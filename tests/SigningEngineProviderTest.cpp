@@ -117,6 +117,28 @@ TEST(SigningEngineProvider, CapturedSnapshotBoundUrlIsImmuneToLaterConfigChange)
     fs::remove_all(dir);
 }
 
+TEST(SigningEngineProvider, DestroyedProviderStopsObservingConfigChanges)
+{
+    // The ctor registers a [this] change observer on the ConfigStore; the dtor
+    // must unregister it. The ConfigStore here deliberately OUTLIVES the
+    // provider (the AgentCore ordering), so a leaked registration is still
+    // reachable: mutating an observed key after destruction would invoke the
+    // dead provider's rebuild callback — a stack-use-after-scope under ASan, a
+    // destroyed-mutex lock otherwise.
+    const auto dir = uniqueDir("dtor");
+    fs::remove_all(dir);
+    Config::ConfigStore cfg{dir / "agent.conf", dir / "cache"};
+    {
+        SigningEngineProvider engine{cfg};
+        ASSERT_NE(engine.snapshot().engine, nullptr);
+    } // provider destroyed; its observer registration must be gone
+    ASSERT_TRUE(cfg.setTsaUrls(std::vector<std::string>{"https://tsa.example.test/tsr"}).ok);
+    ASSERT_TRUE(cfg.setTslSources(std::vector<Config::TslSource>{
+                                      {.url = "https://tl.example.test/lotl.xml", .isLotl = true, .eager = false}})
+                    .ok);
+    fs::remove_all(dir);
+}
+
 TEST(SigningEngineProvider, RecordLastTsaUrlUsedWritesTheConfiguredUrl)
 {
     const auto dir = uniqueDir("lasttsa");

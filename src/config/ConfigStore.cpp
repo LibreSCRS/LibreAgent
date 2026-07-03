@@ -269,13 +269,20 @@ void ConfigStore::persist()
 
 void ConfigStore::fireChanged(const std::string& key) const
 {
-    // m_onChanged + m_changeObservers are wired once during single-threaded
-    // startup; reading them here (post-unlock) needs no lock.
+    // The single setOnChanged slot is wired once during single-threaded
+    // startup and never detached; reading it here (post-unlock) needs no lock.
     if (m_onChanged) {
         m_onChanged(key);
     }
+    // The multicast observers ARE detachable, so the loop runs under
+    // m_observerMutex, held ACROSS the invocations: that hold is what makes
+    // removeChangeObserver's blocks-until-drained guarantee true. m_mutex is
+    // already released here, so callbacks may re-enter the typed getters
+    // (lock order m_observerMutex -> m_mutex, never the reverse), but must
+    // not touch the observer registration itself (non-recursive mutex).
+    std::lock_guard lk(m_observerMutex);
     for (const auto& obs : m_changeObservers) {
-        obs(key);
+        obs.fn(key);
     }
 }
 
@@ -496,10 +503,24 @@ void ConfigStore::setOnChanged(std::function<void(const std::string& key)> cb)
     m_onChanged = std::move(cb);
 }
 
-void ConfigStore::addChangeObserver(std::function<void(const std::string& key)> cb)
+ConfigStore::ObserverId ConfigStore::addChangeObserver(std::function<void(const std::string& key)> cb)
 {
-    std::lock_guard lk(m_mutex);
-    m_changeObservers.push_back(std::move(cb));
+    std::lock_guard lk(m_observerMutex);
+    const ObserverId id{m_nextObserverId++};
+    m_changeObservers.push_back(ChangeObserver{id, std::move(cb)});
+    return id;
+}
+
+void ConfigStore::removeChangeObserver(ObserverId id) noexcept
+{
+    if (id == ObserverId{}) {
+        return; // sentinel: never names a live registration
+    }
+    // Acquiring m_observerMutex is the drain: fireChanged holds it across the
+    // whole invocation pass, so once the erase below runs the removed callback
+    // is not executing on any thread and can never be selected again.
+    std::lock_guard lk(m_observerMutex);
+    std::erase_if(m_changeObservers, [id](const ChangeObserver& obs) { return obs.id == id; });
 }
 
 } // namespace LibreSCRS::Agent::Config

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 // SPDX-FileCopyrightText: 2026 hirashix0
 #pragma once
+#include <LibreSCRS/Agent/config/ConfigStore.h>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -8,18 +9,14 @@
 // LM Signing/Trust types are held only as shared_ptr-to-forward-declared so
 // this header stays free of the LM Signing/Trust includes (the seam-boundary
 // invariant); the full headers are pulled into SigningEngineProvider.cpp only.
+// The agent-side ConfigStore header is included (not forward-declared) for the
+// nested ObserverId member below; it is LM-type-free, so the seam holds.
 namespace LibreSCRS::Signing {
 class SigningService;
 }
 namespace LibreSCRS::Trust {
 class TrustStoreService;
 }
-
-namespace LibreSCRS::Agent {
-namespace Config {
-class ConfigStore;
-}
-} // namespace LibreSCRS::Agent
 
 namespace LibreSCRS::Agent::Operations {
 
@@ -78,6 +75,10 @@ private:
     void rebuild(); // builds a fresh engine from the current ConfigStore snapshot
 
     Config::ConfigStore& m_config;
+    // Handle for the [this]-capturing rebuild observer the ctor registers on
+    // m_config; the dtor unregisters it, so a destroyed provider can never be
+    // called back even though the ConfigStore outlives it.
+    Config::ConfigStore::ObserverId m_configObserverId;
     mutable std::mutex m_mutex;
     // Kept alive alongside the engine: SigningService borrows the trust
     // lifecycle owner for its full lifetime (eager/lazy TL fetches drive it).

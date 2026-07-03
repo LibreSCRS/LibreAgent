@@ -111,11 +111,53 @@ public:
     // multicast addChangeObserver below rather than clobbering this slot.
     void setOnChanged(std::function<void(const std::string& key)> cb);
 
-    // Append an additional change observer (multicast, distinct from the single
-    // setOnChanged slot). Observers fire after setOnChanged on every successful
-    // mutation. Append-only: observers are process-lifetime (no detach), wired
-    // once during single-threaded startup.
-    void addChangeObserver(std::function<void(const std::string& key)> cb);
+    /// @brief Opaque handle identifying one registered change observer.
+    ///
+    /// Returned by @ref addChangeObserver, passed to @ref removeChangeObserver
+    /// (the MonitorService SubscriptionId idiom, sized down: no hashing, the
+    /// store keeps a small vector). A default-constructed id is a sentinel that
+    /// never names a live registration, so consumers can declare a
+    /// zero-initialised member and assign it on registration.
+    class ObserverId
+    {
+    public:
+        /// @brief Default-construct a sentinel (never equal to a live registration).
+        constexpr ObserverId() noexcept = default;
+
+        /// @brief Defaulted comparison (C++20 synthesises operator== from it).
+        auto operator<=>(const ObserverId&) const = default;
+
+    private:
+        friend class ConfigStore;
+        constexpr explicit ObserverId(std::uint64_t value) noexcept : m_value(value) {}
+        std::uint64_t m_value{0};
+    };
+
+    /// @brief Append an additional change observer (multicast, distinct from
+    ///        the single @ref setOnChanged slot).
+    ///
+    /// Observers fire after setOnChanged on every successful mutation.
+    /// Thread-safe; registration may block briefly while a notification pass
+    /// is in flight.
+    ///
+    /// @param cb Invoked (post-value-lock) with the changed key. The callback
+    ///           may read the store through the typed getters, but must NOT
+    ///           mutate it or add/remove observers: notification holds the
+    ///           (non-recursive) observer lock, so re-entry deadlocks.
+    /// @return Handle for @ref removeChangeObserver.
+    [[nodiscard]] ObserverId addChangeObserver(std::function<void(const std::string& key)> cb);
+
+    /// @brief Remove a change observer registered via @ref addChangeObserver.
+    ///
+    /// Blocks until any in-flight notification pass over the observer list has
+    /// completed: after this returns, the removed callback is not running and
+    /// will never run again, so the caller may immediately destroy whatever
+    /// state the callback captured (the SigningEngineProvider dtor relies on
+    /// exactly this). Unknown, sentinel, and already-removed ids are no-ops.
+    ///
+    /// @warning Must not be called from within a change-observer callback —
+    ///          that re-enters the non-recursive observer lock and deadlocks.
+    void removeChangeObserver(ObserverId id) noexcept;
 
 private:
     void applyDefaults();                           // built-in defaults (under m_cacheRoot)
@@ -139,8 +181,25 @@ private:
     std::uint32_t m_pkcs11IdleTimeoutSecs{600};
     std::uint32_t m_pkcs11MaxLifetimeSecs{28800};
 
-    std::function<void(const std::string&)> m_onChanged;                    // guarded by m_mutex for assignment only
-    std::vector<std::function<void(const std::string&)>> m_changeObservers; // multicast; assignment guarded by m_mutex
+    std::function<void(const std::string&)> m_onChanged; // guarded by m_mutex for assignment only
+
+    // One multicast change-observer registration (detachable, unlike the
+    // single-slot m_onChanged, which stays wired for the process lifetime).
+    struct ChangeObserver
+    {
+        ObserverId id;
+        std::function<void(const std::string&)> fn;
+    };
+
+    // Guards m_changeObservers + m_nextObserverId and is HELD ACROSS the
+    // observer invocation loop in fireChanged: that is what gives
+    // removeChangeObserver its blocks-until-drained guarantee. Separate from
+    // m_mutex so callbacks can re-enter the typed getters; the lock order is
+    // strictly m_observerMutex -> m_mutex (fireChanged runs after m_mutex is
+    // released, never the other way around).
+    mutable std::mutex m_observerMutex;
+    std::vector<ChangeObserver> m_changeObservers;
+    std::uint64_t m_nextObserverId{1};
 };
 
 } // namespace LibreSCRS::Agent::Config

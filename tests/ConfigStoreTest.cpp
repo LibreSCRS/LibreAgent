@@ -2,10 +2,12 @@
 // SPDX-FileCopyrightText: 2026 hirashix0
 #include <LibreSCRS/Agent/config/ConfigStore.h>
 #include <atomic>
+#include <chrono>
 #include <filesystem>
 #include <fstream>
 #include <gtest/gtest.h>
 #include <string>
+#include <thread>
 
 using LibreSCRS::Agent::Config::ConfigStore;
 using LibreSCRS::Agent::Config::Mutability;
@@ -256,6 +258,70 @@ TEST_F(ConfigStoreTest, RecordLastTsaUrlNoOpDoesNotFire)
     cfg.setOnChanged([&](const std::string&) { ++hits; });
     cfg.recordLastTsaUrl("https://a"); // same value -> no persist, no Changed
     EXPECT_EQ(hits, 0);
+}
+
+TEST_F(ConfigStoreTest, RemovedChangeObserverStopsFiring)
+{
+    ConfigStore cfg(m_configFile, m_cacheRoot);
+    int first = 0;
+    int second = 0;
+    const auto firstId = cfg.addChangeObserver([&](const std::string&) { ++first; });
+    const auto secondId = cfg.addChangeObserver([&](const std::string&) { ++second; });
+    ASSERT_NE(firstId, secondId);
+    cfg.setDefaultReason("one");
+    EXPECT_EQ(first, 1);
+    EXPECT_EQ(second, 1);
+
+    cfg.removeChangeObserver(firstId);
+    cfg.setDefaultReason("two");
+    EXPECT_EQ(first, 1) << "removed observer still fired";
+    EXPECT_EQ(second, 2) << "removing one observer disturbed another";
+
+    // Double-remove and a default-constructed sentinel are harmless no-ops.
+    cfg.removeChangeObserver(firstId);
+    cfg.removeChangeObserver(ConfigStore::ObserverId{});
+    cfg.setDefaultReason("three");
+    EXPECT_EQ(second, 3);
+}
+
+TEST_F(ConfigStoreTest, RemoveChangeObserverDrainsInFlightCallback)
+{
+    // removeChangeObserver blocks until an in-flight notification pass has
+    // completed: after it returns, the removed callback is not running and
+    // never runs again. That drain is what lets an observer's owner (the
+    // SigningEngineProvider dtor) destroy the callback's captured state
+    // immediately after unregistering, even if a mutation races the teardown.
+    ConfigStore cfg(m_configFile, m_cacheRoot);
+    std::atomic<bool> inCallback{false};
+    std::atomic<bool> release{false};
+    std::atomic<bool> removeReturned{false};
+    bool removeReturnedWhileRunning = false;
+    const auto id = cfg.addChangeObserver([&](const std::string&) {
+        inCallback = true;
+        while (!release) {
+            std::this_thread::yield(); // hold the notification pass in flight
+        }
+        // Still inside the callback: a drained remove cannot have returned yet.
+        removeReturnedWhileRunning = removeReturned;
+    });
+
+    std::thread mutator([&] { cfg.setDefaultReason("held"); });
+    while (!inCallback) {
+        std::this_thread::yield();
+    }
+    std::thread remover([&] {
+        cfg.removeChangeObserver(id);
+        removeReturned = true;
+    });
+    // Give a (buggy) non-blocking remove ample time to return while the
+    // callback is still held in flight, then let the callback finish. The
+    // correct implementation keeps the remover blocked for the whole window,
+    // so the in-callback observation is deterministic, never timing-flaky.
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    release = true;
+    remover.join();
+    mutator.join();
+    EXPECT_FALSE(removeReturnedWhileRunning) << "removeChangeObserver returned while the callback was in flight";
 }
 
 } // namespace

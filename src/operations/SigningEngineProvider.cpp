@@ -50,14 +50,22 @@ SigningEngineProvider::SigningEngineProvider(Config::ConfigStore& config) : m_co
     // wired via setOnChanged. DefaultLevel is deliberately NOT a trigger: it is a
     // per-request value resolved at Card1.Sign entry and feeds neither the trust
     // config nor SigningService construction, so it needs no engine rebuild.
-    m_config.addChangeObserver([this](const std::string& key) {
+    m_configObserverId = m_config.addChangeObserver([this](const std::string& key) {
         if (key == "TsaUrls" || key == "TslSources") {
             rebuild();
         }
     });
 }
 
-SigningEngineProvider::~SigningEngineProvider() = default;
+SigningEngineProvider::~SigningEngineProvider()
+{
+    // Unregister the [this] observer FIRST: removeChangeObserver blocks until
+    // any in-flight notification pass has drained, so after this line the
+    // rebuild callback is not running and can never fire again — member
+    // destruction below cannot race a concurrent config change even though
+    // the ConfigStore outlives this provider.
+    m_config.removeChangeObserver(m_configObserverId);
+}
 
 void SigningEngineProvider::rebuild()
 {
