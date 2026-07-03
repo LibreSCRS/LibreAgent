@@ -239,7 +239,7 @@ void Pkcs11Broker::runCrypto(const char* opName, Mechanism allowedMechanism, con
           idPrefix = certIdPrefix(certId)](CryptoResult result) {
              if (result.outcome == CryptoOutcome::Ok) {
                  // Audit EVERY op (caller identity + op + certId prefix), never the
-                 // bytes. Decrypt is a local oracle (spec §6), so the same line
+                 // bytes. Decrypt is a local oracle, so the same line
                  // covers both — the app id (label) is the per-call attribution.
                  log::infof("pkcs11: {} OK card={} caller={} cert={}", opName, card.value(), label, idPrefix);
                  reply.ok(result.bytes);
@@ -286,7 +286,7 @@ void Pkcs11Broker::decrypt(const std::string& reader, const std::string& certId,
                            const MechanismParams& params, std::span<const std::uint8_t> ciphertext,
                            const Caller& caller, Reply<CryptoOutcome, std::vector<std::uint8_t>> reply)
 {
-    // Decrypt rides the same lease as sign (spec §5 D3.4 default): a live lease
+    // Decrypt rides the same lease as sign: a live lease
     // is the grant, every op is audited in runCrypto. The optional per-app
     // decrypt-confirmation knob was removed: the prompter has no no-secret
     // confirmation primitive (only RequestSecret), so the knob was a verified

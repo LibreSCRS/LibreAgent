@@ -11,7 +11,7 @@
 
 namespace LibreSCRS::Agent::Operations {
 
-// Per-caller request throttle for the Card1.Sign entry. Under the spec's
+// Per-caller request throttle for the Card1.Sign entry. Under the agent's
 // default-allow authorization posture + single-prompt PIN-as-consent, an unbounded
 // caller could drive reflexive-PIN phishing; this caps sign attempts per caller
 // and converts a flood into a hard error (Error.RateLimited) rather than yet

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 // SPDX-FileCopyrightText: 2026 hirashix0
 //
-// Pure-logic exercise of the D4 per-level expired-cert gate. LmSigner computes
+// Pure-logic exercise of the per-level expired-cert gate. LmSigner computes
 // `expired` from the cert's notAfter on hardware; this pins the policy decision
 // itself (the part that decides block vs proceed vs proceed-allowing-expired).
 #include <LibreSCRS/Agent/operations/SignGate.h>
@@ -29,7 +29,7 @@ TEST(SignExpiredGate, BbExpiredNeedsExplicitConsent)
 
 TEST(SignExpiredGate, QualifiedFamilyExpiredAlwaysBlockedNeverHonoursAllowExpired)
 {
-    // A timestamp/LTV over an expired cert is internally inconsistent (D4): the
+    // A timestamp/LTV over an expired cert is internally inconsistent: the
     // qualified family must NEVER forward allowExpired, even when the client set it.
     EXPECT_EQ(evaluateExpiredGate(true, /*qualifiedFamily=*/true, /*allowExpired=*/false), ExpiredGate::Blocked);
     EXPECT_EQ(evaluateExpiredGate(true, /*qualifiedFamily=*/true, /*allowExpired=*/true), ExpiredGate::Blocked);
@@ -39,7 +39,7 @@ TEST(SignExpiredGate, BtComposesWithTheQualifiedClassifierToHardBlockExpired)
 {
     // Pin the wiring the production LmSigner uses: the qualifiedFamily input is
     // derived from isQualifiedSignLevel(level). For b-t an expired cert is a
-    // hard block even when the client set allowExpired (D4).
+    // hard block even when the client set allowExpired.
     EXPECT_EQ(evaluateExpiredGate(/*expired=*/true, sp::isQualifiedSignLevel("b-t"), /*allowExpired=*/true),
               ExpiredGate::Blocked);
     EXPECT_EQ(evaluateExpiredGate(/*expired=*/true, sp::isQualifiedSignLevel("b-t"), /*allowExpired=*/false),

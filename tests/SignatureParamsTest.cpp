@@ -3,7 +3,7 @@
 //
 // Pure-logic exercise of the Card1.Sign parameter resolution: the magic-byte
 // format sniffer, per-format default packaging, and the closed-set validators
-// (the R4 out-of-vocabulary rejection).
+// (the out-of-vocabulary rejection).
 #include <LibreSCRS/Agent/operations/SignatureParams.h>
 #include <gtest/gtest.h>
 #include <algorithm>
@@ -59,7 +59,7 @@ TEST(SignatureParams, ValidatorsAcceptVocabularyAndRejectEverythingElse)
 {
     EXPECT_TRUE(sp::isKnownFormat("pades"));
     EXPECT_TRUE(sp::isKnownFormat("asice"));
-    EXPECT_FALSE(sp::isKnownFormat("asics")) << "ASiC-S is explicitly out of scope (R4)";
+    EXPECT_FALSE(sp::isKnownFormat("asics")) << "ASiC-S is explicitly out of scope";
     EXPECT_FALSE(sp::isKnownFormat("auto")) << "auto must be resolved before validation";
     EXPECT_FALSE(sp::isKnownFormat(""));
 
@@ -70,7 +70,7 @@ TEST(SignatureParams, ValidatorsAcceptVocabularyAndRejectEverythingElse)
 
     EXPECT_TRUE(sp::isKnownPackaging("enveloped"));
     EXPECT_TRUE(sp::isKnownPackaging("detached"));
-    EXPECT_FALSE(sp::isKnownPackaging("enveloping")) << "enveloping is out of scope (R4)";
+    EXPECT_FALSE(sp::isKnownPackaging("enveloping")) << "enveloping is out of scope";
 }
 
 TEST(SignatureParams, ResolveSignLevelUpgradesDefaultedBbOnlyWhenTsaConfigured)

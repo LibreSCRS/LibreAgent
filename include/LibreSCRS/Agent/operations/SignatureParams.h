@@ -12,12 +12,12 @@
 // Agent-side, Qt-free signing-parameter vocabulary: the format magic-byte
 // sniffer, the per-format default packaging, and the closed-set validators.
 // Pure functions (no card, no LM, no bus) so the Card1.Sign method-entry
-// resolution + the R4 out-of-vocabulary rejection are unit-testable without a
+// resolution + the out-of-vocabulary rejection are unit-testable without a
 // D-Bus round-trip.
 namespace LibreSCRS::Agent::Operations::SignatureParams {
 
 // Resolve format=auto to a concrete container from the document's leading
-// bytes (spec §3.1). Empty optional => unrecognised (Error.UnsupportedSignatureParameter).
+// bytes. Empty optional => unrecognised (Error.UnsupportedSignatureParameter).
 //   %PDF -> pades, PK(zip) -> asice, '<' -> xades, '{' -> jades, 0x30 -> cades.
 [[nodiscard]] inline std::optional<std::string> sniffFormat(const std::vector<std::uint8_t>& doc)
 {

@@ -9,7 +9,7 @@ namespace LibreSCRS::Agent {
 
 // The crypto mechanism a private/public-key op requests. Frozen now so EC/ECDH
 // and RSA-OAEP become additive enum values + closed-but-extensible params arms —
-// never a seam-signature widening (spec §8). The core wires only RsaPkcs1Sign /
+// never a seam-signature widening. The core wires only RsaPkcs1Sign /
 // RsaPkcs1Decrypt + Empty params (behaviour-identical to today's SignRaw /
 // Decrypt); the rest are designed-additive.
 enum class Mechanism : std::uint8_t {
@@ -45,7 +45,7 @@ struct MechParamsRsaOaep
 };
 
 // Closed-but-extensible: adding an arm is a reviewed API-version event, never a
-// signature change (spec §8). A future MechParamsRsaPss{hashAlg, mgf, saltLen}
+// signature change. A future MechParamsRsaPss{hashAlg, mgf, saltLen}
 // arm joins here when RsaPssSign is wired (RSA-PSS needs the hash/MGF/salt-len
 // triple — it cannot ride MechParamsEmpty).
 using MechanismParams = std::variant<MechParamsEmpty, MechParamsEcdh, MechParamsRsaOaep>;

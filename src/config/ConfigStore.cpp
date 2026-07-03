@@ -15,7 +15,7 @@ namespace LibreSCRS::Agent::Config {
 namespace {
 
 // Frozen key strings (single source of truth; mirrors the Config1 wire
-// property names 1:1, spec §3.4).
+// property names 1:1).
 constexpr const char* kDefaultLevel = "DefaultLevel";
 constexpr const char* kTsaUrls = "TsaUrls";
 constexpr const char* kLastTsaUrl = "LastTsaUrl";
@@ -28,13 +28,13 @@ constexpr const char* kPluginDir = "PluginDir";
 constexpr const char* kPkcs11IdleTimeoutSecs = "Pkcs11IdleTimeoutSecs";
 constexpr const char* kPkcs11MaxLifetimeSecs = "Pkcs11MaxLifetimeSecs";
 
-// PKCS#11 lease-knob built-in defaults (spec §5): idle 10 min, max lifetime
+// PKCS#11 lease-knob built-in defaults: idle 10 min, max lifetime
 // 8 h. Single source of truth for applyDefaults + resetKey so the two cannot
 // drift.
 constexpr std::uint32_t kPkcs11IdleDefault = 600;
 constexpr std::uint32_t kPkcs11MaxLifetimeDefault = 28800;
 
-// D-Bus error names surfaced by a rejected SetValue/Reset (spec §3.5).
+// D-Bus error names surfaced by a rejected SetValue/Reset.
 constexpr const char* kErrReadOnly = "org.librescrs.Agent.Error.ReadOnlyConfig";
 constexpr const char* kErrUnknownKey = "org.librescrs.Agent.Error.UnknownConfigKey";
 constexpr const char* kErrInvalidValue = "org.librescrs.Agent.Error.InvalidConfigValue";

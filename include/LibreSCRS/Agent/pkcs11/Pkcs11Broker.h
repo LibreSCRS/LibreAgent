@@ -46,7 +46,7 @@ class Authorizer;
 // fakes that complete inline). The caller identity is also injected per call by
 // the backend (resolved while the in-flight message is current).
 //
-// SECURITY / POLICY (spec §4-§6):
+// SECURITY / POLICY:
 //  - CertDer / PublicKey are public data: no consent, no lease, audited at info.
 //  - Login is authorization-gated (kActionPkcs11Login); it establishes a lease for
 //    (caller, card). It is OPTIMISTIC + non-prompting (only opens the channel);
@@ -219,7 +219,7 @@ public:
     // Public data: no Authorizer gate, no lease, no PIN — audited at info. The
     // future RSA public-key encrypt (Mechanism::RsaPkcs1Encrypt) joins THIS
     // no-consent path via a dedicated EncryptSeam, NOT the lease-gated runCrypto
-    // body (spec §8; consent is by private-key use).
+    // body (consent is by private-key use).
     void certDer(const std::string& reader, const std::string& certId, const Caller& caller,
                  Reply<CryptoOutcome, std::vector<std::uint8_t>> reply);
     void publicKey(const std::string& reader, const std::string& certId, const Caller& caller,

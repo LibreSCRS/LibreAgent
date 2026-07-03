@@ -193,7 +193,7 @@ TEST_F(ConfigStoreTest, MutabilityMetadata)
 TEST_F(ConfigStoreTest, Pkcs11LeaseKnobsDefaultsAndRoundTrip)
 {
     ConfigStore cfg(m_configFile, m_cacheRoot);
-    // Spec defaults.
+    // Built-in defaults.
     EXPECT_EQ(cfg.pkcs11IdleTimeoutSecs(), 600u);
     EXPECT_EQ(cfg.pkcs11MaxLifetimeSecs(), 28800u);
 }

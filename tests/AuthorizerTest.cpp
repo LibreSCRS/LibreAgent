@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 // SPDX-FileCopyrightText: 2026 hirashix0
 //
-// Hermetic conformance coverage for the Authorizer backend interface (vocab
-// §6.2) and its two in-core implementations (AllowAllAuthorizer,
+// Hermetic conformance coverage for the Authorizer backend interface and its
+// two in-core implementations (AllowAllAuthorizer,
 // DefaultAuthorizer). A recording FakeAuthorizer proves the interface is
 // drivable with the frozen CallerToken key — no bus-name string leaks into the
 // core surface. No live authorization backend is involved.

@@ -173,7 +173,7 @@ CertSnapshot toCertSnapshot(const LibreSCRS::Plugin::CertificateData& cd)
 {
     CertSnapshot snap;
     snap.certId = sha256Hex(cd.derBytes);
-    snap.trustStatus = static_cast<std::uint32_t>(CertTrustStatus::Unknown); // verdict wired in Inc 6
+    snap.trustStatus = static_cast<std::uint32_t>(CertTrustStatus::Unknown); // chain verdict not yet wired
     // signingCapable is set AFTER parsing (it needs the keyUsage); it defaults
     // false so an unparseable cert is never reported as a usable signing handle.
 
@@ -252,7 +252,7 @@ CertSnapshot toCertSnapshot(const LibreSCRS::Plugin::CertificateData& cd)
             }
         }
     }
-    // signingCapable (spec §3.2): pairs to an on-card private key AND the key
+    // signingCapable: pairs to an on-card private key AND the key
     // usage permits signing. keyFID comes from the card's CDF<->key pairing.
     snap.signingCapable = cd.keyFID.has_value() && kuSuitable;
 
@@ -262,8 +262,8 @@ CertSnapshot toCertSnapshot(const LibreSCRS::Plugin::CertificateData& cd)
             snap.ekuOids.push_back(oid.dottedDecimal);
         }
     }
-    // Inc 2: the chain is not yet evaluated -> just the leaf's own CN; the full
-    // chain walk + trust verdict land in Increment 6 (trustStatus stays Unknown).
+    // The chain is not yet evaluated -> just the leaf's own CN; trustStatus
+    // stays Unknown until the full chain walk + trust verdict are wired.
     snap.chainSubjectCns.push_back(c.subject().commonName());
 
     return snap;
@@ -459,7 +459,7 @@ SignOutcome LmSigner::sign(const std::shared_ptr<LibreSCRS::SmartCard::CardSessi
     }
     // Resolve certId -> the exact on-card cert by iterating the candidate list and
     // re-reading each candidate's certs off the live card, so the assertion is
-    // against the card present NOW (anti-TOCTOU, spec §4.3). The re-read also
+    // against the card present NOW (anti-TOCTOU). The re-read also
     // (re)establishes the PACE channel for travel-document cards so the live
     // session is registered in SessionPresence for in-process adoption.
     // readCertificates takes no CancelToken (the card I/O — and any CAN prompt it
@@ -475,7 +475,7 @@ SignOutcome LmSigner::sign(const std::shared_ptr<LibreSCRS::SmartCard::CardSessi
     const auto& signingPlugin = selection->plugin;
     const auto& chosen = selection->cert;
 
-    // Per-level expired-cert gate (D4). Authority is the cert's own notAfter; the
+    // Per-level expired-cert gate. Authority is the cert's own notAfter; the
     // policy itself is the pure, unit-tested evaluateExpiredGate.
     const bool qualifiedFamily = (level != sign::SignatureLevel::B_B);
     bool expired = false;

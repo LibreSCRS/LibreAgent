@@ -118,7 +118,7 @@ SignFlow::Result SignFlow::run()
     // entry). It rides the untrusted `description` slot, NOT `artifact`: artifact
     // is the trusted, agent-owned operation category (mirrors the read flows'
     // fixed "identity"/"photo"/"certificates"), so a hostile displayName cannot
-    // masquerade as the trusted "what is being signed" label (LR4).
+    // masquerade as the trusted "what is being signed" label.
     const std::string description = m_deps.params.displayName;
     const LibreSCRS::CancelToken token = m_deps.token;
     // Set true iff a prompt fails because the prompter UI broke / was absent on

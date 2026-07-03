@@ -67,7 +67,7 @@ struct RawCryptoFlowDeps
     OperationPhaseSink& phaseSink;
     std::string cardKey;
     std::string requester;
-    std::string certId; // selects the exact key/cert (SHA-256(DER), D3)
+    std::string certId; // selects the exact key/cert (SHA-256(DER))
     RawCryptoOp signOp;
     RawCryptoOp decryptOp;
     LibreSCRS::CancelToken token;

@@ -2,7 +2,7 @@
 // SPDX-FileCopyrightText: 2026 hirashix0
 #pragma once
 
-// The D4 per-level expired-cert gate as a pure decision, factored out of
+// The per-level expired-cert gate as a pure decision, factored out of
 // LmSigner so the policy is unit-testable without a live card or LM types. The
 // "expired" input is computed from the cert's notAfter at the call site; the
 // other two come from the signing level/options.
@@ -14,7 +14,7 @@ enum class ExpiredGate {
     Blocked,                // expired + (qualified-family OR no B-B consent): CertExpiredBlocked
 };
 
-// Per spec D4:
+// Policy:
 //   - not expired                              -> Proceed
 //   - expired + qualified-family (B-T/LT/LTA)  -> Blocked ALWAYS (never honour
 //       allowExpired: a timestamp over an expired cert is internally inconsistent)

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 // SPDX-FileCopyrightText: 2026 hirashix0
 //
-// Design §4 mandates AT MOST ONE live prompter interaction agent-wide. The
+// AT MOST ONE live prompter interaction is allowed agent-wide. The
 // agent runs one worker per reader, so two readers can drive two credential
 // prompts concurrently; without a gate they would stack two dialogs (a
 // consent-integrity hazard: which secret authorizes which artifact?).

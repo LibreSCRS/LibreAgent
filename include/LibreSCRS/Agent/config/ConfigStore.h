@@ -32,7 +32,7 @@ enum class Mutability {
     ReadOnly,         // agent-internal state, never client-settable (e.g. LastTsaUrl)
 };
 
-// Agent-owned signing configuration: the R10 single-source-of-truth for the
+// Agent-owned signing configuration: the single source of truth for the
 // operation-affecting, NON-secret settings (level, TSA, trust list, cache dirs,
 // plugin dir). Secrets (PIN/CAN/MRZ) are NEVER configuration.
 //

@@ -72,7 +72,7 @@ public:
 //     call so PACE-established secure messaging is reused, never re-established.
 struct SignParams
 {
-    std::string certId;                      // opaque SHA-256(DER); selects the exact cert (D3)
+    std::string certId;                      // opaque SHA-256(DER); selects the exact cert
     std::vector<std::uint8_t> inputDocument; // the bytes to sign (already read off the input fd)
     // Resolved (concrete) vocabulary as lower-case wire strings, mapped to the
     // LM Signing enums inside LmSigner so this header stays LM-Signing-free.
@@ -81,8 +81,8 @@ struct SignParams
     std::string format;
     std::string level;
     std::string packaging;
-    bool allowExpired{false}; // B-B only; ignored for the timestamped/LT family (D4)
-    std::string displayName;  // client-supplied chrome (LR4) — never trusted
+    bool allowExpired{false}; // B-B only; ignored for the timestamped/LT family
+    std::string displayName;  // client-supplied chrome — never trusted
     std::string reason;
     std::string location;
 };

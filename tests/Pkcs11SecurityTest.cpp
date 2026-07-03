@@ -376,7 +376,7 @@ TEST(Pkcs11Security, ThrottledCallerRecoversAfterWindowAndBackoff)
     EXPECT_NO_THROW(static_cast<void>(callSignRaw(obj, kReader, kCertId, kInput, appCaller())));
 }
 
-// NOTE: the per-app decrypt-confirm knob (spec §5 D3.4) was REMOVED — it was a
+// NOTE: the per-app decrypt-confirm knob was REMOVED — it was a
 // verified no-op (the prompter has only RequestSecret, no no-secret confirm
 // primitive to back it), and shipping a no-op security toggle is misleading. The
 // former DecryptConfirmKnobReachesTheSeam test re-read the flag inside a fake
