@@ -705,3 +705,104 @@ TEST(PrompterKeepAliveDrain, LoginWedgeSkipsGrantOnShutdownCancel)
     EXPECT_EQ(grantsObserved.load(std::memory_order_acquire), 0)
         << "the shutdown skip must prevent the login continuation from running";
 }
+
+// ---------------------------------------------------------------------------
+// COMPLETION-WEDGE drain proof. The raw-crypto worker re-checks the shutdown
+// token before invoking the broker completion (`done`), but a cancellation can
+// land AFTER that check while the completion wrapper is already in flight — and
+// the wrapper's AuthFailed arm derefs the broker (m_deps.lease->revoke), its
+// only raw `this` touch on the completion path. The wrapper therefore
+// value-captures the co-owned shutdown token (Deps::shutdown) and re-checks it
+// immediately before that deref. This drives the REAL runCrypto wrapper into
+// that exact interleaving: a worker parked between its (passed) pre-completion
+// check and the completion, the token cancelled and the broker freed while it
+// is parked, then released straight into `done`. The re-check must skip both
+// the revoke and the reply — the dropped reply fails closed from its destructor
+// and the lease share the test still holds stays untouched (TSan-clean).
+// Reverting the re-check derefs the freed broker inside revoke — the RED proof.
+TEST(PrompterKeepAliveDrain, CompletionWedgeSkipsBrokerDerefOnShutdownCancel)
+{
+    Latch latch;
+    std::atomic<bool> entered{false};
+    std::atomic<bool> completed{false};
+    std::atomic<int> okReplies{0};
+    std::atomic<int> failOutcome{-1};
+
+    auto lease = std::make_shared<Pkcs11::LeaseManager>(
+        Pkcs11::LeaseConfig{.idleTimeout = std::chrono::minutes(10), .maxLifetime = std::chrono::hours(8)});
+    LibreSCRS::CancelSource shutdownSource;
+    LibreSCRS::Agent::AllowAllAuthorizer authz;
+
+    const Pkcs11::LeaseKey key{.caller = CallerToken{":1.99"}, .card = kWedgeCard};
+    lease->grant(key, std::chrono::steady_clock::now());
+
+    std::thread worker;
+    auto seam = [&](const std::string&, const std::string&, Mechanism, const MechanismParams&,
+                    std::span<const std::uint8_t>, const std::string&, const Pkcs11Broker::LeasePinState&,
+                    std::function<void(Pkcs11Broker::CryptoResult)> done) {
+        worker = std::thread([done = std::move(done), &latch, &entered, &completed] {
+            entered.store(true, std::memory_order_release);
+            latch.waitForRelease();
+            // The worker's own pre-completion token check PASSED before the
+            // cancel landed, so it drives the broker completion unconditionally
+            // — the wrapper's re-check is the only remaining guard.
+            done(Pkcs11Broker::CryptoResult{Pkcs11Broker::CryptoOutcome::AuthFailed, {}});
+            completed.store(true, std::memory_order_release);
+        });
+    };
+
+    auto broker = std::make_unique<Pkcs11Broker>(Pkcs11Broker::Deps{
+        .lease = lease,
+        .authorizer = authz,
+        .certDer = [](const std::string&, const std::string&,
+                      std::function<void(std::optional<std::vector<std::uint8_t>>)> done) { done(std::nullopt); },
+        .publicKey = [](const std::string&, const std::string&,
+                        std::function<void(std::optional<Pkcs11Broker::PublicKey>)> done) { done(std::nullopt); },
+        .login = [](const std::string&,
+                    std::function<void(Pkcs11Broker::LoginOutcome)> done) { done(Pkcs11Broker::LoginOutcome::Ok); },
+        .signRaw = seam,
+        .decrypt = [](const std::string&, const std::string&, Mechanism, const MechanismParams&,
+                      std::span<const std::uint8_t>, const std::string&, const Pkcs11Broker::LeasePinState&,
+                      std::function<void(Pkcs11Broker::CryptoResult)>) {},
+        .resolveCardKey = [](const std::string&) { return std::optional<ObjectId>{kWedgeCard}; },
+        .shutdown = shutdownSource.token(),
+        .now = {},
+    });
+
+    broker->signRaw(
+        "FakeReader", "abc123", Mechanism::RsaPkcs1Sign, MechParamsEmpty{}, kWedgeInput,
+        Pkcs11Broker::Caller{.busName = CallerToken{":1.99"}, .label = "test-client"},
+        Reply<Pkcs11Broker::CryptoOutcome, std::vector<std::uint8_t>>{
+            [&okReplies](const std::vector<std::uint8_t>&) { okReplies.fetch_add(1, std::memory_order_acq_rel); },
+            [&failOutcome](Pkcs11Broker::CryptoOutcome oc) {
+                failOutcome.store(static_cast<int>(oc), std::memory_order_release);
+            },
+            Pkcs11Broker::CryptoOutcome::CardError});
+
+    const auto deadline = std::chrono::steady_clock::now() + 2s;
+    while (!entered.load(std::memory_order_acquire) && std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::sleep_for(5ms);
+    }
+    ASSERT_TRUE(entered.load(std::memory_order_acquire)) << "worker never reached the completion wedge";
+
+    // Cancellation lands after the worker's check passed; the broker (the sole
+    // owner of m_deps) is then freed, as at backend teardown. The lease share the
+    // test holds stands in for the co-owned LeaseManager that outlives the broker.
+    shutdownSource.requestCancel();
+    broker.reset();
+
+    latch.release();
+    if (worker.joinable()) {
+        worker.join();
+    }
+    EXPECT_TRUE(completed.load(std::memory_order_acquire)) << "the wedged worker never finished";
+
+    // The wrapper skipped the revoke (the lease is untouched) and the reply (the
+    // fail-closed fallback arrived from the dropped reply's destructor instead of
+    // the AuthFailed the completion carried).
+    EXPECT_TRUE(lease->isActive(key, std::chrono::steady_clock::now()))
+        << "the skipped completion must not revoke through the freed broker";
+    EXPECT_EQ(okReplies.load(std::memory_order_acquire), 0);
+    EXPECT_EQ(failOutcome.load(std::memory_order_acquire), static_cast<int>(Pkcs11Broker::CryptoOutcome::CardError))
+        << "the dropped reply must deliver its fail-closed fallback, not the skipped AuthFailed";
+}

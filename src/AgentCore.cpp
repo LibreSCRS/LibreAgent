@@ -220,7 +220,11 @@ void AgentCore::runRawCryptoOnWorker(bool isSign, const std::string& reader, con
             if (ctx->shutdown.isCancelled()) {
                 // teardown: skip the completion (broker + reply channel gone). @p
                 // done's deferred reply still fires fail-closed at zombie drain via
-                // its destructor, so the client is never left hanging.
+                // its destructor, so the client is never left hanging. A cancel
+                // landing AFTER this check, with the completion already in flight,
+                // is caught by the broker wrapper's own re-check of its co-owned
+                // token copy immediately before its lease revoke — the wrapper's
+                // only raw broker deref on this path.
                 return;
             }
             done(std::move(result));
@@ -310,6 +314,11 @@ Pkcs11Broker::Deps AgentCore::makeBrokerDeps(Pkcs11Broker::ResolveCardKeySeam re
                 runRawCryptoOnWorker(/*isSign=*/false, reader, certId, bytes, requester, pinState, std::move(done));
             },
         .resolveCardKey = std::move(resolveCardKey),
+        // The broker's runCrypto completion wrapper re-checks this token (a
+        // value-captured copy) immediately before its AuthFailed lease revoke —
+        // its only raw broker deref — narrowing the window between the worker's
+        // pre-completion skip and that deref at teardown.
+        .shutdown = m_cryptoCtx->shutdown,
         .now = {}, // steady_clock::now
     };
 }

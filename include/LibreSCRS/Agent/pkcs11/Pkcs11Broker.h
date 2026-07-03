@@ -6,6 +6,7 @@
 #include <LibreSCRS/Agent/crypto/Mechanism.h>
 #include <LibreSCRS/Agent/operations/RateLimiter.h>
 #include <LibreSCRS/Agent/pkcs11/LeaseManager.h>
+#include <LibreSCRS/CancelToken.h>
 #include <chrono>
 #include <cstdint>
 #include <functional>
@@ -195,6 +196,15 @@ public:
         CryptoSeam signRaw;
         CryptoSeam decrypt;
         ResolveCardKeySeam resolveCardKey;
+        // Agent-wide shutdown-cancel token. The runCrypto completion wrapper
+        // value-captures a copy so it can re-check cancellation immediately
+        // before its AuthFailed lease revoke — the wrapper's only raw broker
+        // deref — and skip the completion when teardown began after the
+        // worker's own pre-completion check had already passed (the dropped
+        // reply then fails closed at drain). Defaults to a never-cancellable
+        // token, which keeps the re-check inert for hosts that join every
+        // worker before tearing the broker down.
+        LibreSCRS::CancelToken shutdown{};
         NowSeam now{}; // defaults to steady_clock::now
     };
 

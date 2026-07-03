@@ -232,9 +232,10 @@ void Pkcs11Broker::runCrypto(const char* opName, Mechanism allowedMechanism, con
     // Thread the caller's display label as the prompt requester so the
     // PIN-as-consent dialog names the app asking (never blank). The continuation
     // runs on the worker thread when the card op completes; it owns everything it
-    // touches (by-value caller / key / cardKey + the Reply).
+    // touches (by-value caller / key / cardKey + the Reply) except the broker
+    // `this` its AuthFailed arm derefs — guarded by the token re-check below.
     seam(reader, certId, mechanism, params, bytes, caller.label, pinState,
-         [this, reply, key, opName, label = caller.label, card = *cardKey,
+         [this, shutdown = m_deps.shutdown, reply, key, opName, label = caller.label, card = *cardKey,
           idPrefix = certIdPrefix(certId)](CryptoResult result) {
              if (result.outcome == CryptoOutcome::Ok) {
                  // Audit EVERY op (caller identity + op + certId prefix), never the
@@ -247,11 +248,21 @@ void Pkcs11Broker::runCrypto(const char* opName, Mechanism allowedMechanism, con
              if (result.outcome == CryptoOutcome::AuthFailed) {
                  // Wrong PIN / card blocked: revoke the lease so the next op
                  // re-prompts. The LeaseManager mutex makes this worker-thread
-                 // revoke safe against the bus thread's lease reads. This wrapper
-                 // still captures the broker `this`, but it is only ever invoked on
-                 // a completing (non-abandoned) worker — the raw-crypto worker SKIPS
-                 // its completion on the shutdown-cancel path, so it never runs on a
-                 // zombie whose broker is gone.
+                 // revoke safe against the bus thread's lease reads. The revoke is
+                 // also this wrapper's ONLY raw broker deref: the raw-crypto worker
+                 // skips the completion when the shutdown token is already
+                 // cancelled, but a cancellation can land AFTER that check with
+                 // this wrapper in flight, and the broker may then be freed within
+                 // the abandon grace. Re-check the token — the value-captured copy,
+                 // so the check itself touches no broker state — immediately before
+                 // the deref and skip the completion when tripped; the dropped
+                 // reply fails closed at drain. Residual: a cancellation landing
+                 // between this check and the revoke is still possible (a token
+                 // check narrows the window to these two adjacent statements; only
+                 // a join could eliminate it), still bounded by the teardown grace.
+                 if (shutdown.isCancelled()) {
+                     return;
+                 }
                  m_deps.lease->revoke(key);
                  log::infof("pkcs11: {} auth-failed card={} caller={} (lease revoked)", opName, card.value(), label);
              }

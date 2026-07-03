@@ -146,3 +146,30 @@ TEST(RawCryptoCaptureGuard, LoginContinuationCoOwnsTheLeaseShareNotTheBroker)
     EXPECT_EQ(src.find("m_deps.login(reader, [this, reply, caller"), std::string::npos)
         << "the pre-fix login continuation captured the broker `this`; that must be gone";
 }
+
+TEST(RawCryptoCaptureGuard, CompletionWrapperRechecksShutdownBeforeBrokerDeref)
+{
+    const std::string broker = slurp(LIBREAGENT_PKCS11BROKER_CPP);
+    ASSERT_FALSE(broker.empty()) << "Pkcs11Broker source path not wired";
+
+    // The runCrypto completion wrapper keeps a raw broker `this` for its
+    // AuthFailed lease revoke, so it must value-capture the co-owned shutdown
+    // token and re-check it immediately before that deref: the worker's own
+    // pre-completion skip cannot catch a cancellation that lands while the
+    // wrapper is already in flight.
+    EXPECT_NE(broker.find("shutdown = m_deps.shutdown"), std::string::npos)
+        << "the runCrypto completion wrapper must value-capture a shutdown-token copy";
+    const auto recheck = broker.find("if (shutdown.isCancelled())");
+    const auto revoke = broker.find("m_deps.lease->revoke(key)");
+    EXPECT_NE(recheck, std::string::npos)
+        << "the completion wrapper must re-check the shutdown token before the lease revoke";
+    ASSERT_NE(revoke, std::string::npos) << "the AuthFailed lease revoke must exist";
+    EXPECT_LT(recheck, revoke) << "the re-check must sit BEFORE the broker deref (the lease revoke)";
+
+    // The aggregate wires the broker's token from the same shutdown state every
+    // worker closure checks.
+    const std::string core = slurp(LIBREAGENT_AGENTCORE_CPP);
+    ASSERT_FALSE(core.empty()) << "AgentCore source path not wired";
+    EXPECT_NE(core.find(".shutdown = m_cryptoCtx->shutdown"), std::string::npos)
+        << "AgentCore must wire Deps::shutdown from the crypto-worker context token";
+}

@@ -15,10 +15,12 @@
 #include "fakes/FakeAgentTransport.h"
 #include "fakes/FakeAuthorizer.h"
 #include "fakes/FakePrompter.h"
+#include <LibreSCRS/CancelToken.h>
 #include <gtest/gtest.h>
 #include <chrono>
 #include <cstdint>
 #include <filesystem>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <span>
@@ -97,6 +99,12 @@ struct Harness
     // test can assert it reaches the PIN-as-consent prompt (never blank).
     std::string capturedSignRequester;
     std::string capturedDecryptRequester;
+    // Wired into Deps::shutdown (defaults to never-cancellable); a test binds a
+    // CancelSource token to drive the completion-wrapper re-check.
+    LibreSCRS::CancelToken shutdown{};
+    // Runs INSIDE the sign seam before it completes — lets a test land a
+    // shutdown cancel between the (modelled) worker check and the completion.
+    std::function<void()> onSignSeam{};
 
     Pkcs11Broker make()
     {
@@ -113,6 +121,9 @@ struct Harness
                                          const std::string& requester, const Pkcs11Broker::LeasePinState&) {
                 ++signCalls;
                 capturedSignRequester = requester;
+                if (onSignSeam) {
+                    onSignSeam();
+                }
                 return signResult;
             }),
             .decrypt = cryptoSeam([this](const std::string&, const std::string&, std::span<const std::uint8_t>,
@@ -122,6 +133,7 @@ struct Harness
                 return decryptResult;
             }),
             .resolveCardKey = [this](const std::string&) { return cardKey; },
+            .shutdown = shutdown,
             .now = [this]() { return clockNow; },
         }};
     }
@@ -382,6 +394,48 @@ TEST(Pkcs11Broker, SignRawAuthFailedRevokesLease)
     } catch (Pkcs11Broker::CryptoOutcome oc) {
         EXPECT_EQ(oc, Pkcs11Broker::CryptoOutcome::UserNotLoggedIn);
     }
+}
+
+// --- runCrypto completion TOCTOU re-check ----------------------------------
+// The per-reader worker skips the broker completion when the shutdown token is
+// already cancelled, but a cancellation can land AFTER that check while the
+// completion wrapper is in flight. The wrapper re-checks its value-captured
+// token copy immediately before its AuthFailed lease revoke (its only raw
+// broker deref) and skips the completion: no revoke, no reply — the dropped
+// reply delivers its fail-closed fallback instead.
+TEST(Pkcs11Broker, AuthFailedCompletionSkipsRevokeAndReplyWhenShutdownCancelsMidWindow)
+{
+    Harness h;
+    LibreSCRS::CancelSource shutdown;
+    h.shutdown = shutdown.token();
+    h.signResult = Pkcs11Broker::CryptoResult{Pkcs11Broker::CryptoOutcome::AuthFailed, {}};
+    // The cancel lands inside the seam — after the worker's own pre-completion
+    // check would have passed, before the broker wrapper runs.
+    h.onSignSeam = [&shutdown] { static_cast<void>(shutdown.requestCancel()); };
+    auto obj = h.make();
+    static_cast<void>(callLogin(obj, kReader, appCaller()));
+    // The wrapper skips: what arrives is the dropped reply's fail-closed
+    // fallback (CardError), never the AuthFailed the skipped completion carried.
+    EXPECT_EQ(signRawMechanismOutcome(obj, Mechanism::RsaPkcs1Sign, appCaller()),
+              Pkcs11Broker::CryptoOutcome::CardError);
+    EXPECT_EQ(h.signCalls, 1) << "the seam ran; only the completion was skipped";
+    // And the lease survived: the skipped wrapper never revoked it.
+    EXPECT_TRUE(h.lease->isActive(Pkcs11::LeaseKey{.caller = CallerToken{":1.42"}, .card = *h.cardKey}, h.clockNow));
+}
+
+// The re-check must not misfire: with a wired-but-untripped token the AuthFailed
+// completion behaves exactly as before (lease revoked, AuthFailed surfaced).
+TEST(Pkcs11Broker, AuthFailedCompletionWithUntrippedShutdownTokenStillRevokesLease)
+{
+    Harness h;
+    LibreSCRS::CancelSource shutdown;
+    h.shutdown = shutdown.token();
+    h.signResult = Pkcs11Broker::CryptoResult{Pkcs11Broker::CryptoOutcome::AuthFailed, {}};
+    auto obj = h.make();
+    static_cast<void>(callLogin(obj, kReader, appCaller()));
+    EXPECT_EQ(signRawMechanismOutcome(obj, Mechanism::RsaPkcs1Sign, appCaller()),
+              Pkcs11Broker::CryptoOutcome::AuthFailed);
+    EXPECT_FALSE(h.lease->isActive(Pkcs11::LeaseKey{.caller = CallerToken{":1.42"}, .card = *h.cardKey}, h.clockNow));
 }
 
 TEST(Pkcs11Broker, DecryptWithinLeaseReturnsPlaintext)
