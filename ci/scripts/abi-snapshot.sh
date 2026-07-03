@@ -15,6 +15,12 @@
 # prefix: that namespace is the public, frozen API; anything outside it is
 # an implementation detail free to churn between releases.
 #
+# Known filter gap: a function-template instantiation demangles with a
+# return-type prefix (e.g. "std::shared_ptr<T> LibreSCRS::Agent::f<..>(..)")
+# and would escape the leading-prefix match — fail-open. The public surface
+# contains no such symbols today; extend the filter before adding the first
+# public function template.
+#
 # This script generates a stable, sorted, human-readable text artefact
 # checked into the tree at:
 #   ci/abi/4.x-baseline.txt
@@ -70,11 +76,18 @@ trap 'rm -rf "$SCRATCH"' EXIT
 
 snapshot="${SCRATCH}/snapshot.txt"
 
-archive="$(find "$BUILD_DIR" -name 'libLibreAgentCore.a' | sort | head -n 1)"
-if [[ -z "$archive" ]]; then
+mapfile -t archives < <(find "$BUILD_DIR" -name 'libLibreAgentCore.a' | sort)
+if [[ ${#archives[@]} -eq 0 ]]; then
     echo "ERROR: libLibreAgentCore.a not found under '$BUILD_DIR' — build first" >&2
     exit 2
 fi
+if [[ ${#archives[@]} -gt 1 ]]; then
+    echo "ERROR: multiple libLibreAgentCore.a archives under '$BUILD_DIR':" >&2
+    printf '       %s\n' "${archives[@]}" >&2
+    echo "       Ambiguous snapshot source — remove the stale copies first." >&2
+    exit 2
+fi
+archive="${archives[0]}"
 
 symbols="$(nm -U "$archive" 2>/dev/null \
     | awk '$2 == "T" { print $3 }' \
