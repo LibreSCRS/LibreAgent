@@ -8,7 +8,7 @@
 #
 # Downstream consumers (the platform backends and packagers) pull the package
 # in via:
-#   find_package(LibreAgent 4.3 REQUIRED CONFIG)
+#   find_package(LibreAgent 4.2 REQUIRED CONFIG)
 # and link against the namespaced LibreAgent::Core imported target.
 
 @PACKAGE_INIT@
