@@ -105,6 +105,14 @@ jobs:
         working-directory: LibreAgent
         run: cmake --build build -j4
 
+      - name: Check ABI snapshot vs 4.x baseline
+        # 4.x baseline — minor-version additions tracked; removals or
+        # signature drift forbidden. Additions land via an intentional
+        # baseline regeneration (`abi-snapshot.sh --update`) reviewed in
+        # the same commit as the new public symbol.
+        working-directory: LibreAgent
+        run: ./ci/scripts/abi-snapshot.sh --check build
+
       # --- Tests ------------------------------------------------------------
       # All moved tests are bus-free and run against the five backend fakes, so
       # no dbus-run-session and no reader are needed. PIN/live-card suites do not
