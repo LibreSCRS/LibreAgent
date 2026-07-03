@@ -137,8 +137,12 @@ public:
     ///        the single @ref setOnChanged slot).
     ///
     /// Observers fire after setOnChanged on every successful mutation.
-    /// Thread-safe; registration may block briefly while a notification pass
-    /// is in flight.
+    /// Thread-safe; registration blocks for the duration of any in-flight
+    /// notification pass — which may be LONG, not brief: a pass runs the
+    /// observer callbacks synchronously under the observer lock, and a
+    /// callback may do heavy work (the production trust-change observer
+    /// rebuilds the signing engine, potentially including trusted-list
+    /// network I/O).
     ///
     /// @param cb Invoked (post-value-lock) with the changed key. The callback
     ///           may read the store through the typed getters, but must NOT
@@ -150,10 +154,12 @@ public:
     /// @brief Remove a change observer registered via @ref addChangeObserver.
     ///
     /// Blocks until any in-flight notification pass over the observer list has
-    /// completed: after this returns, the removed callback is not running and
-    /// will never run again, so the caller may immediately destroy whatever
-    /// state the callback captured (the SigningEngineProvider dtor relies on
-    /// exactly this). Unknown, sentinel, and already-removed ids are no-ops.
+    /// completed (potentially long, for the same reason as
+    /// @ref addChangeObserver): after this returns, the removed callback is
+    /// not running and will never run again, so the caller may immediately
+    /// destroy whatever state the callback captured (the SigningEngineProvider
+    /// dtor relies on exactly this). Unknown, sentinel, and already-removed
+    /// ids are no-ops.
     ///
     /// @warning Must not be called from within a change-observer callback —
     ///          that re-enters the non-recursive observer lock and deadlocks.

@@ -49,8 +49,11 @@ std::size_t countOf(const std::string& hay, const std::string& needle)
 }
 
 // Replaces //-line and /**/-block comments with a single space, honouring string
-// and character literals (a comment marker inside a literal is code). Raw string
-// literals are not handled — the guarded sources contain none.
+// and character literals (a comment marker inside a literal is code). Known
+// gaps: raw string literals are not handled, and a digit separator (e.g. 1'000)
+// is misread as opening a character literal. The guarded sources contain
+// neither; if one slips in, the mangled code text makes an anchor stop
+// matching, so the guard fails LOUDLY rather than false-passing.
 std::string stripComments(const std::string& src)
 {
     enum class State { Code, LineComment, BlockComment, StringLit, CharLit };

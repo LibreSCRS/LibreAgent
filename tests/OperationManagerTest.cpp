@@ -458,7 +458,7 @@ TEST(OperationManager, DestructiveTeardownScrubsBeforeFreeingQueuedOp)
 
     // Op 2: stays QUEUED. Its destructor records whether it is still tracked in
     // m_byId at the instant it is freed. trackedAtFree==false => scrub already
-    // ran (correct); ==true => freed while still tracked (the P0 UAF window).
+    // ran (correct); ==true => freed while still tracked (the UAF window).
     const OperationId queuedId{2};
     std::atomic<int> destroyed{0};
     std::atomic<bool> trackedAtFree{false};
@@ -477,7 +477,7 @@ TEST(OperationManager, DestructiveTeardownScrubsBeforeFreeingQueuedOp)
 
     ASSERT_EQ(destroyed.load(), 1) << "the queued op must have been freed by the teardown drain";
     EXPECT_FALSE(trackedAtFree.load())
-        << "queued op was still in m_byId when it was freed — scrub ran AFTER free (P0 UAF window)";
+        << "queued op was still in m_byId when it was freed — scrub ran AFTER free (UAF window)";
 }
 
 // The NORMAL-completion route (op runs to a terminal, enters the 5 s cleanup-grace
