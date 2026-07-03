@@ -1,0 +1,27 @@
+# SPDX-License-Identifier: LGPL-2.1-or-later
+#
+# CMake Config-package template for LibreAgent. Substituted into
+# LibreAgentConfig.cmake by configure_package_config_file(); the result
+# is installed to ${CMAKE_INSTALL_LIBDIR}/cmake/LibreAgent/ alongside
+# the matching Version file and the auto-generated
+# LibreAgentTargets.cmake export.
+#
+# Downstream consumers (the platform backends and packagers) pull the package
+# in via:
+#   find_package(LibreAgent 4.3 REQUIRED CONFIG)
+# and link against the namespaced LibreAgent::Core imported target.
+
+@PACKAGE_INIT@
+
+include(CMakeFindDependencyMacro)
+
+# Re-expose the PUBLIC card stack (LibreMiddleware::SmartCard / ::Plugin) and
+# the PRIVATE seam-only deps (::Certificate / ::Signing / ::Trust,
+# OpenSSL::Crypto) the static archive carries transitively, so consumers do not
+# re-discover them.
+find_dependency(LibreMiddleware 4.2 REQUIRED CONFIG)
+find_dependency(OpenSSL 3.0 REQUIRED COMPONENTS Crypto)
+
+include("${CMAKE_CURRENT_LIST_DIR}/LibreAgentTargets.cmake")
+
+check_required_components(LibreAgent)

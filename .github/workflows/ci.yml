@@ -1,0 +1,155 @@
+# SPDX-License-Identifier: LGPL-2.1-or-later
+name: CI
+
+# LibreAgent ships only the platform-neutral agent core library
+# (LibreAgent::Core). It has no D-Bus, no systemd, and no Qt, so this
+# workflow is LibreLinux's CI minus the sdbus-c++/systemd runtime, the Qt/KF6
+# prompter, and the dbus-run-session integration layer: just a format gate, a
+# build+test job that first acquires LibreMiddleware from source (the sole
+# external dependency, consumed via find_package(LibreMiddleware CONFIG)), and
+# a ThreadSanitizer gate over the concurrency core (scheduler + throttler).
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  format-check:
+    # Self-contained: the format gate needs neither LibreMiddleware nor any
+    # runtime dependency, so it runs on ubuntu-latest with the exact
+    # clang-format-21 the rest of the org pins (apt.llvm.org). The build/test
+    # job below runs in an Arch container instead, because Arch's rolling
+    # `clang` package is ahead of 21 and would reformat against a different
+    # major — the project standard is clang-format 21, not the distro default.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install clang-format-21
+        run: |
+          wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key | sudo gpg --dearmor -o /usr/share/keyrings/llvm.gpg
+          echo "deb [signed-by=/usr/share/keyrings/llvm.gpg] http://apt.llvm.org/noble/ llvm-toolchain-noble-21 main" | sudo tee /etc/apt/sources.list.d/llvm-21.list
+          sudo apt-get update
+          sudo apt-get install -y clang-format-21
+
+      - name: Check clang-format
+        run: |
+          find include src tests -name "*.cpp" -o -name "*.h" \
+            | xargs clang-format-21 --dry-run --Werror
+
+  build-linux:
+    # Arch container: a rolling-release distro whose packages track current
+    # LibreMiddleware build/runtime deps (pcsclite, OpenSC). pacman provides
+    # openssl, pcsclite, OpenSC (for LibreMiddleware) and gtest. No sdbus-c++,
+    # systemd, dbus, or Qt/KF6 here — the neutral core links none of them, and
+    # its tests are bus-free, so there is nothing to run under dbus-run-session.
+    runs-on: ubuntu-latest
+    container: archlinux:latest
+    env:
+      # Where LibreMiddleware is installed and where the core finds it.
+      LM_PREFIX: /opt/libremiddleware
+      # Git ref of LibreMiddleware to build against. Track its trunk during the
+      # development cycle (LibreLinux/LibreCelik do the same); pin to a release
+      # tag once LibreMiddleware tags releases. find_package(LibreMiddleware 4.2)
+      # in CMakeLists.txt enforces the required version independently of this ref.
+      MIDDLEWARE_REF: main
+    steps:
+      - name: Install system dependencies
+        run: |
+          pacman -Syu --noconfirm
+          pacman -S --noconfirm --needed \
+            base-devel cmake ninja git pkgconf \
+            openssl pcsclite opensc \
+            gtest \
+            python-jsonschema
+
+      - uses: actions/checkout@v4
+        with:
+          path: LibreAgent
+
+      # --- LibreMiddleware: build from source + install to a prefix ---------
+      # The core consumes the installed CONFIG package
+      # (find_package(LibreMiddleware 4.2 REQUIRED CONFIG)), so it must exist on
+      # disk first. SHARED + plugins ON to match how LibreLinux acquires it;
+      # native signing backend (the CI default) — DSS is only a test oracle.
+      - name: Checkout LibreMiddleware
+        uses: actions/checkout@v4
+        with:
+          repository: LibreSCRS/LibreMiddleware
+          ref: ${{ env.MIDDLEWARE_REF }}
+          path: LibreMiddleware
+          fetch-depth: 0
+          submodules: recursive   # LM vendors OpenSC as a git submodule (thirdparty/opensc-source)
+
+      - name: Build & install LibreMiddleware (Release, SHARED)
+        working-directory: LibreMiddleware
+        run: |
+          cmake -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_INSTALL_PREFIX="$LM_PREFIX" \
+            -DLIBREMIDDLEWARE_BUILD_SHARED=ON
+          cmake --build build -j4
+          cmake --install build
+
+      # --- LibreAgentCore: configure / build --------------------------
+      - name: Configure (RelWithDebInfo)
+        working-directory: LibreAgent
+        run: |
+          cmake -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+            -DCMAKE_PREFIX_PATH="$LM_PREFIX"
+
+      - name: Build
+        working-directory: LibreAgent
+        run: cmake --build build -j4
+
+      # --- Tests ------------------------------------------------------------
+      # All moved tests are bus-free and run against the five backend fakes, so
+      # no dbus-run-session and no reader are needed. PIN/live-card suites do not
+      # exist in the neutral core.
+      - name: Test
+        working-directory: LibreAgent
+        run: ctest --test-dir build --output-on-failure
+
+      # --- Installed CONFIG package smoke -----------------------------------
+      # Prove the EXPORTED package actually resolves downstream — nothing the
+      # in-tree build or ctest above exercises. Install the core to a throwaway
+      # prefix, then configure + build the standalone tests/pkgsmoke consumer
+      # against it via find_package(LibreAgent CONFIG). This walks the
+      # install/export rules, the generated LibreAgentConfig.cmake, and its
+      # find_dependency(LibreMiddleware / OpenSSL) re-exposure chain. The consumer's
+      # prefix path carries both the core prefix and $LM_PREFIX so the transitively
+      # re-exposed LibreMiddleware/OpenSSL dependencies resolve. Mirrors how the
+      # LibreMiddleware step above is built + `cmake --install`ed and then consumed
+      # as an installed CONFIG package.
+      - name: Installed CONFIG package smoke (tests/pkgsmoke)
+        working-directory: LibreAgent
+        env:
+          CORE_PREFIX: /opt/libreagent
+        run: |
+          cmake --install build --prefix "$CORE_PREFIX"
+          cmake -S tests/pkgsmoke -B build-pkgsmoke -G Ninja \
+            -DCMAKE_PREFIX_PATH="$CORE_PREFIX;$LM_PREFIX"
+          cmake --build build-pkgsmoke -j4
+
+      # --- Thread-sanitizer gate for the core concurrency invariants --------
+      # OperationManager owns the worker pool / bounded queue / zombie-drain and
+      # PropertyEmissionThrottler coalesces on a timer; both are plain C++
+      # jthread/mutex/condition_variable and are the concurrency surface that
+      # moved into this repo. A regression that drops a lock still passes the
+      # plain RelWithDebInfo Test step but races under TSan. The installed LM is
+      # uninstrumented, which is fine — the guarded state is core-owned.
+      - name: TSan (core concurrency)
+        working-directory: LibreAgent
+        env:
+          TSAN_OPTIONS: halt_on_error=1
+        run: |
+          cmake -B build-tsan -G Ninja \
+            -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+            -DCMAKE_PREFIX_PATH="$LM_PREFIX" \
+            -DCMAKE_CXX_FLAGS="-fsanitize=thread -g" \
+            -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=thread"
+          cmake --build build-tsan --target OperationManagerTest ZombieWorkerDrainTest PropertyEmissionThrottlerTest AgentShutdownUnderLoadTest PrompterKeepAliveDrainTest SignSeamKeepAliveDrainTest RawCryptoCaptureGuardTest WatchdogTest -j4
+          ctest --test-dir build-tsan -R "OperationManager|ZombieWorkerDrain|PropertyEmissionThrottler|AgentShutdownUnderLoad|PrompterKeepAliveDrain|SignSeamKeepAliveDrain|RawCryptoCaptureGuard|Watchdog" --output-on-failure
