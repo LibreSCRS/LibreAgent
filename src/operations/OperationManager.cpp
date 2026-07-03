@@ -81,6 +81,15 @@ OperationManager::~OperationManager()
     // a never-destroyed process-lifetime sink so it lives until exit
     // independent of the manager — this is the "tolerate the leaked
     // thread+storage until exit" contract (the udisksd LUKS-wedge pattern).
+    // SECURITY (accepted risk, decision 2026-07-03): a wedged holder may keep
+    // live SM/PACE session keys resident until daemon exit — they are
+    // intentionally NOT force-scrubbed. The blocked SCardTransmit is
+    // uncancellable on Linux and may still read the channel buffers, so
+    // scrubbing memory a blocked consumer can touch is a use-after-scrub
+    // hazard with no safe synchronization point. Exposure is bounded:
+    // same-user model, PR_SET_DUMPABLE=0 (no dump/attach), no PIN retained,
+    // card removal revokes the lease. Revisit only if a key-lifecycle model
+    // with quiesce semantics makes the scrub provably safe.
     if (!m_zombies.empty()) {
         // Function-local static with intentionally-never-run destructor: a
         // leaked container guaranteed to outlive every detached thread.
