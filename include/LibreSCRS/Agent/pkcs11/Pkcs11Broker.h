@@ -4,6 +4,7 @@
 #include <LibreSCRS/Agent/Identity.h> // CallerToken, ObjectId
 #include <LibreSCRS/Agent/Reply.h>
 #include <LibreSCRS/Agent/crypto/Mechanism.h>
+#include <LibreSCRS/Agent/operations/RateLimiter.h>
 #include <LibreSCRS/Agent/pkcs11/LeaseManager.h>
 #include <chrono>
 #include <cstdint>
@@ -52,9 +53,18 @@ class Authorizer;
 //    rate-limited: it raises no consent prompt, and CKA_ALWAYS_AUTHENTICATE makes
 //    consumers issue a Login(CKU_CONTEXT_SPECIFIC) before EVERY sign, so a
 //    per-window login cap would reject legitimate multi-sign sessions. The
-//    anti-phishing flood throttle lives on the consent surfaces (Card1.Sign).
+//    anti-phishing flood throttle lives on the consent surfaces: Card1.Sign and
+//    the cold-lease first op below.
 //  - SignRaw / Decrypt are lease-gated (touch() else UserNotLoggedIn), NOT
 //    re-authorized (the lease IS the grant) but EVERY call is audited.
+//  - The COLD-LEASE FIRST op (lease not yet PIN-verified — the one op that
+//    raises the PIN-as-consent prompt) is additionally rate-limited per caller
+//    (RateLimiter policy, keyed on the reuse-immune unique bus name, same as the
+//    Card1.Sign throttle). This bounds the Login -> first-op loop a malicious
+//    same-user peer could otherwise drive to pop unbounded PIN dialogs.
+//    Warm-lease silent ops are never throttled and consume no budget; an
+//    over-cap call fails closed with CryptoOutcome::RateLimited before any
+//    prompt or card I/O.
 //  - The lease key's caller component is the unique bus name (reuse-immune for
 //    the connection lifetime); the requester label is display/audit only.
 class Pkcs11Broker
@@ -77,9 +87,10 @@ public:
 
     // Hermetic outcome of a raw crypto op, mirroring RawCryptoFlow::Outcome but
     // kept wire/LM-free here so the host stays unit-testable. The seam produces
-    // the first six values; UnknownCard / UserNotLoggedIn are broker-synthesized
-    // GATE outcomes (no card / no live lease) — a CryptoResult never sets them.
-    // The backend (dbus/Pkcs11OutcomeNames) maps each to its wire error name.
+    // the first six values; UnknownCard / UserNotLoggedIn / RateLimited are
+    // broker-synthesized GATE outcomes (no card / no live lease / prompt-flood
+    // cap) — a CryptoResult never sets them. The backend (dbus/Pkcs11OutcomeNames)
+    // maps each to its wire error name.
     enum class CryptoOutcome : std::uint8_t {
         Ok,
         Cancelled,
@@ -90,6 +101,12 @@ public:
         // broker gates (not seam-produced):
         UnknownCard,
         UserNotLoggedIn,
+        /// The caller exceeded the per-caller budget for PIN-prompt-raising
+        /// cold-lease first ops (anti-phishing throttle, RateLimiter policy);
+        /// the backend maps it to the same wire error as the Card1.Sign
+        /// throttle (Error.RateLimited). Append-only: added after
+        /// UserNotLoggedIn, never reordered.
+        RateLimited,
     };
     struct CryptoResult
     {
@@ -231,6 +248,13 @@ private:
     [[nodiscard]] std::chrono::steady_clock::time_point nowOr() const;
 
     Deps m_deps;
+    // Per-caller throttle for the PIN-prompt-raising cold-lease first op (see the
+    // SECURITY/POLICY block above). Broker-owned so the limit is ACTIVE in every
+    // composition with no host wiring; it runs on the SAME clock seam as the
+    // lease (Deps::now), so tests drive both deterministically. Its budget is
+    // independent of the host's Card1.Sign limiter — the two consent surfaces
+    // are throttled separately, with identical policy constants.
+    Operations::RateLimiter m_rateLimiter;
 };
 
 } // namespace LibreSCRS::Agent

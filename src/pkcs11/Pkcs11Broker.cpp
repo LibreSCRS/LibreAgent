@@ -19,7 +19,14 @@ std::string certIdPrefix(const std::string& certId)
 
 } // namespace
 
-Pkcs11Broker::Pkcs11Broker(Deps deps) : m_deps(std::move(deps)) {}
+Pkcs11Broker::Pkcs11Broker(Deps deps)
+    : m_deps(std::move(deps)),
+      // The first-op prompt limiter shares the broker's injected clock seam so
+      // tests drive the window/backoff deterministically; production leaves the
+      // seam empty and both run on steady_clock.
+      m_rateLimiter(m_deps.now ? m_deps.now
+                               : Operations::RateLimiter::Clock{[] { return std::chrono::steady_clock::now(); }})
+{}
 
 std::chrono::steady_clock::time_point Pkcs11Broker::nowOr() const
 {
@@ -185,6 +192,25 @@ void Pkcs11Broker::runCrypto(const char* opName, Mechanism allowedMechanism, con
         return;
     }
 
+    // Anti-phishing throttle on the PKCS#11 PIN-prompt surface (parity with the
+    // Card1.Sign throttle; same reuse-immune unique-bus-name key). ONLY the
+    // cold-lease FIRST op is gated: that is the op that raises the PIN-as-consent
+    // prompt (the flow prompts iff the lease is not yet PIN-verified), and it is
+    // what a malicious peer loops via Login -> first-op to pop unbounded PIN
+    // dialogs — Login itself stays un-throttled (see login()). Warm-lease ops are
+    // silent, so they are never throttled and consume no budget (the
+    // short-circuit keeps allow() unconsulted). Placed AFTER the lease gate so a
+    // lease-less call is a plain UserNotLoggedIn (it raises no prompt) and never
+    // charges the budget. The verified flag is read on the dispatch thread while
+    // a worker may flip it; that race is benign for a throttle (at worst one
+    // budget slot charged to an op that turned warm in flight).
+    if (!m_deps.lease->isPinVerified(key) && !m_rateLimiter.allow(caller.busName)) {
+        // Over the cap: fail closed BEFORE the seam runs — no prompt is raised,
+        // no card I/O is enqueued, and the flood surfaces as a hard error.
+        reply.fail(CryptoOutcome::RateLimited);
+        return;
+    }
+
     // Lease-scoped PIN-verified state (PIN-as-consent): the seam prompts +
     // verifies the PIN only on the FIRST op of the lease, then marks it verified;
     // subsequent ops skip the re-prompt. Only the boolean crosses this boundary —
@@ -231,7 +257,8 @@ void Pkcs11Broker::runCrypto(const char* opName, Mechanism allowedMechanism, con
              }
              // Forward the seam outcome 1:1 (KeyNotFound / AuthFailed / NotSupported
              // / Cancelled / CardError). A CryptoResult is seam output, so it never
-             // carries a broker-gate value (UnknownCard / UserNotLoggedIn).
+             // carries a broker-gate value (UnknownCard / UserNotLoggedIn /
+             // RateLimited).
              reply.fail(result.outcome);
          });
 }
