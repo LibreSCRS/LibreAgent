@@ -81,8 +81,14 @@ void PropertyEmissionThrottler::dispatchLoop(std::stop_token st)
         }
         const auto now = std::chrono::steady_clock::now();
         if (!m_forceFlush && (now - m_lastEmit) < m_window) {
-            // Sleep out the remainder of the window before emitting; the
-            // wait_for above will time out at exactly the window boundary.
+            // Within the window: sleep until the boundary. Wake early only
+            // for a stop request or a flush() that consumed the pending
+            // request (visible as m_pending dropping to false); a plain
+            // re-schedule keeps m_pending true and changes nothing about
+            // when the next emit is due, so it does not end this wait.
+            m_cv.wait_until(lock, st, m_lastEmit + m_window, [&] { return !m_pending || m_forceFlush; });
+            // Re-evaluate from the top: stop requested, flush consumed the
+            // request, or the boundary was reached and the emit is now due.
             continue;
         }
         EmitFn snapshot = m_emit;

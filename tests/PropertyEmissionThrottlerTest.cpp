@@ -13,18 +13,27 @@ using namespace std::chrono_literals;
 
 TEST(PropertyEmissionThrottler, CoalescesBurstWithinWindow)
 {
+    constexpr auto window = 100ms;
     std::atomic<int> emits{0};
-    PropertyEmissionThrottler throttler([&] { emits.fetch_add(1); }, 100ms);
+    PropertyEmissionThrottler throttler([&] { emits.fetch_add(1); }, window);
+    const auto t0 = std::chrono::steady_clock::now();
     for (int i = 0; i < 50; ++i) {
         throttler.schedule();
     }
     std::this_thread::sleep_for(250ms);
-    // Burst of 50 schedules within one 100 ms window must coalesce to AT
-    // MOST ~3 emits (one per window across 250 ms). Allow some slack for
-    // scheduler jitter; the upper bound is the load-bearing assertion.
+    // Coalescing invariant: consecutive emits are separated by at least one
+    // window (only the very first may fire immediately), so [t0, t1] holds
+    // at most elapsed/window + 1 emits NO MATTER how the scheduler stretches
+    // this thread — the bound is derived from the measured elapsed time, not
+    // from an assumed burst duration. A broken coalescer emits once per
+    // schedule() (~50) and always fails. Read the count before taking t1 so
+    // the interval covers every counted emit.
     const int observed = emits.load();
+    const auto elapsed = std::chrono::steady_clock::now() - t0;
+    const int maxEmits = static_cast<int>(elapsed / window) + 1;
     EXPECT_GE(observed, 1) << "throttler dropped every emit — schedule path broken";
-    EXPECT_LE(observed, 4) << "throttler did not coalesce (got " << observed << " emits)";
+    EXPECT_LE(observed, maxEmits) << "throttler did not coalesce (got " << observed << " emits in "
+                                  << std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count() << " ms)";
 }
 
 TEST(PropertyEmissionThrottler, FlushEmitsImmediately)
