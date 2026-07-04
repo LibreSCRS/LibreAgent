@@ -81,9 +81,11 @@ void PropertyEmissionThrottler::dispatchLoop(std::stop_token st)
         }
         const auto now = std::chrono::steady_clock::now();
         if (!m_forceFlush && (now - m_lastEmit) < m_window) {
-            // Within the window: sleep until the boundary. Wake early only
-            // for a stop request or a flush() that consumed the pending
-            // request (visible as m_pending dropping to false); a plain
+            // Within the window: sleep until the boundary. Only a stop
+            // request actually interrupts the sleep; a flush() that
+            // consumed the pending request does not notify, so the
+            // predicate observes m_pending == false at the deadline (or a
+            // spurious wake) and the pass becomes a no-op. A plain
             // re-schedule keeps m_pending true and changes nothing about
             // when the next emit is due, so it does not end this wait.
             m_cv.wait_until(lock, st, m_lastEmit + m_window, [&] { return !m_pending || m_forceFlush; });
