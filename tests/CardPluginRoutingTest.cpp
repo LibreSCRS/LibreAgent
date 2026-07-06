@@ -46,13 +46,18 @@ std::shared_ptr<const LibreSCRS::Plugin::CardPlugin> mk(std::string id, Cap c)
 
 TEST(CardPluginRouting, FiltersByCapabilityInOrder)
 {
+    // Capability sets mirror the real plugin manifests: pkcs15 is pure
+    // PKI+PinManagement (its readCard has no identity path), identity
+    // comes from the dedicated identity plugins (rs-eid, emrtd).
     std::vector<std::shared_ptr<const LibreSCRS::Plugin::CardPlugin>> cands{
+        mk("rs-eid", Cap::IdentityData),
         mk("emrtd", Cap::IdentityData | Cap::EmrtdCrypto),
-        mk("pkcs15", Cap::PKI | Cap::PinManagement | Cap::IdentityData),
+        mk("pkcs15", Cap::PKI | Cap::PinManagement),
     };
     auto ids = identityCandidates(cands);
     ASSERT_EQ(ids.size(), 2u);
-    EXPECT_EQ(ids.front()->pluginId(), "emrtd");
+    EXPECT_EQ(ids.front()->pluginId(), "rs-eid");
+    EXPECT_EQ(ids.back()->pluginId(), "emrtd");
     auto pki = pkiCandidates(cands);
     ASSERT_EQ(pki.size(), 1u);
     EXPECT_EQ(pki.front()->pluginId(), "pkcs15");
