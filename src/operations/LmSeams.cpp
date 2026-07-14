@@ -537,6 +537,14 @@ SignOutcome LmSigner::sign(const std::shared_ptr<LibreSCRS::SmartCard::CardSessi
     out.tsaUsed = SignatureParams::timestampWasApplied(out.status == SignOutcome::Status::Ok, params.level,
                                                        !snap.boundTsaUrl.empty());
     out.msgFallback = result.userMessage.defaultText;
+    if (out.status != SignOutcome::Status::Ok) {
+        // The LM engine's own message is the ONLY record of why the AdES wrap
+        // failed after the card produced the raw signature — never swallow it.
+        log::warnf("sign: LM engine failed: status={} format={} level={} packaging={} msg=\"{}\" diag=\"{}\"",
+                   static_cast<int>(out.status), static_cast<int>(*format), static_cast<int>(*level),
+                   static_cast<int>(*packaging), result.userMessage.defaultText,
+                   result.diagnosticDetail.value_or("(none)"));
+    }
     if (out.status == SignOutcome::Status::Ok) {
         if (result.signedDocumentBytes) {
             out.signedDocumentBytes = *result.signedDocumentBytes;
