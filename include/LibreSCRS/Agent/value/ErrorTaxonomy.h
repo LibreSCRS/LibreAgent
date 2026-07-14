@@ -36,6 +36,7 @@ enum class ErrorCode : std::uint32_t {
     TsaUnreachable = 15,     // timestamp authority unreachable/unconfigured
     SigningEngineError = 16, // engine failure not otherwise classified
     RateLimited = 17,        // too many sign requests from the caller
+    EngineUnavailable = 18,  // the signing engine/security module could not load (deployment)
 };
 
 [[nodiscard]] ErrorCode errorCodeFor(LibreSCRS::SecureChannel::ChannelActivationError err) noexcept;

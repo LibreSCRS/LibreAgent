@@ -101,6 +101,7 @@ struct SignOutcome
         CommunicationError,
         Cancelled,
         SigningEngineError,
+        EngineUnavailable, // engine/security module could not load (deployment)
     };
     Status status{Status::CommunicationError};
     std::vector<std::uint8_t> signedDocumentBytes; // the finished AdES artifact (empty unless Ok)

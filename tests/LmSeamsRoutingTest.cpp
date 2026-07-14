@@ -201,3 +201,28 @@ TEST(LmCertReaderRouting, ThrowingCandidateIsSkippedThenNextOwnerWins)
     EXPECT_EQ(outcome.status, CertReadOutcome::Status::Ok);
     ASSERT_EQ(outcome.certs.size(), 1u) << "a throwing candidate is skipped, the next owner wins";
 }
+
+// --- signingDiagnosticIsModuleLoadFailure (item 72: EngineUnavailable bridge) -
+
+TEST(LmSeamsDiagnostic, NulloptIsNotAModuleLoadFailure)
+{
+    EXPECT_FALSE(signingDiagnosticIsModuleLoadFailure(std::nullopt));
+}
+
+TEST(LmSeamsDiagnostic, DlopenBareNameFailureIsDetected)
+{
+    EXPECT_TRUE(signingDiagnosticIsModuleLoadFailure(
+        std::optional<std::string>{"Cannot load PKCS#11 module: librescrs-pkcs11.so: cannot open shared object file"}));
+}
+
+TEST(LmSeamsDiagnostic, EitherMarkerAloneMatches)
+{
+    EXPECT_TRUE(signingDiagnosticIsModuleLoadFailure(std::optional<std::string>{"... PKCS#11 module ..."}));
+    EXPECT_TRUE(signingDiagnosticIsModuleLoadFailure(std::optional<std::string>{"foo: cannot open shared object x"}));
+}
+
+TEST(LmSeamsDiagnostic, UnrelatedEngineErrorIsNotAModuleLoadFailure)
+{
+    EXPECT_FALSE(signingDiagnosticIsModuleLoadFailure(std::optional<std::string>{"TSA responded with HTTP 500"}));
+    EXPECT_FALSE(signingDiagnosticIsModuleLoadFailure(std::optional<std::string>{""}));
+}

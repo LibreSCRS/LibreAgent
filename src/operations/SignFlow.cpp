@@ -78,6 +78,8 @@ ErrorCode mapSignStatus(SignOutcome::Status s) noexcept
         return ErrorCode::None;
     case SignOutcome::Status::SigningEngineError:
         return ErrorCode::SigningEngineError;
+    case SignOutcome::Status::EngineUnavailable:
+        return ErrorCode::EngineUnavailable;
     }
     return ErrorCode::SigningEngineError;
 }

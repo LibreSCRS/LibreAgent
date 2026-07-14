@@ -278,6 +278,23 @@ CertSnapshot certSnapshotFromDer(const LibreSCRS::Plugin::CertificateData& cd)
     return toCertSnapshot(cd);
 }
 
+bool signingDiagnosticIsModuleLoadFailure(const std::optional<std::string>& diagnosticDetail) noexcept
+{
+    if (!diagnosticDetail.has_value()) {
+        return false;
+    }
+    const std::string& d = *diagnosticDetail;
+    // libresign's native AdES path reports a bare-name dlopen failure of the LM
+    // PKCS#11 module, e.g. "Cannot load PKCS#11 module: librescrs-pkcs11.so:
+    // cannot open shared object file". Matching either marker also routes the
+    // wrong/foreign-module case (libresign's "…requires the LibreSCRS PKCS#11
+    // module") here — INTENTIONAL: both a missing and a wrong module are
+    // deployment faults the user fixes the same way (correct the installation),
+    // which is exactly what EngineUnavailable tells them. find() does not
+    // allocate, so this stays noexcept.
+    return d.find("PKCS#11 module") != std::string::npos || d.find("cannot open shared object") != std::string::npos;
+}
+
 ReadOutcome LmCardReader::read(LibreSCRS::SmartCard::CardSession& session, const CandidateList& candidates,
                                LibreSCRS::CancelToken token)
 {
@@ -386,6 +403,14 @@ SignOutcome::Status mapResultStatus(const sign::SigningResult& r) noexcept
     case S::InvalidRequest:
         return SignOutcome::Status::SigningEngineError;
     case S::SigningEngineError:
+        // A signing engine that could not LOAD its security module is a
+        // DEPLOYMENT fault, not a generic engine error — surface it as
+        // EngineUnavailable so the client can tell the user to fix the
+        // installation (BACKLOG item 72). The predicate is an exposed, unit-
+        // tested bridge on libresign's fixed dlopen text.
+        if (signingDiagnosticIsModuleLoadFailure(r.diagnosticDetail)) {
+            return SignOutcome::Status::EngineUnavailable;
+        }
         // KeyAmbiguous rides on SigningEngineError distinguished only by its
         // dedicated LM ErrorKey (set by the CKA_ID duplicate-detection); bind to
         // the LM constant (not a string literal) so an LM key rename is a
@@ -449,7 +474,10 @@ SignOutcome LmSigner::sign(const std::shared_ptr<LibreSCRS::SmartCard::CardSessi
     const auto snap = m_engine.snapshot();
     const auto& engine = snap.engine;
     if (!engine || !*engine) {
-        return signFailure(SignOutcome::Status::SigningEngineError, "signing engine unavailable");
+        // Deployment fault (no engine wired) — a distinct code so the client
+        // guides the user to the installation, not a generic engine error.
+        return signFailure(SignOutcome::Status::EngineUnavailable,
+                           "the signing service could not start its security module");
     }
     const auto format = mapFormat(params.format);
     const auto level = mapLevel(params.level);

@@ -54,6 +54,14 @@ private:
 // this is the same pure mapping it uses internally.
 [[nodiscard]] CertSnapshot certSnapshotFromDer(const LibreSCRS::Plugin::CertificateData& cd);
 
+// True when an LM SigningResult diagnostic indicates the signing engine could
+// not LOAD its PKCS#11 security module (a deployment fault) — used to route
+// such a failure to SignOutcome::Status::EngineUnavailable rather than the
+// generic SigningEngineError. Exposed for unit testing; a pragmatic substring
+// bridge on libresign's fixed dlopen text until LM exposes a typed key
+// (BACKLOG item 72). Allocation-free and noexcept.
+[[nodiscard]] bool signingDiagnosticIsModuleLoadFailure(const std::optional<std::string>& diagnosticDetail) noexcept;
+
 // Result of resolving a signing request's certId against the present card: the
 // candidate plugin that owns the cert and the exact CertificateData selected.
 struct SigningSelection
