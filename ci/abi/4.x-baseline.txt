@@ -20,11 +20,18 @@ LibreSCRS::Agent::CardKeyTracker::onCardInserted(std::__cxx11::basic_string<char
 LibreSCRS::Agent::CardKeyTracker::onCardRemoved(std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > const&)
 LibreSCRS::Agent::CardKeyTracker::onReaderRemoved(std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > const&)
 LibreSCRS::Agent::CardKeyTracker::setOnKeyRemoved(std::function<void (LibreSCRS::Agent::ObjectId, std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > const&)>)
-LibreSCRS::Agent::CardReadCache::CardReadCache(std::chrono::duration<long, std::ratio<1l, 1000000000l> >)
+LibreSCRS::Agent::CardReadCache::CardReadCache(std::chrono::duration<long, std::ratio<1l, 1000000000l> >, std::function<std::chrono::time_point<std::chrono::_V2::steady_clock, std::chrono::duration<long, std::ratio<1l, 1000000000l> > > ()>)
+LibreSCRS::Agent::CardReadCache::cleanseCerts(LibreSCRS::Agent::CardReadCache::Entry&)
+LibreSCRS::Agent::CardReadCache::cleanseIdentity(LibreSCRS::Agent::CardReadCache::Entry&)
 LibreSCRS::Agent::CardReadCache::clear()
 LibreSCRS::Agent::CardReadCache::get(std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > const&) const
+LibreSCRS::Agent::CardReadCache::getCertificates(std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > const&) const
 LibreSCRS::Agent::CardReadCache::invalidate(std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > const&)
+LibreSCRS::Agent::CardReadCache::liveEntry(std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > const&) const
 LibreSCRS::Agent::CardReadCache::put(std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > const&, LibreSCRS::Agent::CardReadSnapshot)
+LibreSCRS::Agent::CardReadCache::putCertificates(std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > const&, std::vector<LibreSCRS::Agent::CertSnapshot, std::allocator<LibreSCRS::Agent::CertSnapshot> >)
+LibreSCRS::Agent::CardReadCache::scrub(LibreSCRS::Agent::CardReadCache::Entry&)
+LibreSCRS::Agent::CardReadCache::~CardReadCache()
 LibreSCRS::Agent::Config::ConfigStore::ConfigStore(std::filesystem::__cxx11::path, std::filesystem::__cxx11::path)
 LibreSCRS::Agent::Config::ConfigStore::addChangeObserver(std::function<void (std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > const&)>)
 LibreSCRS::Agent::Config::ConfigStore::aiaCacheDir[abi:cxx11]() const
@@ -161,6 +168,7 @@ LibreSCRS::Agent::Operations::matchCertDer(std::vector<std::vector<unsigned char
 LibreSCRS::Agent::Operations::rsaPublicKeyFromCertDer(std::span<unsigned char const, 18446744073709551615ul>)
 LibreSCRS::Agent::Operations::selectSigningCandidate(std::vector<std::shared_ptr<LibreSCRS::Plugin::CardPlugin const>, std::allocator<std::shared_ptr<LibreSCRS::Plugin::CardPlugin const> > > const&, std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > const&, LibreSCRS::SmartCard::CardSession&)
 LibreSCRS::Agent::Operations::signRaw(std::vector<std::shared_ptr<LibreSCRS::Plugin::CardPlugin const>, std::allocator<std::shared_ptr<LibreSCRS::Plugin::CardPlugin const> > > const&, std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > const&, std::span<unsigned char const, 18446744073709551615ul>, LibreSCRS::Secure::String const*, LibreSCRS::SmartCard::CardSession&, LibreSCRS::CancelToken)
+LibreSCRS::Agent::Operations::signingDiagnosticIsModuleLoadFailure(std::optional<std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > > const&)
 LibreSCRS::Agent::Pkcs11::LeaseManager::clearPinVerified(LibreSCRS::Agent::Pkcs11::LeaseKey const&)
 LibreSCRS::Agent::Pkcs11::LeaseManager::grant(LibreSCRS::Agent::Pkcs11::LeaseKey const&, std::chrono::time_point<std::chrono::_V2::steady_clock, std::chrono::duration<long, std::ratio<1l, 1000000000l> > >)
 LibreSCRS::Agent::Pkcs11::LeaseManager::isActive(LibreSCRS::Agent::Pkcs11::LeaseKey const&, std::chrono::time_point<std::chrono::_V2::steady_clock, std::chrono::duration<long, std::ratio<1l, 1000000000l> > >)

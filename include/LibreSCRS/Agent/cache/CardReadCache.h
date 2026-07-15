@@ -2,49 +2,53 @@
 // SPDX-FileCopyrightText: 2026 hirashix0
 #pragma once
 #include <LibreSCRS/Agent/value/CardReadSnapshot.h>
+#include <LibreSCRS/Agent/value/CertSnapshot.h>
 #include <chrono>
 #include <functional>
 #include <mutex>
 #include <optional>
 #include <string>
 #include <unordered_map>
+#include <vector>
 
 namespace LibreSCRS::Agent {
 
-// Per-Card in-memory cache of the most recent successful identity read. The
-// cached CardReadSnapshot INCLUDES the face photo (a FieldType::Photo binary
-// field), so identity + photo are cached together; populated by ReadIdentity,
-// consumed by GetPhoto, dropped on CardRemoved.
+// Per-card in-memory cache of one inserted card's reads: the identity snapshot
+// (which includes the face photo) and the enumerated signing certificates. Both
+// halves share one entry, so CardRemoved drops everything and a single sliding
+// idle window governs residency — read once per insertion, then serve browsing
+// and cert re-reads from RAM instead of re-walking the card.
 //
-// PII residency is bound to ACTIVE use (BACKLOG item 67): a SLIDING idle
-// window — refreshed on every successful get() — keeps a card:// / plasmoid
-// browsing session warm, while an idle entry is erased AND zeroized once the
-// window elapses; the hard insertion boundary is invalidate() on CardRemoved.
-// The identity strings + photo bytes are OPENSSL_cleanse'd before an entry is
-// dropped (expiry, invalidate, clear, put-overwrite) so expired PII does not
-// linger in freed heap. Never persisted.
+// Residency follows active use: the window is refreshed on every successful get,
+// and an idle entry is erased + zeroized once it elapses. Every field buffer is
+// OPENSSL_cleanse'd before a (half-)entry is dropped so no card PII lingers in
+// freed heap. Certificates are public but scrubbed uniformly. Never persisted.
 //
-// Thread-safe via an internal mutex — callers do NOT hold the agent's state
-// mutex. get() is const but self-cleans expired entries (mutable map + clock).
+// Thread-safe via an internal mutex. get()/getCertificates() are const but
+// self-clean expired entries (mutable map + clock).
 class CardReadCache
 {
 public:
-    // Steady clock seam (default steady_clock::now); injectable so the sliding
-    // window + expiry are deterministically testable, mirroring CardSessionHolder.
+    // Steady-clock seam (default steady_clock::now); injectable for deterministic
+    // window/expiry tests.
     using Clock = std::function<std::chrono::steady_clock::time_point()>;
 
-    // Default idle window 5 min: long enough that active browsing never
-    // re-reads, short enough that an abandoned card's PII does not linger. The
-    // duration stays the first parameter so existing `CardReadCache(30s)`
-    // construction (and the tests) keep compiling.
+    // Idle window default 5 min: long enough that active use never re-reads,
+    // short enough that an abandoned card's PII does not linger.
     explicit CardReadCache(std::chrono::steady_clock::duration idleWindow = std::chrono::minutes{5}, Clock clock = {});
     ~CardReadCache();
 
+    // Identity (+ photo) half.
     void put(const std::string& cardKey, CardReadSnapshot snapshot);
-
-    // Returns the cached snapshot and REFRESHES its idle timer (sliding); an
-    // entry past the idle window is erased + zeroized and nullopt is returned.
+    // Returns the cached identity and refreshes the shared idle timer; an entry
+    // past the window is erased + zeroized and nullopt returned. A present entry
+    // whose identity half is empty returns nullopt without evicting the certs.
     [[nodiscard]] std::optional<CardReadSnapshot> get(const std::string& cardKey) const;
+
+    // Certificate half: same window + scrub semantics, sharing the entry and the
+    // idle timer with the identity half.
+    void putCertificates(const std::string& cardKey, std::vector<CertSnapshot> certs);
+    [[nodiscard]] std::optional<std::vector<CertSnapshot>> getCertificates(const std::string& cardKey) const;
 
     void invalidate(const std::string& cardKey);
 
@@ -53,13 +57,20 @@ public:
 private:
     struct Entry
     {
-        CardReadSnapshot snapshot;
+        std::optional<CardReadSnapshot> identity;
+        std::optional<std::vector<CertSnapshot>> certs;
         std::chrono::steady_clock::time_point touchedAt;
     };
 
-    // Zeroize the snapshot's PII buffers (identity text + photo/binary bytes)
-    // before the Entry is dropped. noexcept — used on teardown paths.
+    // Zeroize + reset one half (on same-half overwrite, so the other survives),
+    // or the whole entry via scrub() on expiry/invalidate/clear. noexcept.
+    static void cleanseIdentity(Entry& entry) noexcept;
+    static void cleanseCerts(Entry& entry) noexcept;
     static void scrub(Entry& entry) noexcept;
+
+    // Caller holds m_mutex: erase + scrub an entry past its window and return
+    // nullptr; otherwise return the live Entry*. Does not slide the timer.
+    [[nodiscard]] Entry* liveEntry(const std::string& cardKey) const;
 
     std::chrono::steady_clock::duration m_idleWindow;
     Clock m_clock;
