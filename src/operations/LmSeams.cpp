@@ -406,7 +406,7 @@ SignOutcome::Status mapResultStatus(const sign::SigningResult& r) noexcept
         // A signing engine that could not LOAD its security module is a
         // DEPLOYMENT fault, not a generic engine error — surface it as
         // EngineUnavailable so the client can tell the user to fix the
-        // installation (BACKLOG item 72). The predicate is an exposed, unit-
+        // installation. The predicate is an exposed, unit-
         // tested bridge on libresign's fixed dlopen text.
         if (signingDiagnosticIsModuleLoadFailure(r.diagnosticDetail)) {
             return SignOutcome::Status::EngineUnavailable;

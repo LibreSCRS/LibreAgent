@@ -202,7 +202,7 @@ TEST(LmCertReaderRouting, ThrowingCandidateIsSkippedThenNextOwnerWins)
     ASSERT_EQ(outcome.certs.size(), 1u) << "a throwing candidate is skipped, the next owner wins";
 }
 
-// --- signingDiagnosticIsModuleLoadFailure (item 72: EngineUnavailable bridge) -
+// --- signingDiagnosticIsModuleLoadFailure (EngineUnavailable bridge) -
 
 TEST(LmSeamsDiagnostic, NulloptIsNotAModuleLoadFailure)
 {

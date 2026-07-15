@@ -58,8 +58,8 @@ private:
 // not LOAD its PKCS#11 security module (a deployment fault) — used to route
 // such a failure to SignOutcome::Status::EngineUnavailable rather than the
 // generic SigningEngineError. Exposed for unit testing; a pragmatic substring
-// bridge on libresign's fixed dlopen text until LM exposes a typed key
-// (BACKLOG item 72). Allocation-free and noexcept.
+// bridge on libresign's fixed dlopen text until LM exposes a typed key.
+// Allocation-free and noexcept.
 [[nodiscard]] bool signingDiagnosticIsModuleLoadFailure(const std::optional<std::string>& diagnosticDetail) noexcept;
 
 // Result of resolving a signing request's certId against the present card: the
