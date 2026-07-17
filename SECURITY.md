@@ -17,14 +17,19 @@ us a reasonable disclosure window before publishing.
 
 ## Release verification
 
-LibreSCRS releases ≥ 4.0 are cryptographically signed.
+LibreSCRS release tags are cryptographically signed.
 
 - **Git tags** are GPG-signed with the LibreSCRS Release Signing key
-  (fingerprint `6B05889AC9A6A7188DF639B06F27A989C2031D16`). The CI
-  release pipeline rejects any unsigned or wrong-fingerprint tag.
-- **Release artifacts** are signed via Sigstore cosign keyless using
-  GitHub Actions OIDC. See <https://librescrs.github.io/security/> for
-  the end-to-end verification guide including expected OIDC issuer +
+  (fingerprint `6B05889AC9A6A7188DF639B06F27A989C2031D16`). The release
+  workflow imports the published key (`KEYS` in this repository) and
+  rejects any unsigned or wrong-fingerprint tag. Verify locally with
+  `gpg --import KEYS && git verify-tag <TAG>`.
+- **Release artifacts.** LibreAgent ships only the source library
+  (`LibreAgent::Core`), consumed from source or as a CONFIG package; it
+  publishes no separate binary artifacts of its own. The components that
+  distribute binaries sign them via Sigstore cosign keyless using GitHub
+  Actions OIDC. See <https://librescrs.github.io/security/> for that
+  end-to-end verification guide including expected OIDC issuer +
   identity values.
 
 ## Supported versions
