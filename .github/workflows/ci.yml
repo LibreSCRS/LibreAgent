@@ -62,8 +62,7 @@ jobs:
           pacman -S --noconfirm --needed \
             base-devel cmake ninja git pkgconf \
             openssl pcsclite opensc \
-            gtest \
-            python-jsonschema
+            gtest
 
       - uses: actions/checkout@v4
         with:
@@ -99,7 +98,8 @@ jobs:
         run: |
           cmake -B build -G Ninja \
             -DCMAKE_BUILD_TYPE=RelWithDebInfo \
-            -DCMAKE_PREFIX_PATH="$LM_PREFIX"
+            -DCMAKE_PREFIX_PATH="$LM_PREFIX" \
+            -DLIBRESCRS_AGENT_WERROR=ON
 
       - name: Build
         working-directory: LibreAgent

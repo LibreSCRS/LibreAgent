@@ -34,6 +34,23 @@ TEST(ErrorTaxonomy, StableNumericValues)
     EXPECT_EQ(static_cast<std::uint32_t>(ErrorCode::TsaUnreachable), 15u);
     EXPECT_EQ(static_cast<std::uint32_t>(ErrorCode::SigningEngineError), 16u);
     EXPECT_EQ(static_cast<std::uint32_t>(ErrorCode::RateLimited), 17u);
+    EXPECT_EQ(static_cast<std::uint32_t>(ErrorCode::EngineUnavailable), 18u);
+    EXPECT_EQ(static_cast<std::uint32_t>(ErrorCode::InvalidDocument), 19u);
+}
+
+// Exhaustiveness guard. The StableNumericValues test above pins every ErrorCode
+// integer 0..N individually; this pins N itself (the highest wire value). A new
+// code appended to the enum bumps this maximum and trips this assertion, which
+// is the reminder to (a) add its numeric pin above and (b) update the three
+// out-of-repo mirrors of this taxonomy (see the ErrorTaxonomy.h wire-freeze
+// note): the Linux agent CDDL/taxonomy, the KDE client, and the fail-closed
+// macOS Swift AgentTypes mirror. Bump this value only when all of that is done.
+TEST(ErrorTaxonomy, HighestWireValueIsPinned)
+{
+    // The enum is append-only, so the last enumerator is the maximum value.
+    EXPECT_EQ(static_cast<std::uint32_t>(ErrorCode::InvalidDocument), 19u)
+        << "ErrorCode enum grew: pin the new value in StableNumericValues, bump "
+           "this guard, and update the CDDL / KDE / macOS Swift mirrors.";
 }
 
 TEST(ErrorTaxonomy, PhaseWireValuesAreFrozen)

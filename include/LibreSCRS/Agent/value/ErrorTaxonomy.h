@@ -7,9 +7,27 @@
 
 namespace LibreSCRS::Agent {
 
-// Stable agent-side error taxonomy. Carried on Operation1.Finished as the
-// `errorCode` field; clients branch on the numeric value. Append-only —
-// never renumber existing entries.
+// Stable agent-side error taxonomy. Carried on the agent's operation-finished
+// signal as the `errorCode` field; clients branch on the numeric value.
+//
+// WIRE-FROZEN, APPEND-ONLY. Existing entries are never renumbered or removed:
+// the integers are a published wire contract. New codes are only ever appended
+// with the next free value.
+//
+// This enum is the single source of truth, but its integers are mirrored by
+// hand in three out-of-repo consumers plus this repo's own guard test. All of
+// them MUST be updated in lockstep whenever a code is appended here:
+//
+//   1. The Linux agent host (LibreLinux) — its CBOR/CDDL wire schema and the
+//      client-side error taxonomy it exposes.
+//   2. The KDE client — its mirror of the taxonomy.
+//   3. The macOS Swift host — its `AgentTypes` mirror. This one is FAIL-CLOSED
+//      with NO automatic guard: an unknown/unmirrored code is treated as a hard
+//      error rather than silently ignored, so a forgotten append surfaces as a
+//      macOS failure, not a wrong branch.
+//   4. This repo's guard test (tests/ErrorTaxonomyTest.cpp) pins every integer
+//      and the current maximum, so an append here trips CI until the pin is
+//      added — the reminder to also update the three mirrors above.
 enum class ErrorCode : std::uint32_t {
     None = 0,
     CardRemoved = 1,
