@@ -418,6 +418,8 @@ SignOutcome::Status mapResultStatus(const sign::SigningResult& r) noexcept
         return (r.userMessage.key == LibreSCRS::Auth::ErrorKeys::keyAmbiguous().key)
                    ? SignOutcome::Status::KeyAmbiguous
                    : SignOutcome::Status::SigningEngineError;
+    case S::InvalidDocument:
+        return SignOutcome::Status::InvalidDocument;
     }
     return SignOutcome::Status::SigningEngineError;
 }

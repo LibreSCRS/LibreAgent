@@ -37,6 +37,7 @@ enum class ErrorCode : std::uint32_t {
     SigningEngineError = 16, // engine failure not otherwise classified
     RateLimited = 17,        // too many sign requests from the caller
     EngineUnavailable = 18,  // the signing engine/security module could not load (deployment)
+    InvalidDocument = 19,    // the document to sign is invalid/unreadable — client input
 };
 
 [[nodiscard]] ErrorCode errorCodeFor(LibreSCRS::SecureChannel::ChannelActivationError err) noexcept;
