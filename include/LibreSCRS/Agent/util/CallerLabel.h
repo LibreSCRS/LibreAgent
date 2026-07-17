@@ -8,7 +8,7 @@
 namespace LibreSCRS::Agent {
 
 // Platform-neutral caller-label shaping for the consent prompt's client-chrome
-// area (contract C4: "Requested by: <x>"). A backend resolves a calling process
+// area ("Requested by: <x>"). A backend resolves a calling process
 // to an executable path however its OS allows (Linux: pidfd-pinned
 // /proc/<pid>/exe; macOS: audit token), then feeds the basename through
 // sanitizeLabel() before it reaches the prompter. Hosting the shaping here means
