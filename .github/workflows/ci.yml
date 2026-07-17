@@ -62,7 +62,8 @@ jobs:
           pacman -S --noconfirm --needed \
             base-devel cmake ninja git pkgconf \
             openssl pcsclite opensc \
-            gtest
+            gtest \
+            python-jsonschema  # LibreMiddleware's plugin-manifest validation needs it during the build below
 
       - uses: actions/checkout@v4
         with:
