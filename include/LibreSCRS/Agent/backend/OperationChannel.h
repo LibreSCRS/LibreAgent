@@ -3,6 +3,7 @@
 #pragma once
 #include <LibreSCRS/Agent/value/CardReadSnapshot.h> // CardReadSnapshot
 #include <LibreSCRS/Agent/value/CertSnapshot.h>     // CertSnapshot
+#include <LibreSCRS/Agent/value/CredentialRecord.h> // CredentialOpResult, CredentialRecord
 #include <LibreSCRS/Agent/value/ErrorTaxonomy.h>    // ErrorCode
 #include <LibreSCRS/Agent/OperationPhase.h>         // OperationStatus
 #include <cstdint>
@@ -49,13 +50,29 @@ struct PhotoField
 };
 using PhotoResult = std::vector<PhotoField>;
 
-// CLOSED variant. One arm per high-level Card1 result shape. A NEW high-level
-// result shape is an API break at the frozen boundary — accepted, because crypto
-// growth routes through Pkcs11Broker + Reply, never here.
+// One credential-management result. `op` carries the uniform outcome payload
+// (outcome token + retriesLeft/blocked/pinActivated/keyActivated) surfaced for
+// EVERY completed management attempt — including InvalidPin/Blocked, where
+// retriesLeft is meaningful — so it rides the Credentials1.Result signal ahead of
+// Finished(status, code). `records` carries the ListCredentials listing (empty for
+// a ManagePin / ActivateSigningKey mutation). Core yields the neutral value types;
+// the Linux Credentials1 channel marshals them to the (a{sv}, aa{sv}) wire shape.
+struct CredentialResult
+{
+    CredentialOpResult op;
+    std::vector<CredentialRecord> records;
+};
+
+// CLOSED variant. One arm per high-level Card1 / Credentials1 result shape. A NEW
+// high-level result shape is an API break at the frozen boundary — accepted here
+// for the credential-management surface (ManagePin / ActivateSigningKey /
+// ListCredentials share the one CredentialResult arm); other crypto growth routes
+// through Pkcs11Broker + Reply, never here.
 using ResultPayload = std::variant<CardReadSnapshot,          // ReadIdentity     -> Identity1.Result
                                    std::vector<CertSnapshot>, // ReadCertificates -> Certificates1.Result
                                    PhotoResult,               // GetPhoto         -> Photo1.Result
-                                   SignedArtifact>;           // Sign             -> Sign1.Result
+                                   SignedArtifact,            // Sign             -> Sign1.Result
+                                   CredentialResult>;         // Credentials1     -> Credentials1.Result
 
 // Per-operation emit-only channel the lifecycle core drives. Cancel rides
 // OperationState, so this surface is emit-only. The concrete backend impl

@@ -66,8 +66,9 @@ RawCryptoStatus mapDecipherOutcome(LibreSCRS::Plugin::DecipherResultOutcome o) n
 // opensc sc_pkcs15_compute_signature / decipher backends do not verify the PIN
 // themselves, so an unverified PSO fails security-status. Returns std::nullopt on
 // success (proceed to the op) or a terminal RawCryptoStatus to surface:
-//   InvalidPin / Blocked / UserCancelled / MissingFields -> AuthFailed
-//   Unsupported (plugin has no verifyPIN) / PluginError  -> CardError (fail-closed)
+//   InvalidPin / Blocked / UserCancelled / MissingFields          -> AuthFailed
+//   Unsupported (plugin has no verifyPIN) / PluginError /
+//     Unspecified / KeyActivationFailed                           -> CardError (fail-closed)
 std::optional<RawCryptoStatus> verifyPinOnCard(const LibreSCRS::Plugin::CardPlugin& plugin,
                                                LibreSCRS::SmartCard::CardSession& session,
                                                const LibreSCRS::Secure::String& pin)
@@ -90,6 +91,11 @@ std::optional<RawCryptoStatus> verifyPinOnCard(const LibreSCRS::Plugin::CardPlug
         return RawCryptoStatus::CardError;
     case O::PluginError:
     case O::Unspecified:
+    case O::KeyActivationFailed:
+        // KeyActivationFailed cannot arise from a bare verifyPIN in this
+        // PKCS#11-login/raw-crypto path (no key ACTIVATE step is requested here);
+        // treat it as an unexpected plugin outcome and fail closed like
+        // PluginError/Unspecified rather than let an unverified PSO hit the card.
         return RawCryptoStatus::CardError;
     }
     return RawCryptoStatus::CardError;

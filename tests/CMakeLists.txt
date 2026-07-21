@@ -104,3 +104,42 @@ target_compile_definitions(OperationManagerTest PRIVATE LIBRESCRS_AGENT_TESTING)
 target_compile_definitions(RawCryptoCaptureGuardTest PRIVATE
     LIBREAGENT_AGENTCORE_CPP="${CMAKE_CURRENT_SOURCE_DIR}/../src/AgentCore.cpp"
     LIBREAGENT_PKCS11BROKER_CPP="${CMAKE_CURRENT_SOURCE_DIR}/../src/pkcs11/Pkcs11Broker.cpp")
+
+# Credential lifecycle wire types: record/outcome mapping tables, id rule,
+# narrowing + placeholders guards.
+agent_core_test(CredentialRecordTest)
+
+# Credential seam routing + multi-secret prompter seam; needs the LM-internal
+# detached card-session factory (same opt-in as the seam routing tests above).
+agent_core_test(CredentialSeamTest)
+target_compile_definitions(CredentialSeamTest PRIVATE LIBRESCRS_INTERNAL_BUILD)
+
+# Credential list flow: open + install-provider prelude, map/disambiguate into a
+# CredentialSnapshot, empty/CardRemoved classification. Uses the LM-internal
+# detached card-session factory (markDead drives the transport-loss case).
+agent_core_test(CredentialListFlowTest)
+target_compile_definitions(CredentialListFlowTest PRIVATE LIBRESCRS_INTERNAL_BUILD)
+
+# Signing-key activation flow (increment #1: Unsupported passthrough). Needs the
+# LM-internal detached card-session factory for its held-session harness. The
+# flow TU is in the top-level Core source list, so the test links it from
+# LibreAgent::Core.
+agent_core_test(KeyActivationFlowTest)
+target_compile_definitions(KeyActivationFlowTest PRIVATE LIBRESCRS_INTERNAL_BUILD)
+
+# PIN-management flow (increment #1: change drives the seam; unblock/activate_pin
+# short-circuit to Unsupported) + entry validation. Needs the LM-internal
+# detached card-session factory for its held-session harness. The flow TU is in
+# the top-level Core source list, so the test links it from LibreAgent::Core.
+agent_core_test(PinChangeFlowTest)
+target_compile_definitions(PinChangeFlowTest PRIVATE LIBRESCRS_INTERNAL_BUILD)
+
+# Credential outcome -> (finish status, wire ErrorCode) mapping: the verbatim
+# contract table plus a compile-guarded exhaustive oracle over CredentialOutcome.
+agent_core_test(CredentialErrorMappingTest)
+
+# Per-card credential-snapshot cache (monotonic version, scrub-on-drop, idle
+# window) + the post-mutation invalidation rule (reached-card drops snapshot +
+# read cache; secret cache untouched). Pure value/cache types — no LM-internal
+# card session, so no LIBRESCRS_INTERNAL_BUILD.
+agent_core_test(CredentialSnapshotCacheTest)

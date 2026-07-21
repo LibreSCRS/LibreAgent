@@ -11,11 +11,13 @@
 
 namespace LibreSCRS::Agent::Operations {
 
-// Per-caller request throttle for the Card1.Sign entry. Under the agent's
-// default-allow authorization posture + single-prompt PIN-as-consent, an unbounded
-// caller could drive reflexive-PIN phishing; this caps sign attempts per caller
-// and converts a flood into a hard error (Error.RateLimited) rather than yet
-// another prompt.
+// Per-caller request throttle, shared by the Card1.Sign entry and the
+// Credentials1 mutation entries (ManagePin / ActivateSigningKey). Under the
+// agent's default-allow authorization posture + single-prompt PIN-as-consent, an
+// unbounded caller could drive reflexive-PIN phishing; this caps attempts per
+// caller and converts a flood into a hard error (Error.RateLimited) rather than
+// yet another prompt. The same limiter instance covers both surfaces so a flood
+// spread across sign + credential mutations is bounded as one per-caller budget.
 //
 // Keyed by the caller's UNIQUE D-Bus name (":1.42") — reuse-immune for the
 // connection lifetime (the same TOCTOU-safe handle the Authorizer uses), so it

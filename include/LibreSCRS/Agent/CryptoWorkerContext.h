@@ -10,17 +10,23 @@
 
 namespace LibreSCRS::Agent {
 
-// Held only as shared_ptr-to-forward-declared: a zombie worker co-owns these two
-// for keep-alive but never dereferences them (the signing engine is reached
-// through the LM-signer seam, the config through that engine), so this header
-// stays free of the config / signing-engine includes. The full headers are pulled
-// in only where the shares are populated (the AgentCore ctor).
+// Held only as shared_ptr-to-forward-declared: a zombie worker co-owns these for
+// keep-alive but never dereferences the signing engine / config from here (the
+// signing engine is reached through the LM-signer seam, the config through that
+// engine), so this header stays free of those includes. The two credential caches
+// ARE dereferenced by an abandoned credential worker on unblock (the list flow's
+// end-of-flow snapshot put, the mutation flows' invalidateForMutationOutcome), so
+// they are co-owned here for the same reason the CAN/MRZ secret cache is — but the
+// header still only needs the shared_ptr, so a forward declaration suffices. The
+// full headers are pulled in only where the shares are populated (the AgentCore ctor).
 namespace Config {
 class ConfigStore;
 }
 namespace Operations {
 class SigningEngineProvider;
 }
+class CardReadCache;
+class CredentialSnapshotCache;
 
 // One owning bundle of everything a crypto worker that outlives the AgentCore
 // aggregate may touch as a core member on unblock. A private-key / read op runs
@@ -59,6 +65,16 @@ class SigningEngineProvider;
 //                   so it too must outlive the zombie. Its own ConfigStore& is the
 //                   `config` share above, so recordLastTsaUrl is safe. Declared
 //                   after `config` so it is destroyed BEFORE the config it borrows.
+//   * snapshotCache — the per-card ListCredentials snapshot store; a credential
+//                   list flow's end-of-flow put and the mutation flows'
+//                   invalidateForMutationOutcome touch it PAST the flow's
+//                   post-prompt gate. An abandoned credential worker (wedged in the
+//                   on-card mutation seam) unblocks into that cache touch, so it
+//                   must outlive the zombie — the same reason the CAN/MRZ secret
+//                   cache is co-owned here.
+//   * readCache   — the identity/cert read cache; invalidateForMutationOutcome
+//                   drops it alongside the snapshot cache, so an abandoned
+//                   credential worker touches it on the same post-gate unblock path.
 struct CryptoWorkerContext
 {
     std::shared_ptr<Operations::PrompterClientBase> prompter;
@@ -68,6 +84,8 @@ struct CryptoWorkerContext
     LibreSCRS::CancelToken shutdown;
     std::shared_ptr<Config::ConfigStore> config;
     std::shared_ptr<Operations::SigningEngineProvider> signingEngine;
+    std::shared_ptr<CredentialSnapshotCache> snapshotCache;
+    std::shared_ptr<CardReadCache> readCache;
 };
 
 } // namespace LibreSCRS::Agent

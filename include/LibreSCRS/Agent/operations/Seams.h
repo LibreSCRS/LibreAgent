@@ -9,11 +9,15 @@
 #include <LibreSCRS/Auth/AuthRequirement.h>
 #include <LibreSCRS/Auth/CredentialProvider.h>
 #include <LibreSCRS/CancelToken.h>
+#include <LibreSCRS/Plugin/PinStatusEntry.h>
+#include <LibreSCRS/Plugin/PluginTypes.h> // PINResult
+#include <LibreSCRS/Secure/String.h>
 #include <LibreSCRS/SmartCard/CardSession.h>
 #include <cstdint>
 #include <memory>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace LibreSCRS::Agent::Operations {
@@ -124,6 +128,58 @@ public:
                                            const SignParams& params, const CandidateList& candidates,
                                            LibreSCRS::Auth::CredentialProvider credentials,
                                            LibreSCRS::CancelToken token) = 0;
+};
+
+// 3d. CredentialManager — drives the plugin PIN-credential lifecycle entry
+//     points on the live session: per-PIN status, PIN change, transport-PIN
+//     activation, signing-key activation. One virtual per CardPlugin entry
+//     point; signatures mirror the LM virtuals (secrets are cleansing
+//     Secure::Strings — pinned by the LM's own static_asserts — never
+//     std::string copies). The session comes from the flow's
+//     CardSessionHolder exactly like the cert seam; candidates are the
+//     capability-filtered, priority-ordered plugin list for this card, routed
+//     on the SAME passed session — never a new one. A card whose plugins
+//     advertise no credential management answers with the Unsupported
+//     outcome: a VALID result, not an entry error. Production:
+//     LmCredentialManager; Fake* for tests.
+
+// Result of CredentialManager::list: the entries of the first candidate that
+// reported a non-empty getPINList, plus that candidate's plugin identity
+// (CardPlugin::pluginId). `pluginId` is empty iff no candidate produced
+// entries. The list flow binds the produced snapshot to this identity so a
+// later mutation is routed to the SAME plugin first — the listing plugin owns
+// the label namespace the mutation addresses, so another candidate must not
+// intercept a mutation for a card it listed nothing for.
+struct CredentialListing
+{
+    std::vector<LibreSCRS::Plugin::PinStatusEntry> entries;
+    std::string pluginId;
+};
+
+class CredentialManager
+{
+public:
+    virtual ~CredentialManager() = default;
+    // -> CardPlugin::getPINList: per-PIN status for all PINs the card exposes,
+    //    bound to the identity of the candidate that produced them.
+    [[nodiscard]] virtual CredentialListing list(LibreSCRS::SmartCard::CardSession& session,
+                                                 const CandidateList& candidates) = 0;
+    // -> CardPlugin::changePIN: change the PIN selected by pinLabel (labels
+    //    come from list(); they are not secret material).
+    [[nodiscard]] virtual LibreSCRS::Plugin::PINResult
+    changePIN(LibreSCRS::SmartCard::CardSession& session, const CandidateList& candidates, std::string_view pinLabel,
+              const LibreSCRS::Secure::String& oldPin, const LibreSCRS::Secure::String& newPin) = 0;
+    // -> CardPlugin::activateTransportPin: set the holder's PIN from the
+    //    issuance transport value.
+    [[nodiscard]] virtual LibreSCRS::Plugin::PINResult
+    activateTransportPin(LibreSCRS::SmartCard::CardSession& session, const CandidateList& candidates,
+                         std::string_view pinLabel, const LibreSCRS::Secure::String& transportValue,
+                         const LibreSCRS::Secure::String& newPin) = 0;
+    // -> CardPlugin::activateSigningKey: VERIFY the operational SIGN PIN and
+    //    perform the key ACTIVATE within one locked session.
+    [[nodiscard]] virtual LibreSCRS::Plugin::PINResult activateSigningKey(LibreSCRS::SmartCard::CardSession& session,
+                                                                          const CandidateList& candidates,
+                                                                          const LibreSCRS::Secure::String& signPin) = 0;
 };
 
 // 4. PrompterClientBase lives in its own header, so the split keeps the include

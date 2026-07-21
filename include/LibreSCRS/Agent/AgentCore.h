@@ -8,6 +8,7 @@
 #include <LibreSCRS/Agent/backend/PrompterClientBase.h>
 #include <LibreSCRS/Agent/cache/CardReadCache.h>
 #include <LibreSCRS/Agent/cache/CredentialCache.h>
+#include <LibreSCRS/Agent/cache/CredentialSnapshotCache.h>
 #include <LibreSCRS/Agent/config/ConfigStore.h>
 #include <LibreSCRS/Agent/crypto/Mechanism.h>
 #include <LibreSCRS/Agent/operations/OperationManager.h>
@@ -122,7 +123,15 @@ public:
     }
     [[nodiscard]] CardReadCache& cardReadCache() noexcept
     {
-        return m_readCache;
+        return *m_cryptoCtx->readCache;
+    }
+    // Per-card ListCredentials snapshot store (records + monotonic version).
+    // DISTINCT from credentialCache() (the CAN/MRZ secret cache): a credential
+    // mutation that reaches the card invalidates THIS cache + cardReadCache() via
+    // invalidateForMutationOutcome, but never the secret cache.
+    [[nodiscard]] CredentialSnapshotCache& credentialSnapshotCache() noexcept
+    {
+        return *m_cryptoCtx->snapshotCache;
     }
     [[nodiscard]] CardKeyTracker& cardKeyTracker() noexcept
     {
@@ -243,7 +252,15 @@ private:
     // before the broker + scheduler so it outlives both.
     ObjectRegistry m_registry;
     PresenceModel m_model;
-    CardReadCache m_readCache;
+    // The identity/cert read cache and the per-card ListCredentials snapshot store
+    // are owned by the crypto-worker context (m_cryptoCtx->readCache /
+    // ->snapshotCache), not as direct members: the credential flows touch BOTH past
+    // the flow's post-prompt gate (the list flow's end-of-flow snapshot put, the
+    // mutation flows' invalidateForMutationOutcome), so an abandoned credential
+    // worker wedged in the on-card mutation seam unblocks into that cache touch —
+    // it must co-own them through the same context it already keeps alive, exactly
+    // as the CAN/MRZ secret cache is. cardReadCache() / credentialSnapshotCache()
+    // deref the context shares.
     CardKeyTracker m_tracker;
     // The config SSOT and the signing-engine provider are shared_ptr (not direct
     // value members) so an abandoned qualified-sign worker keeps both alive on

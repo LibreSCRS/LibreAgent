@@ -72,3 +72,33 @@ TEST(CardPluginRouting, UnionCapabilities)
         mk("rs-eid", Cap::IdentityData), mk("opensc", Cap::PKI | Cap::PinManagement)};
     EXPECT_EQ(unionCapabilities(cands), static_cast<std::uint32_t>(Cap::IdentityData | Cap::PKI | Cap::PinManagement));
 }
+
+TEST(CardPluginRouting, PrioritizeCandidateMovesTheMatchToTheFrontStably)
+{
+    CandidateList cands{mk("a", Cap::PinManagement), mk("b", Cap::PinManagement), mk("c", Cap::PinManagement)};
+    auto out = prioritizeCandidate(cands, "b");
+    ASSERT_EQ(out.size(), 3u);
+    EXPECT_EQ(out[0]->pluginId(), "b") << "the listing plugin answers a mutation first";
+    EXPECT_EQ(out[1]->pluginId(), "a") << "the rest keep their relative priority order";
+    EXPECT_EQ(out[2]->pluginId(), "c");
+}
+
+TEST(CardPluginRouting, PrioritizeCandidateEmptyOrUnknownIdKeepsPriorityOrder)
+{
+    CandidateList cands{mk("a", Cap::PinManagement), mk("b", Cap::PinManagement)};
+    auto keptEmpty = prioritizeCandidate(cands, "");
+    ASSERT_EQ(keptEmpty.size(), 2u);
+    EXPECT_EQ(keptEmpty[0]->pluginId(), "a");
+    auto keptUnknown = prioritizeCandidate(cands, "not-present");
+    ASSERT_EQ(keptUnknown.size(), 2u);
+    EXPECT_EQ(keptUnknown[0]->pluginId(), "a");
+}
+
+TEST(CardPluginRouting, PrioritizeCandidateSkipsNullEntries)
+{
+    CandidateList cands{nullptr, mk("a", Cap::PinManagement), mk("b", Cap::PinManagement)};
+    auto out = prioritizeCandidate(cands, "b");
+    ASSERT_EQ(out.size(), 3u);
+    ASSERT_NE(out[0], nullptr);
+    EXPECT_EQ(out[0]->pluginId(), "b");
+}

@@ -18,6 +18,7 @@
 #include <LibreSCRS/LocalizedText.h>
 #include <LibreSCRS/SmartCard/AppletAid.h>
 #include <gtest/gtest.h>
+#include <atomic>
 #include <optional>
 #include <utility>
 
@@ -128,6 +129,57 @@ TEST(CredentialCacheRequest, PrompterErrorMapsToError)
     auto result = cache.requestCredential("card-A", paceReq(PaceSecretKind::Can), prompter, opts);
     EXPECT_EQ(result.status, CredentialResult::Status::Error);
     EXPECT_FALSE(cache.hasCan("card-A"));
+}
+
+// A cancelled CAN prompt must raise the userCancelled flag — and ONLY that
+// flag: a cancel is not a prompter failure, so prompterFailed stays false. The
+// flag is the list flow's only signal that an empty seam result was really a
+// user-dismissed prompt (the LM seam swallows the candidate throw).
+TEST(CredentialCacheRequest, CancelledCanPromptSetsUserCancelledFlagOnly)
+{
+    CredentialCache cache;
+    FakePrompter prompter;
+    prompter.canResult = PromptResult{PromptStatus::Cancelled, std::nullopt, ""};
+    PromptOptions opts;
+    std::atomic<bool> prompterFailed{false};
+    std::atomic<bool> userCancelled{false};
+    auto result = cache.requestCredential("card-A", paceReq(PaceSecretKind::Can), prompter, opts, &prompterFailed,
+                                          &userCancelled);
+    EXPECT_EQ(result.status, CredentialResult::Status::UserCancelled);
+    EXPECT_TRUE(userCancelled.load()) << "a cancelled prompt must raise the cancel signal";
+    EXPECT_FALSE(prompterFailed.load()) << "a cancel is not a prompter failure";
+}
+
+TEST(CredentialCacheRequest, CancelledMrzPromptSetsUserCancelledFlagOnly)
+{
+    CredentialCache cache;
+    FakePrompter prompter;
+    prompter.mrzResult = PromptResult{PromptStatus::Cancelled, std::nullopt, ""};
+    PromptOptions opts;
+    std::atomic<bool> prompterFailed{false};
+    std::atomic<bool> userCancelled{false};
+    auto result = cache.requestCredential("card-A", paceReq(PaceSecretKind::Mrz), prompter, opts, &prompterFailed,
+                                          &userCancelled);
+    EXPECT_EQ(result.status, CredentialResult::Status::UserCancelled);
+    EXPECT_TRUE(userCancelled.load());
+    EXPECT_FALSE(prompterFailed.load());
+}
+
+// The complementary rule: a broken prompter raises prompterFailed and must NOT
+// masquerade as a user cancel.
+TEST(CredentialCacheRequest, PrompterErrorSetsPrompterFailedFlagOnly)
+{
+    CredentialCache cache;
+    FakePrompter prompter;
+    prompter.canResult = PromptResult{PromptStatus::Error, std::nullopt, "prompter gone"};
+    PromptOptions opts;
+    std::atomic<bool> prompterFailed{false};
+    std::atomic<bool> userCancelled{false};
+    auto result = cache.requestCredential("card-A", paceReq(PaceSecretKind::Can), prompter, opts, &prompterFailed,
+                                          &userCancelled);
+    EXPECT_EQ(result.status, CredentialResult::Status::Error);
+    EXPECT_TRUE(prompterFailed.load());
+    EXPECT_FALSE(userCancelled.load()) << "a prompter failure is not a user cancel";
 }
 
 TEST(CredentialCacheRequest, PinKindIsNeverCachedAndYieldsError)

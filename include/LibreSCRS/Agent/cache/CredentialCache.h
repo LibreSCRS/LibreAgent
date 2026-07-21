@@ -69,10 +69,18 @@ public:
     // secret. The caller uses it to remap the final ErrorCode to
     // PrompterError so clients can tell "the prompter failed" from a
     // generic comms/auth failure. Left null by callers that do not care.
+    //
+    // @p userCancelled, when non-null, is set to true iff the prompt returned
+    // PromptStatus::Cancelled (the user dismissed the dialog) — the cancel
+    // twin of prompterFailed. The list flow consults it because the LM seam
+    // swallows a candidate's channel-activation throw: without this signal a
+    // cancelled CAN prompt would be indistinguishable from a live card that
+    // advertises no PIN credentials. Left null by callers that do not care.
     template <typename PrompterT>
     [[nodiscard]] LibreSCRS::Auth::CredentialResult
     requestCredential(const std::string& cardKey, const LibreSCRS::Auth::AuthRequirement& req, PrompterT& prompter,
-                      const PromptOptions& options, std::atomic<bool>* prompterFailed = nullptr);
+                      const PromptOptions& options, std::atomic<bool>* prompterFailed = nullptr,
+                      std::atomic<bool>* userCancelled = nullptr);
 
 private:
     struct Entry
@@ -87,7 +95,8 @@ private:
 template <typename PrompterT>
 LibreSCRS::Auth::CredentialResult
 CredentialCache::requestCredential(const std::string& cardKey, const LibreSCRS::Auth::AuthRequirement& req,
-                                   PrompterT& prompter, const PromptOptions& options, std::atomic<bool>* prompterFailed)
+                                   PrompterT& prompter, const PromptOptions& options, std::atomic<bool>* prompterFailed,
+                                   std::atomic<bool>* userCancelled)
 {
     using LibreSCRS::Auth::CredentialEntry;
     using LibreSCRS::Auth::CredentialResult;
@@ -121,6 +130,9 @@ CredentialCache::requestCredential(const std::string& cardKey, const LibreSCRS::
         }
         const auto prompt = prompter.requestCan(options);
         if (prompt.status == PromptStatus::Cancelled) {
+            if (userCancelled != nullptr) {
+                userCancelled->store(true, std::memory_order_relaxed);
+            }
             return CredentialResult::cancelled();
         }
         if (prompt.status != PromptStatus::Ok || !prompt.secret.has_value()) {
@@ -138,6 +150,9 @@ CredentialCache::requestCredential(const std::string& cardKey, const LibreSCRS::
         }
         const auto prompt = prompter.requestMrz(options);
         if (prompt.status == PromptStatus::Cancelled) {
+            if (userCancelled != nullptr) {
+                userCancelled->store(true, std::memory_order_relaxed);
+            }
             return CredentialResult::cancelled();
         }
         if (prompt.status != PromptStatus::Ok || !prompt.secret.has_value()) {

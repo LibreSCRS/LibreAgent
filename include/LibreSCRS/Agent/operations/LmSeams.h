@@ -27,6 +27,37 @@ public:
                          LibreSCRS::CancelToken token) override;
 };
 
+// Stateless credential router: holds no plugin. Each method iterates the
+// passed candidates (already capability-filtered by the flow) on the SAME
+// passed session — never opens a new one. list() returns the first candidate's
+// non-empty getPINList (the active applet) together with that candidate's
+// pluginId, so the flow can bind the produced snapshot to the listing plugin;
+// a throwing candidate is skipped (read-only). The mutating entry points route
+// a REAL Unsupported (the LM base default — the plugin did not implement the
+// flow, so no card interaction happened) to the next candidate; ANY other
+// outcome is final: a mutation is never retried across candidates, so a failed
+// attempt cannot burn a second retry counter, and a throw maps to PluginError
+// and stops routing (card state unknown). All-Unsupported (or no candidates)
+// answers Unsupported — the valid outcome for a card that advertises no
+// credential management. Mutation flows put the snapshot's listing plugin
+// FIRST in the candidate order (prioritizeCandidate), so the plugin that
+// minted the label namespace answers the mutation addressed against it.
+class LmCredentialManager final : public CredentialManager
+{
+public:
+    CredentialListing list(LibreSCRS::SmartCard::CardSession& session, const CandidateList& candidates) override;
+    LibreSCRS::Plugin::PINResult changePIN(LibreSCRS::SmartCard::CardSession& session, const CandidateList& candidates,
+                                           std::string_view pinLabel, const LibreSCRS::Secure::String& oldPin,
+                                           const LibreSCRS::Secure::String& newPin) override;
+    LibreSCRS::Plugin::PINResult activateTransportPin(LibreSCRS::SmartCard::CardSession& session,
+                                                      const CandidateList& candidates, std::string_view pinLabel,
+                                                      const LibreSCRS::Secure::String& transportValue,
+                                                      const LibreSCRS::Secure::String& newPin) override;
+    LibreSCRS::Plugin::PINResult activateSigningKey(LibreSCRS::SmartCard::CardSession& session,
+                                                    const CandidateList& candidates,
+                                                    const LibreSCRS::Secure::String& signPin) override;
+};
+
 class SigningEngineProvider;
 
 // Production Signer: resolves certId against the live card (anti-TOCTOU DER

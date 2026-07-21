@@ -69,16 +69,14 @@ OpenOutcome openSession(CardSessionHolder& holder, const LibreSCRS::CancelToken&
                        .msgFallback = {}};
 }
 
-LibreSCRS::Auth::CredentialProvider makeReadCredentialProvider(CredentialCache& cache, PrompterClientBase& prompter,
-                                                               PromptSerializer& serializer,
-                                                               OperationPhaseSink& phaseSink, std::string cardKey,
-                                                               std::string requester, std::string artifact,
-                                                               LibreSCRS::CancelToken token,
-                                                               std::shared_ptr<std::atomic<bool>> prompterFailed)
+LibreSCRS::Auth::CredentialProvider makeReadCredentialProvider(
+    CredentialCache& cache, PrompterClientBase& prompter, PromptSerializer& serializer, OperationPhaseSink& phaseSink,
+    std::string cardKey, std::string requester, std::string artifact, LibreSCRS::CancelToken token,
+    std::shared_ptr<std::atomic<bool>> prompterFailed, std::shared_ptr<std::atomic<bool>> userCancelled)
 {
     return [&cache, &prompter, &serializer, &phaseSink, cardKey = std::move(cardKey), requester = std::move(requester),
-            artifact = std::move(artifact), token = std::move(token),
-            prompterFailed = std::move(prompterFailed)](const LibreSCRS::Auth::AuthRequirement& req) {
+            artifact = std::move(artifact), token = std::move(token), prompterFailed = std::move(prompterFailed),
+            userCancelled = std::move(userCancelled)](const LibreSCRS::Auth::AuthRequirement& req) {
         try {
             // About to (potentially) block on the prompter for user input —
             // surface the modal-dialog progress phase.
@@ -92,7 +90,7 @@ LibreSCRS::Auth::CredentialProvider makeReadCredentialProvider(CredentialCache& 
             // real prompt. The routing keys off the AuthRequirement LM hands the
             // callback (its paceKind selects CAN vs MRZ), not a pre-read guess.
             SerializingPrompter gated{serializer, prompter, token};
-            return cache.requestCredential(cardKey, req, gated, opts, prompterFailed.get());
+            return cache.requestCredential(cardKey, req, gated, opts, prompterFailed.get(), userCancelled.get());
         } catch (...) {
             return LibreSCRS::Auth::CredentialResult::error(LibreSCRS::LocalizedText{});
         }

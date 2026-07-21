@@ -29,6 +29,7 @@
 #include <thread>
 #include <vector>
 
+using LibreSCRS::Agent::PinChangePromptResult;
 using LibreSCRS::Agent::PromptOptions;
 using LibreSCRS::Agent::PromptResult;
 using LibreSCRS::Agent::PromptStatus;
@@ -69,9 +70,22 @@ public:
     {
         return enter();
     }
+    // The two-secret change prompt shares the SAME concurrency machinery, so a
+    // test can prove it is gated exactly like the single-secret requests.
+    PinChangePromptResult requestPinChange(const PromptOptions&) override
+    {
+        track();
+        PinChangePromptResult r;
+        r.status = PromptStatus::Ok;
+        r.current = LibreSCRS::Secure::String{"1111"};
+        r.newPin = LibreSCRS::Secure::String{"2222"};
+        return r;
+    }
 
 private:
-    PromptResult enter()
+    // Concurrency tracking + first-entrant park, shared by every request* so the
+    // change prompt is measured on the same single-slot high-water mark.
+    void track()
     {
         const int now = live.fetch_add(1) + 1;
         int prevMax = maxConcurrent.load();
@@ -91,6 +105,11 @@ private:
         }
 
         live.fetch_sub(1);
+    }
+
+    PromptResult enter()
+    {
+        track();
         PromptResult r;
         r.status = PromptStatus::Ok;
         r.secret = LibreSCRS::Secure::String{"123456"};
@@ -238,6 +257,76 @@ TEST(PromptSerializer, CancelledBeforeAcquireNeverPrompts)
 
     EXPECT_EQ(r.status, PromptStatus::Cancelled);
     EXPECT_EQ(inner.totalCalls.load(), 0) << "a pre-cancelled op must never prompt";
+}
+
+TEST(PromptSerializer, PinChangePromptQueuesBehindLivePrompt)
+{
+    // The two-secret change prompt must go through the SAME single-slot gate as
+    // requestPin/Can/Mrz: a change dialog must never stack on top of another
+    // reader's live prompt (which secret authorizes which change?). The recording
+    // prompter parks a first entrant (requestCan); a second worker's
+    // requestPinChange must queue, not fire, until the first is released.
+    PromptSerializer serializer;
+    RecordingFakePrompter inner;
+
+    LibreSCRS::CancelSource src1;
+    LibreSCRS::CancelSource src2;
+    SerializingPrompter gated1{serializer, inner, src1.token()};
+    SerializingPrompter gated2{serializer, inner, src2.token()};
+
+    std::atomic<bool> changeDone{false};
+
+    PromptOptions opts;
+    std::thread t1([&] {
+        auto r = gated1.requestCan(opts);
+        EXPECT_EQ(r.status, PromptStatus::Ok);
+    });
+
+    {
+        std::unique_lock lock(inner.holdMutex);
+        ASSERT_TRUE(inner.holdCv.wait_for(lock, 2s, [&] { return inner.firstEntered; }))
+            << "first prompt must enter the slot";
+    }
+
+    std::thread t2([&] {
+        auto r = gated2.requestPinChange(opts);
+        EXPECT_EQ(r.status, PromptStatus::Ok);
+        changeDone = true;
+    });
+
+    // While the first holds the slot, the change prompt must NOT have run.
+    std::this_thread::sleep_for(200ms);
+    EXPECT_EQ(inner.totalCalls.load(), 1) << "the change prompt must queue behind the live prompt, not stack a dialog";
+    EXPECT_FALSE(changeDone.load()) << "the change prompt must block behind the live one";
+
+    {
+        std::lock_guard lock(inner.holdMutex);
+        inner.releaseHold = true;
+        inner.holdCv.notify_all();
+    }
+    t1.join();
+    t2.join();
+
+    EXPECT_TRUE(changeDone.load());
+    EXPECT_EQ(inner.totalCalls.load(), 2);
+    EXPECT_EQ(inner.maxConcurrent.load(), 1) << "the gate must never let the change prompt overlap another prompt";
+}
+
+TEST(PromptSerializer, PinChangeCancelledBeforeAcquireNeverPrompts)
+{
+    // A token already cancelled when the change prompt is requested returns a
+    // Cancelled-shaped result immediately without ever raising the dialog.
+    PromptSerializer serializer;
+    RecordingFakePrompter inner;
+    LibreSCRS::CancelSource src;
+    src.requestCancel();
+
+    SerializingPrompter gated{serializer, inner, src.token()};
+    PromptOptions opts;
+    auto r = gated.requestPinChange(opts);
+
+    EXPECT_EQ(r.status, PromptStatus::Cancelled);
+    EXPECT_EQ(inner.totalCalls.load(), 0) << "a pre-cancelled op must never raise the change dialog";
 }
 
 TEST(PromptSerializer, ThreeConcurrentPromptsSerializeFifoNoOverlap)

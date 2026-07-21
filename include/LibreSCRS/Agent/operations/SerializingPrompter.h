@@ -44,6 +44,21 @@ public:
     {
         return gated([&] { return m_inner.requestMrz(options); });
     }
+    // The two-secret change prompt is gated identically: it holds the single
+    // agent-wide slot across the one modal, so a change dialog can never stack on
+    // top of another reader's live prompt. Cancelled-while-queued surfaces as a
+    // Cancelled-shaped result, which the change flow maps to UserCancelled — the
+    // same outcome as the user dismissing the dialog.
+    [[nodiscard]] PinChangePromptResult requestPinChange(const PromptOptions& options) override
+    {
+        return m_serializer.serialize(
+            m_token, [&] { return m_inner.requestPinChange(options); },
+            [] {
+                PinChangePromptResult r;
+                r.status = PromptStatus::Cancelled;
+                return r;
+            });
+    }
 
     // The in-dialog dismiss is the inner client's concern (it issues
     // Prompter1.CancelCurrent for the live modal); forward unchanged. A worker

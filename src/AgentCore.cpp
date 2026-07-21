@@ -121,6 +121,11 @@ AgentCore::AgentCore(CapabilityResolver& resolver, AgentTransport& transport, Au
           .shutdown = m_shutdownCancel.token(),
           .config = m_config,
           .signingEngine = m_signingEngine,
+          // The read + snapshot caches are co-owned here (not direct members) so an
+          // abandoned credential worker keeps them alive on unblock — see the
+          // AgentCore member note. Both are leaf caches (no dependencies).
+          .snapshotCache = std::make_shared<CredentialSnapshotCache>(),
+          .readCache = std::make_shared<CardReadCache>(),
       })),
       // The broker's seams only CAPTURE `this` at construction (they read the
       // scheduler lazily, at op time), so it is built before the scheduler below.

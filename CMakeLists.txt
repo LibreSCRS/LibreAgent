@@ -29,6 +29,7 @@ add_library(LibreAgentCore STATIC
     # cache/
     src/cache/CardReadCache.cpp
     src/cache/CredentialCache.cpp
+    src/cache/CredentialSnapshotCache.cpp
     # presence/
     src/presence/ObjectRegistry.cpp
     src/presence/PresenceModel.cpp
@@ -47,6 +48,9 @@ add_library(LibreAgentCore STATIC
     src/operations/CardSessionHolder.cpp
     src/operations/IdentityReadFlow.cpp
     src/operations/CertReadFlow.cpp
+    src/operations/CredentialListFlow.cpp
+    src/operations/PinChangeFlow.cpp
+    src/operations/KeyActivationFlow.cpp
     src/operations/SignFlow.cpp
     src/operations/RawCryptoFlow.cpp
     src/operations/PropertyEmissionThrottler.cpp
@@ -94,10 +98,13 @@ endif()
 # GCC 16's -Warray-bounds raises a false positive on the inlined
 # shared_ptr<std::atomic<bool>> control-block teardown in the credential-flow
 # TUs. It is emitted during optimization, so a source-level diagnostic pragma
-# cannot suppress it; disable the single warning for just these four flows.
+# cannot suppress it; disable the single warning for just these flows.
 set_source_files_properties(
     src/operations/IdentityReadFlow.cpp
     src/operations/CertReadFlow.cpp
+    src/operations/CredentialListFlow.cpp
+    src/operations/PinChangeFlow.cpp
+    src/operations/KeyActivationFlow.cpp
     src/operations/SignFlow.cpp
     src/operations/RawCryptoFlow.cpp
     # AgentCore.cpp inlines the raw-crypto flow (make_shared over the same

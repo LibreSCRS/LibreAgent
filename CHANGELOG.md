@@ -35,6 +35,18 @@ per-user card broker without re-implementing the neutral state machine.
 - **Certificate read caching per card insertion**, so repeated
   certificate reads within a single card session avoid redundant card
   I/O; the cache is bound to the card's presence.
+- **Card credential management.** Beyond reading and signing, the core
+  can enumerate a card's PINs and keys together with their current state
+  — retry counts, whether a PIN is still in transport state or has been
+  blocked, and whether a signing key is awaiting activation — and can
+  change a card PIN. The same surface additionally exposes unblocking a
+  blocked PIN and activating a dormant signing key for cards and plugins
+  that support them; on the hardware supported in this release those
+  requests return an unsupported result. Each operation collects the
+  PIN(s) it needs through the prompter and never caches them. When a card
+  reports that a blocked PIN or a dormant key can only be recovered
+  through the card issuer, that guidance is forwarded to the client so
+  the user learns the correct next step.
 
 ### Security
 

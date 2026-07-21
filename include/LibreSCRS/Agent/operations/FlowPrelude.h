@@ -66,11 +66,17 @@ struct OpenOutcome
 // remaps its final ErrorCode to PrompterError when the flag is set, so a broken
 // prompter is distinguishable from a generic comms/auth failure. Shared by value
 // (shared_ptr) so the flag outlives the closure even if LM defers it.
-[[nodiscard]] LibreSCRS::Auth::CredentialProvider
-makeReadCredentialProvider(CredentialCache& cache, PrompterClientBase& prompter, PromptSerializer& serializer,
-                           OperationPhaseSink& phaseSink, std::string cardKey, std::string requester,
-                           std::string artifact, LibreSCRS::CancelToken token,
-                           std::shared_ptr<std::atomic<bool>> prompterFailed);
+//
+// @p userCancelled is the cancel twin of prompterFailed (optional, may be
+// null): set to true iff a prompt returned PromptStatus::Cancelled. The list
+// flow consults it because the LM seam swallows a candidate's channel-
+// activation throw — without this signal a user-dismissed CAN prompt would be
+// indistinguishable from a live card advertising no PIN credentials (and would
+// be cached as a valid empty snapshot).
+[[nodiscard]] LibreSCRS::Auth::CredentialProvider makeReadCredentialProvider(
+    CredentialCache& cache, PrompterClientBase& prompter, PromptSerializer& serializer, OperationPhaseSink& phaseSink,
+    std::string cardKey, std::string requester, std::string artifact, LibreSCRS::CancelToken token,
+    std::shared_ptr<std::atomic<bool>> prompterFailed, std::shared_ptr<std::atomic<bool>> userCancelled = {});
 
 // Install @p provider on @p session and return a scope guard that, on
 // destruction, replaces it with a stateless no-op provider. Use in EVERY flow

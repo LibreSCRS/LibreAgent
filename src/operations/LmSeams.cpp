@@ -647,4 +647,100 @@ CertReadOutcome LmCertificateReader::read(LibreSCRS::SmartCard::CardSession& ses
     return last;
 }
 
+// --- LmCredentialManager ---------------------------------------------------
+
+namespace {
+
+// Route a MUTATING PIN operation across the candidate list. Only a REAL
+// Unsupported (the LM base default — the plugin did not implement the flow, so
+// no card interaction happened) falls through to the next candidate; any other
+// outcome is the card's answer and returns immediately — a mutation is NEVER
+// retried on another candidate, so a failed attempt cannot burn a second retry
+// counter. A throwing candidate maps to PluginError and also stops routing:
+// after a throw mid-mutation the card state is unknown, so retrying elsewhere
+// would be unsafe. All-Unsupported (or an empty list) answers Unsupported —
+// the valid outcome for a card that advertises no credential management.
+template <typename Op>
+LibreSCRS::Plugin::PINResult routePinMutation(const CandidateList& candidates, const char* opName, Op&& op)
+{
+    for (const auto& cand : candidates) {
+        if (!cand) {
+            continue;
+        }
+        LibreSCRS::Plugin::PINResult result;
+        try {
+            result = op(*cand);
+        } catch (...) {
+            log::warnf("credential: a candidate threw on {}; failing the operation", opName);
+            result = {};
+            result.outcome = LibreSCRS::Plugin::PINResultOutcome::PluginError;
+            return result;
+        }
+        if (result.outcome != LibreSCRS::Plugin::PINResultOutcome::Unsupported) {
+            return result;
+        }
+    }
+    LibreSCRS::Plugin::PINResult unsupported;
+    unsupported.outcome = LibreSCRS::Plugin::PINResultOutcome::Unsupported;
+    return unsupported;
+}
+
+} // namespace
+
+CredentialListing LmCredentialManager::list(LibreSCRS::SmartCard::CardSession& session, const CandidateList& candidates)
+{
+    // Lazy fallback, cert-reader style: the first candidate reporting a
+    // non-empty PIN list is the active applet — its identity is returned with
+    // the entries so the flow can bind the snapshot to the listing plugin.
+    // Candidate plugins switch applets via their own SM-wrapped SELECT on the
+    // SAME session — never open a new one. A throwing candidate is skipped
+    // (read-only operation).
+    for (const auto& cand : candidates) {
+        if (!cand) {
+            continue;
+        }
+        std::vector<LibreSCRS::Plugin::PinStatusEntry> entries;
+        try {
+            entries = cand->getPINList(session);
+        } catch (...) {
+            log::warn("credential: a candidate threw on getPINList; skipping it");
+            continue;
+        }
+        if (!entries.empty()) {
+            return {std::move(entries), cand->pluginId()};
+        }
+    }
+    return {};
+}
+
+LibreSCRS::Plugin::PINResult LmCredentialManager::changePIN(LibreSCRS::SmartCard::CardSession& session,
+                                                            const CandidateList& candidates, std::string_view pinLabel,
+                                                            const LibreSCRS::Secure::String& oldPin,
+                                                            const LibreSCRS::Secure::String& newPin)
+{
+    return routePinMutation(candidates, "changePIN", [&](const LibreSCRS::Plugin::CardPlugin& plugin) {
+        return plugin.changePIN(session, pinLabel, oldPin, newPin);
+    });
+}
+
+LibreSCRS::Plugin::PINResult LmCredentialManager::activateTransportPin(LibreSCRS::SmartCard::CardSession& session,
+                                                                       const CandidateList& candidates,
+                                                                       std::string_view pinLabel,
+                                                                       const LibreSCRS::Secure::String& transportValue,
+                                                                       const LibreSCRS::Secure::String& newPin)
+{
+    return routePinMutation(candidates, "activateTransportPin", [&](const LibreSCRS::Plugin::CardPlugin& plugin) {
+        return plugin.activateTransportPin(session, pinLabel, transportValue, newPin);
+    });
+}
+
+LibreSCRS::Plugin::PINResult LmCredentialManager::activateSigningKey(LibreSCRS::SmartCard::CardSession& session,
+                                                                     const CandidateList& candidates,
+                                                                     const LibreSCRS::Secure::String& signPin)
+{
+    return routePinMutation(candidates, "activateSigningKey", [&](const LibreSCRS::Plugin::CardPlugin& plugin) {
+        return plugin.activateSigningKey(session, signPin);
+    });
+}
+
 } // namespace LibreSCRS::Agent::Operations

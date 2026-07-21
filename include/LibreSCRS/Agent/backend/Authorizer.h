@@ -22,6 +22,11 @@ inline constexpr const char* kActionSign = "org.librescrs.agent.sign";
 // + rate-limiter bound abuse; SignRaw/Decrypt within an active lease are NOT
 // re-authorized (the lease is the grant) but ARE audited.
 inline constexpr const char* kActionPkcs11Login = "org.librescrs.agent.pkcs11.login";
+// Credentials1 mutation (ManagePin / ActivateSigningKey). Default-allow,
+// PIN-as-consent (the PIN(s) collected during the operation are the
+// human-presence proof), site-restrictable. Same posture as Card1.Sign; the
+// rate-limiter caps abuse under the default-allow gate.
+inline constexpr const char* kActionCredentialsManage = "org.librescrs.agent.credentials.manage";
 
 // Authorization-of-the-CLIENT policy gate (distinct from authentication-TO-the-
 // card, which is the PIN). Shared by Config1 mutation and, later, Card1.Sign
@@ -53,20 +58,21 @@ public:
 
 // Degraded fallback used only when the platform authorization service is
 // unreachable at startup (no system authorization backend). Fail-closed
-// allow-LIST: only the low-tier configure action, the default-allow sign action
-// and the default-allow PKCS#11 login action are permitted; everything else —
-// the trust/timestamping tier (configure.trust requires auth_self, which only
-// the real authorization service can satisfy) and any future/unknown action id
-// — is denied. So TsaUrls/TslSources cannot be changed remotely in this mode;
-// they are seeded via the agent's config file (the file-load path bypasses this
-// gate). In the normal path the platform Authorizer impl replaces this with a
-// policy-backed authorizer.
+// allow-LIST: only the low-tier configure action, the default-allow sign action,
+// the default-allow PKCS#11 login action and the default-allow credential-manage
+// action are permitted; everything else — the trust/timestamping tier
+// (configure.trust requires auth_self, which only the real authorization service
+// can satisfy) and any future/unknown action id — is denied. So TsaUrls/TslSources
+// cannot be changed remotely in this mode; they are seeded via the agent's config
+// file (the file-load path bypasses this gate). In the normal path the platform
+// Authorizer impl replaces this with a policy-backed authorizer.
 class DefaultAuthorizer final : public Authorizer
 {
 public:
     [[nodiscard]] bool authorize(std::string_view actionId, const CallerToken& /*caller*/) override
     {
-        return actionId == kActionConfigure || actionId == kActionSign || actionId == kActionPkcs11Login;
+        return actionId == kActionConfigure || actionId == kActionSign || actionId == kActionPkcs11Login ||
+               actionId == kActionCredentialsManage;
     }
 };
 
