@@ -276,3 +276,27 @@ TEST(CardReadCache, CertificatesIdleBeyondWindowExpiresAndErasesEntry)
     *now -= 200ms;
     EXPECT_FALSE(cache.getCertificates("card-A").has_value()) << "expired cert entry is erased, not merely hidden";
 }
+
+// kNoIdleExpiry gives an entry card-lifetime residency: it never idle-expires no
+// matter how long the clock advances (the immutable eID identity + cert data
+// cannot go stale while the card is seated — a change requires a physical
+// re-issue = card removal, which invalidates the cache). Explicit invalidation
+// still drops it.
+TEST(CardReadCache, NoIdleExpiryKeepsEntryForTheCardLifetime)
+{
+    auto now = std::make_shared<std::chrono::steady_clock::time_point>();
+    CardReadCache cache(CardReadCache::kNoIdleExpiry, [now] { return *now; });
+    cache.put("card-A", makeSnap("rs-eid"));
+    cache.putCertificates("card-A", makeCerts("abc123"));
+
+    // A card seated all day, never browsed: far past any ordinary idle window.
+    *now += 24h;
+    EXPECT_TRUE(cache.get("card-A").has_value())
+        << "no-idle-expiry: immutable identity is kept for the card's whole lifetime";
+    EXPECT_TRUE(cache.getCertificates("card-A").has_value()) << "the cert half is kept too";
+
+    // Explicit invalidation (card removal / auth failure) still drops it.
+    cache.invalidate("card-A");
+    EXPECT_FALSE(cache.get("card-A").has_value()) << "invalidate still drops a no-expiry entry";
+    EXPECT_FALSE(cache.getCertificates("card-A").has_value());
+}

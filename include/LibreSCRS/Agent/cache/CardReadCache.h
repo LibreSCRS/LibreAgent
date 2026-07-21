@@ -33,6 +33,14 @@ public:
     // window/expiry tests.
     using Clock = std::function<std::chrono::steady_clock::time_point()>;
 
+    // Pass as the idle window to DISABLE idle expiry (card-lifetime residency):
+    // the entry then lives until invalidate()/clear()/card removal, never on
+    // idle time. For the immutable eID identity + certs, which cannot go stale
+    // while the card is seated — any change is a physical re-issue, i.e. a card
+    // removal, which already invalidates the cache. The production cache uses
+    // this; the short default below is for the window/expiry unit tests.
+    static constexpr std::chrono::steady_clock::duration kNoIdleExpiry = std::chrono::steady_clock::duration::max();
+
     // Idle window default 5 min: long enough that active use never re-reads,
     // short enough that an abandoned card's PII does not linger.
     explicit CardReadCache(std::chrono::steady_clock::duration idleWindow = std::chrono::minutes{5}, Clock clock = {});

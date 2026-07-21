@@ -57,7 +57,7 @@ struct CredentialRecord
     std::string label;
     std::string kind;  // "user"|"sign"|"puk"|"can"|"unknown"
     std::string state; // "unknown"|"transport"|"operational"|"needsChange"|"blocked"
-    std::optional<int> retriesLeft, retriesMax, usesLeft, unblocksLeft;
+    std::optional<int> retriesLeft, retriesMax, usesLeft, usesMax, unblocksLeft;
     std::optional<int> minLength, maxLength; // CHECKED narrowing from LM's std::optional<std::size_t>
     bool canChange = false, unblockable = false;
     std::string unblockStyle; // "unknown"|"resetOnly"|"setsNewPin"|"unblockAndChange"
@@ -263,6 +263,7 @@ splitGuidance(const std::optional<LocalizedText>& guidance, std::string_view fie
     record.retriesLeft = e.retriesLeft;
     record.retriesMax = e.retriesMax;
     record.usesLeft = e.usesLeft;
+    record.usesMax = e.usesMax;
     record.unblocksLeft = e.unblocksLeft;
     record.minLength = detail::narrowLengthToInt(e.minLength);
     record.maxLength = detail::narrowLengthToInt(e.maxLength);

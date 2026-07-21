@@ -285,6 +285,7 @@ TEST(CredentialRecordMap, FullyPopulatedEntryMapsFieldForField)
     e.retriesLeft = 3;
     e.retriesMax = 5;
     e.usesLeft = 7;
+    e.usesMax = 20;
     e.unblocksLeft = 2;
     e.minLength = std::size_t{6};
     e.maxLength = std::size_t{12};
@@ -305,6 +306,7 @@ TEST(CredentialRecordMap, FullyPopulatedEntryMapsFieldForField)
     EXPECT_EQ(r.retriesLeft, std::optional<int>{3});
     EXPECT_EQ(r.retriesMax, std::optional<int>{5});
     EXPECT_EQ(r.usesLeft, std::optional<int>{7});
+    EXPECT_EQ(r.usesMax, std::optional<int>{20});
     EXPECT_EQ(r.unblocksLeft, std::optional<int>{2});
     EXPECT_EQ(r.minLength, std::optional<int>{6});
     EXPECT_EQ(r.maxLength, std::optional<int>{12});

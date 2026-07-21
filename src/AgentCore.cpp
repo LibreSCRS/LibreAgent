@@ -125,7 +125,13 @@ AgentCore::AgentCore(CapabilityResolver& resolver, AgentTransport& transport, Au
           // abandoned credential worker keeps them alive on unblock — see the
           // AgentCore member note. Both are leaf caches (no dependencies).
           .snapshotCache = std::make_shared<CredentialSnapshotCache>(),
-          .readCache = std::make_shared<CardReadCache>(),
+          // Card-lifetime residency: eID identity + certs are immutable while the
+          // card is seated (a change is a physical re-issue = card removal, which
+          // invalidates the cache), so a still-seated card never re-reads on a
+          // reader switch, however long it has sat idle. PIN/credential metadata
+          // — the only volatile surface — lives in the snapshotCache above and is
+          // fetched fresh, so this does not stale it.
+          .readCache = std::make_shared<CardReadCache>(CardReadCache::kNoIdleExpiry),
       })),
       // The broker's seams only CAPTURE `this` at construction (they read the
       // scheduler lazily, at op time), so it is built before the scheduler below.

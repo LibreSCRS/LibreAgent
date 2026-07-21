@@ -36,7 +36,7 @@ CredentialOpResult nonSeamResult(CredentialOutcome outcome, std::optional<bool> 
 // Map the LM PINResult onto the wire-facing CredentialOpResult. keyActivated is
 // true only on Ok; every other LM outcome — including KeyActivationFailed, where
 // VERIFY succeeded but the card-side ACTIVATE step failed — is preserved verbatim
-// (its wire ErrorCode mapping is a later task's job). retriesLeft rides the
+// (its wire ErrorCode mapping is not yet implemented). retriesLeft rides the
 // payload and describes the PIN that was presented — here the SIGN PIN, the only
 // PIN this flow prompts.
 CredentialOpResult mapSeamResult(const LibreSCRS::Plugin::PINResult& pin, std::optional<bool> pinActivated)

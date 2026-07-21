@@ -93,7 +93,10 @@ CardReadCache::Entry* CardReadCache::liveEntry(const std::string& cardKey) const
     if (it == m_entries.end()) {
         return nullptr;
     }
-    if ((m_clock() - it->second.touchedAt) > m_idleWindow) {
+    // kNoIdleExpiry disables idle expiry entirely (card-lifetime residency): the
+    // entry lives until invalidate()/clear()/card removal. Otherwise the sliding
+    // idle window governs residency as usual.
+    if (m_idleWindow != kNoIdleExpiry && (m_clock() - it->second.touchedAt) > m_idleWindow) {
         scrub(it->second); // expired: erase AND zeroize the PII, never return it
         m_entries.erase(it);
         return nullptr;

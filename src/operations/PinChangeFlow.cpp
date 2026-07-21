@@ -138,11 +138,11 @@ CredentialOpResult runPinManage(PinManageFlowDeps& deps, const PinManageRequest&
             return resultWith(CredentialOutcome::Unsupported);
         }
 
-        // Increment #1 wires only `change`. A capable unblock/activate_pin record
+        // Only `change` is wired today. A capable unblock/activate_pin record
         // has no prompter kind or seam entry point yet — driving the LM unblock/
         // activate entry points with empty secrets could burn PUK budget against a
         // future plugin — so those verbs answer Unsupported WITHOUT prompting until
-        // increment #2 adds the real collection path. (`change` on a canChange
+        // the real collection path is added. (`change` on a canChange
         // record falls through to the prompt + seam below.)
         if (request.verb != kVerbChange) {
             return resultWith(CredentialOutcome::Unsupported);
