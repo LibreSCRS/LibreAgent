@@ -145,6 +145,10 @@ public:
     {
         runOnThread(m_context, [this]() { m_agent->sendNonCanonicalFrame(); });
     }
+    void setNonCanonicalAfterStateReply()
+    {
+        runOnThread(m_context, [this]() { m_agent->config().nonCanonicalAfterStateReply = true; });
+    }
     [[nodiscard]] int operationCount()
     {
         int out = 0;
@@ -912,6 +916,39 @@ struct RecordingPropertyListener final : PropertyListener
     }
 };
 
+struct RecordingRegistryListener final : RegistryListener
+{
+    int registeredCount = 0;
+    int unregisteredCount = 0;
+
+    void onServiceRegistered() override
+    {
+        ++registeredCount;
+    }
+    void onServiceUnregistered() override
+    {
+        ++unregisteredCount;
+    }
+    void onReaderAdded(const QString& readerId, const QVariantMap& properties) override
+    {
+        Q_UNUSED(readerId)
+        Q_UNUSED(properties)
+    }
+    void onCardAdded(const QString& cardId, const QVariantMap& properties) override
+    {
+        Q_UNUSED(cardId)
+        Q_UNUSED(properties)
+    }
+    void onReaderRemoved(const QString& readerId) override
+    {
+        Q_UNUSED(readerId)
+    }
+    void onCardRemoved(const QString& cardId) override
+    {
+        Q_UNUSED(cardId)
+    }
+};
+
 } // namespace
 
 TEST(SocketIntegration, RequestPropertiesFetchesTheObjectSnapshot)
@@ -938,4 +975,128 @@ TEST(SocketIntegration, RequestPropertiesFetchesTheObjectSnapshot)
     EXPECT_EQ(listener.fetched->value(QStringLiteral("Reader")).toString(), QLatin1String(kReaderId));
 
     transport.unsubscribeProperties(QLatin1String(kCardId), &listener);
+}
+
+// ---- write-after-peer-close: EPIPE -> failed call, drop delivery stays queued -------
+
+// The agent dies and the client's next seam call discovers it through the
+// failing WRITE (not the read-EOF pump). Two contracts pinned at once:
+//   - the failing send must surface as a failed call (EPIPE ->
+//     CallError::AgentUnavailable), NOT as a process-killing SIGPIPE —
+//     without MSG_NOSIGNAL on the send this whole test binary dies here;
+//   - ConnectionLost delivery is QUEUED, never inline from inside the
+//     consumer's own seam call: an inline onServiceUnregistered would tear
+//     down the registry (deleting the very AgentCard the call is running
+//     on) mid-call — a consumer use-after-free.
+TEST(SocketIntegration, WriteAfterAgentDeathFailsCallWithoutInlineUnregistration)
+{
+    FakeSocketAgent::Config cfg;
+    cfg.capabilities = Cap::Pki;
+    SocketHarness h(cfg);
+
+    auto client = makeClient(h);
+    AgentCard* card = client->card(QLatin1String(kCardId));
+    ASSERT_NE(card, nullptr);
+
+    int sequence = 0;
+    int unavailableAt = 0;
+    QObject::connect(client.get(), &AgentClient::availabilityChanged, client.get(), [&](bool available) {
+        if (!available && unavailableAt == 0) {
+            unavailableAt = ++sequence;
+        }
+    });
+
+    // The agent dies. Deliberately NO event processing between here and the
+    // next seam call, so the death is discovered by the write itself.
+    h.closeAllConnections();
+
+    AgentOperation* op = card->readIdentity();
+    const int callReturnedAt = ++sequence;
+
+    // All asserted BEFORE any event processing: the op (parented to the
+    // card) is deleted by the queued availability teardown on the next turn.
+    ASSERT_NE(op, nullptr) << "a refused entry mints a failed operation, never nullptr";
+    EXPECT_TRUE(op->isFinished()) << "an entry-refused op is terminal the instant the minting call returns";
+    EXPECT_EQ(op->callError(), CallError::AgentUnavailable);
+    EXPECT_EQ(unavailableAt, 0) << "the availability push must not be delivered inside the seam call";
+    EXPECT_TRUE(client->isAvailable()) << "registry teardown inside the consumer's own call stack is the UAF";
+
+    ASSERT_TRUE(waitFor([&]() { return unavailableAt != 0; }));
+    EXPECT_GT(unavailableAt, callReturnedAt) << "ConnectionLost must land on a later event-loop turn";
+    EXPECT_FALSE(client->isAvailable());
+    EXPECT_EQ(client->card(QLatin1String(kCardId)), nullptr) << "the teardown (on its own turn) clears the registry";
+}
+
+// ---- stale ConnectionLost across a same-stack reconnect ------------------------------
+
+// A drop discovered mid-call defers ConnectionLost; if the consumer
+// reconnects in the SAME stack (probe -> fresh handshake) before that
+// deferred notice drains, the stale notice must not be announced against the
+// fresh connection — while the DEAD connection's in-flight async requests
+// must still be answered with their failure outcomes.
+TEST(SocketIntegration, StaleConnectionLostAfterSynchronousReconnectIsNotAnnounced)
+{
+    FakeSocketAgent::Config cfg;
+    cfg.capabilities = Cap::Pki;
+    SocketHarness h(cfg);
+
+    SocketTransport transport(h.path());
+    RecordingRegistryListener registry;
+    transport.setRegistryListener(&registry);
+    ASSERT_TRUE(transport.probeAvailability());
+
+    // An async request in flight on the doomed connection.
+    RecordingPropertyListener props;
+    transport.subscribeProperties(QLatin1String(kCardId), ObjectKind::Card, &props);
+    const quint64 token = transport.requestProperties(QLatin1String(kCardId), ObjectKind::Card, &props);
+    ASSERT_NE(token, 0u);
+
+    // The agent's end closes; the next sync call discovers the death (failed
+    // send) and defers ConnectionLost. The fake still listens, so an
+    // immediate same-stack probe reconnects BEFORE the deferred notice
+    // drains.
+    h.closeAllConnections();
+    EXPECT_FALSE(transport.fetchRegistry().has_value());
+    EXPECT_FALSE(transport.isConnected());
+    ASSERT_TRUE(transport.probeAvailability()) << "the same-stack reconnect must succeed";
+    EXPECT_TRUE(transport.isConnected());
+
+    // Drain the deferred notice: the old connection's in-flight request is
+    // terminalized...
+    ASSERT_TRUE(waitFor([&]() { return props.fetchedSeen; }));
+    EXPECT_EQ(props.fetchedToken, token);
+    EXPECT_FALSE(props.fetched.has_value());
+    // ...but the stale ConnectionLost must NOT clear the fresh connection.
+    EXPECT_EQ(registry.unregisteredCount, 0) << "a stale ConnectionLost fired against the reconnected transport";
+    const std::optional<RegistrySnapshot> snapshot = transport.fetchRegistry();
+    ASSERT_TRUE(snapshot.has_value()) << "the fresh connection must survive the stale notice";
+    EXPECT_EQ(snapshot->readers.size(), 1);
+    transport.unsubscribeProperties(QLatin1String(kCardId), &props);
+}
+
+// ---- an awaited reply followed by a malformed frame in ONE batch ----------------------
+
+// The received success must be preserved (the call succeeds) while the
+// malformed trailer still costs the connection (fail closed) — announced on
+// the next event-loop turn, exactly like every other drop.
+TEST(SocketIntegration, AwaitedReplyThenMalformedFrameInSameBatchPreservesTheReply)
+{
+    FakeSocketAgent::Config cfg;
+    cfg.capabilities = Cap::Pki;
+    SocketHarness h(cfg);
+
+    SocketTransport transport(h.path());
+    RecordingRegistryListener registry;
+    transport.setRegistryListener(&registry);
+    ASSERT_TRUE(transport.probeAvailability());
+
+    h.setNonCanonicalAfterStateReply();
+    const std::optional<RegistrySnapshot> snapshot = transport.fetchRegistry();
+    ASSERT_TRUE(snapshot.has_value()) << "a reply already received must not be clobbered by the malformed trailer";
+    EXPECT_EQ(snapshot->readers.size(), 1);
+
+    // The fail-closed policy is untouched: the connection is gone, announced
+    // on the next turn.
+    EXPECT_FALSE(transport.isConnected());
+    ASSERT_TRUE(waitFor([&]() { return registry.unregisteredCount == 1; }));
 }

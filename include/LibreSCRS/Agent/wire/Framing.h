@@ -61,7 +61,10 @@ struct Frame
 
 // Blocking send of exactly one frame plus optional passed fds (SCM_RIGHTS) in a
 // single sendmsg. `passFds` are duplicated into the peer; the caller keeps
-// ownership of its copies. Bodies over kMaxFrameBytes fail closed.
+// ownership of its copies. Bodies over kMaxFrameBytes fail closed. Never raises
+// SIGPIPE (MSG_NOSIGNAL where available; elsewhere the connecting side sets
+// SO_NOSIGPIPE on the socket): a peer that closed surfaces as FrameError::Io
+// so the caller can fail its call instead of the process dying.
 [[nodiscard]] std::expected<void, FrameError> sendFrame(int fd, std::span<const std::uint8_t> body,
                                                         std::span<const int> passFds = {});
 

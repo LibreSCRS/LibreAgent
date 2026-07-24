@@ -836,6 +836,15 @@ bool SocketTransport::connectAndHandshake()
     // FD_CLOEXEC via fcntl: SOCK_CLOEXEC is not portable to every supported
     // host (and the contract requires the flag either way).
     ::fcntl(fd.get(), F_SETFD, FD_CLOEXEC);
+#ifdef SO_NOSIGPIPE
+    // No MSG_NOSIGNAL on this platform (Darwin): suppress SIGPIPE at the
+    // socket instead, so a write against a just-died agent fails the call
+    // with EPIPE -> FrameError::Io -> CallError::AgentUnavailable rather
+    // than killing the process (Wire::sendFrame's other half of the same
+    // contract).
+    const int noSigPipe = 1;
+    ::setsockopt(fd.get(), SOL_SOCKET, SO_NOSIGPIPE, &noSigPipe, sizeof(noSigPipe));
+#endif
     if (::connect(fd.get(), reinterpret_cast<const sockaddr*>(&address), sizeof(address)) != 0) {
         return false; // refused / absent — the agent is not reachable
     }
@@ -869,6 +878,9 @@ bool SocketTransport::connectAndHandshake()
     }
     m_established = true;
     m_quiesced = false;
+    // A new connection generation: any ConnectionLost notice still queued
+    // for an OLDER connection must not be announced against this one.
+    ++m_generation;
     return true;
 }
 
@@ -894,21 +906,29 @@ void SocketTransport::dropConnection()
     }
     DeferredItem item;
     item.kind = DeferredItem::Kind::ConnectionLost;
+    // Stamp the dead connection's generation and detach ITS in-flight async
+    // requests now: a reconnect before the drain starts a fresh pending set,
+    // and the stale notice must neither touch that set nor be announced
+    // against the fresh connection (deliverConnectionLost's guard).
+    item.generation = m_generation;
+    item.lostProps.swap(m_pendingProps);
+    item.lostDer.swap(m_pendingDer);
     m_deferred.push_back(std::move(item));
-    if (m_syncDepth == 0) {
-        drainDeferred();
-    } else {
-        scheduleDrain();
-    }
+    // ALWAYS queued, even at sync depth 0: a failing send inside
+    // callSync/cancelOperation/requestProperties/requestCertificateDer runs
+    // on the consumer's own call stack, and an inline onServiceUnregistered
+    // there would let the consumer tear down the registry underneath the
+    // very object making the call (use-after-free). Queued delivery is
+    // correct from the event-pump context too.
+    scheduleDrain();
 }
 
-void SocketTransport::deliverConnectionLost()
+void SocketTransport::deliverConnectionLost(DeferredItem& item)
 {
-    // Answer every in-flight asynchronous request with its failure outcome
-    // (same liveness rules as a real reply), then report the agent gone.
-    const QList<quint64> propIds = m_pendingProps.keys();
-    for (const quint64 id : propIds) {
-        const PendingProps pending = m_pendingProps.take(id);
+    // Answer the dead connection's in-flight asynchronous requests with
+    // their failure outcomes (same liveness rules as a real reply). This
+    // half is unconditional: no connection can ever answer them.
+    for (const PendingProps& pending : std::as_const(item.lostProps)) {
         if (pending.timer != nullptr) {
             pending.timer->deleteLater();
         }
@@ -918,9 +938,7 @@ void SocketTransport::deliverConnectionLost()
         }
         pending.listener->onPropertiesFetched(pending.token, std::nullopt);
     }
-    const QList<quint64> derIds = m_pendingDer.keys();
-    for (const quint64 id : derIds) {
-        const PendingDer pending = m_pendingDer.take(id);
+    for (const PendingDer& pending : std::as_const(item.lostDer)) {
         if (pending.timer != nullptr) {
             pending.timer->deleteLater();
         }
@@ -932,6 +950,13 @@ void SocketTransport::deliverConnectionLost()
         outcome.error.callError = CallError::AgentUnavailable;
         outcome.error.message = QStringLiteral("the agent connection was lost");
         target->onCertificateDer(pending.token, std::move(outcome));
+    }
+    // The availability push is generation-guarded: a consumer that
+    // reconnected before this notice drained (probe -> fresh handshake in
+    // the same stack) has a LIVE registry — announcing the stale death
+    // would clear it.
+    if (item.generation != m_generation) {
+        return;
     }
     if (m_registry != nullptr) {
         m_registry->onServiceUnregistered();
@@ -1024,7 +1049,7 @@ void SocketTransport::drainDeferred()
             dispatchAsyncReply(std::move(item.reply));
             break;
         case DeferredItem::Kind::ConnectionLost:
-            deliverConnectionLost();
+            deliverConnectionLost(item);
             break;
         }
         // A dispatched callback may have re-entered a seam call and deferred
@@ -1262,7 +1287,12 @@ SocketTransport::SyncResult SocketTransport::callSync(const Wire::RequestVariant
         if (protocolFailure) {
             qCWarning(lcSocket) << "malformed/non-canonical frame from the agent; failing the connection closed";
             dropConnection();
-            out.failure = CallError::ProtocolError;
+            // Like the PeerClosed/Error branches below: a malformed TRAILING
+            // frame in the same batch as the awaited reply still costs the
+            // connection, but must not clobber the success already received.
+            if (out.failure != CallError::None) {
+                out.failure = CallError::ProtocolError;
+            }
             break;
         }
         if (pumped.status == Wire::PumpStatus::PeerClosed) {

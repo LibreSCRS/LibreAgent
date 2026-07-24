@@ -161,4 +161,19 @@ TEST(Framing, PeerClosedFailsClosed)
     EXPECT_EQ(frame.error(), FrameError::PeerClosed);
 }
 
+TEST(Framing, SendAfterPeerCloseFailsWithIoInsteadOfSigpipe)
+{
+    SocketPair sp;
+    ::close(sp.fds[1]); // the peer is gone
+    sp.fds[1] = -1;
+    // A write against the closed peer raises EPIPE. Without MSG_NOSIGNAL on
+    // the send (SO_NOSIGPIPE where MSG_NOSIGNAL does not exist) the kernel
+    // would deliver SIGPIPE and kill this whole test binary — surviving to
+    // observe the error return IS the assertion.
+    const std::vector<std::uint8_t> body{0x42};
+    const auto r = sendFrame(sp.fds[0], body);
+    ASSERT_FALSE(r.has_value());
+    EXPECT_EQ(r.error(), FrameError::Io);
+}
+
 } // namespace

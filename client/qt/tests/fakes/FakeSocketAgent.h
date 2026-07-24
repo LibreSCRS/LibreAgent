@@ -91,7 +91,11 @@ public:
         bool credEntryError = false; ///< the id-bearing mutations answer the scripted err at entry
         LibreSCRS::Agent::Wire::SyncError credEntryErrorName = LibreSCRS::Agent::Wire::SyncError::UnknownCredential;
         bool wedgeGetState = false; ///< GetState never answers (models a wedged discovery)
-        QByteArray photoBytes;      ///< bytes the GetPhoto result memfd carries ("personal:photo")
+        /// Answer GetState with the real reply IMMEDIATELY FOLLOWED by a
+        /// non-canonical frame, written as ONE batch (a single send) so the
+        /// client's one pump absorbs both frames together.
+        bool nonCanonicalAfterStateReply = false;
+        QByteArray photoBytes; ///< bytes the GetPhoto result memfd carries ("personal:photo")
         QByteArray signArtifactBytes = QByteArrayLiteral("FAKE-SOCKET-ARTIFACT");
         QByteArray certDerBytes;         ///< GetCertDer success bytes
         bool certDerKeyNotFound = false; ///< GetCertDer answers err KeyNotFound instead
@@ -168,6 +172,8 @@ private:
                        std::vector<LibreSCRS::Agent::Wire::UniqueFd>& fds);
     void sendCbor(Connection* connection, const LibreSCRS::Agent::Wire::CborValue& value,
                   std::span<const int> passFds = {});
+    /// Write pre-framed bytes verbatim (several frames as ONE send batch).
+    void sendRawBatch(Connection* connection, std::span<const std::uint8_t> bytes);
     void broadcastCbor(const LibreSCRS::Agent::Wire::CborValue& value);
     void sendEntryError(Connection* connection, quint64 req, LibreSCRS::Agent::Wire::SyncError error);
     /// Mint + schedule a scripted op; answers op-started on @p connection.

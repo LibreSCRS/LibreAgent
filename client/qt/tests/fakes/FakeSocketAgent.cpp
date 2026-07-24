@@ -210,6 +210,30 @@ void FakeSocketAgent::sendCbor(Connection* connection, const Wire::CborValue& va
     }
 }
 
+void FakeSocketAgent::sendRawBatch(Connection* connection, std::span<const std::uint8_t> bytes)
+{
+    if (!isLive(connection)) {
+        return;
+    }
+#ifdef MSG_NOSIGNAL
+    constexpr int kFlags = MSG_NOSIGNAL;
+#else
+    constexpr int kFlags = 0;
+#endif
+    std::size_t sent = 0;
+    while (sent < bytes.size()) {
+        const ssize_t w = ::send(connection->fd.get(), bytes.data() + sent, bytes.size() - sent, kFlags);
+        if (w < 0) {
+            if (errno == EINTR) {
+                continue;
+            }
+            closeConnection(connection);
+            return;
+        }
+        sent += static_cast<std::size_t>(w);
+    }
+}
+
 void FakeSocketAgent::broadcastCbor(const Wire::CborValue& value)
 {
     // Snapshot: a failed send closes (erases) the connection mid-loop.
@@ -515,6 +539,17 @@ void FakeSocketAgent::handleRequest(Connection* connection, Wire::RequestEnvelop
         ++m_getStateCalls;
         if (m_config.wedgeGetState) {
             return; // scripted wedge: never answers
+        }
+        if (m_config.nonCanonicalAfterStateReply) {
+            // The awaited reply + a non-canonical frame in ONE write: the
+            // client must keep the received reply while still failing the
+            // connection closed on the malformed trailer.
+            std::vector<std::uint8_t> batch = Wire::encodeFrame(Wire::makeReply(req, buildState()).encode());
+            static constexpr std::uint8_t kNonCanonical[] = {0x19, 0x00, 0x2A};
+            const std::vector<std::uint8_t> trailer = Wire::encodeFrame(kNonCanonical);
+            batch.insert(batch.end(), trailer.begin(), trailer.end());
+            sendRawBatch(connection, batch);
+            return;
         }
         sendCbor(connection, Wire::makeReply(req, buildState()));
         return;

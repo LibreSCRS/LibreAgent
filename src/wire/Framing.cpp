@@ -84,6 +84,18 @@ bool recvExact(int fd, std::uint8_t* dst, std::size_t n, std::vector<UniqueFd>& 
 } // namespace
 
 namespace {
+// EPIPE, not SIGPIPE: a peer that vanished between the caller's liveness
+// check and this send must surface as FrameError::Io (the transports map it
+// to a failed call — CallError::AgentUnavailable), never as a
+// process-killing signal. Linux spells that MSG_NOSIGNAL per send; on
+// platforms without MSG_NOSIGNAL (Darwin) the connecting side sets
+// SO_NOSIGPIPE on the socket instead (SocketTransport::connectAndHandshake).
+#ifdef MSG_NOSIGNAL
+inline constexpr int kSendNoSigPipe = MSG_NOSIGNAL;
+#else
+inline constexpr int kSendNoSigPipe = 0;
+#endif
+
 void putU32Le(std::vector<std::uint8_t>& out, std::uint32_t v)
 {
     out.push_back(static_cast<std::uint8_t>(v & 0xFF));
@@ -144,7 +156,7 @@ std::expected<void, FrameError> sendFrame(int fd, std::span<const std::uint8_t> 
     // fds are never re-transmitted, even on a partial first send.
     while (sent < framed.size()) {
         if (!ancillarySent) {
-            const ssize_t w = ::sendmsg(fd, &msg, 0);
+            const ssize_t w = ::sendmsg(fd, &msg, kSendNoSigPipe);
             if (w < 0) {
                 if (errno == EINTR) {
                     continue;
@@ -154,7 +166,9 @@ std::expected<void, FrameError> sendFrame(int fd, std::span<const std::uint8_t> 
             ancillarySent = true;
             sent += static_cast<std::size_t>(w);
         } else {
-            const ssize_t w = ::write(fd, framed.data() + sent, framed.size() - sent);
+            // ::send, not ::write: the remainder must carry the same
+            // no-SIGPIPE flag as the first sendmsg (see kSendNoSigPipe).
+            const ssize_t w = ::send(fd, framed.data() + sent, framed.size() - sent, kSendNoSigPipe);
             if (w < 0) {
                 if (errno == EINTR) {
                     continue;

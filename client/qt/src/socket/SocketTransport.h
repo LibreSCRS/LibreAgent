@@ -30,7 +30,9 @@
 //   - connect refused / peer EOF / ECONNRESET / send failure -> the
 //     connection is dropped and the in-flight call fails
 //     CallError::AgentUnavailable; the registry listener sees
-//     onServiceUnregistered (the availability push).
+//     onServiceUnregistered (the availability push) on a LATER event-loop
+//     turn, never from inside the failing call itself (a send can fail at
+//     sync depth 0, from directly inside a consumer's seam call).
 //   - a frame whose body decodes to neither a reply nor an event (malformed
 //     or non-canonical CBOR), or a framing-level violation (oversize,
 //     fd-count mismatch) -> FAIL CLOSED: the connection is dropped
@@ -159,8 +161,14 @@ private:
         LibreSCRS::Agent::Wire::ReplyVariant reply;
         std::vector<LibreSCRS::Agent::Wire::UniqueFd> fds;
     };
-    // A frame (or connection-loss notice) whose dispatch was displaced out of
-    // a synchronous wait onto the next event-loop turn.
+    // A frame (or connection-loss notice) whose dispatch was displaced onto
+    // the next event-loop turn. A ConnectionLost item carries the DEAD
+    // connection's generation stamp plus its in-flight async requests
+    // (snapshotted at drop time): answering those with failure outcomes is
+    // unconditional — no connection can ever answer them — while the
+    // availability push is generation-guarded, so a reconnect completed
+    // before the drain does not have its FRESH registry cleared by the stale
+    // notice.
     struct DeferredItem
     {
         enum class Kind : unsigned char { Event, Reply, ConnectionLost };
@@ -168,13 +176,19 @@ private:
         LibreSCRS::Agent::Wire::DecodedEvent event{};
         LibreSCRS::Agent::Wire::DecodedReply reply{};
         std::vector<LibreSCRS::Agent::Wire::UniqueFd> fds;
+        quint64 generation = 0; // ConnectionLost only
+        QHash<quint64, PendingProps> lostProps;
+        QHash<quint64, PendingDer> lostDer;
     };
 
     [[nodiscard]] bool connectAndHandshake();
     /// Tear down the connection. In-flight async requests are answered
     /// (failure outcomes) and the registry listener is told the agent is gone
-    /// — deferred onto the event loop when a synchronous wait is on the
-    /// stack, delivered inline otherwise.
+    /// — ALWAYS deferred onto the event loop (queued), never delivered inline
+    /// from the dropping call's stack: a drop can be discovered inside a
+    /// consumer's own seam call (a failing send at sync depth 0 included),
+    /// and an inline onServiceUnregistered would let the consumer tear down
+    /// the registry — freeing the very object the call is running on.
     void dropConnection();
     void onReadable();
     /// Classify one inbound frame and either consume it (the awaited sync
@@ -186,7 +200,7 @@ private:
     void dispatchEvent(LibreSCRS::Agent::Wire::DecodedEvent&& event,
                        std::vector<LibreSCRS::Agent::Wire::UniqueFd>& fds);
     void dispatchAsyncReply(LibreSCRS::Agent::Wire::DecodedReply&& reply);
-    void deliverConnectionLost();
+    void deliverConnectionLost(DeferredItem& item);
     /// Send one request and wait (deadline poll, no event loop) for its
     /// correlated reply.
     [[nodiscard]] SyncResult callSync(const LibreSCRS::Agent::Wire::RequestVariant& request, int timeoutMs,
@@ -212,6 +226,10 @@ private:
     QHash<quint64, PendingDer> m_pendingDer;     // keyed by wire request id
 
     std::deque<DeferredItem> m_deferred;
+    // Bumped on every completed handshake; deferred ConnectionLost notices
+    // are stamped with it so a stale notice cannot be announced against a
+    // connection established after the drop (see DeferredItem).
+    quint64 m_generation = 0;
     int m_syncDepth = 0; // > 0 while a synchronous wait owns the socket
     bool m_draining = false;
     bool m_drainQueued = false;
