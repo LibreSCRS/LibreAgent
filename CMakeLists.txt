@@ -30,6 +30,11 @@ if(LIBREAGENT_BUILD_CLIENT_QT AND NOT LIBREAGENT_BUILD_WIRE)
     message(FATAL_ERROR "LIBREAGENT_BUILD_CLIENT_QT requires LIBREAGENT_BUILD_WIRE (the Qt client library links the wire protocol library)")
 endif()
 
+# Strict warnings by default; treat as errors only in CI builds. Declared once,
+# unconditionally, so a LIBREAGENT_BUILD_WIRE-only (Core-less) configuration
+# still gets the option — every component target below opts into it.
+option(LIBRESCRS_AGENT_WERROR "Treat compiler warnings as errors" OFF)
+
 if(LIBREAGENT_BUILD_CORE)
     find_package(LibreMiddleware 4.2 REQUIRED CONFIG)
     find_package(OpenSSL 3.0 REQUIRED COMPONENTS Crypto)
@@ -101,8 +106,6 @@ if(LIBREAGENT_BUILD_CORE)
             LibreMiddleware::Trust
             OpenSSL::Crypto)
 
-    # Strict warnings by default; treat as errors only in CI builds.
-    option(LIBRESCRS_AGENT_WERROR "Treat compiler warnings as errors" OFF)
     target_compile_options(LibreAgentCore PRIVATE
         -Wall -Wextra -Wpedantic
         -Wshadow -Wnon-virtual-dtor -Wold-style-cast -Wcast-align
@@ -128,6 +131,70 @@ if(LIBREAGENT_BUILD_CORE)
         src/AgentCore.cpp
         PROPERTIES COMPILE_OPTIONS -Wno-array-bounds)
 endif() # LIBREAGENT_BUILD_CORE
+
+if(LIBREAGENT_BUILD_WIRE)
+    # Shared canonical-CBOR wire codec — the CborValue seam over the vendored
+    # QCBOR C library. No LibreMiddleware, no OpenSSL: every wire-capable
+    # consumer (the LibreDarwin agent daemon today, a future Qt client) shares
+    # this single codec instead of forking it. Framing/FrameReassembler/
+    # Messages (the rest of the socket-wire protocol) move in a later task;
+    # this component carries the canonical-CBOR layer only.
+    include(cmake/FetchQCBOR.cmake) # provides the qcbor::qcbor imported target
+
+    add_library(LibreAgentWire STATIC
+        src/wire/Cbor.cpp
+        # Fold qcbor's compiled objects straight into this archive so an
+        # installed libLibreAgentWire.a is self-contained: a consumer linking
+        # only this archive + this repo's headers gets qcbor's symbols too,
+        # with no separate libqcbor.a to also find and link.
+        $<TARGET_OBJECTS:qcbor>)
+    add_library(LibreAgent::Wire ALIAS LibreAgentWire)
+    target_include_directories(LibreAgentWire PUBLIC
+        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+        $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>)
+    target_compile_features(LibreAgentWire PUBLIC cxx_std_23)
+    set_target_properties(LibreAgentWire PROPERTIES POSITION_INDEPENDENT_CODE ON)
+    # $<BUILD_INTERFACE:...>, not a plain PRIVATE: qcbor's headers are consumed
+    # only by Cbor.cpp (no public header of this target includes <qcbor/...>),
+    # and its objects are already folded into the archive above via
+    # TARGET_OBJECTS. A plain PRIVATE link here would still get the include
+    # dirs to that one TU during THIS build, but CMake's export machinery
+    # exports even PRIVATE links of a STATIC library to consumers as an
+    # INTERFACE_LINK_LIBRARIES "$<LINK_ONLY:qcbor::qcbor>" usage requirement —
+    # which would both defeat the point of folding qcbor in (a consumer would
+    # be told to separately find + link qcbor::qcbor too) and break
+    # find_package(LibreAgent COMPONENTS Wire) outright in a fresh consumer
+    # tree where that target was never defined (LibreAgentWireTargets.cmake
+    # fails its "referenced imported targets must exist" check). Wrapping in
+    # BUILD_INTERFACE keeps the include dirs for this project's own build of
+    # Cbor.cpp while making the requirement evaluate to nothing at export
+    # time, so INSTALL_INTERFACE carries no qcbor reference at all.
+    target_link_libraries(LibreAgentWire PRIVATE $<BUILD_INTERFACE:qcbor::qcbor>)
+
+    target_compile_options(LibreAgentWire PRIVATE
+        -Wall -Wextra -Wpedantic
+        -Wshadow -Wnon-virtual-dtor -Wold-style-cast -Wcast-align
+        -Woverloaded-virtual -Wconversion -Wsign-conversion -Wnull-dereference
+        -Wdouble-promotion -Wformat=2)
+    if(LIBRESCRS_AGENT_WERROR)
+        target_compile_options(LibreAgentWire PRIVATE -Werror)
+    endif()
+
+    # AppleClang (Xcode 16/17, the macos-15 CI image) still gates the
+    # std::expected that Cbor.h/.cpp use behind -fexperimental-library. Unlike
+    # LibreAgentCore — a GCC-based build whose AppleClang consumers add this
+    # flag themselves, see LibreDarwin's FindOrUseLibreAgent.cmake:35-38 — Wire
+    # attaches it to itself PUBLIC, mirroring LibreDarwin's own
+    # LibreDarwinWireCore target (agent/CMakeLists.txt:28-29), so every Darwin
+    # consumer inherits it for free with no per-consumer workaround. Not
+    # buildable/testable on this (Linux) machine; the condition and flag are a
+    # direct mirror of the LibreDarwin target, left here for the Mac session to
+    # confirm.
+    if(CMAKE_CXX_COMPILER_ID STREQUAL "AppleClang")
+        target_compile_options(LibreAgentWire PUBLIC -fexperimental-library)
+        target_link_options(LibreAgentWire PUBLIC -fexperimental-library)
+    endif()
+endif() # LIBREAGENT_BUILD_WIRE
 
 # The installed CONFIG package is only built when this repo is the top-level
 # project. When it is pulled in as a subproject (FetchContent from a platform

@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: LGPL-2.1-or-later
 #
-# Two targets, two different jobs:
+# Three targets, three different jobs:
 #
 # 1. WireHeadersTest (below) pins the *runtime values* of
 #    LibreSCRS/Agent/wire/ErrorCode.h and LibreSCRS/Agent/OperationPhase.h via
@@ -27,3 +27,18 @@ add_executable(WireHeadersTest ErrorCodeHeaderTest.cpp)
 target_include_directories(WireHeadersTest PRIVATE ${CMAKE_SOURCE_DIR}/include)
 target_link_libraries(WireHeadersTest PRIVATE GTest::gtest GTest::gtest_main)
 add_test(NAME WireHeadersTest COMMAND WireHeadersTest)
+
+if(LIBREAGENT_BUILD_WIRE)
+    # 3. CborRoundTripTest is the actual behavioural test of the canonical-CBOR
+    #    codec this component ships: byte-stable round-trips + fail-closed
+    #    rejection of non-canonical/malformed input. Unlike the two targets
+    #    above it is NOT dependency-light by design — it links the real
+    #    LibreAgent::Wire target (Cbor.cpp + qcbor folded in), so it only
+    #    exists when that target does.
+    add_executable(CborRoundTripTest CborRoundTripTest.cpp)
+    target_link_libraries(CborRoundTripTest PRIVATE
+        LibreAgent::Wire
+        GTest::gtest
+        GTest::gtest_main)
+    add_test(NAME CborRoundTripTest COMMAND CborRoundTripTest)
+endif()

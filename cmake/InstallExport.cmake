@@ -32,16 +32,48 @@ if(LIBREAGENT_BUILD_CORE)
         NAMESPACE LibreAgent::
         DESTINATION ${_cfgdir})
 
+    # Core installs the WHOLE include/LibreSCRS tree, so a Core+Wire build's
+    # single install(DIRECTORY) call already covers Wire's headers too
+    # (include/LibreSCRS/Agent/wire/) — the block below only has to cover the
+    # CORE=OFF, WIRE=ON case where this install() never runs.
     install(DIRECTORY include/LibreSCRS DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
         FILES_MATCHING PATTERN "*.h")
 endif()
 
-# Wire (socket-wire protocol library) and ClientQt (Qt client library) land in
-# later tasks; their own
-#   install(TARGETS ... EXPORT LibreAgentWireTargets / LibreAgentClientQtTargets)
-#   install(EXPORT LibreAgentWireTargets / LibreAgentClientQtTargets ...)
-# blocks join here, each gated the same way behind its LIBREAGENT_BUILD_WIRE /
-# LIBREAGENT_BUILD_CLIENT_QT option, once those targets exist.
+if(LIBREAGENT_BUILD_WIRE)
+    # In-tree target LibreAgentWire -> imported LibreAgent::Wire.
+    set_target_properties(LibreAgentWire PROPERTIES EXPORT_NAME Wire)
+
+    install(TARGETS LibreAgentWire EXPORT LibreAgentWireTargets
+        ARCHIVE  DESTINATION ${CMAKE_INSTALL_LIBDIR}
+        INCLUDES DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
+
+    install(EXPORT LibreAgentWireTargets
+        FILE LibreAgentWireTargets.cmake
+        NAMESPACE LibreAgent::
+        DESTINATION ${_cfgdir})
+
+    if(NOT LIBREAGENT_BUILD_CORE)
+        # Core's install(DIRECTORY include/LibreSCRS ...) above already ships
+        # Wire's headers when Core is enabled. When Core is OFF, that call
+        # never runs, so a CORE=OFF, WIRE=ON install would otherwise ship the
+        # LibreAgentWire archive with NO public headers at all — install
+        # Wire's own subtree (include/LibreSCRS/Agent/wire/) plus
+        # OperationPhase.h (the other wire-stable enum header this component's
+        # headers/tests sit alongside) specifically.
+        install(FILES include/LibreSCRS/Agent/OperationPhase.h
+            DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/LibreSCRS/Agent)
+        install(DIRECTORY include/LibreSCRS/Agent/wire
+            DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/LibreSCRS/Agent
+            FILES_MATCHING PATTERN "*.h")
+    endif()
+endif()
+
+# ClientQt (Qt client library) lands in a later task; its own
+#   install(TARGETS ... EXPORT LibreAgentClientQtTargets)
+#   install(EXPORT LibreAgentClientQtTargets ...)
+# blocks join here, gated behind LIBREAGENT_BUILD_CLIENT_QT, once that target
+# exists.
 
 configure_package_config_file(
     ${CMAKE_CURRENT_SOURCE_DIR}/cmake/LibreAgentConfig.cmake.in
