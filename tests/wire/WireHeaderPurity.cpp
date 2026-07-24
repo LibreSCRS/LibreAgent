@@ -11,16 +11,24 @@
 //
 // PreReadAuth.h/CredentialWire.h are the std-only mirrors of LibreMiddleware's
 // PreReadAuthMethod and this repo's own CredentialOutcome/CredentialRecord/
-// CredentialOpResult — Messages.h's future re-base target. The VALUE parity
-// against those authoritative types is proved separately in the core-gated
+// CredentialOpResult — Messages.h's re-base target. The VALUE parity against
+// those authoritative types is proved separately in the core-gated
 // src/wire/WireParityChecks.cpp (which, unlike this TU, is allowed to see
 // LM); the static_asserts below just self-pin this mirror's own declared
 // values so a value edited here without touching WireParityChecks.cpp still
 // shows up as a diff in this file's expectations.
+//
+// ClientCodec.h transitively includes Messages.h (and, through it, Cbor.h):
+// with an include path of ONLY this repo's include/ dir and no linked
+// libraries, a passing compile of THIS TU is the isolation proof for the
+// whole request/reply/event model, both server-role (Messages.h) and
+// client-role (ClientCodec.h) — an LM/Qt/OpenSSL include added to any header
+// in that chain fails this target with a file-not-found error.
 #include <LibreSCRS/Agent/wire/ErrorCode.h>
 #include <LibreSCRS/Agent/OperationPhase.h>
 #include <LibreSCRS/Agent/wire/CredentialWire.h>
 #include <LibreSCRS/Agent/wire/PreReadAuth.h>
+#include <LibreSCRS/Agent/wire/ClientCodec.h>
 
 using LibreSCRS::Agent::ErrorCode;
 using LibreSCRS::Agent::Operations::OperationStatus;

@@ -68,6 +68,19 @@ if(LIBREAGENT_BUILD_WIRE)
         LibreAgent::Wire
         GTest::gtest)
     add_test(NAME MessagesRoundTripTest COMMAND MessagesRoundTripTest)
+
+    # ClientCodecTest: the client-role inverse of MessagesRoundTripTest --
+    # parseReply/parseEvent (decode what the agent sends) and encodeRequest
+    # (build what the client sends), over ClientCodec.h/.cpp. Same
+    # dependency-light rationale as the test above (LibreAgent::Wire only,
+    # no Core), so it stays reachable in a Core-less (CORE=OFF, WIRE=ON)
+    # configuration too.
+    add_executable(ClientCodecTest ClientCodecTest.cpp)
+    target_link_libraries(ClientCodecTest PRIVATE
+        LibreAgent::Wire
+        GTest::gtest
+        GTest::gtest_main)
+    add_test(NAME ClientCodecTest COMMAND ClientCodecTest)
 endif()
 
 if(LIBREAGENT_BUILD_CORE AND LIBREAGENT_BUILD_WIRE)

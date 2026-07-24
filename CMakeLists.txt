@@ -164,6 +164,7 @@ if(LIBREAGENT_BUILD_WIRE)
         src/wire/Framing.cpp
         src/wire/FrameReassembler.cpp
         src/wire/Messages.cpp
+        src/wire/ClientCodec.cpp
         # Fold qcbor's compiled objects straight into this archive so an
         # installed libLibreAgentWire.a is self-contained: a consumer linking
         # only this archive + this repo's headers gets qcbor's symbols too,

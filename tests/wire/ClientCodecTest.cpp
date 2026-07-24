@@ -1,0 +1,542 @@
+// SPDX-License-Identifier: LGPL-2.1-or-later
+// SPDX-FileCopyrightText: 2026 hirashix0
+//
+// Client-role codec tests: the inverse of MessagesRoundTripTest.cpp.
+//   (a) every reply/event shape: server-role encoder -> parseReply/parseEvent
+//       -> decode-then-reencode is byte-identical to the original (the same
+//       "byte-stable" idiom MessagesRoundTripTest uses for requests; several
+//       reply/event structs have no operator== of their own, so this is the
+//       equality check available without touching Messages.h).
+//   (b) every request type: encodeRequest -> the existing server-role
+//       parseRequest -> equal request (Request's alternatives already have
+//       operator==).
+//   (c) an unknown extra map key inside a known shape is ignored.
+//   (d) an unknown reply arm / event `t` decodes to UnknownReply/UnknownEvent,
+//       never nullopt, never a throw.
+//   (e) the one genuinely structurally-ambiguous reply pair (public-key's
+//       RSA/EC, sharing "kty") + the err-info code/name XOR rule.
+//   (f) fd-index bounds mapping, including out-of-range -> nullopt.
+#include <LibreSCRS/Agent/wire/ClientCodec.h>
+
+#include <gtest/gtest.h>
+
+using namespace LibreSCRS::Agent::Wire;
+
+namespace {
+
+std::span<const int> noFds()
+{
+    return {};
+}
+
+// ---- (a) reply round-trip: makeReply/makeErrorReply/makeSignRecoveryReply
+// -> parseReply -> re-encode the decoded value with the SAME maker -> bytes
+// match the original. Proves parseReply captured every field faithfully.
+template <class T, class Maker>
+void expectReplyRoundTrip(std::uint64_t reqId, const T& arm, Maker makeIt, std::span<const int> fds = {})
+{
+    const auto originalBytes = makeIt(reqId, arm).encode();
+    const auto decoded = parseReply(originalBytes, fds);
+    ASSERT_TRUE(decoded.has_value());
+    EXPECT_EQ(decoded->requestId, reqId);
+    ASSERT_TRUE(std::holds_alternative<T>(decoded->reply));
+    const auto& got = std::get<T>(decoded->reply);
+    const auto reencodedBytes = makeIt(reqId, got).encode();
+    EXPECT_EQ(reencodedBytes, originalBytes);
+}
+
+// ---- (a) event round-trip: toCbor(event) -> parseEvent -> re-encode ->
+// bytes match.
+template <class T>
+void expectEventRoundTrip(const T& ev, std::span<const int> fds = {})
+{
+    const auto originalBytes = toCbor(ev).encode();
+    const auto decoded = parseEvent(originalBytes, fds);
+    ASSERT_TRUE(decoded.has_value());
+    ASSERT_TRUE(std::holds_alternative<T>(decoded->event));
+    const auto& got = std::get<T>(decoded->event);
+    const auto reencodedBytes = toCbor(got).encode();
+    EXPECT_EQ(reencodedBytes, originalBytes);
+}
+
+// ---- (b) request round-trip: encodeRequest -> the existing server-role
+// parseRequest -> equal request (Request's alternatives have operator==).
+template <class T>
+void expectRequestRoundTrip(std::uint64_t reqId, const T& body)
+{
+    const auto bytes = encodeRequest(RequestVariant{body}, reqId);
+    const auto parsed = parseRequest(bytes);
+    ASSERT_TRUE(parsed.has_value());
+    EXPECT_EQ(parsed->req, reqId);
+    ASSERT_TRUE(std::holds_alternative<T>(parsed->body));
+    EXPECT_EQ(std::get<T>(parsed->body), body);
+}
+
+CertInfo makeSampleCertInfo()
+{
+    CertInfo ci;
+    ci.certId = "deadbeef";
+    ci.signingCapable = true;
+    ci.fields["Subject"]["CN"] = CertField{"cn.subject.key", "Common Name", "John Doe"};
+    ci.keyUsageBits = 1;
+    ci.ekus = {"clientAuth"};
+    ci.chainSubjectCns = {"Root CA"};
+    ci.trustStatus = 0;
+    return ci;
+}
+
+CredentialRecord makeFullCredentialRecord()
+{
+    CredentialRecord rec;
+    rec.id = "sign:0x92";
+    rec.label = "Signing PIN";
+    rec.kind = "sign";
+    rec.state = "operational";
+    rec.retriesLeft = 3;
+    rec.retriesMax = 3;
+    rec.usesLeft = 5;
+    rec.usesMax = 20;
+    rec.unblocksLeft = 10;
+    rec.minLength = 4;
+    rec.maxLength = 8;
+    rec.canChange = true;
+    rec.unblockable = true;
+    rec.unblockStyle = "unblockAndChange";
+    rec.activatable = true;
+    rec.keyActivationPending = true;
+    rec.keyActivatable = true;
+    rec.recovery = "holderViaPuk";
+    rec.probeSafe = true;
+    rec.blockedGuidanceKey = "guidance.blocked.key";
+    rec.blockedGuidanceFallback = "Blocked; contact issuer";
+    rec.keyActivationGuidanceKey = "guidance.activate.key";
+    rec.keyActivationGuidanceFallback = "Activate your signing key";
+    return rec;
+}
+
+CredentialRecord makeBareCredentialRecord()
+{
+    CredentialRecord rec;
+    rec.id = "unknown:0x00";
+    rec.label = "";
+    rec.kind = "unknown";
+    rec.state = "unknown";
+    rec.unblockStyle = "unknown";
+    rec.recovery = "unknown";
+    return rec;
+}
+
+// ============================================================================
+// (b) requests: encodeRequest -> parseRequest, every request type.
+// ============================================================================
+
+TEST(ClientCodec, EncodeRequestEveryTypeRoundTripsThroughServerParse)
+{
+    expectRequestRoundTrip(1, Hello{1, std::nullopt});
+    expectRequestRoundTrip(2, Hello{1, std::string("LibreMac/0.1")});
+    expectRequestRoundTrip(3, GetState{});
+    expectRequestRoundTrip(4, ReadIdentity{"reader/0:card/0"});
+    expectRequestRoundTrip(5, GetPhoto{"reader/0:card/0"});
+    expectRequestRoundTrip(6, ReadCertificates{"reader/0:card/0"});
+    expectRequestRoundTrip(7, Sign{"card/0", "abc123", 0,
+                                   SignOpts{"pades", "b-lt", "enveloped", true, std::string("Doc"), std::string("why"),
+                                            std::string("Belgrade")}});
+    expectRequestRoundTrip(
+        8, Sign{"card/0", "abc123", 2,
+                SignOpts{"auto", "b-b", "auto", std::nullopt, std::nullopt, std::nullopt, std::nullopt}});
+    expectRequestRoundTrip(9, GetCertDer{"reader/0", "certid"});
+    expectRequestRoundTrip(10, GetConfig{});
+    expectRequestRoundTrip(11, SetConfig{"DefaultLevel", CborValue(std::string("b-t"))});
+    expectRequestRoundTrip(12, ResetConfig{"TsaUrls"});
+    expectRequestRoundTrip(13, CancelOp{42});
+    expectRequestRoundTrip(14, GetSignResult{42});
+    expectRequestRoundTrip(15, PkLogin{"reader/0"});
+    expectRequestRoundTrip(16, PkLogout{"reader/0"});
+    expectRequestRoundTrip(17, PkPublicKey{"reader/0", "certid"});
+    expectRequestRoundTrip(18, PkSignRaw{"reader/0", "certid", {0xDE, 0xAD}});
+    expectRequestRoundTrip(19, PkDecrypt{"reader/0", "certid", {0xBE, 0xEF}});
+    expectRequestRoundTrip(20, ListCredentials{"reader/0:card/0"});
+    expectRequestRoundTrip(21, ManagePin{"reader/0:card/0", "sign:0x92", "change", std::nullopt});
+    expectRequestRoundTrip(22, ManagePin{"reader/0:card/0", "user:0x01", "activate_pin", std::optional<bool>{true}});
+    expectRequestRoundTrip(23, ManagePin{"reader/0:card/0", "user:0x01", "unblock", std::optional<bool>{false}});
+    expectRequestRoundTrip(24, ActivateSigningKey{"reader/0:card/0"});
+}
+
+TEST(ClientCodec, EncodeRequestDefaultsRequestIdToZero)
+{
+    // The brief's exact one-arg call form: encodeRequest(variant). CDDL:47
+    // mandates `req: uint` on every request frame, so this still has to
+    // produce a valid, parseable frame -- with req defaulted to 0.
+    const auto bytes = encodeRequest(RequestVariant{GetState{}});
+    const auto parsed = parseRequest(bytes);
+    ASSERT_TRUE(parsed.has_value());
+    EXPECT_EQ(parsed->req, 0u);
+    EXPECT_TRUE(std::holds_alternative<GetState>(parsed->body));
+}
+
+// ============================================================================
+// (a) replies: server-role encoder -> parseReply -> byte-stable re-encode.
+// ============================================================================
+
+TEST(ClientCodec, HelloAckRoundTrips)
+{
+    expectReplyRoundTrip(1, HelloAck{"0.1.0", {"pki", "sign"}},
+                         [](std::uint64_t r, const HelloAck& a) { return makeReply(r, a); });
+}
+
+TEST(ClientCodec, OpStartedRoundTrips)
+{
+    expectReplyRoundTrip(2, OpStarted{42}, [](std::uint64_t r, const OpStarted& a) { return makeReply(r, a); });
+}
+
+TEST(ClientCodec, StateReplyRoundTrips)
+{
+    StateReply state;
+    state.readers.push_back(ReaderState{"r1", "Reader One", true, std::string("c1")});
+    state.readers.push_back(ReaderState{"r2", "Reader Two", false, std::nullopt}); // exercises optText absent
+    state.cards.push_back(CardState{"c1", "r1", 0x3, PreReadAuth::PaceCan});
+    expectReplyRoundTrip(3, state, [](std::uint64_t r, const StateReply& a) { return makeReply(r, a); });
+}
+
+TEST(ClientCodec, CertListReplyRoundTrips)
+{
+    CertListReply certList;
+    certList.certs.push_back(makeSampleCertInfo());
+    expectReplyRoundTrip(4, certList, [](std::uint64_t r, const CertListReply& a) { return makeReply(r, a); });
+}
+
+TEST(ClientCodec, CertDerReplyRoundTrips)
+{
+    expectReplyRoundTrip(5, CertDerReply{{0xDE, 0xAD, 0xBE, 0xEF}},
+                         [](std::uint64_t r, const CertDerReply& a) { return makeReply(r, a); });
+}
+
+// (e) structural discrimination: public-key's RSA and EC arms share the
+// "kty" key and are discriminated by its VALUE, not by key presence -- the
+// one genuinely ambiguous-looking reply pair on this wire (CDDL:135-136).
+TEST(ClientCodec, PublicKeyReplyDiscriminatesRsaFromEcByKtyValue)
+{
+    const PublicKeyReply rsa = RsaPublicKey{{0x01, 0x02}, {0x03}};
+    expectReplyRoundTrip(6, rsa, [](std::uint64_t r, const PublicKeyReply& a) { return makeReply(r, a); });
+
+    const PublicKeyReply ec = EcPublicKey{"P-256", {0x04}, {0x05}};
+    expectReplyRoundTrip(7, ec, [](std::uint64_t r, const PublicKeyReply& a) { return makeReply(r, a); });
+}
+
+TEST(ClientCodec, ConfigReplyRoundTrips)
+{
+    ConfigReply config;
+    config.entries.emplace("DefaultLevel", CborValue(std::string("b-t")));
+    expectReplyRoundTrip(8, config, [](std::uint64_t r, const ConfigReply& a) { return makeReply(r, a); });
+}
+
+TEST(ClientCodec, AckReplyRoundTrips)
+{
+    expectReplyRoundTrip(9, AckReply{}, [](std::uint64_t r, const AckReply& a) { return makeReply(r, a); });
+}
+
+TEST(ClientCodec, RawSignatureReplyRoundTrips)
+{
+    expectReplyRoundTrip(10, RawSignatureReply{{0xAA, 0xBB}},
+                         [](std::uint64_t r, const RawSignatureReply& a) { return makeReply(r, a); });
+}
+
+// (f) fd-index: sign-recovery's artifact is a valid index into `fds`.
+TEST(ClientCodec, SignRecoveryReplyRoundTripsWithValidFdIndex)
+{
+    const int fdVec[] = {7};
+    expectReplyRoundTrip(
+        11, SignResult{0, SignMeta{"pades", "b-lta", true, true}},
+        [](std::uint64_t r, const SignResult& a) { return makeSignRecoveryReply(r, a); }, fdVec);
+}
+
+// (f) fd-index: an out-of-range artifact index is malformed -> nullopt.
+TEST(ClientCodec, SignRecoveryReplyRejectsOutOfRangeFdIndex)
+{
+    const auto bytes = makeSignRecoveryReply(12, SignResult{5, SignMeta{"pades", "b-lta", true, true}}).encode();
+    const int fdVec[] = {7}; // only index 0 is valid; artifact=5 is out of range
+    EXPECT_FALSE(parseReply(bytes, fdVec).has_value());
+    EXPECT_FALSE(parseReply(bytes, noFds()).has_value());
+}
+
+TEST(ClientCodec, NumericErrorReplyRoundTrips)
+{
+    expectReplyRoundTrip(13, ErrInfo{ErrorCode::CardRemoved, std::string("cardRemoved"), std::string("Card removed")},
+                         [](std::uint64_t r, const ErrInfo& a) { return makeErrorReply(r, a); });
+}
+
+TEST(ClientCodec, NamedErrorReplyRoundTrips)
+{
+    expectReplyRoundTrip(14, ErrInfo{SyncError::UnknownCard, std::nullopt, std::nullopt},
+                         [](std::uint64_t r, const ErrInfo& a) { return makeErrorReply(r, a); });
+    expectReplyRoundTrip(15, ErrInfo{SyncError::UnknownCredential, std::nullopt, std::nullopt},
+                         [](std::uint64_t r, const ErrInfo& a) { return makeErrorReply(r, a); });
+}
+
+// (e) err-info code/name XOR (CDDL:105-113): both present, or neither, is
+// malformed -- never a silent pick of one side.
+TEST(ClientCodec, ErrInfoRejectsBothCodeAndNamePresent)
+{
+    CborValue::Map err;
+    err.emplace("code", CborValue::uint(static_cast<std::uint64_t>(ErrorCode::CardRemoved)));
+    err.emplace("name", CborValue(std::string("UnknownCard")));
+    CborValue::Map reply;
+    reply.emplace("t", CborValue(std::string("Reply")));
+    reply.emplace("req", CborValue::uint(16));
+    reply.emplace("err", CborValue(std::move(err)));
+    const auto bytes = CborValue(std::move(reply)).encode();
+    EXPECT_FALSE(parseReply(bytes, noFds()).has_value());
+}
+
+TEST(ClientCodec, ErrInfoRejectsNeitherCodeNorNamePresent)
+{
+    CborValue::Map err;
+    err.emplace("msgKey", CborValue(std::string("x"))); // no code, no name
+    CborValue::Map reply;
+    reply.emplace("t", CborValue(std::string("Reply")));
+    reply.emplace("req", CborValue::uint(17));
+    reply.emplace("err", CborValue(std::move(err)));
+    const auto bytes = CborValue(std::move(reply)).encode();
+    EXPECT_FALSE(parseReply(bytes, noFds()).has_value());
+}
+
+// (c) an unrecognised EXTRA map key inside a known reply arm is ignored.
+TEST(ClientCodec, IgnoresUnknownReplyMapKeys)
+{
+    CborValue::Map arm;
+    arm.emplace("t", CborValue(std::string("Reply")));
+    arm.emplace("req", CborValue::uint(18));
+    arm.emplace("ok", CborValue(true));
+    arm.emplace("futureField", CborValue(std::string("ignored"))); // unknown extra key
+    const auto bytes = CborValue(std::move(arm)).encode();
+    const auto decoded = parseReply(bytes, noFds());
+    ASSERT_TRUE(decoded.has_value());
+    EXPECT_EQ(decoded->requestId, 18u);
+    EXPECT_TRUE(std::holds_alternative<AckReply>(decoded->reply));
+}
+
+// (d) a reply shape this client build does not recognise decodes to
+// UnknownReply -- never nullopt, never a throw.
+TEST(ClientCodec, UnrecognisedReplyShapeDecodesToUnknownReply)
+{
+    CborValue::Map arm;
+    arm.emplace("t", CborValue(std::string("Reply")));
+    arm.emplace("req", CborValue::uint(19));
+    arm.emplace("futureShape", CborValue(std::string("something-new")));
+    const auto bytes = CborValue(std::move(arm)).encode();
+    std::optional<DecodedReply> decoded;
+    EXPECT_NO_THROW(decoded = parseReply(bytes, noFds()));
+    ASSERT_TRUE(decoded.has_value());
+    EXPECT_EQ(decoded->requestId, 19u);
+    EXPECT_TRUE(std::holds_alternative<UnknownReply>(decoded->reply));
+}
+
+// A frame that is not a reply at all (wrong/missing top-level `t`) is
+// malformed for parseReply's contract, not an unknown arm.
+TEST(ClientCodec, ParseReplyRejectsNonReplyTopLevelTag)
+{
+    CborValue::Map m;
+    m.emplace("t", CborValue(std::string("ReaderAdded")));
+    m.emplace("req", CborValue::uint(1));
+    const auto bytes = CborValue(std::move(m)).encode();
+    EXPECT_FALSE(parseReply(bytes, noFds()).has_value());
+}
+
+TEST(ClientCodec, ParseReplyRejectsMalformedBytes)
+{
+    const std::vector<std::uint8_t> garbage{0xff, 0x00, 0x9f};
+    EXPECT_FALSE(parseReply(garbage, noFds()).has_value());
+    EXPECT_FALSE(parseEvent(garbage, noFds()).has_value());
+}
+
+// ============================================================================
+// (a) events: toCbor(event) -> parseEvent -> byte-stable re-encode.
+// ============================================================================
+
+TEST(ClientCodec, ReaderAddedRoundTrips)
+{
+    expectEventRoundTrip(ReaderAdded{ReaderState{"r1", "Reader One", false, std::nullopt}});
+}
+
+TEST(ClientCodec, ReaderRemovedRoundTrips)
+{
+    expectEventRoundTrip(ReaderRemoved{"r1"});
+}
+
+TEST(ClientCodec, CardAddedRoundTrips)
+{
+    expectEventRoundTrip(CardAdded{CardState{"c1", "r1", 0x3, PreReadAuth::PaceCan}});
+}
+
+TEST(ClientCodec, CardRemovedRoundTrips)
+{
+    expectEventRoundTrip(CardRemoved{"c1"});
+}
+
+TEST(ClientCodec, PropertyChangedRoundTrips)
+{
+    std::map<std::string, CborValue> props;
+    props.emplace("hasCard", CborValue(true));
+    expectEventRoundTrip(PropertyChanged{"r1", "org.librescrs.Reader1", props});
+}
+
+TEST(ClientCodec, ConfigChangedRoundTrips)
+{
+    expectEventRoundTrip(ConfigChanged{"DefaultLevel"});
+}
+
+TEST(ClientCodec, OpProgressRoundTripsWithAllOptionalsPresentAndAbsent)
+{
+    // Fractional progress lands as f16 on the wire (QCBOR preferred
+    // serialization) -- exercises float decode, not just uint.
+    expectEventRoundTrip(
+        OpProgress{9, OperationPhase::Signing, 0.5, std::optional<bool>{false}, std::optional<std::uint64_t>{30}});
+    expectEventRoundTrip(OpProgress{9, OperationPhase::Created, std::nullopt, std::nullopt, std::nullopt});
+}
+
+TEST(ClientCodec, OpFinishedRoundTrips)
+{
+    expectEventRoundTrip(OpFinished{24, OperationStatus::Error, ErrorCode::CardRemoved, "op.failed", "Card removed"});
+    expectEventRoundTrip(OpFinished{25, OperationStatus::Ok, ErrorCode::None, "", ""});
+}
+
+TEST(ClientCodec, AgentQuiescedRoundTrips)
+{
+    expectEventRoundTrip(AgentQuiesced{QuiesceReason::ScreenLocked});
+}
+
+TEST(ClientCodec, OpResultReadyIdentityRoundTrips)
+{
+    IdentityResult idResult;
+    idResult.fields["MRZ"]["Name"] = IdentityField{"name.key", "Name", "text", std::string("JOHN DOE")};
+    idResult.fields["MRZ"]["Raw"] = IdentityField{"raw.key", "Raw", "binary", CborValue::Bytes{0x01, 0x02}};
+    expectEventRoundTrip(OpResultReady{20, idResult});
+}
+
+// (f) fd-index: Photo items reference fds by index; a valid index round-trips.
+TEST(ClientCodec, OpResultReadyPhotoRoundTripsWithValidFdIndex)
+{
+    PhotoResult photoResult;
+    photoResult.photos.push_back(PhotoItem{"MRZ:Photo", 0});
+    const int fdVec[] = {11};
+    expectEventRoundTrip(OpResultReady{21, photoResult}, fdVec);
+}
+
+// (f) fd-index: an out-of-range Photo fd index is malformed -> nullopt.
+TEST(ClientCodec, OpResultReadyPhotoRejectsOutOfRangeFdIndex)
+{
+    PhotoResult photoResult;
+    photoResult.photos.push_back(PhotoItem{"MRZ:Photo", 3});
+    const auto bytes = toCbor(OpResultReady{21, photoResult}).encode();
+    const int fdVec[] = {11}; // only index 0 valid; fd=3 is out of range
+    EXPECT_FALSE(parseEvent(bytes, fdVec).has_value());
+}
+
+TEST(ClientCodec, OpResultReadyCertificatesRoundTrips)
+{
+    CertListResult certListResult;
+    certListResult.certs.push_back(makeSampleCertInfo());
+    expectEventRoundTrip(OpResultReady{22, certListResult});
+}
+
+// (f) fd-index: Sign's artifact is fd-referenced too, same as sign-recovery.
+TEST(ClientCodec, OpResultReadySignRoundTripsWithValidFdIndexAndRejectsInvalid)
+{
+    const int fdVec[] = {5};
+    expectEventRoundTrip(OpResultReady{23, SignResult{0, SignMeta{"pades", "b-lta", true, true}}}, fdVec);
+
+    const auto bytes = toCbor(OpResultReady{23, SignResult{9, SignMeta{"pades", "b-lta", true, true}}}).encode();
+    EXPECT_FALSE(parseEvent(bytes, fdVec).has_value());
+}
+
+TEST(ClientCodec, OpResultReadyCredentialsListRoundTrips)
+{
+    CredentialsResult listing;
+    listing.result.outcome = CredentialOutcome::Ok;
+    listing.result.blocked = false;
+    listing.records = {makeFullCredentialRecord(), makeBareCredentialRecord()};
+    expectEventRoundTrip(OpResultReady{25, listing});
+}
+
+TEST(ClientCodec, OpResultReadyCredentialsFailedMutationRoundTrips)
+{
+    CredentialsResult failed;
+    failed.result.outcome = CredentialOutcome::InvalidPin;
+    failed.result.retriesLeft = 2;
+    failed.result.blocked = false;
+    expectEventRoundTrip(OpResultReady{26, failed});
+}
+
+TEST(ClientCodec, OpResultReadyCredentialsKeyActivationFailedRoundTrips)
+{
+    CredentialsResult keyFail;
+    keyFail.result.outcome = CredentialOutcome::KeyActivationFailed;
+    keyFail.result.blocked = false;
+    keyFail.result.pinActivated = true;
+    keyFail.result.keyActivated = false;
+    expectEventRoundTrip(OpResultReady{27, keyFail});
+}
+
+// An OpResultReady whose nested op-result `kind` is not one of the five
+// closed alternatives is malformed (nested-unknown, not a top-level unknown
+// shape) -- the append-tolerant escape hatch covers unrecognised top-level
+// `t` tags, not a novel discriminator inside an otherwise-known event.
+TEST(ClientCodec, OpResultReadyRejectsUnrecognisedResultKind)
+{
+    CborValue::Map result;
+    result.emplace("kind", CborValue(std::string("SomethingNew")));
+    CborValue::Map ev;
+    ev.emplace("t", CborValue(std::string("OpResultReady")));
+    ev.emplace("op", CborValue::uint(28));
+    ev.emplace("result", CborValue(std::move(result)));
+    const auto bytes = CborValue(std::move(ev)).encode();
+    EXPECT_FALSE(parseEvent(bytes, noFds()).has_value());
+}
+
+// (c) an unrecognised EXTRA map key inside a known event is ignored.
+TEST(ClientCodec, IgnoresUnknownEventMapKeys)
+{
+    CborValue::Map ev;
+    ev.emplace("t", CborValue(std::string("CardRemoved")));
+    ev.emplace("handle", CborValue(std::string("c1")));
+    ev.emplace("futureField", CborValue(std::string("ignored")));
+    const auto bytes = CborValue(std::move(ev)).encode();
+    const auto decoded = parseEvent(bytes, noFds());
+    ASSERT_TRUE(decoded.has_value());
+    ASSERT_TRUE(std::holds_alternative<CardRemoved>(decoded->event));
+    EXPECT_EQ(std::get<CardRemoved>(decoded->event).handle, "c1");
+}
+
+// (d) an event `t` this client build does not recognise decodes to
+// UnknownEvent -- never nullopt, never a throw.
+TEST(ClientCodec, UnrecognisedEventTagDecodesToUnknownEvent)
+{
+    CborValue::Map ev;
+    ev.emplace("t", CborValue(std::string("SomeFutureEvent")));
+    ev.emplace("payload", CborValue(std::string("opaque")));
+    const auto bytes = CborValue(std::move(ev)).encode();
+    std::optional<DecodedEvent> decoded;
+    EXPECT_NO_THROW(decoded = parseEvent(bytes, noFds()));
+    ASSERT_TRUE(decoded.has_value());
+    EXPECT_TRUE(std::holds_alternative<UnknownEvent>(decoded->event));
+}
+
+TEST(ClientCodec, ParseEventRejectsMissingTag)
+{
+    CborValue::Map ev;
+    ev.emplace("handle", CborValue(std::string("c1")));
+    const auto bytes = CborValue(std::move(ev)).encode();
+    EXPECT_FALSE(parseEvent(bytes, noFds()).has_value());
+}
+
+TEST(ClientCodec, ParseReplyRejectsNonMapTopLevel)
+{
+    EXPECT_FALSE(parseReply(CborValue::uint(7).encode(), noFds()).has_value());
+}
+
+TEST(ClientCodec, ParseEventRejectsNonMapTopLevel)
+{
+    EXPECT_FALSE(parseEvent(CborValue::uint(7).encode(), noFds()).has_value());
+}
+
+} // namespace
