@@ -386,8 +386,10 @@ TEST(DBusIntegration, CancelStopsAnInFlightOperation)
 // integration suite's job: prove the actual contract a caller relies on — an
 // op the agent never completes stays un-finished indefinitely (no silent
 // auto-fail), and `cancel()` is the escape valve a caller's own watchdog would
-// invoke. The literal 35 s stall-cap firing is exercised in the
-// transport-parity suite; here we assert the no-internal-watchdog contract.
+// invoke. The socket suite's OpStallHasNoInternalWatchdogCancelIsTheEscapeValve
+// pins the identical contract over that transport; TransportParityTest.cpp
+// deliberately excludes the literal 35 s wait (see its file header) since both
+// suites already independently pin the SAME transport-neutral behavior.
 TEST(DBusIntegration, OpStallHasNoInternalWatchdogCancelIsTheEscapeValve)
 {
     FakeAgent::Config cfg;

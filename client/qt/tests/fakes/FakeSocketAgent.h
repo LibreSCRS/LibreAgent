@@ -97,6 +97,10 @@ public:
         bool nonCanonicalAfterStateReply = false;
         QByteArray photoBytes; ///< bytes the GetPhoto result memfd carries ("personal:photo")
         QByteArray signArtifactBytes = QByteArrayLiteral("FAKE-SOCKET-ARTIFACT");
+        /// Override the fixed Sign meta script (default nullopt preserves the
+        /// historical {"pades","b-lta",true,true}). Scriptable so a
+        /// cross-transport test can request IDENTICAL values from both fakes.
+        std::optional<LibreSCRS::Agent::Wire::SignMeta> signMetaOverride;
         QByteArray certDerBytes;         ///< GetCertDer success bytes
         bool certDerKeyNotFound = false; ///< GetCertDer answers err KeyNotFound instead
         QList<FakeSocketCert> certScript;

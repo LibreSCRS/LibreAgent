@@ -137,10 +137,7 @@ public Q_SLOTS:
             meta = QVariantMap{};
             return QDBusUnixFileDescriptor();
         }
-        meta.insert(QStringLiteral("format"), QStringLiteral("pades"));
-        meta.insert(QStringLiteral("level"), QStringLiteral("b-b"));
-        meta.insert(QStringLiteral("tsaUsed"), false);
-        meta.insert(QStringLiteral("chainComplete"), false);
+        meta = m_op->effectiveSignMeta();
         return QDBusUnixFileDescriptor(m_op->m_keptArtifactFd);
     }
 
@@ -294,13 +291,15 @@ FakeOperation::FakeOperation(QObject* parent, QDBusConnection connection, QStrin
                              uint finalStatus, uint finalErrorCode, bool suppressResult, FakeCertList certScript,
                              bool rawCertResult, QByteArray photoBytes, bool photoEmptyMap, bool announceConsentPhase,
                              bool lostSignalRecoverable, QVariantMap credResult,
-                             LibreSCRS::AgentClient::CredentialRecordsWire credRecords)
+                             LibreSCRS::AgentClient::CredentialRecordsWire credRecords, QByteArray signArtifactBytes,
+                             QVariantMap signMeta)
     : QObject(parent), m_connection(connection), m_path(std::move(path)), m_kind(kind), m_delayMs(delayMs),
       m_finalStatus(finalStatus), m_finalErrorCode(finalErrorCode), m_suppressResult(suppressResult),
       m_lostSignalRecoverable(lostSignalRecoverable), m_certScript(std::move(certScript)),
       m_rawCertResult(rawCertResult), m_photoBytes(std::move(photoBytes)), m_photoEmptyMap(photoEmptyMap),
       m_announceConsentPhase(announceConsentPhase), m_credResult(std::move(credResult)),
-      m_credRecords(std::move(credRecords))
+      m_credRecords(std::move(credRecords)), m_signArtifactBytes(std::move(signArtifactBytes)),
+      m_signMeta(std::move(signMeta))
 {
     m_opAdaptor = std::make_unique<FakeOperationAdaptor>(this);
     if (m_kind == Kind::Sign) {
@@ -401,13 +400,9 @@ void FakeOperation::fire()
         if (okResult) {
             m_resultRetained = true; // GetResult now serves (retained payload)
             if (m_kind == Kind::Sign) {
-                m_keptArtifactFd = makeSealedArtifact(QByteArrayLiteral("FAKE-SIGNED-ARTIFACT"));
+                m_keptArtifactFd = makeSealedArtifact(m_signArtifactBytes);
                 if (emitSignal) {
-                    QVariantMap meta;
-                    meta.insert(QStringLiteral("format"), QStringLiteral("pades"));
-                    meta.insert(QStringLiteral("level"), QStringLiteral("b-b"));
-                    meta.insert(QStringLiteral("tsaUsed"), false);
-                    meta.insert(QStringLiteral("chainComplete"), false);
+                    const QVariantMap meta = effectiveSignMeta();
                     int dup = m_keptArtifactFd >= 0 ? ::dup(m_keptArtifactFd) : -1;
                     Q_EMIT static_cast<FakeSignAdaptor*>(m_resultAdaptor.get())
                         ->Result(QDBusUnixFileDescriptor(dup), meta);
@@ -547,6 +542,19 @@ LibreSCRS::AgentClient::IdentityFieldsWire FakeOperation::buildIdentityFields() 
     LibreSCRS::AgentClient::IdentityFieldsWire fields;
     fields.insert(QStringLiteral("personal"), group);
     return fields;
+}
+
+QVariantMap FakeOperation::effectiveSignMeta() const
+{
+    if (!m_signMeta.isEmpty()) {
+        return m_signMeta;
+    }
+    QVariantMap meta;
+    meta.insert(QStringLiteral("format"), QStringLiteral("pades"));
+    meta.insert(QStringLiteral("level"), QStringLiteral("b-b"));
+    meta.insert(QStringLiteral("tsaUsed"), false);
+    meta.insert(QStringLiteral("chainComplete"), false);
+    return meta;
 }
 
 LibreSCRS::AgentClient::CertListWire FakeOperation::buildCertificateList() const
@@ -1128,7 +1136,7 @@ QDBusObjectPath FakeAgent::mintOperation(FakeOperation::Kind kind, bool withCred
     auto* op = new FakeOperation(this, m_connection, opPath, kind, delay, m_config.finalStatus, m_config.finalErrorCode,
                                  suppressResult, m_config.certScript, m_config.rawCertResult, m_config.photoBytes,
                                  photoEmptyMap, m_config.announceConsentPhase, m_config.lostSignalRecoverable,
-                                 m_config.credResult, credRecords);
+                                 m_config.credResult, credRecords, m_config.signArtifactBytes, m_config.signMeta);
     m_operations.append(op);
     // When raceResultBeforeReturn is set, delay is 0 so start() fires Result +
     // Finished synchronously here, BEFORE we return the path — the client

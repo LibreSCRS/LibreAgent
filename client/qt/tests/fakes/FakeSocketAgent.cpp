@@ -291,6 +291,9 @@ Wire::StateReply FakeSocketAgent::buildState() const
 
 Wire::SignMeta FakeSocketAgent::signMeta() const
 {
+    if (m_config.signMetaOverride) {
+        return *m_config.signMetaOverride;
+    }
     // Fixed meta script, mirroring the D-Bus fake's fixed Sign meta.
     return Wire::SignMeta{"pades", "b-lta", true, true};
 }

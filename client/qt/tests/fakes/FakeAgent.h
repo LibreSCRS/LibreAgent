@@ -278,7 +278,8 @@ public:
                   uint finalErrorCode, bool suppressResult, FakeCertList certScript = {}, bool rawCertResult = false,
                   QByteArray photoBytes = {}, bool photoEmptyMap = false, bool announceConsentPhase = false,
                   bool lostSignalRecoverable = false, QVariantMap credResult = {},
-                  LibreSCRS::AgentClient::CredentialRecordsWire credRecords = {});
+                  LibreSCRS::AgentClient::CredentialRecordsWire credRecords = {},
+                  QByteArray signArtifactBytes = QByteArrayLiteral("FAKE-SIGNED-ARTIFACT"), QVariantMap signMeta = {});
     ~FakeOperation() override;
 
     [[nodiscard]] QString path() const;
@@ -322,6 +323,12 @@ private:
     ///        client's operator<< so the client's operator>> is tested against a
     ///        payload it did NOT itself produce.
     void emitRawCertResult();
+    /// @brief The Sign1 meta map `fire()` and `FakeSignAdaptor::GetResult()`
+    ///        both serve: `m_signMeta` verbatim when scripted, else the
+    ///        historical fixed script (format=pades level=b-b tsaUsed=false
+    ///        chainComplete=false) — preserved so every caller that does not
+    ///        pass `signMeta` keeps today's exact values.
+    [[nodiscard]] QVariantMap effectiveSignMeta() const;
 
     QDBusConnection m_connection;
     QString m_path;
@@ -343,6 +350,8 @@ private:
     int m_keptPhotoFd = -1;               // sealed photo memfd, kept alive past the signal send (owned)
     QVariantMap m_credResult;             // a{sv} mutation result the Operation.Credentials1.Result carries
     LibreSCRS::AgentClient::CredentialRecordsWire m_credRecords; // aa{sv} records (empty for a mutation)
+    QByteArray m_signArtifactBytes; // Sign1 Result/GetResult artifact bytes (default: "FAKE-SIGNED-ARTIFACT")
+    QVariantMap m_signMeta;         // Sign1 Result/GetResult meta map (empty -> effectiveSignMeta()'s default)
     std::unique_ptr<class FakeOperationAdaptor> m_opAdaptor;
     std::unique_ptr<QObject> m_resultAdaptor;
 };
@@ -397,6 +406,17 @@ public:
                                 ///< GetResult re-serves) — delivered for EVERY completed attempt, Ok or Error
         LibreSCRS::AgentClient::CredentialRecordsWire
             credRecords; ///< aa{sv} records a ListCredentials op returns; empty for a mutation (a legitimate result)
+        /// Sign1 Result/GetResult artifact bytes. Default preserves the
+        /// historical "FAKE-SIGNED-ARTIFACT" literal every pre-existing suite
+        /// asserts on; scriptable so a cross-transport test can request
+        /// IDENTICAL bytes from both fakes for a byte-for-byte content-hash
+        /// comparison.
+        QByteArray signArtifactBytes = QByteArrayLiteral("FAKE-SIGNED-ARTIFACT");
+        /// Sign1 Result/GetResult meta map. Empty (default) preserves the
+        /// historical fixed script (format=pades level=b-b tsaUsed=false
+        /// chainComplete=false); scriptable for the same cross-transport
+        /// reason as signArtifactBytes above.
+        QVariantMap signMeta;
         /// Attach a `WedgedPropertiesAdaptor` to the card object at construction
         /// time, shadowing its auto-exported Properties interface (GetAll never
         /// replies until scripted via `scriptCardGetAll`). Requires hasCard=true.

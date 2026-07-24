@@ -203,6 +203,41 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     set_tests_properties(ClientQtSocketIntegrationTest PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 endif()
 
+# Transport parity suite: ONE shared gtest-typed-test scenario corpus
+# (identity, photo, certificates, sign, credentials list/manage/re-list,
+# cancel, method-entry refusal, agent-loss mid-op, availability appear/
+# vanish) run twice -- once over the REAL DBusTransport + FakeAgent, once
+# over the REAL SocketTransport + FakeSocketAgent -- asserting identical
+# client-visible outcomes. Needs both fakes and both transports in ONE
+# binary, so it reuses the D-Bus sources/fake list assembled above
+# (_fake_agent_src / _client_dbus_transport_src) plus the socket sources the
+# block above compiles directly. The whole binary runs under
+# dbus-run-session (only the D-Bus half needs the bus; the socket half is
+# unaffected by the private session). Linux-gated, matching both halves'
+# own Linux-only gates above.
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    add_executable(ClientQtTransportParityTest
+        TransportParityTest.cpp
+        ${_fake_agent_src}
+        ${_client_dbus_transport_src}
+        fakes/FakeSocketAgent.h
+        fakes/FakeSocketAgent.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/../src/socket/MemfdSource.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/../src/socket/SocketPath.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/../src/socket/SocketTransport.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/../src/socket/SocketTransport.h
+        ClientTestMain.cpp)
+    set_target_properties(ClientQtTransportParityTest PROPERTIES AUTOMOC ON)
+    target_include_directories(ClientQtTransportParityTest PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+    target_link_libraries(ClientQtTransportParityTest PRIVATE
+        LibreAgent::ClientQt
+        LibreAgent::Wire
+        Qt6::DBus
+        GTest::gtest)
+    add_test(NAME ClientQtTransportParityTest COMMAND ${DBUS_RUN_SESSION} -- $<TARGET_FILE:ClientQtTransportParityTest>)
+    set_tests_properties(ClientQtTransportParityTest PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+endif()
+
 # The header-self-sufficiency / no-Qt-DBus-KF6-LM-QCBOR-leak acceptance
 # harness -- its own subdirectory, see that CMakeLists.txt.
 add_subdirectory(HeaderAcceptance)
