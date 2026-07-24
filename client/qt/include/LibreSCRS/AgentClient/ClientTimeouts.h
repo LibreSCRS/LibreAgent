@@ -4,7 +4,7 @@
 
 // Default call-timeout budgets (milliseconds) for the transport-neutral Qt
 // client. Plain int, not std::chrono::milliseconds: every Qt timer/socket
-// timeout API these feed (QTimer::start, QDBusPendingCallWatcher, a raw
+// timeout API these feed (QTimer::start, a bus pending-call watcher, a raw
 // AF_UNIX poll/recv deadline) takes int msec, and keeping the unit in the
 // name avoids a duration<->int conversion at every call site.
 //

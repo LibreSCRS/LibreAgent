@@ -1,21 +1,44 @@
 # SPDX-License-Identifier: LGPL-2.1-or-later
 #
 # LibreAgent::ClientQt -- the transport-neutral Qt client library LibreCelik
-# and (later) LibreKDE consume. This task lands only the FOUNDATION: CMake
-# wiring, the public value types (Types.h/SignOptions.h/CallError.h/
-# ClientTimeouts.h), the move-only FdHandle RAII wrapper, the two std-only
-# wire-enum re-export headers (ErrorCode.h/OperationPhase.h), and the internal
-# wire-token vocabulary (src/TokenMap.{h,cpp}). No lifted API
-# (AgentClient/AgentCard/...) yet -- that is a later task.
+# and (later) LibreKDE consume: the public value types plus the lifted client
+# API (AgentClient/AgentReader/AgentCard/AgentOperation/SharedAgentClient)
+# over the internal TransportSeam. The D-Bus transport (src/dbus/, Linux-only)
+# is the first seam implementation; the socket transport is a later task.
 #
 # Included from the root CMakeLists.txt's `if(LIBREAGENT_BUILD_CLIENT_QT)`
 # block, AFTER that block's find_package(Qt6 ...) call -- Qt enters this
 # whole repo's build ONLY there; LibreAgent::Core/::Wire never see it.
 
+# The four public QObject headers are listed as target sources so AUTOMOC
+# scans them (their generated moc TUs are compiled into this library -- the
+# QObject types must never be duplicated across .so boundaries).
 qt_add_library(LibreAgentClientQt SHARED
+    src/AgentClient.cpp
+    src/AgentCard.cpp
+    src/AgentOperation.cpp
+    src/AgentReader.cpp
+    src/CredentialTypes.cpp
     src/FdHandle.cpp
-    src/TokenMap.cpp)
+    src/IdentityRows.cpp
+    src/SharedAgentClient.cpp
+    src/TokenMap.cpp
+    include/LibreSCRS/AgentClient/AgentClient.h
+    include/LibreSCRS/AgentClient/AgentCard.h
+    include/LibreSCRS/AgentClient/AgentOperation.h
+    include/LibreSCRS/AgentClient/AgentReader.h)
 add_library(LibreAgent::ClientQt ALIAS LibreAgentClientQt)
+
+# The D-Bus transport: Linux-only, matching the Linux-only Qt6::DBus
+# dependency below (the macOS transport is POSIX sockets, a later task).
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    target_sources(LibreAgentClientQt PRIVATE
+        src/dbus/CappedCall.cpp
+        src/dbus/DBusTransport.cpp
+        src/dbus/DBusTransport.h
+        src/dbus/ErrorNameMap.cpp
+        src/dbus/Marshal.cpp)
+endif()
 
 set_target_properties(LibreAgentClientQt PROPERTIES
     OUTPUT_NAME librescrs-agentclient-qt
@@ -38,9 +61,15 @@ generate_export_header(LibreAgentClientQt
     BASE_NAME LIBRESCRS_AGENTCLIENT
     EXPORT_FILE_NAME include/LibreSCRS/AgentClient/Export.h)
 
+# The repo's top-level include/ is on the PUBLIC surface too: the std-only
+# wire enum headers (ErrorCode/OperationPhase/PreReadAuth) are re-exported by
+# public client headers, so a consumer of THIS target must resolve them even
+# though LibreAgent::Wire itself stays a PRIVATE link (its install rules put
+# those headers under the same installed include root).
 target_include_directories(LibreAgentClientQt PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
     $<BUILD_INTERFACE:${CMAKE_CURRENT_BINARY_DIR}/include>
+    $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include>
     $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>)
 target_compile_features(LibreAgentClientQt PUBLIC cxx_std_23)
 

@@ -9,8 +9,8 @@
 
 #include <cstdint>
 
-// Transport-neutral Qt value types the lifted AgentClient API (a later
-// task) hands back to LibreCelik/LibreKDE. Header-only aggregates -- no
+// Transport-neutral Qt value types the lifted AgentClient API hands back
+// to the GUI hosts consuming this library. Header-only aggregates -- no
 // vtable, no exported symbols, nothing to implement in a .cpp -- mirroring
 // the agent-side GroupSnapshot/FieldSnapshot (identity fields) and
 // CertSnapshot (certificates) value types these are the Qt-facing shape of,

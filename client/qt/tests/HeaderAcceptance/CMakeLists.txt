@@ -39,12 +39,20 @@
 # umbrella-sharing applies to QtWidgets/QtGui/QtNetwork/... too).
 
 set(_agentclient_public_headers
+    AgentCapabilities.h
+    AgentCard.h
+    AgentClient.h
+    AgentOperation.h
+    AgentReader.h
     CallError.h
     ClientTimeouts.h
+    CredentialTypes.h
     ErrorCode.h
     Export.h
     FdHandle.h
+    IdentityRows.h
     OperationPhase.h
+    SharedAgentClient.h
     SignOptions.h
     Types.h)
 
