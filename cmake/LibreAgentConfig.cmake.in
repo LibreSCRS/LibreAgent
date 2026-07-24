@@ -2,26 +2,54 @@
 #
 # CMake Config-package template for LibreAgent. Substituted into
 # LibreAgentConfig.cmake by configure_package_config_file(); the result
-# is installed to ${CMAKE_INSTALL_LIBDIR}/cmake/LibreAgent/ alongside
-# the matching Version file and the auto-generated
-# LibreAgentTargets.cmake export.
+# is installed to ${CMAKE_INSTALL_LIBDIR}/cmake/LibreAgent/ alongside the
+# matching Version file and the per-component LibreAgent<Component>Targets.cmake
+# exports — only the ones actually enabled at build time (LIBREAGENT_BUILD_CORE
+# / _WIRE / _CLIENT_QT) are present on disk, so this file probes for each
+# before including it.
 #
 # Downstream consumers (the platform backends and packagers) pull the package
 # in via:
-#   find_package(LibreAgent 4.2 REQUIRED CONFIG)
-# and link against the namespaced LibreAgent::Core imported target.
+#   find_package(LibreAgent 4.2 REQUIRED CONFIG COMPONENTS Core)
+# and link against the namespaced LibreAgent::<Component> imported target(s).
 
 @PACKAGE_INIT@
 
 include(CMakeFindDependencyMacro)
 
-# Re-expose the PUBLIC card stack (LibreMiddleware::SmartCard / ::Plugin) and
-# the PRIVATE seam-only deps (::Certificate / ::Signing / ::Trust,
-# OpenSSL::Crypto) the static archive carries transitively, so consumers do not
-# re-discover them.
-find_dependency(LibreMiddleware 4.2 REQUIRED CONFIG)
-find_dependency(OpenSSL 3.0 REQUIRED COMPONENTS Crypto)
-
-include("${CMAKE_CURRENT_LIST_DIR}/LibreAgentTargets.cmake")
+# Probe every known component's export file rather than assuming all three
+# are present: a package installed from a configuration with, say, only
+# LIBREAGENT_BUILD_CORE=ON ships just LibreAgentCoreTargets.cmake, and this
+# loop must not fail just because LibreAgentWireTargets.cmake /
+# LibreAgentClientQtTargets.cmake do not exist on disk.
+#
+# Loop/scratch variables below are prefixed _LibreAgent_ rather than given
+# generic names: find_package()/find_dependency() include the located
+# Config.cmake or Find<Pkg>.cmake in THIS scope (no new variable scope), and
+# CMake's bundled FindOpenSSL.cmake module happens to use — and unset() — a
+# local variable literally named "_comp". A generically-named loop variable
+# here would be silently clobbered by that find_dependency(OpenSSL ...) call
+# below before the include() line runs.
+set(_LibreAgent_known_components Core Wire ClientQt)
+foreach(_LibreAgent_comp IN LISTS _LibreAgent_known_components)
+    set(_LibreAgent_comp_targets_file "${CMAKE_CURRENT_LIST_DIR}/LibreAgent${_LibreAgent_comp}Targets.cmake")
+    if(EXISTS "${_LibreAgent_comp_targets_file}")
+        if(_LibreAgent_comp STREQUAL "Core")
+            # Re-expose the PUBLIC card stack (LibreMiddleware::SmartCard /
+            # ::Plugin) and the PRIVATE seam-only deps (::Certificate,
+            # ::Signing, ::Trust, OpenSSL::Crypto) the static archive carries
+            # transitively, so consumers do not re-discover them.
+            find_dependency(LibreMiddleware 4.2 REQUIRED CONFIG)
+            find_dependency(OpenSSL 3.0 REQUIRED COMPONENTS Crypto)
+        endif()
+        include("${_LibreAgent_comp_targets_file}")
+        set(LibreAgent_${_LibreAgent_comp}_FOUND TRUE)
+    else()
+        set(LibreAgent_${_LibreAgent_comp}_FOUND FALSE)
+    endif()
+endforeach()
+unset(_LibreAgent_comp)
+unset(_LibreAgent_comp_targets_file)
+unset(_LibreAgent_known_components)
 
 check_required_components(LibreAgent)
