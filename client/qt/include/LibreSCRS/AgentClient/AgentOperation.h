@@ -45,6 +45,19 @@ struct SeamError;
 /// retained payload where the contract provides one, and an unrecoverable
 /// lost result surfaces as a loud CommunicationError instead of masquerading
 /// as a silent empty success).
+///
+/// @par Threading and connection-timing
+/// All signals are delivered on the thread the minting `AgentCard`/`AgentClient`
+/// lives on (the single-threaded transport contract; see `TransportSeam`) —
+/// never from a foreign thread, so a direct connection on that thread never
+/// races the polled state. `finished()` is guaranteed exactly once even when
+/// the terminal outcome is already known at minting time (an entry-refused
+/// call, or a hot operation that completed before this object finished
+/// constructing): that early terminal is QUEUED to the event loop rather
+/// than emitted from inside the constructor, specifically so a consumer that
+/// connects to `finished()` right after receiving the minted pointer — never
+/// having had a chance to connect earlier — still observes it. Once emitted
+/// on the live/async path, it is synchronous and never re-queued.
 class LIBRESCRS_AGENTCLIENT_EXPORT AgentOperation : public QObject
 {
     Q_OBJECT
@@ -111,10 +124,20 @@ public:
     [[nodiscard]] QByteArray certificateDerResult() const;
 
 Q_SIGNALS:
+    /// @brief Progress report: the agent moved into @p phase, with @p progress
+    ///        in [0.0, 1.0]. Zero or more emissions between minting and
+    ///        `finished()`; not every operation kind visits every phase, and
+    ///        an operation that fails fast may emit none at all.
     void phaseChanged(LibreSCRS::AgentClient::OperationPhase phase, double progress);
-    /// @brief The single terminal notification; fires exactly once. Poll
-    ///        `status()` / `errorCode()` / `callError()` and the typed result
-    ///        getters after it.
+    /// @brief The single terminal notification; fires exactly once, ever,
+    ///        for this operation. `status()` / `errorCode()` / `callError()`
+    ///        / `messageKey()` / `messageFallback()` and the typed result
+    ///        getter matching the minting method are ALL settled before this
+    ///        signal is emitted — a slot connected directly may read them
+    ///        synchronously inside the slot with no further synchronization.
+    ///        See the class documentation for the connection-timing
+    ///        guarantee on an operation that was already terminal when
+    ///        minted, and for the lost-result recovery this fires after.
     void finished();
 
 private:

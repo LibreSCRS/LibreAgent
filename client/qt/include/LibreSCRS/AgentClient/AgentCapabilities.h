@@ -32,7 +32,7 @@ using LibreSCRS::Agent::Wire::PreReadAuth;
 ///
 /// @note Values mirror the wire contract exactly — do not renumber.
 namespace Cap {
-inline constexpr std::uint32_t None = 0;
+inline constexpr std::uint32_t None = 0;                ///< No capability bits set.
 inline constexpr std::uint32_t Pki = 1U << 0;           ///< readCertificates + verifyPIN + sign + discoverKeys.
 inline constexpr std::uint32_t IdentityData = 1U << 1;  ///< readCard returns identity/document fields.
 inline constexpr std::uint32_t EmrtdCrypto = 1U << 2;   ///< eMRTD-family crypto (BAC/PACE/PA/AA/CA).

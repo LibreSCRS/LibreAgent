@@ -1,0 +1,43 @@
+# SPDX-License-Identifier: LGPL-2.1-or-later
+# Public-facing API reference for the Qt client library (LibreAgent::ClientQt).
+# Mirrors LibreMiddleware/Doxyfile.publicapi's convention.
+
+PROJECT_NAME            = "LibreAgent Qt Client"
+PROJECT_NUMBER          = 4.2
+OUTPUT_DIRECTORY        = build/doc/publicapi
+
+# Scope: the Qt client's public headers, plus the two shared wire-stable
+# value types they re-export under LibreSCRS::AgentClient (ErrorCode.h,
+# OperationPhase.h — see those headers' own "why a re-export" doc comments)
+# and the wire/ subtree those re-exports pull in transitively (currently
+# just PreReadAuth.h; the rest of wire/ is CBOR/framing plumbing the Qt
+# client never includes, so it is not part of this reference).
+INPUT                   = client/qt/include/LibreSCRS/AgentClient \
+                           include/LibreSCRS/Agent/OperationPhase.h \
+                           include/LibreSCRS/Agent/wire/ErrorCode.h \
+                           include/LibreSCRS/Agent/wire/PreReadAuth.h
+RECURSIVE                = YES
+
+EXTRACT_ALL              = NO
+EXTRACT_PRIVATE          = NO
+EXTRACT_STATIC           = NO
+INTERNAL_DOCS            = NO
+
+GENERATE_HTML            = YES
+GENERATE_XML             = NO
+GENERATE_LATEX           = NO
+
+# Every public-surface symbol must carry Doxygen (project convention); an
+# undocumented member of a documented class/enum/struct is a warning, and
+# warnings fail the run. Re-run `doxygen Doxyfile.publicapi` after any
+# public-header change.
+WARN_IF_UNDOCUMENTED     = YES
+WARN_NO_PARAMDOC         = NO
+WARN_AS_ERROR            = FAIL_ON_WARNINGS
+
+QUIET                    = YES
+
+ENABLE_PREPROCESSING     = YES
+MACRO_EXPANSION          = YES
+EXPAND_ONLY_PREDEF       = YES
+PREDEFINED               = LIBRESCRS_AGENTCLIENT_EXPORT=

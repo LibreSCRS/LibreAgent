@@ -34,6 +34,17 @@ class LIBRESCRS_AGENTCLIENT_EXPORT AgentClient : public QObject
 {
     Q_OBJECT
 public:
+    /// @brief Constructs a client, runs a bounded synchronous probe of agent
+    ///        availability, and — if reachable — populates the initial
+    ///        reader/card registry before returning; both are already valid
+    ///        via `isAvailable()` / `readers()` on the very next line. Live
+    ///        subscriptions are also armed here, so a later appear/vanish or
+    ///        registry change is observed via `availabilityChanged` /
+    ///        `readersChanged` / `cardChanged` without polling. Most
+    ///        consumers should prefer `sharedAgentClient()` over
+    ///        constructing directly, so the process establishes one
+    ///        connection.
+    /// @param parent Standard QObject ownership parent, or nullptr.
     explicit AgentClient(QObject* parent = nullptr);
     ~AgentClient() override;
 
@@ -87,6 +98,13 @@ Q_SIGNALS:
     /// at once, so per-id notifications would be redundant). UI that tracks
     /// individual card ids must drop them all on this signal.
     void availabilityChanged(bool available);
+    /// @brief The reader/card roster ITSELF changed — a reader or card was
+    ///        added or removed, including as the reconcile outcome of
+    ///        `refreshDiscovery()` (fired even when a re-scan finds nothing
+    ///        new, so consumers always recompute after asking). Contrast
+    ///        `cardChanged()`, which fires for a property change on an
+    ///        object already in the roster. Re-fetch `readers()` on this
+    ///        signal rather than diffing incrementally.
     void readersChanged();
     /// @brief The card situation behind one registry object changed: a card
     ///        appeared/vanished (@p objectId is the card id) or a reader's
