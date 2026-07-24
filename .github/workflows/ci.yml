@@ -1,13 +1,21 @@
 # SPDX-License-Identifier: LGPL-2.1-or-later
 name: CI
 
-# LibreAgent ships only the platform-neutral agent core library
-# (LibreAgent::Core). It has no D-Bus, no systemd, and no Qt, so this
-# workflow is LibreLinux's CI minus the sdbus-c++/systemd runtime, the Qt/KF6
-# prompter, and the dbus-run-session integration layer: just a format gate, a
-# build+test job that first acquires LibreMiddleware from source (the sole
-# external dependency, consumed via find_package(LibreMiddleware CONFIG)), and
-# a ThreadSanitizer gate over the concurrency core (scheduler + throttler).
+# LibreAgent ships three independently-buildable components: the
+# platform-neutral agent core (LibreAgent::Core, LM-backed), the socket-wire
+# protocol library (LibreAgent::Wire, dependency-free), and the Qt client
+# library LibreCelik consumes (LibreAgent::ClientQt, Wire + Qt6 only — no LM).
+# This workflow has: a format gate; build-linux, a Core+Wire build+test job
+# that first acquires LibreMiddleware from source (Core's sole external
+# dependency, consumed via find_package(LibreMiddleware CONFIG)) plus a
+# ThreadSanitizer gate over the concurrency core (scheduler + throttler);
+# client, the same Core+Wire+ClientQt stack with Qt6 + D-Bus added, running
+# the full suite including the D-Bus/socket/transport-parity integration
+# tests (LibreCelik's actual build shape); client-lm-less, the guarantee that
+# Wire+ClientQt build/test/install standalone on a runner where
+# LibreMiddleware is never built or installed at all (a Qt-only consumer
+# never needs to acquire LM); and fuzz-cbor, a libFuzzer+ASan gate over the
+# untrusted-input CBOR decoder both Wire-consuming components share.
 
 on:
   push:
@@ -35,8 +43,10 @@ jobs:
           sudo apt-get install -y clang-format-21
 
       - name: Check clang-format
+        # client: the Qt client library's own tree (client/qt/{include,src,
+        # tests}/), not covered by the four directories above.
         run: |
-          find include src tests -name "*.cpp" -o -name "*.h" \
+          find include src tests client -name "*.cpp" -o -name "*.h" \
             | xargs clang-format-21 --dry-run --Werror
 
   build-linux:
@@ -162,3 +172,206 @@ jobs:
             -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=thread"
           cmake --build build-tsan --target OperationManagerTest ZombieWorkerDrainTest PropertyEmissionThrottlerTest AgentShutdownUnderLoadTest PrompterKeepAliveDrainTest SignSeamKeepAliveDrainTest RawCryptoCaptureGuardTest WatchdogTest -j4
           ctest --test-dir build-tsan -R "OperationManager|ZombieWorkerDrain|PropertyEmissionThrottler|AgentShutdownUnderLoad|PrompterKeepAliveDrain|SignSeamKeepAliveDrain|RawCryptoCaptureGuard|Watchdog" --output-on-failure
+
+  client:
+    # The Qt client library (LibreAgent::ClientQt), full stack: same
+    # Arch-container LibreMiddleware acquisition as build-linux, plus Qt6
+    # (Arch's qt6-base package bundles QtDBus/QtTest under the one package —
+    # same pattern LibreLinux's own CI uses for its KDE prompter) and dbus
+    # (dbus-run-session, which client/qt/tests/CMakeLists.txt already wraps
+    # each D-Bus/socket/transport-parity suite's own add_test() in — this job
+    # supplies the binary, not an outer ctest wrapper). Core ON (LM-backed) +
+    # Wire ON + ClientQt ON in one build/test pass: this is LibreCelik's
+    # actual build shape, and the full suite here includes HeaderAcceptance
+    # plus every D-Bus/socket/parity integration test alongside the plain
+    # Core/Wire unit tests build-linux already covers on its own.
+    runs-on: ubuntu-latest
+    container: archlinux:latest
+    env:
+      LM_PREFIX: /opt/libremiddleware
+      MIDDLEWARE_REF: main
+    steps:
+      - name: Install system dependencies
+        run: |
+          pacman -Syu --noconfirm
+          pacman -S --noconfirm --needed \
+            base-devel cmake ninja git pkgconf \
+            openssl pcsclite opensc \
+            gtest dbus \
+            python-jsonschema \
+            qt6-base
+
+      - uses: actions/checkout@v4
+        with:
+          path: LibreAgent
+
+      # --- LibreMiddleware: build from source + install to a prefix ---------
+      # Same as build-linux's own step (Core here needs it too — ClientQt
+      # requires LIBREAGENT_BUILD_WIRE, and this job leaves Core at its
+      # default ON, so it needs LM just like build-linux does).
+      - name: Checkout LibreMiddleware
+        uses: actions/checkout@v4
+        with:
+          repository: LibreSCRS/LibreMiddleware
+          ref: ${{ env.MIDDLEWARE_REF }}
+          path: LibreMiddleware
+          fetch-depth: 0
+          submodules: recursive
+
+      - name: Build & install LibreMiddleware (Release, SHARED)
+        working-directory: LibreMiddleware
+        run: |
+          cmake -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_INSTALL_PREFIX="$LM_PREFIX" \
+            -DLIBREMIDDLEWARE_BUILD_SHARED=ON
+          cmake --build build -j4
+          cmake --install build
+
+      # --- LibreAgent (Core+Wire+ClientQt): configure / build / test --------
+      - name: Configure (RelWithDebInfo, ClientQt ON)
+        working-directory: LibreAgent
+        run: |
+          cmake -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+            -DCMAKE_PREFIX_PATH="$LM_PREFIX" \
+            -DLIBRESCRS_AGENT_WERROR=ON \
+            -DLIBREAGENT_BUILD_CLIENT_QT=ON
+
+      - name: Build
+        working-directory: LibreAgent
+        run: cmake --build build -j4
+
+      - name: Test
+        working-directory: LibreAgent
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: ctest --test-dir build --output-on-failure
+
+  client-lm-less:
+    # The Wire+ClientQt "no LibreMiddleware anywhere" guarantee: Core stays
+    # OFF and CMAKE_DISABLE_FIND_PACKAGE_LibreMiddleware=ON turns any
+    # accidental find_package(LibreMiddleware ...) into a hard configure-time
+    # error rather than a silent no-op — this runner never checks out, builds,
+    # or installs LibreMiddleware at all, unlike every other job in this
+    # workflow. Proves a Qt-only ClientQt consumer never has to acquire LM
+    # just to build against this library. Qt6 + dbus are still installed
+    # (ClientQt's own dependency), same packages as the client job above.
+    #
+    # Also walks the installed CONFIG package end-to-end on this same LM-less
+    # prefix: `cmake --install`, then a standalone find_package(LibreAgent
+    # COMPONENTS ClientQt) consumer project (written here rather than checked
+    # into the tree — this job's LM-less runner is the only place it has
+    # anything to prove; contrast tests/pkgsmoke, which the client-carrying
+    # build-linux job installs alongside a real LM install and so doubles as
+    # a permanent regression fixture) that constructs AgentClient and calls
+    # readers(), proving cmake/InstallExport.cmake's ClientQt component
+    # (library + public headers incl. the generated Export.h +
+    # LibreAgentClientQtTargets) actually resolves and links downstream, not
+    # just in-tree. Needs a live QCoreApplication (DBusTransport's queued
+    # terminal emits deliver through the event loop, same as
+    # client/qt/tests/ClientTestMain.cpp) and a session bus to connect to.
+    runs-on: ubuntu-latest
+    container: archlinux:latest
+    env:
+      CLIENTQT_PREFIX: /opt/libreagent-clientqt
+    steps:
+      - name: Install system dependencies
+        run: |
+          pacman -Syu --noconfirm
+          pacman -S --noconfirm --needed \
+            base-devel cmake ninja git pkgconf \
+            gtest dbus \
+            qt6-base
+
+      - uses: actions/checkout@v4
+        with:
+          path: LibreAgent
+
+      - name: Configure (Core OFF, Wire+ClientQt ON, LibreMiddleware disabled)
+        working-directory: LibreAgent
+        run: |
+          cmake -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+            -DLIBREAGENT_BUILD_CORE=OFF \
+            -DLIBREAGENT_BUILD_WIRE=ON \
+            -DLIBREAGENT_BUILD_CLIENT_QT=ON \
+            -DCMAKE_DISABLE_FIND_PACKAGE_LibreMiddleware=ON \
+            -DLIBRESCRS_AGENT_WERROR=ON
+
+      - name: Build
+        working-directory: LibreAgent
+        run: cmake --build build -j4
+
+      - name: Test
+        working-directory: LibreAgent
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: ctest --test-dir build --output-on-failure
+
+      - name: Install ClientQt to a throwaway prefix
+        working-directory: LibreAgent
+        run: cmake --install build --prefix "$CLIENTQT_PREFIX"
+
+      - name: Installed CONFIG package smoke (ClientQt, LM-less)
+        run: |
+          mkdir -p /tmp/clientqt-consumer
+          cat > /tmp/clientqt-consumer/CMakeLists.txt <<'EOF'
+          cmake_minimum_required(VERSION 3.24)
+          project(clientqt_consumer_smoke LANGUAGES CXX)
+          set(CMAKE_CXX_STANDARD 23)
+          set(CMAKE_CXX_STANDARD_REQUIRED ON)
+          find_package(LibreAgent 4.2 REQUIRED CONFIG COMPONENTS ClientQt)
+          find_package(Qt6 REQUIRED COMPONENTS Core)
+          add_executable(clientqt_consumer_smoke main.cpp)
+          target_link_libraries(clientqt_consumer_smoke PRIVATE LibreAgent::ClientQt Qt6::Core)
+          EOF
+          cat > /tmp/clientqt-consumer/main.cpp <<'EOF'
+          #include <LibreSCRS/AgentClient/AgentClient.h>
+
+          #include <QCoreApplication>
+
+          int main(int argc, char** argv)
+          {
+              QCoreApplication app(argc, argv);
+              LibreSCRS::AgentClient::AgentClient client;
+              return client.readers().isEmpty() ? 0 : 1;
+          }
+          EOF
+          cmake -S /tmp/clientqt-consumer -B /tmp/clientqt-consumer-build -G Ninja \
+            -DCMAKE_PREFIX_PATH="$CLIENTQT_PREFIX"
+          cmake --build /tmp/clientqt-consumer-build -j4
+          QT_QPA_PLATFORM=offscreen dbus-run-session -- /tmp/clientqt-consumer-build/clientqt_consumer_smoke
+
+  fuzz-cbor:
+    # Untrusted-decoder fuzz gate (moved from LibreDarwin, whose own
+    # ci.yml dropped this job once the wire codec/framing/message model
+    # moved into this repo's own LibreAgent::Wire — see that repo's history
+    # for the original job this is ported from): the CBOR decoder parses
+    # input from any local caller over the socket wire (and, on macOS, the
+    # browser-extension facade) — an untrusted-input surface that must never
+    # crash / invoke UB. AppleClang ships no libFuzzer runtime, so this leg
+    # builds the fuzzer standalone on Linux clang with -fsanitize=fuzzer,address
+    # (the decoder + QCBOR are platform-neutral; nothing macOS-specific is
+    # exercised). This job shells out to ci/scripts/fuzz-cbor.sh — the exact
+    # same script a dev runs locally — rather than duplicating its
+    # QCBOR-pinning / build / run steps inline, so the two never drift.
+    # Bounded run over the seed corpus; any crash/UB/leak fails the job.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install clang-21
+        # The decoder uses std::expected, which libstdc++ gates on
+        # __cpp_concepts >= 202002L — advertised by clang 19+, not the
+        # runner image's older default clang. Pin the same LLVM 21 the
+        # format-check job pins; libclang-rt-21-dev carries the
+        # libFuzzer/ASan runtimes ci/scripts/fuzz-cbor.sh needs.
+        run: |
+          wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key | sudo gpg --dearmor -o /usr/share/keyrings/llvm.gpg
+          echo "deb [signed-by=/usr/share/keyrings/llvm.gpg] http://apt.llvm.org/noble/ llvm-toolchain-noble-21 main" | sudo tee /etc/apt/sources.list.d/llvm-21.list
+          sudo apt-get update
+          sudo apt-get install -y clang-21 libclang-rt-21-dev
+
+      - name: Run the bounded fuzz
+        run: ci/scripts/fuzz-cbor.sh --time 120 --clang clang++-21
