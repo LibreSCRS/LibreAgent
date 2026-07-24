@@ -1,8 +1,9 @@
 # SPDX-License-Identifier: LGPL-2.1-or-later
 #
 # LibreAgent::ClientQt -- the transport-neutral Qt client library LibreCelik
-# and (later) LibreKDE consume: the public value types plus the lifted client
-# API (AgentClient/AgentReader/AgentCard/AgentOperation/SharedAgentClient)
+# and (later) other KDE-based clients consume: the public value types plus
+# the lifted client API (AgentClient/AgentReader/AgentCard/AgentOperation/
+# SharedAgentClient)
 # over the internal TransportSeam. The D-Bus transport (src/dbus/, Linux-only)
 # is the first seam implementation; the socket transport is a later task.
 #
@@ -48,10 +49,9 @@ set_target_properties(LibreAgentClientQt PROPERTIES
     POSITION_INDEPENDENT_CODE ON)
 
 include(GenerateExportHeader)
-# EXPORT_FILE_NAME is an addition to the brief's literal snippet (which left
-# generate_export_header() at its default output -- a flat
-# librescrs_agentclient_export.h next to the target's other build-tree
-# files): the brief's own public-header list names this file
+# EXPORT_FILE_NAME is an addition beyond generate_export_header()'s default
+# output -- a flat librescrs_agentclient_export.h next to the target's other
+# build-tree files: this component's own public-header list names this file
 # client/qt/include/LibreSCRS/AgentClient/Export.h, the same
 # <LibreSCRS/AgentClient/...> spelling every hand-written header here uses,
 # and client/qt/tests/HeaderAcceptance/ needs it to sit under that exact
@@ -90,8 +90,8 @@ if(LIBRESCRS_AGENT_WERROR)
 endif()
 
 # Exposed to cmake/InstallExport.cmake (install() the generated header) and
-# to client/qt/tests/HeaderAcceptance/ (the exact include-path set the brief
-# requires) without either having to re-derive generate_export_header()'s
+# to client/qt/tests/HeaderAcceptance/ (the exact include-path set that
+# harness requires) without either having to re-derive generate_export_header()'s
 # output location by hand.
 set(LIBREAGENT_CLIENTQT_PUBLIC_INCLUDE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/include)
 set(LIBREAGENT_CLIENTQT_EXPORT_INCLUDE_DIR ${CMAKE_CURRENT_BINARY_DIR}/include)

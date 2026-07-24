@@ -213,8 +213,8 @@ TEST(FieldGroupValueType, DefaultConstructionLeavesFieldsAndExtraEmpty)
 TEST(CallErrorValueType, HasTheDocumentedSevenEnumerators)
 {
     // Not a wire-frozen value set (CallError is local/client-side, never
-    // serialized) -- this just pins the brief's documented shape so an
-    // accidental reorder/removal is caught here rather than downstream.
+    // serialized) -- this just pins the documented shape so an accidental
+    // reorder/removal is caught here rather than downstream.
     EXPECT_EQ(static_cast<int>(CallError::None), 0);
     EXPECT_EQ(static_cast<int>(CallError::AgentUnavailable), 1);
     EXPECT_EQ(static_cast<int>(CallError::Timeout), 2);

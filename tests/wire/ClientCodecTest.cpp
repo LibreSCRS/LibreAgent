@@ -171,7 +171,7 @@ TEST(ClientCodec, EncodeRequestEveryTypeRoundTripsThroughServerParse)
 
 TEST(ClientCodec, EncodeRequestDefaultsRequestIdToZero)
 {
-    // The brief's exact one-arg call form: encodeRequest(variant). CDDL:47
+    // The library's one-arg call form: encodeRequest(variant). CDDL:47
     // mandates `req: uint` on every request frame, so this still has to
     // produce a valid, parseable frame -- with req defaulted to 0.
     const auto bytes = encodeRequest(RequestVariant{GetState{}});

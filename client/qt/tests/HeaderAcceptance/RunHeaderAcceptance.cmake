@@ -5,7 +5,7 @@
 #   1. writes `#include <LibreSCRS/AgentClient/<header>>\nint main(){return 0;}`
 #      to a fresh TU under -DGENERATED_DIR
 #   2. compiles it with `-fsyntax-only -H` and EXACTLY the four include paths
-#      the brief specifies (client include dir, the generated Export.h's
+#      this harness requires (client include dir, the generated Export.h's
 #      dir, the repo's std-only include/, and Qt6::Core's own include dirs
 #      read back from -DQT_CORE_INCLUDES_FILE)
 #   3. fails this whole test (message(FATAL_ERROR), nonzero exit) if the
@@ -41,7 +41,7 @@ string(STRIP "${_qt_core_includes}" _qt_core_includes)
 # separate install prefixes and so have no umbrella-sharing problem to
 # allowlist against.
 set(_forbidden_markers
-    "/KF6/"           # KDE Frameworks 6 -- LibreKDE's own layer, never this library's
+    "/KF6/"           # KDE Frameworks 6 -- a downstream KDE client's own layer, never this library's
     "/LibreSCRS/SmartCard/"   # LibreMiddleware's public headers -- Core/Wire never leak these either
     "/LibreSCRS/Plugin/"
     "/LibreSCRS/Certificate/"

@@ -8,9 +8,9 @@
 // the op-stall contract, and lost-Result recovery. The four adapted KDE
 // suites (AgentCardTest/AgentDiscoveryTest/AgentOperationTest/
 // AgentResultSignatureTest) pin the individual mechanisms in depth; this file
-// is the "does it all actually work end to end over the wire" cross-section
-// the brief asks for, so a few scenarios below are deliberately terser
-// restatements of cases those suites already cover in detail.
+// is the "does it all actually work end to end over the wire" cross-section,
+// so a few scenarios below are deliberately terser restatements of cases
+// those suites already cover in detail.
 
 #include <LibreSCRS/AgentClient/AgentCapabilities.h>
 #include <LibreSCRS/AgentClient/AgentCard.h>
@@ -386,9 +386,8 @@ TEST(DBusIntegration, CancelStopsAnInFlightOperation)
 // integration suite's job: prove the actual contract a caller relies on — an
 // op the agent never completes stays un-finished indefinitely (no silent
 // auto-fail), and `cancel()` is the escape valve a caller's own watchdog would
-// invoke. The literal 35s-budget behavior (a caller-built watchdog actually
-// firing at the cap) belongs in the transport-parity suite (Task 13), per the
-// brief's own fallback for this case.
+// invoke. The literal 35 s stall-cap firing is exercised in the
+// transport-parity suite; here we assert the no-internal-watchdog contract.
 TEST(DBusIntegration, OpStallHasNoInternalWatchdogCancelIsTheEscapeValve)
 {
     FakeAgent::Config cfg;

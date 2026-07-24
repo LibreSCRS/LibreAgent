@@ -103,12 +103,12 @@ add_test(NAME ClientQtDerListenerRegistryTest COMMAND ClientQtDerListenerRegistr
 # D-Bus integration tests: a REAL DBusTransport driven against an in-process
 # FakeAgent (fakes/FakeAgent.{h,cpp}, lifted from the KDE client's own
 # FakeAgent + scrubbed) on a PRIVATE session bus. Each binary runs under
-# dbus-run-session (LibreLinux precedent: prompter/tests/CMakeLists.txt),
-# headless (QT_QPA_PLATFORM=offscreen). Linux-only, matching the Linux-only
-# Qt6::DBus dependency (client/qt/CMakeLists.txt's own DBusTransport.cpp
-# block, and the root CMakeLists.txt's find_package(Qt6 ...) split -- Qt6::DBus
-# is never found on a non-Linux configuration, so this whole block would fail
-# to configure there).
+# dbus-run-session, which gives each suite an isolated session bus (standard
+# ctest wrapper pattern in this project), headless (QT_QPA_PLATFORM=offscreen).
+# Linux-only, matching the Linux-only Qt6::DBus dependency (client/qt/
+# CMakeLists.txt's own DBusTransport.cpp block, and the root CMakeLists.txt's
+# find_package(Qt6 ...) split -- Qt6::DBus is never found on a non-Linux
+# configuration, so this whole block would fail to configure there).
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     # DBusTransport.{h,cpp} (+ its CappedCall/ErrorNameMap/Marshal dependencies)
     # are INTERNAL, hidden-visibility TUs with no export macro -- linking
@@ -151,8 +151,8 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     libreagent_add_client_dbus_test(ClientQtAgentDiscoveryTest AgentDiscoveryTest.cpp)
     libreagent_add_client_dbus_test(ClientQtAgentOperationTest AgentOperationTest.cpp)
 
-    # The end-to-end corpus (Task 11 brief): availability appear/vanish, discovery,
-    # identity, photo content-hash round trip, certificates, sign (typed options ->
+    # The end-to-end corpus: availability appear/vanish, discovery, identity,
+    # photo content-hash round trip, certificates, sign (typed options ->
     # wire dict, fd in/out), credentials list/manage/re-list, cancel, the op-stall
     # contract, and lost-Result recovery when Finished fires before the subscriber.
     libreagent_add_client_dbus_test(ClientQtDBusIntegrationTest DBusIntegrationTest.cpp)
@@ -173,5 +173,5 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
 endif() # CMAKE_SYSTEM_NAME STREQUAL "Linux"
 
 # The header-self-sufficiency / no-Qt-DBus-KF6-LM-QCBOR-leak acceptance
-# harness (brief Step 3) -- its own subdirectory, see that CMakeLists.txt.
+# harness -- its own subdirectory, see that CMakeLists.txt.
 add_subdirectory(HeaderAcceptance)

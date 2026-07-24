@@ -30,10 +30,11 @@ using namespace LibreSCRS::AgentClient::Fakes;
 
 namespace {
 
-// The KDE lift's convenience finders, NOT part of the scrubbed public API
-// (Task 10: "pure functions over readers(); a consumer re-adds where it
-// lands"). readers() is itself deterministically id-sorted now, so no
-// separate "sorted" accessor is needed.
+// The KDE lift's convenience finders, NOT part of the scrubbed public API:
+// readers() is a pure sorted view, and consumers re-add whatever finder
+// helpers they need on top of it where those items land. readers() is
+// itself deterministically id-sorted now, so no separate "sorted" accessor
+// is needed.
 
 AgentReader* firstReaderWithCard(AgentClient& client)
 {
