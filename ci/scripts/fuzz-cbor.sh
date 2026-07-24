@@ -7,17 +7,16 @@
 #
 # The CBOR decoder parses input from any local caller over the socket wire
 # (and, on macOS, the browser-extension facade) — an untrusted-input surface
-# that must never crash / invoke UB. This script is the LOCAL equivalent of
-# LibreDarwin's `fuzz-cbor` CI job (.github/workflows/ci.yml, ubuntu-latest
-# leg): same technique (raw clang -fsanitize=fuzzer,address over the decoder
-# + QCBOR, standalone — NOT the project's own CMake/compiler configuration,
-# since -fsanitize=fuzzer needs a fuzzer-capable clang and this repo's default
-# build compiler is whatever CMAKE_CXX_COMPILER resolves to, typically GCC),
-# same pinned QCBOR revision (parsed straight out of cmake/FetchQCBOR.cmake,
-# single source of truth), same corpus (tests/corpus/cbor/). Wiring this into
-# LibreAgent's own CI workflow is a separate, later task; this script is what
-# that job will eventually shell out to, and is meanwhile how a dev runs the
-# fuzzer locally.
+# that must never crash / invoke UB. This script mirrors the fuzz job this
+# repo's CI will run: same technique (raw clang -fsanitize=fuzzer,address over
+# the decoder + QCBOR, standalone — NOT the project's own CMake/compiler
+# configuration, since -fsanitize=fuzzer needs a fuzzer-capable clang and this
+# repo's default build compiler is whatever CMAKE_CXX_COMPILER resolves to,
+# typically GCC), same pinned QCBOR revision (parsed straight out of
+# cmake/FetchQCBOR.cmake, single source of truth), same corpus
+# (tests/corpus/cbor/). Wiring this into LibreAgent's own CI workflow is a
+# separate, later task; this script is what that job will eventually shell
+# out to, and is meanwhile how a dev runs the fuzzer locally.
 #
 # Requires: a clang++ with the libFuzzer + ASan runtimes (libclang_rt.fuzzer*,
 # libclang_rt.asan*) — e.g. Arch's `clang`+`compiler-rt` packages, or Debian/

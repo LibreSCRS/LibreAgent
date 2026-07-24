@@ -181,15 +181,13 @@ if(LIBREAGENT_BUILD_WIRE)
     endif()
 
     # AppleClang (Xcode 16/17, the macos-15 CI image) still gates the
-    # std::expected that Cbor.h/.cpp use behind -fexperimental-library. Unlike
-    # LibreAgentCore — a GCC-based build whose AppleClang consumers add this
-    # flag themselves, see LibreDarwin's FindOrUseLibreAgent.cmake:35-38 — Wire
-    # attaches it to itself PUBLIC, mirroring LibreDarwin's own
-    # LibreDarwinWireCore target (agent/CMakeLists.txt:28-29), so every Darwin
-    # consumer inherits it for free with no per-consumer workaround. Not
-    # buildable/testable on this (Linux) machine; the condition and flag are a
-    # direct mirror of the LibreDarwin target, left here for the Mac session to
-    # confirm.
+    # std::expected that Cbor.h/.cpp use behind -fexperimental-library.
+    # AppleClang pairs -fexperimental-library with libc++'s experimental ABI
+    # surface (std::expected); the LibreDarwin daemon applies the same flag to
+    # its wire consumers, so Wire must carry it PUBLIC for Darwin builds so
+    # every Darwin consumer inherits it for free with no per-consumer
+    # workaround. Not buildable/testable on this (Linux) machine — verify on
+    # the next macOS session.
     if(CMAKE_CXX_COMPILER_ID STREQUAL "AppleClang")
         target_compile_options(LibreAgentWire PUBLIC -fexperimental-library)
         target_link_options(LibreAgentWire PUBLIC -fexperimental-library)
@@ -208,8 +206,11 @@ if(PROJECT_IS_TOP_LEVEL)
     # resolves the imported target(s) for whichever components it asked for.
     include(cmake/InstallExport.cmake)
 
-    if(LIBREAGENT_BUILD_CORE)
-        # Platform-neutral unit tests + the five shared backend fakes.
+    if(LIBREAGENT_BUILD_CORE OR LIBREAGENT_BUILD_WIRE)
+        # Platform-neutral unit tests + the five shared backend fakes (Core
+        # only) plus the dependency-light Wire/spike GTest targets, which stay
+        # reachable in a Core-less (CORE=OFF, WIRE=ON) configuration too — see
+        # tests/CMakeLists.txt for the Core/non-Core split.
         enable_testing()
         add_subdirectory(tests)
     endif()

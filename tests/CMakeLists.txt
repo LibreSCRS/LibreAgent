@@ -11,6 +11,13 @@ add_subdirectory(wire)
 # tests/spike/CMakeLists.txt and tests/spike/ScmRightsSpikeTest.cpp.
 add_subdirectory(spike)
 
+# Everything below this point links LibreAgent::Core (directly, or via a flow
+# TU folded into it) and is therefore only reachable in a LIBREAGENT_BUILD_CORE
+# configuration — see the caller (root CMakeLists.txt) which now also
+# add_subdirectory()s here whenever LIBREAGENT_BUILD_WIRE alone is on, purely
+# to reach tests/wire/ and tests/spike/ above.
+if(LIBREAGENT_BUILD_CORE)
+
 # All tests here are platform-neutral: they link only LibreAgent::Core + the
 # shared fakes under tests/fakes/ (the five backend doubles). No private session
 # bus, no wire-XML codegen, no polkit, no hardware — the D-Bus/backend tests stay
@@ -153,3 +160,5 @@ agent_core_test(CredentialErrorMappingTest)
 # read cache; secret cache untouched). Pure value/cache types — no LM-internal
 # card session, so no LIBRESCRS_INTERNAL_BUILD.
 agent_core_test(CredentialSnapshotCacheTest)
+
+endif() # LIBREAGENT_BUILD_CORE
