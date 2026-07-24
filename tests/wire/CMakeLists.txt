@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: LGPL-2.1-or-later
 #
-# Three targets, three different jobs:
+# Six targets, six different jobs:
 #
 # 1. WireHeadersTest (below) pins the *runtime values* of
 #    LibreSCRS/Agent/wire/ErrorCode.h and LibreSCRS/Agent/OperationPhase.h via
@@ -41,4 +41,55 @@ if(LIBREAGENT_BUILD_WIRE)
         GTest::gtest
         GTest::gtest_main)
     add_test(NAME CborRoundTripTest COMMAND CborRoundTripTest)
+
+    # 4. Framing/FrameReassembler: the length-prefixed + SCM_RIGHTS frame codec
+    #    and the non-blocking streaming reassembler, both re-based onto this
+    #    component (originally LibreDarwin's macOS agent backend) and now
+    #    std/POSIX-only — no LM, reachable from a Core-less build.
+    foreach(wire_test FramingTest FrameReassemblerTest)
+        add_executable(${wire_test} ${wire_test}.cpp)
+        target_link_libraries(${wire_test} PRIVATE
+            LibreAgent::Wire
+            GTest::gtest
+            GTest::gtest_main)
+        add_test(NAME ${wire_test} COMMAND ${wire_test})
+    endforeach()
+
+    # 5. MessagesRoundTripTest: the typed request/reply/event model over the
+    #    Cbor seam, re-based onto this component's std-only wire mirrors
+    #    (wire/PreReadAuth.h, wire/CredentialWire.h) — no LM either. Supplies
+    #    its own main() (unlike the targets above): besides the normal gtest
+    #    run it doubles as the cross-implementation fixture generator for the
+    #    LibreMac Swift client's decode tests (`--dump-fixtures <dir>` writes
+    #    one canonical frame body per reply/event shape instead of running the
+    #    test suite), so it links GTest::gtest, not GTest::gtest_main.
+    add_executable(MessagesRoundTripTest MessagesRoundTripTest.cpp)
+    target_link_libraries(MessagesRoundTripTest PRIVATE
+        LibreAgent::Wire
+        GTest::gtest)
+    add_test(NAME MessagesRoundTripTest COMMAND MessagesRoundTripTest)
+endif()
+
+if(LIBREAGENT_BUILD_CORE AND LIBREAGENT_BUILD_WIRE)
+    # 6. WireContractGuardTest: the cross-stack wire-contract drift guard. It
+    #    ties the CDDL (wire/librescrs-agent.cddl) + this component's wire enums
+    #    back to the upstream LibreMiddleware/LibreAgent symbols (LM
+    #    CardCapabilities/PreReadAuthMethod, this repo's own ErrorCode/
+    #    CredentialOutcome/OperationPhase), so it needs BOTH Core (for the LM +
+    #    agent-side authoritative types) and Wire (for wire::Messages' SyncError
+    #    + syncErrorName) — the only guard in this tree entitled to see both
+    #    worlds at once.
+    add_executable(WireContractGuardTest WireContractGuardTest.cpp)
+    target_link_libraries(WireContractGuardTest
+        PRIVATE
+            LibreAgent::Core
+            LibreAgent::Wire
+            GTest::gtest
+            GTest::gtest_main)
+    target_compile_options(WireContractGuardTest PRIVATE -Werror=switch)
+    # The CDDL is the wire contract of record; the guard parses its `error-code`
+    # group and compares it value-for-value with the upstream taxonomy.
+    target_compile_definitions(WireContractGuardTest PRIVATE
+        LIBRESCRS_AGENT_WIRE_CDDL="${CMAKE_SOURCE_DIR}/wire/librescrs-agent.cddl")
+    add_test(NAME WireContractGuardTest COMMAND WireContractGuardTest)
 endif()

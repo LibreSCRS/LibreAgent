@@ -53,6 +53,12 @@ if(LIBREAGENT_BUILD_WIRE)
         NAMESPACE LibreAgent::
         DESTINATION ${_cfgdir})
 
+    # The wire contract (CBOR/CDDL) is installed alongside the library so
+    # clients can pin against it. The canonical semantic source stays the
+    # D-Bus interface surface; this schema mirrors it rather than forking it.
+    install(FILES wire/librescrs-agent.cddl
+        DESTINATION ${CMAKE_INSTALL_DATADIR}/librescrs)
+
     if(NOT LIBREAGENT_BUILD_CORE)
         # Core's install(DIRECTORY include/LibreSCRS ...) above already ships
         # Wire's headers when Core is enabled. When Core is OFF, that call

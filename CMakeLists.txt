@@ -149,16 +149,21 @@ if(LIBREAGENT_BUILD_CORE)
 endif() # LIBREAGENT_BUILD_CORE
 
 if(LIBREAGENT_BUILD_WIRE)
-    # Shared canonical-CBOR wire codec — the CborValue seam over the vendored
-    # QCBOR C library. No LibreMiddleware, no OpenSSL: every wire-capable
-    # consumer (the LibreDarwin agent daemon today, a future Qt client) shares
-    # this single codec instead of forking it. Framing/FrameReassembler/
-    # Messages (the rest of the socket-wire protocol) move in a later task;
-    # this component carries the canonical-CBOR layer only.
+    # Shared canonical-CBOR wire codec plus the socket framing + typed message
+    # model — the CborValue seam over the vendored QCBOR C library, the
+    # length-prefixed + SCM_RIGHTS frame codec, the non-blocking streaming
+    # reassembler, and the CDDL-backed request/reply/event message model. No
+    # LibreMiddleware, no OpenSSL: every wire-capable consumer (the LibreDarwin
+    # agent daemon today, a future Qt client) shares this single library
+    # instead of forking it. PrompterProtocol, PeerIdentity/BSM, and the
+    # Darwin-only AnonFd stay host-specific (LibreDarwin), not here.
     include(cmake/FetchQCBOR.cmake) # provides the qcbor::qcbor imported target
 
     add_library(LibreAgentWire STATIC
         src/wire/Cbor.cpp
+        src/wire/Framing.cpp
+        src/wire/FrameReassembler.cpp
+        src/wire/Messages.cpp
         # Fold qcbor's compiled objects straight into this archive so an
         # installed libLibreAgentWire.a is self-contained: a consumer linking
         # only this archive + this repo's headers gets qcbor's symbols too,
