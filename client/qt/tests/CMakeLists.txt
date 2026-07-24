@@ -100,6 +100,78 @@ target_link_libraries(ClientQtDerListenerRegistryTest PRIVATE
     GTest::gtest_main)
 add_test(NAME ClientQtDerListenerRegistryTest COMMAND ClientQtDerListenerRegistryTest)
 
+# D-Bus integration tests: a REAL DBusTransport driven against an in-process
+# FakeAgent (fakes/FakeAgent.{h,cpp}, lifted from the KDE client's own
+# FakeAgent + scrubbed) on a PRIVATE session bus. Each binary runs under
+# dbus-run-session (LibreLinux precedent: prompter/tests/CMakeLists.txt),
+# headless (QT_QPA_PLATFORM=offscreen). Linux-only, matching the Linux-only
+# Qt6::DBus dependency (client/qt/CMakeLists.txt's own DBusTransport.cpp
+# block, and the root CMakeLists.txt's find_package(Qt6 ...) split -- Qt6::DBus
+# is never found on a non-Linux configuration, so this whole block would fail
+# to configure there).
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    # DBusTransport.{h,cpp} (+ its CappedCall/ErrorNameMap/Marshal dependencies)
+    # are INTERNAL, hidden-visibility TUs with no export macro -- linking
+    # LibreAgent::ClientQt would not resolve their symbols outside the .so.
+    # Compiling them directly into each test executable is the same pattern
+    # TokenMapTest/ErrorNameMapTest already use for the library's other
+    # non-exported internals (a second, independent set of object files from
+    # the ones folded into LibreAgentClientQt.so). Qt6::DBus is PRIVATE on the
+    # library target, so a test driving the fake's own D-Bus surface links it
+    # directly; Qt6::Test supplies QSignalSpy.
+    find_program(DBUS_RUN_SESSION dbus-run-session REQUIRED)
+
+    set(_client_dbus_transport_src
+        ${CMAKE_CURRENT_SOURCE_DIR}/../src/dbus/CappedCall.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/../src/dbus/DBusTransport.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/../src/dbus/DBusTransport.h
+        ${CMAKE_CURRENT_SOURCE_DIR}/../src/dbus/ErrorNameMap.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/../src/dbus/Marshal.cpp)
+    set(_fake_agent_src fakes/FakeAgent.h fakes/FakeAgent.cpp)
+
+    function(libreagent_add_client_dbus_test name source)
+        add_executable(${name} ${source} ${_fake_agent_src} ${_client_dbus_transport_src} ClientTestMain.cpp)
+        set_target_properties(${name} PROPERTIES AUTOMOC ON)
+        target_include_directories(${name} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+        target_link_libraries(${name} PRIVATE
+            LibreAgent::ClientQt
+            Qt6::DBus
+            Qt6::Test
+            GTest::gtest)
+        add_test(NAME ${name} COMMAND ${DBUS_RUN_SESSION} -- $<TARGET_FILE:${name}>)
+        set_tests_properties(${name} PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+    endfunction()
+
+    # Adapted from the lifted KDE suites of the same name (see fakes/FakeAgent.h's
+    # file comment): AgentCard/AgentReader typed proxies, ObjectManager discovery
+    # + live add/remove + availability, and AgentOperation's Finished/Result race
+    # + recovery + Cancel(), all now mediated through AgentClient (AgentCard has
+    # no public constructor in the scrubbed API).
+    libreagent_add_client_dbus_test(ClientQtAgentCardTest AgentCardTest.cpp)
+    libreagent_add_client_dbus_test(ClientQtAgentDiscoveryTest AgentDiscoveryTest.cpp)
+    libreagent_add_client_dbus_test(ClientQtAgentOperationTest AgentOperationTest.cpp)
+
+    # The end-to-end corpus (Task 11 brief): availability appear/vanish, discovery,
+    # identity, photo content-hash round trip, certificates, sign (typed options ->
+    # wire dict, fd in/out), credentials list/manage/re-list, cancel, the op-stall
+    # contract, and lost-Result recovery when Finished fires before the subscriber.
+    libreagent_add_client_dbus_test(ClientQtDBusIntegrationTest DBusIntegrationTest.cpp)
+
+    # Pins the typed Result D-Bus signatures to the frozen agent XML -- no bus
+    # needed (QDBusMetaType::typeToSignature works off the registered type alone),
+    # so NOT run under dbus-run-session, and needs only Marshal.cpp (no transport).
+    add_executable(ClientQtAgentResultSignatureTest
+        AgentResultSignatureTest.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/../src/dbus/Marshal.cpp)
+    target_include_directories(ClientQtAgentResultSignatureTest PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+    target_link_libraries(ClientQtAgentResultSignatureTest PRIVATE
+        LibreAgent::ClientQt
+        Qt6::DBus
+        GTest::gtest
+        GTest::gtest_main)
+    add_test(NAME ClientQtAgentResultSignatureTest COMMAND ClientQtAgentResultSignatureTest)
+endif() # CMAKE_SYSTEM_NAME STREQUAL "Linux"
+
 # The header-self-sufficiency / no-Qt-DBus-KF6-LM-QCBOR-leak acceptance
 # harness (brief Step 3) -- its own subdirectory, see that CMakeLists.txt.
 add_subdirectory(HeaderAcceptance)
