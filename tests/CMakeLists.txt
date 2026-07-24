@@ -1,6 +1,10 @@
 # SPDX-License-Identifier: LGPL-2.1-or-later
 find_package(GTest REQUIRED)
 
+# Dependency-free wire-header compile guard (no LibreAgent::Core link, no LM
+# on its include path) — see tests/wire/CMakeLists.txt.
+add_subdirectory(wire)
+
 # All tests here are platform-neutral: they link only LibreAgent::Core + the
 # shared fakes under tests/fakes/ (the five backend doubles). No private session
 # bus, no wire-XML codegen, no polkit, no hardware — the D-Bus/backend tests stay

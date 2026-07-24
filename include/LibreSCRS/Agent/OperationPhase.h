@@ -17,6 +17,9 @@ enum class OperationPhase : std::uint32_t {
     Done = 7,
 };
 
+// Wire-stable finish status, carried alongside ErrorCode (see
+// LibreSCRS/Agent/wire/ErrorCode.h) on the operation-finished signal.
+// Append-only, same freeze as OperationPhase above.
 enum class OperationStatus : std::uint32_t {
     Ok = 0,
     Cancelled = 1,
