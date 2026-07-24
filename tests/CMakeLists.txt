@@ -5,6 +5,12 @@ find_package(GTest REQUIRED)
 # on its include path) — see tests/wire/CMakeLists.txt.
 add_subdirectory(wire)
 
+# SCM_RIGHTS + memfd fd-passing spike (early de-risk for the macOS client's
+# AF_UNIX transport) — pure POSIX, no LibreAgent::Core, no Qt. Temporary
+# location: adopted by the client transport tests once that work lands. See
+# tests/spike/CMakeLists.txt and tests/spike/ScmRightsSpikeTest.cpp.
+add_subdirectory(spike)
+
 # All tests here are platform-neutral: they link only LibreAgent::Core + the
 # shared fakes under tests/fakes/ (the five backend doubles). No private session
 # bus, no wire-XML codegen, no polkit, no hardware — the D-Bus/backend tests stay
