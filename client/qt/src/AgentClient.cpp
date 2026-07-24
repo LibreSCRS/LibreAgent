@@ -13,6 +13,7 @@
 #endif
 
 #include <QHash>
+#include <QLoggingCategory>
 #include <QSet>
 
 #include <algorithm>
@@ -21,6 +22,7 @@
 namespace LibreSCRS::AgentClient {
 
 namespace {
+Q_LOGGING_CATEGORY(lcAgentClient, "librescrs.agentclient.client")
 
 /// The production transport for this platform: D-Bus on Linux; none elsewhere
 /// yet (the socket transport lands in a later task). A transport-less client
@@ -189,6 +191,11 @@ AgentOperation* AgentClient::certificateDer(const QString& readerId, const QStri
         SeamError error;
         error.callError = CallError::AgentUnavailable;
         error.message = QStringLiteral("The card agent is not reachable.");
+        // The agent's error name/message is the only prose record of why — a
+        // local refusal never reached the wire, so log the same fields
+        // AgentCard::startOperation logs for its own entry-refusal path.
+        qCWarning(lcAgentClient).noquote()
+            << "certificateDer refused for" << readerId << certId << ':' << error.message;
         operation->failEntry(error);
         return operation;
     }

@@ -9,6 +9,7 @@
 // the GetResult recovery pulls), with every QtDBus type scrubbed at this
 // boundary — QDBusObjectPath -> opaque QString id, QDBusUnixFileDescriptor ->
 // FdHandle, error-name strings -> SeamError (ErrorNameMap).
+#include "../DerListenerRegistry.h"
 #include "../TransportSeam.h"
 
 #include "Marshal.h"
@@ -18,7 +19,6 @@
 #include <QDBusUnixFileDescriptor>
 #include <QHash>
 #include <QObject>
-#include <QSet>
 #include <QString>
 #include <QStringList>
 #include <QVariantMap>
@@ -97,7 +97,7 @@ public:
                                                                        OperationKind kind) override;
     void cancelOperation(const QString& operationId) override;
     quint64 requestCertificateDer(const QString& readerId, const QString& certId, DerListener* listener) override;
-    void cancelCertificateDer(DerListener* listener) override;
+    void cancelCertificateDer(quint64 token, DerListener* listener) override;
 
 private Q_SLOTS:
     void onServiceRegistered(const QString& service);
@@ -118,8 +118,8 @@ private:
     RegistryListener* m_registry = nullptr;
     QHash<PropertyListener*, DBusPropertyWatch*> m_propertyWatches;
     QHash<OperationListener*, DBusOperationWatch*> m_operationWatches;
-    QSet<DerListener*> m_derListeners;
-    quint64 m_nextToken = 0;
+    DerListenerRegistry m_derListeners;
+    quint64 m_nextToken = 0; // requestProperties only — DER tokens live in m_derListeners
 };
 
 } // namespace LibreSCRS::AgentClient

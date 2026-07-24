@@ -255,7 +255,12 @@ public:
     /// Asynchronous DER fetch (the agent's no-consent public-data call),
     /// reader-addressed. @p listener receives exactly one
     /// onCertificateDer(token, outcome) IF still registered when the reply
-    /// lands; returns a nonzero token.
+    /// lands; returns a nonzero token. Implementations MUST track the
+    /// registration by this token, never by listener identity alone: a
+    /// cancelled operation's Private and a freshly minted one can share the
+    /// same heap address, and an identity-keyed registry would let the
+    /// cancelled operation's late/stale reply silently unregister — and thus
+    /// permanently drop — the new operation's delivery.
     class DerListener
     {
     public:
@@ -263,7 +268,11 @@ public:
         virtual void onCertificateDer(quint64 token, DerOutcome outcome) = 0;
     };
     virtual quint64 requestCertificateDer(const QString& readerId, const QString& certId, DerListener* listener) = 0;
-    virtual void cancelCertificateDer(DerListener* listener) = 0;
+    /// Cancel path: drop @p token's registration. Keyed by @p token (NOT by
+    /// @p listener identity) for the same reason requestCertificateDer's
+    /// delivery is — @p listener is passed through only for an
+    /// implementation's own defense-in-depth sanity check.
+    virtual void cancelCertificateDer(quint64 token, DerListener* listener) = 0;
 
 protected:
     TransportSeam() = default;

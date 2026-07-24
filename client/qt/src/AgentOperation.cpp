@@ -95,6 +95,12 @@ struct AgentOperation::Private final : public OperationListener, public Transpor
         // A live typed-Result delivery, only ever dispatched by the event loop
         // (never synchronously in the ctor — the ctor's recovery uses the
         // fetch pull below), so the payload is simply retained for the getters.
+        // If this fires AFTER finalizeTerminal() already gave up and surfaced
+        // a loud CommunicationError (resultSeen was false and the recovery
+        // pull found nothing yet), it still overwrites the result getters
+        // here — a raced live Result landing after its own terminal. The
+        // lifted KDE client has the identical wrinkle; preserved deliberately
+        // for parity rather than papered over.
         storePayload(std::move(payload));
         resultSeen = true;
     }
@@ -213,7 +219,7 @@ AgentOperation::~AgentOperation()
         d->transport->unsubscribeOperation(d->operationId, d.get());
     }
     if (d->transport != nullptr && d->derToken != 0) {
-        d->transport->cancelCertificateDer(d.get());
+        d->transport->cancelCertificateDer(d->derToken, d.get());
     }
 }
 

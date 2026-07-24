@@ -86,6 +86,20 @@ target_link_libraries(ClientQtErrorNameMapTest PRIVATE
     GTest::gtest_main)
 add_test(NAME ClientQtErrorNameMapTest COMMAND ClientQtErrorNameMapTest)
 
+# The token-keyed DER-listener registration bookkeeping (the fix for the
+# cancel + listener-pointer-reuse race that used to silently drop a second
+# operation's delivery forever): pure QHash/QSet logic, no D-Bus, no event
+# loop -- the cheapest layer where remove-by-identity vs remove-by-token is
+# directly assertable. Needs the INTERNAL seam headers (-I src) for
+# TransportSeam::DerListener.
+add_executable(ClientQtDerListenerRegistryTest DerListenerRegistryTest.cpp)
+target_include_directories(ClientQtDerListenerRegistryTest PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+target_link_libraries(ClientQtDerListenerRegistryTest PRIVATE
+    LibreAgent::ClientQt
+    GTest::gtest
+    GTest::gtest_main)
+add_test(NAME ClientQtDerListenerRegistryTest COMMAND ClientQtDerListenerRegistryTest)
+
 # The header-self-sufficiency / no-Qt-DBus-KF6-LM-QCBOR-leak acceptance
 # harness (brief Step 3) -- its own subdirectory, see that CMakeLists.txt.
 add_subdirectory(HeaderAcceptance)

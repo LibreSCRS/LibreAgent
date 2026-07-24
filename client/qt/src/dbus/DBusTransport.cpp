@@ -539,8 +539,7 @@ void DBusTransport::cancelOperation(const QString& operationId)
 
 quint64 DBusTransport::requestCertificateDer(const QString& readerId, const QString& certId, DerListener* listener)
 {
-    const quint64 token = ++m_nextToken;
-    m_derListeners.insert(listener);
+    const quint64 token = m_derListeners.add(listener);
 
     QDBusMessage call = QDBusMessage::createMethodCall(m_service, QLatin1String(kRootPath), QLatin1String(kPkcs11Iface),
                                                        QStringLiteral("CertDer"));
@@ -549,11 +548,20 @@ quint64 DBusTransport::requestCertificateDer(const QString& readerId, const QStr
     // Asynchronous, bounded by the default call budget: this is a real
     // public-data fetch, not a registry read, and the reply lands through the
     // event loop so a wedged agent can never stall the caller.
+    //
+    // The lambda captures ONLY the token, never the listener pointer: a
+    // cancelled op's Private and a freshly minted op's Private can share the
+    // same heap address, so removing/delivering by pointer identity would let
+    // this stale reply silently steal (and drop forever) a DIFFERENT, still-
+    // live registration that happens to reuse the same pointer. Looking the
+    // listener up through the token-keyed registry instead means two
+    // registrations sharing a pointer still occupy two distinct slots.
     auto* watcher = new QDBusPendingCallWatcher(m_connection.asyncCall(call, kDefaultCallTimeoutMs), this);
-    connect(watcher, &QDBusPendingCallWatcher::finished, this, [this, token, listener](QDBusPendingCallWatcher* w) {
+    connect(watcher, &QDBusPendingCallWatcher::finished, this, [this, token](QDBusPendingCallWatcher* w) {
         w->deleteLater();
-        if (!m_derListeners.remove(listener)) {
-            return; // cancelled — the operation is gone
+        DerListener* target = m_derListeners.takeIfPresent(token);
+        if (target == nullptr) {
+            return; // cancelled (or already delivered) — the operation is gone
         }
         DerOutcome outcome;
         const QDBusMessage reply = w->reply();
@@ -566,14 +574,15 @@ quint64 DBusTransport::requestCertificateDer(const QString& readerId, const QStr
         } else {
             outcome.der = reply.arguments().constFirst().toByteArray(); // 'ay' -> QByteArray
         }
-        listener->onCertificateDer(token, std::move(outcome));
+        target->onCertificateDer(token, std::move(outcome));
     });
     return token;
 }
 
-void DBusTransport::cancelCertificateDer(DerListener* listener)
+void DBusTransport::cancelCertificateDer(quint64 token, DerListener* listener)
 {
-    m_derListeners.remove(listener);
+    Q_UNUSED(listener) // the registration is keyed strictly by token; kept for interface symmetry
+    m_derListeners.cancel(token);
 }
 
 void DBusTransport::onServiceRegistered(const QString& /*service*/)

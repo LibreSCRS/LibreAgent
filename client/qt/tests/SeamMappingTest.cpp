@@ -163,10 +163,11 @@ public:
         derRequests.push_back(record);
         return record.token;
     }
-    void cancelCertificateDer(DerListener* listener) override
+    void cancelCertificateDer(quint64 token, DerListener* listener) override
     {
+        Q_UNUSED(listener) // the fake mirrors the token-keyed production contract
         for (DerRecord& record : derRequests) {
-            if (record.listener == listener) {
+            if (record.token == token) {
                 record.listener = nullptr;
             }
         }
