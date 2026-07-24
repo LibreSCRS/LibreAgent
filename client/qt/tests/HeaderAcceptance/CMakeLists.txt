@@ -55,6 +55,7 @@ set(_agentclient_public_headers
 # above fails the CONFIGURE step immediately, rather than silently never
 # being covered by this harness.
 file(GLOB _agentclient_actual_src_headers
+    CONFIGURE_DEPENDS
     RELATIVE "${LIBREAGENT_CLIENTQT_PUBLIC_INCLUDE_DIR}/LibreSCRS/AgentClient"
     "${LIBREAGENT_CLIENTQT_PUBLIC_INCLUDE_DIR}/LibreSCRS/AgentClient/*.h")
 list(SORT _agentclient_actual_src_headers)

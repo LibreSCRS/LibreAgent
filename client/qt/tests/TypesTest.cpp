@@ -179,6 +179,7 @@ TEST(PhotoItemValueType, IsMoveOnlyAndCarriesItsKeyAndFdTogether)
     PhotoItem item{QStringLiteral("face"), FdHandle(fd)};
     EXPECT_EQ(item.key, QStringLiteral("face"));
     EXPECT_TRUE(item.fd.valid());
+    EXPECT_TRUE(item.extra.isEmpty());
 
     PhotoItem moved(std::move(item));
     EXPECT_EQ(moved.key, QStringLiteral("face"));

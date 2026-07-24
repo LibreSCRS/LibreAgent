@@ -9,8 +9,14 @@
 #      dir, the repo's std-only include/, and Qt6::Core's own include dirs
 #      read back from -DQT_CORE_INCLUDES_FILE)
 #   3. fails this whole test (message(FATAL_ERROR), nonzero exit) if the
-#      compile itself fails, OR if `-H`'s include transcript contains a path
-#      that could only have come from QtDBus, KF6, LibreMiddleware, or QCBOR.
+#      compile itself fails, OR if `-H`'s include transcript reaches any Qt
+#      module other than QtCore -- a fail-closed ALLOWLIST, not a blocklist
+#      of specific non-Core modules by name, so QtTest/QtSql/QtXml/... (never
+#      enumerated anywhere) are rejected exactly like QtDBus/QtWidgets are --
+#      OR a path that could only have come from KF6, LibreMiddleware, or
+#      QCBOR (those three stay a blocklist: each lives under its own,
+#      Qt-unrelated install prefix, so there is no umbrella-sharing problem
+#      to allowlist against).
 # All -D arguments are required; see the add_test() call in CMakeLists.txt in
 # this directory for how they are populated.
 
@@ -28,12 +34,13 @@ string(STRIP "${_qt_core_includes}" _qt_core_includes)
 # (compiler diagnostics + the include trace share stderr). Path-shaped, not
 # bare module names, so a coincidental substring elsewhere in a diagnostic
 # (e.g. a warning message mentioning "qcbor" in prose) cannot false-positive.
+# Qt modules are NOT enumerated here -- see the ALLOWLIST check below, which
+# covers every Qt module (including ones nobody thought to list, e.g.
+# QtTest/QtSql/QtXml/QtConcurrent) by construction. This list stays a
+# blocklist only for the non-Qt families, which live under their own
+# separate install prefixes and so have no umbrella-sharing problem to
+# allowlist against.
 set(_forbidden_markers
-    "/QtDBus/"        # Qt module this library never links PUBLIC-visibly to a public header
-    "/QtWidgets/"      # any other non-Core Qt module sharing the same umbrella prefix
-    "/QtGui/"
-    "/QtNetwork/"
-    "/QtQml/"
     "/KF6/"           # KDE Frameworks 6 -- LibreKDE's own layer, never this library's
     "/LibreSCRS/SmartCard/"   # LibreMiddleware's public headers -- Core/Wire never leak these either
     "/LibreSCRS/Plugin/"
@@ -75,13 +82,43 @@ foreach(_hdr IN LISTS HEADERS)
             set(_any_failed TRUE)
         endif()
     endforeach()
+
+    # Qt-module ALLOWLIST: every path component shaped like /Qt<Name>/
+    # anywhere in the transcript must name QtCore -- fail-closed for ANY Qt
+    # module, not just the ones a hand-maintained blocklist happens to name
+    # (QtTest is guaranteed installed alongside Qt6::Test; QtSql/QtXml/
+    # QtConcurrent are commonly present too -- none of those were ever in
+    # the old blocklist, so they used to pass silently). Extraction works at
+    # module-NAME level (matched out of the path, not the full path string),
+    # so QtCore's own internal subpaths (e.g. .../QtCore/private/...) are
+    # still correctly recognized as QtCore and allowed.
+    string(REGEX MATCHALL "/Qt[A-Za-z0-9]+/" _qt_module_path_hits "${_ev}")
+    unset(_qt_modules_seen)
+    foreach(_path_hit IN LISTS _qt_module_path_hits)
+        string(REGEX MATCH "Qt[A-Za-z0-9]+" _module "${_path_hit}")
+        if(NOT _module IN_LIST _qt_modules_seen)
+            list(APPEND _qt_modules_seen "${_module}")
+        endif()
+    endforeach()
+    foreach(_module IN LISTS _qt_modules_seen)
+        if(NOT _module STREQUAL "QtCore")
+            message("---- ${_hdr}: forbidden Qt module reachable: ${_module} (only QtCore is allowlisted) ----")
+            string(REGEX MATCHALL "[^\n]*/${_module}/[^\n]*" _hits "${_ev}")
+            foreach(_hit IN LISTS _hits)
+                message("    ${_hit}")
+            endforeach()
+            set(_any_failed TRUE)
+        endif()
+    endforeach()
+    unset(_qt_module_path_hits)
+    unset(_qt_modules_seen)
 endforeach()
 
 if(_any_failed)
     message(FATAL_ERROR
         "HeaderAcceptance: one or more public headers failed the standalone "
-        "compile, or pulled in a QtDBus/KF6/LibreMiddleware/QCBOR header -- "
-        "see the transcript above.")
+        "compile, reached a Qt module other than QtCore, or pulled in a "
+        "KF6/LibreMiddleware/QCBOR header -- see the transcript above.")
 endif()
 
 list(LENGTH HEADERS _header_count)

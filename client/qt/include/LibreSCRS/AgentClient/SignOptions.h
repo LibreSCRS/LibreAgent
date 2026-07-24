@@ -77,6 +77,7 @@ struct PhotoItem
 {
     QString key;
     FdHandle fd;
+    QVariantMap extra; // forward-compatible metadata pass-through, as on every other result/options struct
 };
 
 } // namespace LibreSCRS::AgentClient
