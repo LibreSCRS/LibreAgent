@@ -16,9 +16,16 @@
 //   (e) the one genuinely structurally-ambiguous reply pair (public-key's
 //       RSA/EC, sharing "kty") + the err-info code/name XOR rule.
 //   (f) fd-index bounds mapping, including out-of-range -> nullopt.
+//   (g) ErrorCode append tolerance: an unrecognised numeric value (one a
+//       newer agent appended) decodes through verbatim; a value too wide to
+//       ever fit ErrorCode's uint32 wire width still nullopts.
+//   (h) parseReply's entry point rejects well-formed-but-non-canonical CBOR,
+//       not just malformed CBOR.
 #include <LibreSCRS/Agent/wire/ClientCodec.h>
 
 #include <gtest/gtest.h>
+
+#include <limits>
 
 using namespace LibreSCRS::Agent::Wire;
 
@@ -273,6 +280,31 @@ TEST(ClientCodec, NamedErrorReplyRoundTrips)
                          [](std::uint64_t r, const ErrInfo& a) { return makeErrorReply(r, a); });
 }
 
+// (g) same append-tolerance, on err-info's numeric `code` arm: a code past
+// InvalidDocument=19 -- simulating a newer agent -- decodes, it does not
+// nullopt just because this build doesn't have a name for it.
+TEST(ClientCodec, NumericErrorReplyToleratesAppendedErrorCodeValue)
+{
+    expectReplyRoundTrip(28, ErrInfo{static_cast<ErrorCode>(20), std::nullopt, std::nullopt},
+                         [](std::uint64_t r, const ErrInfo& a) { return makeErrorReply(r, a); });
+}
+
+// (g) the tolerance is bounded by the wire field's actual width: a `code`
+// that doesn't fit ErrorCode's uint32_t underlying type at all -- as opposed
+// to merely being past this build's last known name -- is still malformed.
+// Pins decodeErrorCode's pre-existing width check.
+TEST(ClientCodec, NumericErrorReplyRejectsCodeAboveUint32Range)
+{
+    CborValue::Map err;
+    err.emplace("code", CborValue::uint(static_cast<std::uint64_t>(std::numeric_limits<std::uint32_t>::max()) + 1));
+    CborValue::Map reply;
+    reply.emplace("t", CborValue(std::string("Reply")));
+    reply.emplace("req", CborValue::uint(29));
+    reply.emplace("err", CborValue(std::move(err)));
+    const auto bytes = CborValue(std::move(reply)).encode();
+    EXPECT_FALSE(parseReply(bytes, noFds()).has_value());
+}
+
 // (e) err-info code/name XOR (CDDL:105-113): both present, or neither, is
 // malformed -- never a silent pick of one side.
 TEST(ClientCodec, ErrInfoRejectsBothCodeAndNamePresent)
@@ -349,6 +381,20 @@ TEST(ClientCodec, ParseReplyRejectsMalformedBytes)
     EXPECT_FALSE(parseEvent(garbage, noFds()).has_value());
 }
 
+// (h) well-formed-but-non-canonical CBOR (legal per the base RFC 8949 grammar,
+// but violating the §4.2 canonical subset Cbor.cpp's decode() enforces via its
+// re-encode-and-compare guard) must be rejected at parseReply's entry point
+// too, not just at the Cbor-level decode() unit tests (CborRoundTripTest.cpp).
+// Hand-built map(3){ "req":18, "t":"Reply", "ok":true } -- a structurally
+// valid ack-reply shape QCBOR itself accepts, but with keys out of canonical
+// (length-ascending) order: "req" (len 3) appears before "t" (len 1).
+TEST(ClientCodec, ParseReplyRejectsNonCanonicalCbor)
+{
+    const std::vector<std::uint8_t> nonCanonical{0xa3, 0x63, 'r', 'e', 'q', 0x12, 0x61, 't', 0x65,
+                                                 'R',  'e',  'p', 'l', 'y', 0x62, 'o',  'k', 0xf5};
+    EXPECT_FALSE(parseReply(nonCanonical, noFds()).has_value());
+}
+
 // ============================================================================
 // (a) events: toCbor(event) -> parseEvent -> byte-stable re-encode.
 // ============================================================================
@@ -398,6 +444,21 @@ TEST(ClientCodec, OpFinishedRoundTrips)
 {
     expectEventRoundTrip(OpFinished{24, OperationStatus::Error, ErrorCode::CardRemoved, "op.failed", "Card removed"});
     expectEventRoundTrip(OpFinished{25, OperationStatus::Ok, ErrorCode::None, "", ""});
+}
+
+// (g) ErrorCode is wire-frozen APPEND-ONLY (ErrorCode.h): a code past this
+// build's last known value (InvalidDocument=19) -- as a newer agent would
+// send -- must decode through, not fail closed like OperationStatus/etc.
+// static_cast<ErrorCode>(v) is well-defined for any value that fits the
+// enum's uint32_t underlying type; byte-stable re-encode proves the carried
+// value survived the round trip unmodified.
+TEST(ClientCodec, OpFinishedToleratesAppendedErrorCodeValue)
+{
+    expectEventRoundTrip(OpFinished{30, OperationStatus::Error, static_cast<ErrorCode>(20), "op.failed", "unknown"});
+    // A huge-but-still-uint32 value, as far from the known range as this wire
+    // field can ever carry.
+    expectEventRoundTrip(
+        OpFinished{31, OperationStatus::Error, static_cast<ErrorCode>(4000000000U), "op.failed", "unknown"});
 }
 
 TEST(ClientCodec, AgentQuiescedRoundTrips)

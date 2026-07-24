@@ -22,10 +22,21 @@
 //     parseRequest already applies on the server side);
 //   - a whole reply arm / event `t` this client does not (yet) recognise is
 //     NOT an error: it decodes into UnknownReply / UnknownEvent, never a
-//     throw, never nullopt.
+//     throw, never nullopt;
+//   - ErrorCode (ErrorCode.h) is wire-frozen APPEND-ONLY, so an unrecognised
+//     numeric VALUE -- one a newer agent appended past this build's last
+//     known code -- decodes through verbatim (static_cast) instead of
+//     nullopt-ing; the client treats it as opaque display/log data, it does
+//     not branch on it.
+// This value-level tolerance is ErrorCode-SPECIFIC. Unknown values of the
+// OTHER, semantically-branching closed enums on this wire (OperationStatus,
+// OperationPhase, QuiesceReason, PreReadAuth, ...) are NOT covered yet and
+// still decode to std::nullopt, pending a broader cross-mirror tolerance
+// decision for those.
 // Only genuinely malformed input (bad CBOR, a required field missing/wrong
 // type inside an otherwise-recognised shape, the err-info code/name XOR
-// violated, an out-of-range fd-index) yields std::nullopt.
+// violated, an out-of-range fd-index, an unrecognised value of one of those
+// still-closed enums) yields std::nullopt.
 //
 // Replies carry no per-arm tag (every reply shares `t: "Reply"`; CDDL:105)
 // — the arms are discriminated STRUCTURALLY, by which keys are present

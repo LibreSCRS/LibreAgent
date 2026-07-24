@@ -236,11 +236,20 @@ std::optional<std::vector<std::string>> textArray(const Array& a)
 
 std::optional<ErrorCode> decodeErrorCode(std::uint64_t v)
 {
-    // 20 stable, append-only, contiguous values (CDDL:40-44).
-    if (v > static_cast<std::uint64_t>(ErrorCode::InvalidDocument)) {
+    // ErrorCode (ErrorCode.h) is WIRE-FROZEN APPEND-ONLY: new codes are only
+    // ever appended with the next free value, never renumbered. A NEWER agent
+    // may therefore send a value past this build's InvalidDocument=19 -- that
+    // is not malformed, it is this build simply not knowing the name yet. The
+    // enum's underlying type is uint32_t, so every value that fits uint32 is a
+    // well-defined ErrorCode; only reject a value too wide for the wire field
+    // to ever carry (mirrors u32()'s width check above). This tolerance is
+    // ErrorCode-SPECIFIC: OperationStatus, OperationPhase, QuiesceReason and
+    // PreReadAuth below stay fail-closed on an unrecognised value, because
+    // those are semantically-branching closed enums, not opaque display data.
+    if (v > static_cast<std::uint64_t>(std::numeric_limits<std::uint32_t>::max())) {
         return std::nullopt;
     }
-    return static_cast<ErrorCode>(v);
+    return static_cast<ErrorCode>(static_cast<std::uint32_t>(v));
 }
 
 std::optional<SyncError> decodeSyncError(const std::string& s)
@@ -1073,6 +1082,12 @@ std::optional<DecodedReply> parseReply(std::span<const std::uint8_t> body, std::
         }
         return DecodedReply{reqId, std::move(*v)};
     }
+    // Both "readers" and "cards" are required for the state arm. A reply
+    // carrying only "readers" (e.g. a truncated frame, or some future arm
+    // that happens to reuse that key) can't be told apart from "an
+    // unrecognised future shape" by key presence alone -- so it falls
+    // through to the generic no-known-key match below (UnknownReply), not
+    // nullopt: forward-compat tolerance wins over guessing at malformed-ness.
     if (has(*m, "readers") && has(*m, "cards")) {
         auto v = decodeStateReply(*m);
         if (!v) {
