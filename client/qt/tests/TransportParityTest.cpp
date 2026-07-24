@@ -46,18 +46,25 @@
 //       trailer-in-one-batch case — all socket byte-framing mechanics with no
 //       D-Bus analogue (D-Bus's own wedge/robustness cases are unit-level, in
 //       AgentCardTest.cpp, not this corpus).
-//     - The FIFO-delivery / GetSignResult recovery-window cases
-//       (ResultWrittenBeforeEntryReturnsIsDeliveredInOrder,
+//     - SocketPathResolutionOrder — exercises a private filesystem-path
+//       helper with no D-Bus counterpart at all (D-Bus resolves a bus name).
+//   Present on both fakes, but not part of this corpus:
+//     - Lost-result recovery (ResultWrittenBeforeEntryReturnsIsDeliveredInOrder,
 //       SignLostResultRecoveredViaGetSignResult,
-//       SignSuppressedResultWithNoRecoveryFailsLoud) — the OBSERVABLE recovery
+//       SignSuppressedResultWithNoRecoveryFailsLoud on the socket side;
+//       LostResultRecoveredWhenFinishedFiresBeforeSubscription on the D-Bus
+//       side) — both transports guarantee recovery, but the OBSERVABLE
 //       mechanism genuinely differs (D-Bus recovers synchronously inside the
 //       AgentOperation ctor via the terminal-triple probe; the socket wire
 //       recovers on the next event-loop turn via GetSignResult), so there is
 //       no single assertion shape to share; each transport's own suite pins
 //       its mechanism already.
-//     - SocketPathResolutionOrder — exercises a private filesystem-path
-//       helper with no D-Bus counterpart at all (D-Bus resolves a bus name).
-//   Present on both fakes, but not part of this corpus:
+//     - requestProperties/subscribeProperties (the property-refresh seam
+//       methods) — no standalone parity scenario because every scenario below
+//       exercises them incidentally as setup (AgentCard construction issues
+//       the initial property fetch + subscription on both transports); the
+//       direct end-to-end case lives in SocketIntegrationTest.cpp, and the
+//       D-Bus property/wedge behavior is unit-pinned in AgentCardTest.cpp.
 //     - certificateDer (Pkcs11_1.CertDer / GetCertDer) — both fakes implement
 //       it, but only SocketIntegrationTest.cpp exercises it end-to-end today;
 //       there is no existing D-Bus FakeAgent integration coverage to
