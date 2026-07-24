@@ -75,11 +75,38 @@ if(LIBREAGENT_BUILD_WIRE)
     endif()
 endif()
 
-# ClientQt (Qt client library) lands in a later task; its own
-#   install(TARGETS ... EXPORT LibreAgentClientQtTargets)
-#   install(EXPORT LibreAgentClientQtTargets ...)
-# blocks join here, gated behind LIBREAGENT_BUILD_CLIENT_QT, once that target
-# exists.
+if(LIBREAGENT_BUILD_CLIENT_QT)
+    # In-tree target LibreAgentClientQt -> imported LibreAgent::ClientQt.
+    set_target_properties(LibreAgentClientQt PROPERTIES EXPORT_NAME ClientQt)
+
+    install(TARGETS LibreAgentClientQt EXPORT LibreAgentClientQtTargets
+        LIBRARY  DESTINATION ${CMAKE_INSTALL_LIBDIR}
+        ARCHIVE  DESTINATION ${CMAKE_INSTALL_LIBDIR}
+        RUNTIME  DESTINATION ${CMAKE_INSTALL_BINDIR}
+        INCLUDES DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
+
+    install(EXPORT LibreAgentClientQtTargets
+        FILE LibreAgentClientQtTargets.cmake
+        NAMESPACE LibreAgent::
+        DESTINATION ${_cfgdir})
+
+    # ClientQt's public headers live under client/qt/include/LibreSCRS/AgentClient/
+    # -- a separate subtree from Core/Wire's include/LibreSCRS/Agent/, so
+    # neither of the install(DIRECTORY include/LibreSCRS ...) calls above
+    # ever reaches them; this component always installs its own headers
+    # regardless of which other components are enabled.
+    install(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/client/qt/include/LibreSCRS
+        DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
+        FILES_MATCHING PATTERN "*.h")
+
+    # generate_export_header()'s output (client/qt/CMakeLists.txt sets
+    # LIBREAGENT_CLIENTQT_EXPORT_HEADER to its exact path) lands in the build
+    # tree, not the source tree, so the install(DIRECTORY ...) above never
+    # sees it -- install it into the same LibreSCRS/AgentClient/ subdir as
+    # the hand-written public headers.
+    install(FILES ${LIBREAGENT_CLIENTQT_EXPORT_HEADER}
+        DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/LibreSCRS/AgentClient)
+endif()
 
 configure_package_config_file(
     ${CMAKE_CURRENT_SOURCE_DIR}/cmake/LibreAgentConfig.cmake.in

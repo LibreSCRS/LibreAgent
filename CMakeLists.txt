@@ -216,6 +216,24 @@ if(LIBREAGENT_BUILD_WIRE)
     endif()
 endif() # LIBREAGENT_BUILD_WIRE
 
+if(LIBREAGENT_BUILD_CLIENT_QT)
+    # Qt enters this whole repo's build HERE and ONLY here: this is the one
+    # and only find_package(Qt6 ...) call in this tree, so a WIRE-only or
+    # CORE-only configuration never runs it (verified by
+    # `grep Qt6 CMakeCache.txt` returning empty in such a build). DBus is
+    # Linux-only (LibreLinux's socket transport backend); Test is required
+    # now even though this task's own tests stay plain GTest, so a later
+    # client task that needs QSignalSpy/QTest does not need a second
+    # find_package call.
+    if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+        find_package(Qt6 REQUIRED COMPONENTS Core DBus Test)
+    else()
+        find_package(Qt6 REQUIRED COMPONENTS Core Test)
+    endif()
+
+    add_subdirectory(client/qt)
+endif() # LIBREAGENT_BUILD_CLIENT_QT
+
 # The installed CONFIG package is only built when this repo is the top-level
 # project. When it is pulled in as a subproject (FetchContent from a platform
 # backend such as LibreLinux), the consumer wants just the enabled component

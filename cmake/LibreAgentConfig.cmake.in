@@ -41,6 +41,26 @@ foreach(_LibreAgent_comp IN LISTS _LibreAgent_known_components)
             # transitively, so consumers do not re-discover them.
             find_dependency(LibreMiddleware 4.2 REQUIRED CONFIG)
             find_dependency(OpenSSL 3.0 REQUIRED COMPONENTS Crypto)
+        elseif(_LibreAgent_comp STREQUAL "ClientQt")
+            # Re-discover only the PUBLIC Qt6::Core this target was built
+            # against, mirroring Core's block above. Qt6::DBus is linked
+            # PRIVATE, and LibreAgentClientQt is SHARED (not STATIC like
+            # Wire's folded-in qcbor, see that target's own comment in the
+            # root CMakeLists.txt) -- a PRIVATE link of a SHARED library is
+            # NOT re-exported to consumers as an INTERFACE_LINK_LIBRARIES
+            # target requirement at all (verified: LibreAgentClientQtTargets.cmake's
+            # INTERFACE_LINK_LIBRARIES carries only "Qt6::Core"; DBus surfaces
+            # solely as the advisory, non-target IMPORTED_LINK_DEPENDENT_LIBRARIES_<CONFIG>
+            # string property, used for the .so's own RPATH/dependency
+            # bookkeeping, not resolved as a CMake target by find_package()).
+            # The runtime dependency on libQt6DBus is instead carried as an
+            # ordinary DT_NEEDED entry inside liblibrescrs-agentclient-qt.so
+            # itself, resolved by the dynamic linker when that .so loads --
+            # a consumer's own build never needs Qt6::DBus to exist as a
+            # CMake target, so requiring it here would be a false hard
+            # dependency (confirmed empirically: a consumer configures and
+            # links fine with only Core found).
+            find_dependency(Qt6 REQUIRED COMPONENTS Core)
         endif()
         include("${_LibreAgent_comp_targets_file}")
         set(LibreAgent_${_LibreAgent_comp}_FOUND TRUE)
