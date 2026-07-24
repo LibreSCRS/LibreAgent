@@ -172,6 +172,37 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     add_test(NAME ClientQtAgentResultSignatureTest COMMAND ClientQtAgentResultSignatureTest)
 endif() # CMAKE_SYSTEM_NAME STREQUAL "Linux"
 
+# Socket integration tests: the REAL SocketTransport driven against an
+# in-process FakeSocketAgent on a temp AF_UNIX path. No bus, no
+# dbus-run-session — the whole wire is this repo's own framing + canonical
+# CBOR (LibreAgent::Wire), so the suite also runs on a D-Bus-less
+# configuration. Linux-gated for now because the fake's document/artifact
+# source is memfd_create (src/socket/MemfdSource.{h,cpp}, the Linux-test-only
+# helper); the transport TU itself compiles into the library on every
+# platform. SocketTransport/SocketPath/ErrorNameMap are INTERNAL,
+# hidden-visibility TUs — compiled directly into the test executable, the
+# same pattern as the D-Bus suites above.
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    add_executable(ClientQtSocketIntegrationTest
+        SocketIntegrationTest.cpp
+        fakes/FakeSocketAgent.h
+        fakes/FakeSocketAgent.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/../src/dbus/ErrorNameMap.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/../src/socket/MemfdSource.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/../src/socket/SocketPath.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/../src/socket/SocketTransport.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/../src/socket/SocketTransport.h
+        ClientTestMain.cpp)
+    set_target_properties(ClientQtSocketIntegrationTest PROPERTIES AUTOMOC ON)
+    target_include_directories(ClientQtSocketIntegrationTest PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+    target_link_libraries(ClientQtSocketIntegrationTest PRIVATE
+        LibreAgent::ClientQt
+        LibreAgent::Wire
+        GTest::gtest)
+    add_test(NAME ClientQtSocketIntegrationTest COMMAND ClientQtSocketIntegrationTest)
+    set_tests_properties(ClientQtSocketIntegrationTest PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+endif()
+
 # The header-self-sufficiency / no-Qt-DBus-KF6-LM-QCBOR-leak acceptance
 # harness -- its own subdirectory, see that CMakeLists.txt.
 add_subdirectory(HeaderAcceptance)

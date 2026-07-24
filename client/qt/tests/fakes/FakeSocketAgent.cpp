@@ -1,0 +1,756 @@
+// SPDX-License-Identifier: LGPL-2.1-or-later
+// SPDX-FileCopyrightText: 2026 hirashix0
+
+#include "FakeSocketAgent.h"
+
+#include "dbus/AgentDBus.h"     // the shared object/interface name spellings (constants only)
+#include "socket/MemfdSource.h" // memfd document/artifact source + readFdAll (Linux test helper)
+
+#include <LibreSCRS/Agent/wire/Framing.h>
+
+#include <QFile>
+#include <QSocketNotifier>
+#include <QTimer>
+#include <QVariant>
+
+#include <fcntl.h>
+#include <sys/socket.h>
+#include <sys/un.h>
+#include <unistd.h>
+
+#include <cerrno>
+#include <cstring>
+#include <utility>
+
+namespace LibreSCRS::AgentClient::Fakes {
+
+namespace Wire = LibreSCRS::Agent::Wire;
+
+namespace {
+
+constexpr const char* kReaderHandle = "reader/0";
+constexpr const char* kCardHandle = "card/0";
+
+Wire::PreReadAuth preAuthFromToken(const QString& token)
+{
+    if (token == QLatin1String("BacMrz")) {
+        return Wire::PreReadAuth::BacMrz;
+    }
+    if (token == QLatin1String("PaceCan")) {
+        return Wire::PreReadAuth::PaceCan;
+    }
+    return Wire::PreReadAuth::None;
+}
+
+void setNonBlockingCloexec(int fd)
+{
+    ::fcntl(fd, F_SETFD, FD_CLOEXEC);
+    const int flags = ::fcntl(fd, F_GETFL, 0);
+    ::fcntl(fd, F_SETFL, flags | O_NONBLOCK);
+}
+
+} // namespace
+
+FakeSocketAgent::FakeSocketAgent(Config config, QObject* parent) : QObject(parent), m_config(std::move(config))
+{
+    relisten();
+}
+
+FakeSocketAgent::~FakeSocketAgent()
+{
+    stopListening();
+}
+
+bool FakeSocketAgent::listening() const
+{
+    return m_listenFd.valid();
+}
+
+QString FakeSocketAgent::socketPath() const
+{
+    return m_config.socketPath;
+}
+
+FakeSocketAgent::Config& FakeSocketAgent::config()
+{
+    return m_config;
+}
+
+void FakeSocketAgent::stopListening()
+{
+    m_listenNotifier.reset();
+    m_listenFd.reset();
+    if (!m_config.socketPath.isEmpty()) {
+        ::unlink(QFile::encodeName(m_config.socketPath).constData());
+    }
+}
+
+void FakeSocketAgent::relisten()
+{
+    stopListening();
+    const QByteArray encoded = QFile::encodeName(m_config.socketPath);
+    sockaddr_un address{};
+    if (encoded.isEmpty() || static_cast<std::size_t>(encoded.size()) + 1 > sizeof(address.sun_path)) {
+        return;
+    }
+    address.sun_family = AF_UNIX;
+    std::memcpy(address.sun_path, encoded.constData(), static_cast<std::size_t>(encoded.size()));
+
+    Wire::UniqueFd fd(::socket(AF_UNIX, SOCK_STREAM, 0));
+    if (!fd.valid()) {
+        return;
+    }
+    setNonBlockingCloexec(fd.get());
+    ::unlink(encoded.constData());
+    if (::bind(fd.get(), reinterpret_cast<const sockaddr*>(&address), sizeof(address)) != 0 ||
+        ::listen(fd.get(), 4) != 0) {
+        return;
+    }
+    m_listenFd = std::move(fd);
+    m_listenNotifier = std::make_unique<QSocketNotifier>(m_listenFd.get(), QSocketNotifier::Read);
+    connect(m_listenNotifier.get(), &QSocketNotifier::activated, this, [this]() { onAcceptable(); });
+}
+
+void FakeSocketAgent::closeAllConnections()
+{
+    for (const auto& op : m_operations) {
+        op->connection = nullptr;
+    }
+    m_connections.clear();
+}
+
+int FakeSocketAgent::connectionCount() const
+{
+    return static_cast<int>(m_connections.size());
+}
+
+void FakeSocketAgent::onAcceptable()
+{
+    while (true) {
+        const int fd = ::accept(m_listenFd.get(), nullptr, nullptr);
+        if (fd < 0) {
+            return; // EAGAIN — drained
+        }
+        setNonBlockingCloexec(fd);
+        auto connection = std::make_unique<Connection>();
+        connection->fd = Wire::UniqueFd(fd);
+        connection->reassembler = std::make_unique<Wire::FrameReassembler>();
+        connection->notifier = std::make_unique<QSocketNotifier>(fd, QSocketNotifier::Read);
+        Connection* raw = connection.get();
+        connect(connection->notifier.get(), &QSocketNotifier::activated, this,
+                [this, raw]() { onConnectionReadable(raw); });
+        m_connections.push_back(std::move(connection));
+    }
+}
+
+bool FakeSocketAgent::isLive(Connection* connection) const
+{
+    if (connection == nullptr) {
+        return false;
+    }
+    for (const auto& candidate : m_connections) {
+        if (candidate.get() == connection) {
+            return true;
+        }
+    }
+    return false;
+}
+
+void FakeSocketAgent::closeConnection(Connection* connection)
+{
+    for (const auto& op : m_operations) {
+        if (op->connection == connection) {
+            op->connection = nullptr;
+        }
+    }
+    for (auto it = m_connections.begin(); it != m_connections.end(); ++it) {
+        if (it->get() == connection) {
+            // May run from inside this notifier's own activated handler —
+            // never delete a signal's sender mid-emission.
+            if (connection->notifier != nullptr) {
+                connection->notifier->setEnabled(false);
+                connection->notifier.release()->deleteLater();
+            }
+            m_connections.erase(it);
+            return;
+        }
+    }
+}
+
+void FakeSocketAgent::onConnectionReadable(Connection* connection)
+{
+    if (!isLive(connection)) {
+        return;
+    }
+    Wire::PumpResult pumped = connection->reassembler->pump(connection->fd.get());
+    for (Wire::Frame& frame : pumped.frames) {
+        if (!isLive(connection)) {
+            return; // a handler closed it mid-batch
+        }
+        auto envelope = Wire::parseRequest(frame.body);
+        if (!envelope) {
+            closeConnection(connection); // the agent fails malformed requests closed
+            return;
+        }
+        handleRequest(connection, std::move(*envelope), frame.fds);
+    }
+    if (pumped.status != Wire::PumpStatus::Ok && isLive(connection)) {
+        closeConnection(connection);
+    }
+}
+
+void FakeSocketAgent::sendCbor(Connection* connection, const Wire::CborValue& value, std::span<const int> passFds)
+{
+    if (!isLive(connection)) {
+        return;
+    }
+    const std::vector<std::uint8_t> body = value.encode();
+    if (!Wire::sendFrame(connection->fd.get(), body, passFds)) {
+        closeConnection(connection);
+    }
+}
+
+void FakeSocketAgent::broadcastCbor(const Wire::CborValue& value)
+{
+    // Snapshot: a failed send closes (erases) the connection mid-loop.
+    std::vector<Connection*> targets;
+    targets.reserve(m_connections.size());
+    for (const auto& connection : m_connections) {
+        targets.push_back(connection.get());
+    }
+    for (Connection* connection : targets) {
+        sendCbor(connection, value);
+    }
+}
+
+void FakeSocketAgent::sendEntryError(Connection* connection, quint64 req, Wire::SyncError error)
+{
+    Wire::ErrInfo info;
+    info.code = error;
+    info.msgFallback = std::string("scripted method-entry refusal");
+    sendCbor(connection, Wire::makeErrorReply(req, info));
+}
+
+// ---- state ------------------------------------------------------------------------
+
+Wire::ReaderState FakeSocketAgent::buildReaderState() const
+{
+    Wire::ReaderState reader;
+    reader.handle = kReaderHandle;
+    reader.name = m_config.readerName.toStdString();
+    reader.hasCard = m_config.hasCard;
+    if (m_config.hasCard) {
+        reader.card = std::string(kCardHandle);
+    }
+    return reader;
+}
+
+Wire::CardState FakeSocketAgent::buildCardState() const
+{
+    Wire::CardState card;
+    card.handle = kCardHandle;
+    card.reader = kReaderHandle;
+    card.caps = m_config.capabilities;
+    card.preAuth = preAuthFromToken(m_config.preReadAuth);
+    return card;
+}
+
+Wire::StateReply FakeSocketAgent::buildState() const
+{
+    Wire::StateReply state;
+    state.readers.push_back(buildReaderState());
+    if (m_config.hasCard) {
+        state.cards.push_back(buildCardState());
+    }
+    return state;
+}
+
+Wire::SignMeta FakeSocketAgent::signMeta() const
+{
+    // Fixed meta script, mirroring the D-Bus fake's fixed Sign meta.
+    return Wire::SignMeta{"pades", "b-lta", true, true};
+}
+
+std::vector<Wire::CertInfo> FakeSocketAgent::buildCertList() const
+{
+    std::vector<Wire::CertInfo> certs;
+    certs.reserve(static_cast<std::size_t>(m_config.certScript.size()));
+    for (const FakeSocketCert& scripted : m_config.certScript) {
+        Wire::CertInfo cert;
+        cert.certId = scripted.certId.toStdString();
+        cert.signingCapable = scripted.signingCapable;
+        if (!scripted.subjectCn.isEmpty()) {
+            cert.fields["subject"]["cn"] =
+                Wire::CertField{"label_subject_cn", "Subject CN", scripted.subjectCn.toStdString()};
+        }
+        if (!scripted.issuerCn.isEmpty()) {
+            cert.fields["issuer"]["cn"] =
+                Wire::CertField{"label_issuer_cn", "Issuer CN", scripted.issuerCn.toStdString()};
+        }
+        if (!scripted.notBefore.isEmpty()) {
+            cert.fields["validity"]["notBefore"] =
+                Wire::CertField{"label_not_before", "Not before", scripted.notBefore.toStdString()};
+        }
+        if (!scripted.notAfter.isEmpty()) {
+            cert.fields["validity"]["notAfter"] =
+                Wire::CertField{"label_not_after", "Not after", scripted.notAfter.toStdString()};
+        }
+        cert.keyUsageBits = scripted.keyUsageBits;
+        for (const QString& oid : scripted.extendedKeyUsageOids) {
+            cert.ekus.push_back(oid.toStdString());
+        }
+        if (scripted.chainSubjectCns.isEmpty()) {
+            cert.chainSubjectCns.push_back(scripted.subjectCn.toStdString());
+        } else {
+            for (const QString& cn : scripted.chainSubjectCns) {
+                cert.chainSubjectCns.push_back(cn.toStdString());
+            }
+        }
+        cert.trustStatus = scripted.trustStatus;
+        certs.push_back(std::move(cert));
+    }
+    return certs;
+}
+
+Wire::CredentialsResult FakeSocketAgent::buildCredentialsResult(bool withRecords) const
+{
+    Wire::CredentialsResult result;
+    result.result.outcome = m_config.credOutcome;
+    result.result.blocked = m_config.credBlocked;
+    result.result.retriesLeft = m_config.credRetriesLeft;
+    if (withRecords) {
+        for (const FakeSocketCredRecord& scripted : m_config.credRecords) {
+            Wire::CredentialRecord record;
+            record.id = scripted.id.toStdString();
+            record.label = scripted.label.toStdString();
+            record.kind = scripted.kind.toStdString();
+            record.state = scripted.state.toStdString();
+            record.retriesLeft = scripted.retriesLeft;
+            record.canChange = scripted.canChange;
+            record.unblockStyle = "unknown";
+            record.recovery = "unknown";
+            result.records.push_back(std::move(record));
+        }
+    }
+    return result;
+}
+
+// ---- operations --------------------------------------------------------------------
+
+FakeSocketAgent::Op* FakeSocketAgent::findOperation(quint64 opId)
+{
+    for (const auto& op : m_operations) {
+        if (op->id == opId) {
+            return op.get();
+        }
+    }
+    return nullptr;
+}
+
+int FakeSocketAgent::operationCount() const
+{
+    return static_cast<int>(m_operations.size());
+}
+
+int FakeSocketAgent::cancelledOperationCount() const
+{
+    return m_cancelledOps;
+}
+
+int FakeSocketAgent::getStateCount() const
+{
+    return m_getStateCalls;
+}
+
+int FakeSocketAgent::listCredentialsCount() const
+{
+    return m_listCredentialsCalls;
+}
+
+int FakeSocketAgent::getSignResultCount() const
+{
+    return m_getSignResultCalls;
+}
+
+QString FakeSocketAgent::lastSignCertId() const
+{
+    return m_lastSignCertId;
+}
+
+QByteArray FakeSocketAgent::lastSignInputBytes() const
+{
+    return m_lastSignInputBytes;
+}
+
+QVariantMap FakeSocketAgent::lastSignOptions() const
+{
+    return m_lastSignOptions;
+}
+
+QString FakeSocketAgent::lastCertDerReader() const
+{
+    return m_lastCertDerReader;
+}
+
+QString FakeSocketAgent::lastCertDerCertId() const
+{
+    return m_lastCertDerCertId;
+}
+
+void FakeSocketAgent::mintOperation(Connection* connection, quint64 req, OpKind kind, bool withRecords)
+{
+    auto op = std::make_unique<Op>();
+    op->id = ++m_nextOpId;
+    op->kind = kind;
+    op->connection = connection;
+    op->withRecords = withRecords;
+    const quint64 opId = op->id;
+    m_operations.push_back(std::move(op));
+
+    // The op-started reply is enqueued BEFORE any of the op's events — the
+    // unicast-FIFO ordering the wire contract guarantees.
+    sendCbor(connection, Wire::makeReply(req, Wire::OpStarted{opId}));
+    if (m_config.raceResultBeforeReturn) {
+        fireOperation(opId); // events written before the client even parses the reply
+        return;
+    }
+    QTimer::singleShot(m_config.operationDelayMs, this, [this, opId]() { fireOperation(opId); });
+}
+
+void FakeSocketAgent::fireOperation(quint64 opId)
+{
+    Op* op = findOperation(opId);
+    if (op == nullptr || op->fired || !isLive(op->connection)) {
+        return;
+    }
+    op->fired = true;
+
+    Wire::OpProgress progress;
+    progress.op = op->id;
+    progress.phase = Wire::OperationPhase::Reading;
+    progress.progress = 0.5;
+    sendCbor(op->connection, Wire::toCbor(progress));
+
+    const bool ok = m_config.finalStatus == 0;
+    const bool suppressResult = m_config.suppressResult || (op->kind == OpKind::Sign && m_config.signRecoverable);
+    // A read result only exists on Ok; the credentials result is delivered
+    // for EVERY completed attempt (its payload carries the outcome).
+    const bool emitResult = (ok || op->kind == OpKind::Credentials) && !suppressResult;
+    if (emitResult && isLive(op->connection)) {
+        Wire::OpResultReady ready;
+        ready.op = op->id;
+        switch (op->kind) {
+        case OpKind::Identity: {
+            Wire::IdentityResult identity;
+            identity.fields["personal"]["given_name"] =
+                Wire::IdentityField{"label_given_name", "Given name", "text", std::string("Ana")};
+            identity.fields["personal"]["family_name"] =
+                Wire::IdentityField{"label_family_name", "Family name", "text", std::string("Horvat")};
+            ready.result = std::move(identity);
+            sendCbor(op->connection, Wire::toCbor(ready));
+            break;
+        }
+        case OpKind::Photo: {
+            FdHandle photoFd = makeMemfdDocument(m_config.photoBytes);
+            Wire::PhotoResult photos;
+            photos.photos.push_back(Wire::PhotoItem{"personal:photo", 0});
+            ready.result = std::move(photos);
+            const int raw = photoFd.get();
+            sendCbor(op->connection, Wire::toCbor(ready), std::span<const int>(&raw, 1));
+            break;
+        }
+        case OpKind::Certificates: {
+            ready.result = Wire::CertListResult{buildCertList()};
+            sendCbor(op->connection, Wire::toCbor(ready));
+            break;
+        }
+        case OpKind::Sign: {
+            FdHandle artifactFd = makeMemfdDocument(m_config.signArtifactBytes);
+            ready.result = Wire::SignResult{0, signMeta()};
+            const int raw = artifactFd.get();
+            sendCbor(op->connection, Wire::toCbor(ready), std::span<const int>(&raw, 1));
+            break;
+        }
+        case OpKind::Credentials: {
+            ready.result = buildCredentialsResult(op->withRecords);
+            sendCbor(op->connection, Wire::toCbor(ready));
+            break;
+        }
+        }
+    }
+    if (op->kind == OpKind::Sign && m_config.signRecoverable && ok) {
+        op->retainedArtifact = true; // GetSignResult re-serves it within the grace window
+    }
+
+    if (!isLive(op->connection)) {
+        return;
+    }
+    Wire::OpFinished finished;
+    finished.op = op->id;
+    finished.status = static_cast<Wire::OperationStatus>(m_config.finalStatus);
+    finished.code = static_cast<Wire::ErrorCode>(m_config.finalErrorCode);
+    sendCbor(op->connection, Wire::toCbor(finished));
+}
+
+// ---- request handling -----------------------------------------------------------------
+
+void FakeSocketAgent::handleRequest(Connection* connection, Wire::RequestEnvelope&& envelope,
+                                    std::vector<Wire::UniqueFd>& fds)
+{
+    const quint64 req = envelope.req;
+    Wire::Request& body = envelope.body;
+
+    const bool lacksPinManagement = (m_config.capabilities & (1U << 3)) == 0;
+
+    if (std::get_if<Wire::Hello>(&body) != nullptr) {
+        Wire::HelloAck ack;
+        ack.agentVer = m_config.agentVersion.toStdString();
+        for (const QString& feature : m_config.features) {
+            ack.features.push_back(feature.toStdString());
+        }
+        sendCbor(connection, Wire::makeReply(req, ack));
+        return;
+    }
+    if (std::get_if<Wire::GetState>(&body) != nullptr) {
+        ++m_getStateCalls;
+        if (m_config.wedgeGetState) {
+            return; // scripted wedge: never answers
+        }
+        sendCbor(connection, Wire::makeReply(req, buildState()));
+        return;
+    }
+    if (std::get_if<Wire::ReadIdentity>(&body) != nullptr) {
+        if (m_config.failMethodEntry) {
+            sendEntryError(connection, req, m_config.entryError);
+            return;
+        }
+        mintOperation(connection, req, OpKind::Identity, false);
+        return;
+    }
+    if (std::get_if<Wire::GetPhoto>(&body) != nullptr) {
+        if (m_config.failMethodEntry) {
+            sendEntryError(connection, req, m_config.entryError);
+            return;
+        }
+        mintOperation(connection, req, OpKind::Photo, false);
+        return;
+    }
+    if (std::get_if<Wire::ReadCertificates>(&body) != nullptr) {
+        if (m_config.failMethodEntry) {
+            sendEntryError(connection, req, m_config.entryError);
+            return;
+        }
+        mintOperation(connection, req, OpKind::Certificates, false);
+        return;
+    }
+    if (const auto* sign = std::get_if<Wire::Sign>(&body)) {
+        if (m_config.failMethodEntry) {
+            sendEntryError(connection, req, m_config.entryError);
+            return;
+        }
+        if (sign->inFd >= fds.size()) {
+            sendEntryError(connection, req, Wire::SyncError::InvalidRequest);
+            return; // fd index outside this frame's SCM_RIGHTS vector
+        }
+        // Capture the verbatim in-args (the document is read synchronously,
+        // before the client closes its copy).
+        m_lastSignCertId = QString::fromStdString(sign->cert);
+        m_lastSignInputBytes = readFdAll(fds[static_cast<std::size_t>(sign->inFd)].get());
+        QVariantMap options;
+        options.insert(QStringLiteral("format"), QString::fromStdString(sign->opts.format));
+        options.insert(QStringLiteral("level"), QString::fromStdString(sign->opts.level));
+        options.insert(QStringLiteral("packaging"), QString::fromStdString(sign->opts.packaging));
+        if (sign->opts.allowExpired) {
+            options.insert(QStringLiteral("allowExpired"), *sign->opts.allowExpired);
+        }
+        if (sign->opts.displayName) {
+            options.insert(QStringLiteral("displayName"), QString::fromStdString(*sign->opts.displayName));
+        }
+        if (sign->opts.reason) {
+            options.insert(QStringLiteral("reason"), QString::fromStdString(*sign->opts.reason));
+        }
+        if (sign->opts.location) {
+            options.insert(QStringLiteral("location"), QString::fromStdString(*sign->opts.location));
+        }
+        m_lastSignOptions = options;
+        mintOperation(connection, req, OpKind::Sign, false);
+        return;
+    }
+    if (const auto* cancel = std::get_if<Wire::CancelOp>(&body)) {
+        sendCbor(connection, Wire::makeReply(req, Wire::AckReply{}));
+        Op* op = findOperation(cancel->op);
+        if (op != nullptr) {
+            ++m_cancelledOps;
+            if (!op->fired && isLive(op->connection)) {
+                op->fired = true;
+                Wire::OpFinished finished;
+                finished.op = op->id;
+                finished.status = Wire::OperationStatus::Cancelled;
+                finished.code = Wire::ErrorCode::None;
+                sendCbor(op->connection, Wire::toCbor(finished));
+            }
+        }
+        return;
+    }
+    if (const auto* recovery = std::get_if<Wire::GetSignResult>(&body)) {
+        ++m_getSignResultCalls;
+        Op* op = findOperation(recovery->op);
+        if (op != nullptr && op->kind == OpKind::Sign && op->retainedArtifact) {
+            FdHandle artifactFd = makeMemfdDocument(m_config.signArtifactBytes);
+            const int raw = artifactFd.get();
+            sendCbor(connection, Wire::makeSignRecoveryReply(req, Wire::SignResult{0, signMeta()}),
+                     std::span<const int>(&raw, 1));
+            return;
+        }
+        Wire::ErrInfo info;
+        info.code = Wire::SyncError::InvalidRequest;
+        info.msgFallback = std::string("no retained result for this operation");
+        sendCbor(connection, Wire::makeErrorReply(req, info));
+        return;
+    }
+    if (const auto* certDer = std::get_if<Wire::GetCertDer>(&body)) {
+        m_lastCertDerReader = QString::fromStdString(certDer->reader);
+        m_lastCertDerCertId = QString::fromStdString(certDer->cert);
+        if (m_config.certDerKeyNotFound) {
+            sendEntryError(connection, req, Wire::SyncError::KeyNotFound);
+            return;
+        }
+        Wire::CertDerReply reply;
+        const auto* derData = reinterpret_cast<const std::uint8_t*>(m_config.certDerBytes.constData());
+        reply.der.assign(derData, derData + m_config.certDerBytes.size());
+        sendCbor(connection, Wire::makeReply(req, reply));
+        return;
+    }
+    if (std::get_if<Wire::ListCredentials>(&body) != nullptr) {
+        ++m_listCredentialsCalls;
+        if (lacksPinManagement) {
+            sendEntryError(connection, req, Wire::SyncError::UnsupportedOnThisCard);
+            return;
+        }
+        // The listing becomes current and its ids are snapshotted — the set
+        // ManagePin resolves pinIds against (list-before-mutate).
+        m_hasListing = true;
+        m_listedIds.clear();
+        for (const FakeSocketCredRecord& record : m_config.credRecords) {
+            m_listedIds.append(record.id);
+        }
+        mintOperation(connection, req, OpKind::Credentials, true);
+        return;
+    }
+    if (const auto* manage = std::get_if<Wire::ManagePin>(&body)) {
+        if (lacksPinManagement) {
+            sendEntryError(connection, req, Wire::SyncError::UnsupportedOnThisCard);
+            return;
+        }
+        if (m_config.credEntryError) {
+            sendEntryError(connection, req, m_config.credEntryErrorName);
+            return;
+        }
+        const QString verb = QString::fromStdString(manage->verb);
+        const bool knownVerb = verb == QLatin1String("change") || verb == QLatin1String("unblock") ||
+                               verb == QLatin1String("activate_pin");
+        if (!knownVerb || (manage->activateKey && verb != QLatin1String("activate_pin"))) {
+            sendEntryError(connection, req, Wire::SyncError::InvalidRequest);
+            return;
+        }
+        const QString pinId = QString::fromStdString(manage->pinId);
+        if (!m_hasListing || !m_listedIds.contains(pinId)) {
+            sendEntryError(connection, req, Wire::SyncError::UnknownCredential);
+            return;
+        }
+        // The mutation reaches the card: the listing cache drops, so a client
+        // that skips the mandatory re-list fails loudly.
+        m_hasListing = false;
+        m_listedIds.clear();
+        mintOperation(connection, req, OpKind::Credentials, false);
+        return;
+    }
+    if (std::get_if<Wire::ActivateSigningKey>(&body) != nullptr) {
+        if (lacksPinManagement) {
+            sendEntryError(connection, req, Wire::SyncError::UnsupportedOnThisCard);
+            return;
+        }
+        if (m_config.credEntryError) {
+            sendEntryError(connection, req, m_config.credEntryErrorName);
+            return;
+        }
+        m_hasListing = false;
+        m_listedIds.clear();
+        mintOperation(connection, req, OpKind::Credentials, false);
+        return;
+    }
+    // Request families this fake does not model (config, Pkcs11 raw crypto):
+    // answer a clean per-request refusal.
+    Wire::ErrInfo info;
+    info.code = Wire::SyncError::InvalidRequest;
+    info.msgFallback = std::string("request family not modelled by this fake");
+    sendCbor(connection, Wire::makeErrorReply(req, info));
+}
+
+// ---- live scripting ---------------------------------------------------------------------
+
+void FakeSocketAgent::setCardPresent(bool present)
+{
+    if (m_config.hasCard == present) {
+        return;
+    }
+    m_config.hasCard = present;
+    if (present) {
+        // Card first, then the reader's claim — a reader's card reference
+        // must resolve immediately (the presence-model ordering).
+        broadcastCbor(Wire::toCbor(Wire::CardAdded{buildCardState()}));
+        Wire::PropertyChanged changed;
+        changed.handle = kReaderHandle;
+        changed.iface = kReaderIface;
+        changed.props.emplace("HasCard", Wire::CborValue(true));
+        changed.props.emplace("Card", Wire::CborValue(std::string(kCardHandle)));
+        broadcastCbor(Wire::toCbor(changed));
+        return;
+    }
+    m_hasListing = false;
+    m_listedIds.clear();
+    broadcastCbor(Wire::toCbor(Wire::CardRemoved{std::string(kCardHandle)}));
+    Wire::PropertyChanged changed;
+    changed.handle = kReaderHandle;
+    changed.iface = kReaderIface;
+    changed.props.emplace("HasCard", Wire::CborValue(false));
+    changed.props.emplace("Card", Wire::CborValue(std::string()));
+    broadcastCbor(Wire::toCbor(changed));
+}
+
+void FakeSocketAgent::emitCardCapabilitiesChanged(quint32 capabilities)
+{
+    m_config.capabilities = capabilities;
+    Wire::PropertyChanged changed;
+    changed.handle = kCardHandle;
+    changed.iface = kCardIface;
+    changed.props.emplace("Capabilities", Wire::CborValue::uint(capabilities));
+    broadcastCbor(Wire::toCbor(changed));
+}
+
+void FakeSocketAgent::sendAgentQuiesced(quint32 reason)
+{
+    Wire::AgentQuiesced quiesced;
+    quiesced.reason = static_cast<Wire::QuiesceReason>(reason);
+    broadcastCbor(Wire::toCbor(quiesced));
+}
+
+void FakeSocketAgent::sendNonCanonicalFrame()
+{
+    // uint 42 in TWO-byte form (0x19 0x00 0x2A): well-formed CBOR, but not
+    // shortest-form — the canonical decode rejects it, so the client must
+    // fail the connection closed.
+    static constexpr std::uint8_t kNonCanonical[] = {0x19, 0x00, 0x2A};
+    std::vector<Connection*> targets;
+    targets.reserve(m_connections.size());
+    for (const auto& connection : m_connections) {
+        targets.push_back(connection.get());
+    }
+    for (Connection* connection : targets) {
+        if (!Wire::sendFrame(connection->fd.get(), kNonCanonical)) {
+            closeConnection(connection);
+        }
+    }
+}
+
+} // namespace LibreSCRS::AgentClient::Fakes
