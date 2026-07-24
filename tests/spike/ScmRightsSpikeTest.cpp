@@ -178,6 +178,12 @@ std::vector<UniqueFd> recvFdsViaPoll(int sock, std::size_t maxFds, int overallTi
         if (pfd.revents & POLLIN) {
             break;
         }
+        if (pfd.revents & (POLLHUP | POLLERR | POLLNVAL)) {
+            // Level-triggered poll() would otherwise keep returning >0 for
+            // this fd on every iteration (the condition persists), spinning
+            // hot until the deadline instead of failing fast.
+            return {};
+        }
     }
 
     char data = 0;
@@ -196,6 +202,14 @@ std::vector<UniqueFd> recvFdsViaPoll(int sock, std::size_t maxFds, int overallTi
 
     const ssize_t received = ::recvmsg(sock, &msg, 0);
     if (received != 1) {
+        return {};
+    }
+    // MSG_CTRUNC means the control buffer was too small and the kernel
+    // silently dropped some SCM_RIGHTS ancillary data -- without this check
+    // we'd return only the fds that happened to fit, silently losing the
+    // rest. No fds have been parsed out of cmsg yet at this point, so there
+    // is nothing to close here.
+    if (msg.msg_flags & MSG_CTRUNC) {
         return {};
     }
 
@@ -304,4 +318,35 @@ TEST(ScmRightsSpike, PollLoopTimesOutWhenNoMessageIsSent)
 
     std::vector<UniqueFd> received = recvFdsViaPoll(receiverSock.get(), 1, /*overallTimeoutMs=*/150);
     EXPECT_TRUE(received.empty());
+}
+
+// Guards the fix for a code-review finding: recvFdsViaPoll's loop used to
+// break only on POLLIN, with no POLLHUP/POLLERR/POLLNVAL check. On this
+// platform an orderly-closed AF_UNIX SOCK_STREAM peer sets POLLIN together
+// with POLLHUP (verified separately), so a plain peer close() already
+// returned promptly even before the fix and cannot exercise the missing
+// branch. Passing an already-closed (invalid) fd is the one way to
+// deterministically get revents with POLLNVAL and WITHOUT POLLIN, which is
+// exactly the shape of bug the review flagged: the old `if (revents &
+// POLLIN) break;` never fires, but level-triggered poll() on an invalid fd
+// still returns >0 immediately every iteration regardless of the requested
+// timeout, so the loop spun hot until the deadline instead of returning
+// immediately. Both emptiness and elapsed time are asserted so a regression
+// back to spinning-until-deadline fails this test.
+TEST(ScmRightsSpike, PollLoopReturnsEmptyQuicklyWhenSocketFdIsInvalid)
+{
+    int fds[2];
+    ASSERT_EQ(::socketpair(AF_UNIX, SOCK_STREAM, 0, fds), 0) << std::strerror(errno);
+    const int invalidSock = fds[1];
+    ASSERT_EQ(::close(fds[0]), 0) << std::strerror(errno);
+    ASSERT_EQ(::close(fds[1]), 0) << std::strerror(errno);
+
+    const auto start = std::chrono::steady_clock::now();
+    std::vector<UniqueFd> received = recvFdsViaPoll(invalidSock, 1, /*overallTimeoutMs=*/2000);
+    const auto elapsedMs =
+        std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start).count();
+
+    EXPECT_TRUE(received.empty());
+    EXPECT_LT(elapsedMs, 500) << "recvFdsViaPoll busy-spun instead of returning promptly (elapsed=" << elapsedMs
+                              << "ms)";
 }
