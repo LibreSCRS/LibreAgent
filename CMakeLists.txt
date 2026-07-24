@@ -130,6 +130,22 @@ if(LIBREAGENT_BUILD_CORE)
         # credential-flow teardown), so it inherits the same GCC 16 false positive.
         src/AgentCore.cpp
         PROPERTIES COMPILE_OPTIONS -Wno-array-bounds)
+
+    # Compile-time-only lockstep proof between the std-only wire mirrors
+    # (include/LibreSCRS/Agent/wire/{PreReadAuth,CredentialWire}.h — LM-free,
+    # reachable from a Core-less LIBREAGENT_BUILD_WIRE-only build) and their
+    # authoritative sources (LibreMiddleware's PreReadAuthMethod; this repo's
+    # own CredentialOutcome/CredentialRecord/CredentialOpResult). It is its
+    # own OBJECT target, deliberately NOT folded into LibreAgentWire's
+    # sources above: Wire must stay LM-free, but this TU needs to see LM
+    # through LibreAgent::Core to do the comparison, so it can only exist
+    # when Core is built. No runtime code — every check is a static_assert,
+    # so a passing compile of this target IS the test; see the file's own
+    # header comment and tests/wire/WireHeaderPurity.cpp for the sibling
+    # dependency-isolation proof.
+    add_library(LibreAgentWireParityChecks OBJECT src/wire/WireParityChecks.cpp)
+    target_link_libraries(LibreAgentWireParityChecks PRIVATE LibreAgent::Core)
+    target_compile_features(LibreAgentWireParityChecks PRIVATE cxx_std_23)
 endif() # LIBREAGENT_BUILD_CORE
 
 if(LIBREAGENT_BUILD_WIRE)

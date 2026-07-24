@@ -1,0 +1,33 @@
+// SPDX-License-Identifier: LGPL-2.1-or-later
+// SPDX-FileCopyrightText: 2026 hirashix0
+#pragma once
+#include <cstdint>
+
+// Std-only mirror of the authoritative LibreSCRS::Auth::PreReadAuthMethod
+// enum (declared alongside AuthRequirement in the middleware's auth headers).
+// Messages.h needs the pre-read-unlock-method vocabulary on the wire without
+// pulling in LM's auth/plugin/smartcard headers just for a 3-value enum —
+// this header has no include beyond <cstdint>, so it stays reachable from a
+// LIBREAGENT_BUILD_CORE=OFF, LIBREAGENT_BUILD_WIRE=ON configuration.
+//
+// This mirror is NOT self-certifying: src/wire/WireParityChecks.cpp
+// (core-gated, so it sees both this header and the LM original) statically
+// asserts every enumerator's underlying value stays in lockstep with LM's.
+// An append, rename, or renumber on the LM side fails THIS repo's build
+// until the mirror is updated to match — never edit one side without the
+// other.
+//
+// NOTE: the pre-read-auth vocabulary is slated for a credential-centric
+// rename in a future increment. This mirrors what is authoritative TODAY;
+// the parity asserts are exactly what forces the two to move together when
+// that rename lands.
+
+namespace LibreSCRS::Agent::Wire {
+
+enum class PreReadAuth : std::uint8_t {
+    None = 0,    ///< No pre-read authentication required.
+    BacMrz = 1,  ///< ICAO 9303 Basic Access Control derived from MRZ.
+    PaceCan = 2, ///< PACE using a Card Access Number.
+};
+
+} // namespace LibreSCRS::Agent::Wire
