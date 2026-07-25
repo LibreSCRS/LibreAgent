@@ -17,6 +17,14 @@
 ///       SEPARATE, server-side budget the client just observes. A caller may
 ///       override any of these per-call; these are only the library's
 ///       out-of-the-box defaults.
+///
+/// @note Enforcement differs per constant: the transports apply
+///       kHandshakeTimeoutMs and kDefaultCallTimeoutMs internally to their
+///       synchronous round-trips, but kLongOperationTimeoutMs is a
+///       CALLER-ENFORCED advisory budget — the library has NO internal
+///       watchdog and never auto-fails a stalled operation. A consumer that
+///       wants stall detection must run its own timer against this constant
+///       and call AgentOperation::cancel() when it expires.
 
 namespace LibreSCRS::AgentClient {
 
