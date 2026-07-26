@@ -326,15 +326,15 @@ TEST_P(CertReadFlowVerdictTest, MapsStatusAndToken)
     }
 }
 
-INSTANTIATE_TEST_SUITE_P(
-    EachVerdict, CertReadFlowVerdictTest,
-    ::testing::Values(std::pair{CertTrustStatus::Trusted, std::string{"trusted"}},
-                     std::pair{CertTrustStatus::UntrustedRoot, std::string{"untrusted-root"}},
-                     std::pair{CertTrustStatus::BrokenChain, std::string{"broken-chain"}},
-                     std::pair{CertTrustStatus::InvalidCertificate, std::string{"invalid"}},
-                     std::pair{CertTrustStatus::Expired, std::string{"expired"}},
-                     std::pair{CertTrustStatus::Revoked, std::string{"revoked"}},
-                     std::pair{CertTrustStatus::OfflineUnverified, std::string{"offline-unverified"}}));
+INSTANTIATE_TEST_SUITE_P(EachVerdict, CertReadFlowVerdictTest,
+                         ::testing::Values(std::pair{CertTrustStatus::Trusted, std::string{"trusted"}},
+                                           std::pair{CertTrustStatus::UntrustedRoot, std::string{"untrusted-root"}},
+                                           std::pair{CertTrustStatus::BrokenChain, std::string{"broken-chain"}},
+                                           std::pair{CertTrustStatus::InvalidCertificate, std::string{"invalid"}},
+                                           std::pair{CertTrustStatus::Expired, std::string{"expired"}},
+                                           std::pair{CertTrustStatus::Revoked, std::string{"revoked"}},
+                                           std::pair{CertTrustStatus::OfflineUnverified,
+                                                     std::string{"offline-unverified"}}));
 
 // The offline/no-TSL path is a VALID Ok outcome carrying OfflineUnverified +
 // "offline-unverified" -- never an error, and never silently downgraded to
