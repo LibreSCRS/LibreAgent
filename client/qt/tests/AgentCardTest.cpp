@@ -55,7 +55,7 @@ TEST(AgentCard, PropertiesReflectFake)
 {
     FakeAgent::Config cfg;
     cfg.capabilities = Cap::IdentityData | Cap::Pki;
-    cfg.preReadAuth = QStringLiteral("PaceCan");
+    cfg.preReadAuth = QStringLiteral("Can");
     Harness h(cfg);
 
     auto client = makeClient(h);
@@ -64,15 +64,15 @@ TEST(AgentCard, PropertiesReflectFake)
     // capabilityTokens() enumerates in ascending bit order: Pki (bit0) before
     // IdentityData (bit1), regardless of the OR order the fake was configured with.
     EXPECT_EQ(card->capabilities(), (QStringList{QStringLiteral("Pki"), QStringLiteral("IdentityData")}));
-    EXPECT_EQ(card->preReadAuth(), QStringLiteral("PaceCan"));
+    EXPECT_EQ(card->preReadAuth(), QStringLiteral("Can"));
     EXPECT_EQ(card->readerId(), h.readerPath());
 }
 
 TEST(AgentCard, PreReadAuthAllThreeVocabularyValues)
 {
-    for (const auto& [wire, expected] : {std::pair{QStringLiteral("None"), PreReadAuth::None},
-                                         std::pair{QStringLiteral("BacMrz"), PreReadAuth::BacMrz},
-                                         std::pair{QStringLiteral("PaceCan"), PreReadAuth::PaceCan}}) {
+    for (const auto& [wire, expected] :
+         {std::pair{QStringLiteral("None"), PreReadAuth::None}, std::pair{QStringLiteral("Mrz"), PreReadAuth::Mrz},
+          std::pair{QStringLiteral("Can"), PreReadAuth::Can}}) {
         FakeAgent::Config cfg;
         cfg.capabilities = Cap::IdentityData;
         cfg.preReadAuth = wire;
@@ -85,6 +85,59 @@ TEST(AgentCard, PreReadAuthAllThreeVocabularyValues)
         // ...and decodes to the same enum the lifted client used to expose directly.
         EXPECT_EQ(preReadAuthFromToken(card->preReadAuth()), expected) << wire.toStdString();
     }
+}
+
+// Insertion carries atrHex always, and cardType when the fake scripts an
+// unambiguous single-candidate value (empty otherwise -- "empty until known").
+TEST(AgentCard, InsertionCarriesAtrHexAndScriptedCardType)
+{
+    FakeAgent::Config cfg;
+    cfg.capabilities = Cap::IdentityData;
+    cfg.cardType = QStringLiteral("SRB-eID");
+    cfg.atrHex = QStringLiteral("3B7F96000080318065B085040132900085");
+    Harness h(cfg);
+
+    auto client = makeClient(h);
+    AgentCard* card = client->card(h.cardPath());
+    ASSERT_NE(card, nullptr);
+    EXPECT_EQ(card->cardType(), QStringLiteral("SRB-eID"));
+    EXPECT_EQ(card->atrHex(), QStringLiteral("3B7F96000080318065B085040132900085"));
+}
+
+TEST(AgentCard, InsertionLeavesCardTypeEmptyWhenNotScripted)
+{
+    FakeAgent::Config cfg;
+    cfg.capabilities = Cap::IdentityData;
+    // cfg.cardType left at its default (empty) -- models the ambiguous/
+    // not-yet-known multi-candidate case.
+    Harness h(cfg);
+
+    auto client = makeClient(h);
+    AgentCard* card = client->card(h.cardPath());
+    ASSERT_NE(card, nullptr);
+    EXPECT_TRUE(card->cardType().isEmpty());
+}
+
+// The post-read authoritative update flips cardType and fires the
+// DEDICATED cardTypeChanged() signal (in addition to the generic changed()).
+TEST(AgentCard, CardTypePropertiesChangedFlipsValueAndFiresDedicatedSignal)
+{
+    FakeAgent::Config cfg;
+    cfg.capabilities = Cap::IdentityData;
+    Harness h(cfg);
+
+    auto client = makeClient(h);
+    AgentCard* card = client->card(h.cardPath());
+    ASSERT_NE(card, nullptr);
+    EXPECT_TRUE(card->cardType().isEmpty());
+
+    QSignalSpy changedSpy(card, &AgentCard::changed);
+    QSignalSpy cardTypeChangedSpy(card, &AgentCard::cardTypeChanged);
+    h.emitCardTypeChanged(QStringLiteral("SRB-eID"));
+
+    ASSERT_TRUE(waitFor([&]() { return card->cardType() == QStringLiteral("SRB-eID"); }));
+    EXPECT_GE(changedSpy.count(), 1);
+    EXPECT_GE(cardTypeChangedSpy.count(), 1);
 }
 
 TEST(AgentCard, SignReturnsOperationThatFinishesOk)
@@ -126,6 +179,97 @@ TEST(AgentCard, ReadIdentityDeliversFieldMap)
     const bool hasPersonal = std::any_of(groups.cbegin(), groups.cend(),
                                          [](const FieldGroup& g) { return g.key == QStringLiteral("personal"); });
     EXPECT_TRUE(hasPersonal);
+}
+
+// ReadTokenInfo rides the SAME Identity1 result path as ReadIdentity —
+// the FakeAgent scripts a DISTINCT "token" group (label/serial_number/
+// manufacturer) for it, so this proves the client demarshals it correctly
+// through the identical Identity1 wire shape.
+TEST(AgentCard, ReadTokenInfoDeliversTokenGroup)
+{
+    FakeAgent::Config cfg;
+    cfg.capabilities = Cap::Pki;
+    cfg.operationDelayMs = 20;
+    // The transport-neutral entry gate (AgentCard::startOperation) requires
+    // the agent to advertise "token-info" — script it explicitly rather than
+    // relying on the default feature set, which does not include it.
+    cfg.features = {QStringLiteral("credentials"), QStringLiteral("token-info")};
+    Harness h(cfg);
+
+    auto client = makeClient(h);
+    AgentCard* card = client->card(h.cardPath());
+    ASSERT_NE(card, nullptr);
+    AgentOperation* op = card->readTokenInfo();
+    ASSERT_NE(op, nullptr);
+
+    ASSERT_TRUE(waitFor([&]() { return op->isFinished(); }));
+    EXPECT_EQ(op->status(), OperationStatus::Ok);
+    const QList<FieldGroup> groups = op->identityResult();
+    ASSERT_EQ(groups.size(), 1);
+    EXPECT_EQ(groups.front().key, QStringLiteral("token"));
+    const QList<Field>& fields = groups.front().fields;
+    const bool hasLabel =
+        std::any_of(fields.cbegin(), fields.cend(), [](const Field& f) { return f.key == QStringLiteral("label"); });
+    const bool hasSerial = std::any_of(fields.cbegin(), fields.cend(),
+                                       [](const Field& f) { return f.key == QStringLiteral("serial_number"); });
+    const bool hasManufacturer = std::any_of(fields.cbegin(), fields.cend(),
+                                             [](const Field& f) { return f.key == QStringLiteral("manufacturer"); });
+    EXPECT_TRUE(hasLabel);
+    EXPECT_TRUE(hasSerial);
+    EXPECT_TRUE(hasManufacturer);
+}
+
+// The spec's empty-group resilience: an unsupported/best-effort-miss plugin
+// answers a present-but-EMPTY "token" group — a SUCCESS, never an error.
+TEST(AgentCard, ReadTokenInfoEmptyGroupIsStillSuccess)
+{
+    FakeAgent::Config cfg;
+    cfg.capabilities = Cap::Pki;
+    cfg.operationDelayMs = 20;
+    cfg.tokenInfoEmpty = true;
+    // See ReadTokenInfoDeliversTokenGroup's comment: the transport-neutral
+    // entry gate requires the "token-info" feature token to be scripted.
+    cfg.features = {QStringLiteral("credentials"), QStringLiteral("token-info")};
+    Harness h(cfg);
+
+    auto client = makeClient(h);
+    AgentCard* card = client->card(h.cardPath());
+    ASSERT_NE(card, nullptr);
+    AgentOperation* op = card->readTokenInfo();
+    ASSERT_NE(op, nullptr);
+
+    ASSERT_TRUE(waitFor([&]() { return op->isFinished(); }));
+    EXPECT_EQ(op->status(), OperationStatus::Ok);
+    EXPECT_EQ(op->errorCode(), ErrorCode::None);
+    // The empty group carries no wire entry at all (the outer map's "token"
+    // key is absent -- see FakeOperation::buildIdentityFields); the client
+    // correctly reports zero groups, not an error.
+    EXPECT_TRUE(op->identityResult().isEmpty());
+}
+
+// Capability-refused entry: without the PKI bit, ReadTokenInfo throws
+// UnsupportedOnThisCard at method entry (no Operation minted) — the fake
+// enforces the real gate for real (lacksPkiCapability()), so a regression
+// that drops the server-side check cannot pass while throwing against the
+// real agent.
+TEST(AgentCard, ReadTokenInfoRequiresPkiCapability)
+{
+    FakeAgent::Config cfg;
+    cfg.capabilities = Cap::IdentityData; // NO Pki
+    // Script "token-info" so the client's OWN feature gate (AgentCard::
+    // startOperation) does not intercept the call before it ever reaches the
+    // fake — this test is specifically about the AGENT-SIDE capability gate.
+    cfg.features = {QStringLiteral("credentials"), QStringLiteral("token-info")};
+    Harness h(cfg);
+
+    auto client = makeClient(h);
+    AgentCard* card = client->card(h.cardPath());
+    ASSERT_NE(card, nullptr);
+    AgentOperation* op = card->readTokenInfo();
+    ASSERT_NE(op, nullptr) << "a ReadTokenInfo that errors at entry mints a FAILED operation, never nullptr";
+    EXPECT_TRUE(op->isFinished());
+    EXPECT_EQ(op->status(), OperationStatus::Error);
+    EXPECT_EQ(op->errorCode(), ErrorCode::CapabilityMissing);
 }
 
 // a PropertiesChanged whose `changed` map carries the full new value must
@@ -224,6 +368,100 @@ TEST(AgentCard, DemarshalRealShapedCertPayload)
     EXPECT_EQ(c.extra.value(QStringLiteral("chainSubjectCns")).toStringList(),
               (QStringList{QStringLiteral("Ana Anić"), QStringLiteral("MUP CA Građani")}));
     EXPECT_EQ(c.extra.value(QStringLiteral("trustStatusWire")).toUInt(), 2u);
+}
+
+// trustStatus=5 (Revoked) maps to the client's own Revoked case, and the
+// "security" fields-group tokens land in CertificateInfo::securityStatus.
+// Exercised over the raw hand-marshalled path (bypasses operator<<), so this
+// is a genuine wire decode, not a round-trip of the client's own encoder.
+TEST(AgentCard, TrustStatusRevokedMapsToRevokedWithSecurityToken)
+{
+    FakeAgent::Config cfg;
+    cfg.capabilities = Cap::Pki;
+    cfg.operationDelayMs = 20;
+    cfg.rawCertResult = true;
+    FakeCert fc;
+    fc.certId = QStringLiteral("revoked-cert");
+    fc.trustStatus = 5u;
+    fc.securityStatus = QStringList{QStringLiteral("revoked")};
+    cfg.certScript = FakeCertList{fc};
+    Harness h(cfg);
+
+    auto client = makeClient(h);
+    AgentCard* card = client->card(h.cardPath());
+    ASSERT_NE(card, nullptr);
+    AgentOperation* op = card->readCertificates();
+    ASSERT_NE(op, nullptr);
+    ASSERT_TRUE(waitFor([&]() { return op->isFinished(); }));
+
+    const QList<CertificateInfo> certs = op->certificatesResult();
+    ASSERT_EQ(certs.size(), 1);
+    const CertificateInfo& c = certs.constFirst();
+    EXPECT_EQ(c.trust, TrustStatus::Revoked);
+    EXPECT_EQ(c.securityStatus, (QStringList{QStringLiteral("revoked")}));
+    EXPECT_EQ(c.extra.value(QStringLiteral("trustStatusWire")).toUInt(), 5u);
+}
+
+// trustStatus=6 (OfflineUnverified) collapses to the client's Unknown case
+// (no dedicated client-side enum value for it), but the "offline-unverified"
+// token still rides securityStatus for a consumer that wants the nuance.
+TEST(AgentCard, TrustStatusOfflineUnverifiedMapsToUnknownWithSecurityToken)
+{
+    FakeAgent::Config cfg;
+    cfg.capabilities = Cap::Pki;
+    cfg.operationDelayMs = 20;
+    cfg.rawCertResult = true;
+    FakeCert fc;
+    fc.certId = QStringLiteral("offline-cert");
+    fc.trustStatus = 6u;
+    fc.securityStatus = QStringList{QStringLiteral("offline-unverified")};
+    cfg.certScript = FakeCertList{fc};
+    Harness h(cfg);
+
+    auto client = makeClient(h);
+    AgentCard* card = client->card(h.cardPath());
+    ASSERT_NE(card, nullptr);
+    AgentOperation* op = card->readCertificates();
+    ASSERT_NE(op, nullptr);
+    ASSERT_TRUE(waitFor([&]() { return op->isFinished(); }));
+
+    const QList<CertificateInfo> certs = op->certificatesResult();
+    ASSERT_EQ(certs.size(), 1);
+    const CertificateInfo& c = certs.constFirst();
+    EXPECT_EQ(c.trust, TrustStatus::Unknown);
+    EXPECT_EQ(c.securityStatus, (QStringList{QStringLiteral("offline-unverified")}));
+    EXPECT_EQ(c.extra.value(QStringLiteral("trustStatusWire")).toUInt(), 6u);
+}
+
+// A trustStatus value this build does not recognise at all (neither the
+// frozen 0-4 range nor this task's 5/6 append) must still degrade to Unknown
+// rather than fail the decode -- the wire-law tolerance policy pinned in
+// TokenMap-equivalent client mapping code.
+TEST(AgentCard, UnknownFutureTrustStatusMapsToUnknown)
+{
+    FakeAgent::Config cfg;
+    cfg.capabilities = Cap::Pki;
+    cfg.operationDelayMs = 20;
+    cfg.rawCertResult = true;
+    FakeCert fc;
+    fc.certId = QStringLiteral("future-cert");
+    fc.trustStatus = 42u; // not yet defined by any agent build
+    cfg.certScript = FakeCertList{fc};
+    Harness h(cfg);
+
+    auto client = makeClient(h);
+    AgentCard* card = client->card(h.cardPath());
+    ASSERT_NE(card, nullptr);
+    AgentOperation* op = card->readCertificates();
+    ASSERT_NE(op, nullptr);
+    ASSERT_TRUE(waitFor([&]() { return op->isFinished(); }));
+
+    const QList<CertificateInfo> certs = op->certificatesResult();
+    ASSERT_EQ(certs.size(), 1);
+    const CertificateInfo& c = certs.constFirst();
+    EXPECT_EQ(c.trust, TrustStatus::Unknown);
+    EXPECT_TRUE(c.securityStatus.isEmpty());
+    EXPECT_EQ(c.extra.value(QStringLiteral("trustStatusWire")).toUInt(), 42u);
 }
 
 // the FakeAgent's Sign must honor + expose its in-args. Assert verbatim
@@ -520,12 +758,12 @@ TEST(AgentCard, DirectApplyRacingRefreshReissuesGetAllAndConverges)
     ASSERT_TRUE(waitFor([&]() { return h.cardGetAllCallCount() >= 1; })) << "the first GetAll must reach the agent";
 
     // Q changes and arrives as a direct full-value apply (no new invalidation).
-    h.emitCardPropertiesChanged({{QStringLiteral("PreReadAuthMethod"), QStringLiteral("PaceCan")}});
-    ASSERT_TRUE(waitFor([&]() { return card->preReadAuth() == QStringLiteral("PaceCan"); }));
+    h.emitCardPropertiesChanged({{QStringLiteral("PreReadAuthMethod"), QStringLiteral("Can")}});
+    ASSERT_TRUE(waitFor([&]() { return card->preReadAuth() == QStringLiteral("Can"); }));
     // A coherent agent's GetAll now serves the post-Q state; the in-flight call
     // already captured the pre-Q script at arrival time.
     h.scriptCardGetAll(100, QVariantMap{{QStringLiteral("Capabilities"), newCaps},
-                                        {QStringLiteral("PreReadAuthMethod"), QStringLiteral("PaceCan")}});
+                                        {QStringLiteral("PreReadAuthMethod"), QStringLiteral("Can")}});
 
     // The pre-Q reply lands, is discarded (it would revert Q to None), and the
     // refresh is re-issued: P converges, Q never flickers, and the server saw a
@@ -533,7 +771,7 @@ TEST(AgentCard, DirectApplyRacingRefreshReissuesGetAllAndConverges)
     ASSERT_TRUE(
         waitFor([&]() { return capabilityBits(card->capabilities()) == newCaps; }, kDefaultCallTimeoutMs + 2000))
         << "the invalidated property must converge via the re-issued GetAll";
-    EXPECT_EQ(card->preReadAuth(), QStringLiteral("PaceCan"))
+    EXPECT_EQ(card->preReadAuth(), QStringLiteral("Can"))
         << "the discarded pre-Q snapshot must not have reverted the newer direct apply";
     EXPECT_GE(h.cardGetAllCallCount(), 2) << "the discard must re-issue a GetAll";
 }

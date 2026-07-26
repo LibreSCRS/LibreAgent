@@ -29,9 +29,11 @@
 #include <QStringList>
 #include <QVariantMap>
 
+#include <map>
 #include <memory>
 #include <optional>
 #include <span>
+#include <string>
 #include <vector>
 
 class QSocketNotifier;
@@ -50,7 +52,22 @@ struct FakeSocketCert
     quint32 keyUsageBits = 0;
     QStringList extendedKeyUsageOids;
     QStringList chainSubjectCns;
-    quint32 trustStatus = 255;
+    quint32 trustStatus = 255; ///< 255 = Unknown; 5 = Revoked, 6 = OfflineUnverified.
+    /// Tokens riding the "security" fields-group, mirroring trustStatus (e.g.
+    /// {"revoked"} for trustStatus=5). Empty by default.
+    QStringList securityStatus;
+};
+
+/// One scripted progressive field group: the ordered payload of ONE
+/// "OpIdentityGroup" event. Distinct from the final Wire::IdentityResult map
+/// (unordered on the wire) precisely because streaming order is the thing
+/// this event exists to carry — an explicit ordered list is the only way to
+/// pin "these groups arrive in THIS order", mirroring FakeIdentityGroup (the
+/// D-Bus fake's twin struct).
+struct FakeSocketIdentityGroup
+{
+    QString key;
+    std::map<std::string, LibreSCRS::Agent::Wire::IdentityField> fields;
 };
 
 /// One scripted credential record a ListCredentials operation returns.
@@ -78,9 +95,14 @@ public:
         QString readerName = QStringLiteral("Fake");
         quint32 capabilities = 0;
         bool hasCard = true;
-        QString preReadAuth = QStringLiteral("None"); ///< None | BacMrz | PaceCan
-        int operationDelayMs = 5;                     ///< delay before an op fires its result/finished events
-        quint32 finalStatus = 0;                      ///< 0 Ok / 1 Cancelled / 2 Error
+        QString preReadAuth = QStringLiteral("None"); ///< None | Mrz | Can
+        // card-state's cardType/atr -- empty (default) models the ambiguous/
+        // not-yet-known cardType case, or an agent predating this surface
+        // (both keys simply absent from the encoded map either way).
+        QString cardType;
+        QString atrHex;
+        int operationDelayMs = 5; ///< delay before an op fires its result/finished events
+        quint32 finalStatus = 0;  ///< 0 Ok / 1 Cancelled / 2 Error
         quint32 finalErrorCode = 0;
         bool raceResultBeforeReturn = false; ///< fire the op's events synchronously, right after op-started
         bool suppressResult = false;         ///< finish Ok WITHOUT the result event AND with nothing to recover
@@ -88,6 +110,11 @@ public:
                                              ///< deterministic lost-result recovery window)
         bool failMethodEntry = false;        ///< card methods answer an err-info at entry (no op minted)
         LibreSCRS::Agent::Wire::SyncError entryError = LibreSCRS::Agent::Wire::SyncError::UnsupportedOnThisCard;
+        /// ReadTokenInfo's Identity1-shaped result carries a present-but-EMPTY
+        /// "token" group instead of the scripted label/serial_number/
+        /// manufacturer fields — the unsupported/best-effort-miss plugin
+        /// case, a SUCCESS with zero fields (never an error).
+        bool tokenInfoEmpty = false;
         bool credEntryError = false; ///< the id-bearing mutations answer the scripted err at entry
         LibreSCRS::Agent::Wire::SyncError credEntryErrorName = LibreSCRS::Agent::Wire::SyncError::UnknownCredential;
         bool wedgeGetState = false; ///< GetState never answers (models a wedged discovery)
@@ -101,6 +128,14 @@ public:
         /// historical {"pades","b-lta",true,true}). Scriptable so a
         /// cross-transport test can request IDENTICAL values from both fakes.
         std::optional<LibreSCRS::Agent::Wire::SignMeta> signMetaOverride;
+        /// SignBatch: from THIS 0-based row index onward (inclusive), every
+        /// row's artifact is a ZERO-LENGTH memfd and its code is
+        /// batchHaltErrorCode — the SAME per-row halt-code convention the
+        /// real agent's op-result-ready freezes (see FakeAgent::Config's
+        /// identically-named fields, the D-Bus twin). -1 (default) means no
+        /// halt: every row succeeds with signArtifactBytes/signMeta.
+        int batchHaltAtIndex = -1;
+        quint32 batchHaltErrorCode = 0;
         QByteArray certDerBytes;         ///< GetCertDer success bytes
         bool certDerKeyNotFound = false; ///< GetCertDer answers err KeyNotFound instead
         QList<FakeSocketCert> certScript;
@@ -108,6 +143,27 @@ public:
         bool credBlocked = false;
         std::optional<int> credRetriesLeft;
         QList<FakeSocketCredRecord> credRecords;
+        /// LayoutVisual's scripted reply — see FakeAgent::Config's
+        /// identically-named fields (the D-Bus twin); a cross-transport
+        /// parity test scripts both fakes to the SAME values.
+        double layoutFontSize = 9.5;
+        double layoutLineHeight = 11.4;
+        QStringList layoutLines = {QStringLiteral("Signed by"), QStringLiteral("John Doe")};
+        bool layoutClipped = false;
+        /// GetAppearanceFont's scripted bytes, served as a fresh anonymous
+        /// fd per call.
+        QByteArray appearanceFontBytes = QByteArrayLiteral("FAKE-LIBERATION-SANS-TTF");
+        /// Ordered per-group sequence a ReadIdentity op streams via
+        /// "OpIdentityGroup" events BEFORE its op-result-ready (see
+        /// FakeSocketIdentityGroup's own doc comment for why this is an
+        /// explicit ordered list). Empty (default) streams nothing — every
+        /// pre-existing test is unaffected. When non-empty, fireOperation's
+        /// Identity arm also switches from the historical fixed two-field
+        /// script to the UNION of this list, so the eventual result always
+        /// matches what streamed. Combine with raceResultBeforeReturn to
+        /// model a client that subscribes too late to observe ANY of them
+        /// (mirrors the D-Bus fake's own late-subscriber race).
+        QList<FakeSocketIdentityGroup> identityGroupScript;
     };
 
     explicit FakeSocketAgent(Config config, QObject* parent = nullptr);
@@ -133,6 +189,9 @@ public:
     /// Change the card's capabilities and broadcast the PropertyChanged
     /// carrying the full new value.
     void emitCardCapabilitiesChanged(quint32 capabilities);
+    /// Change the card's CardType and broadcast the PropertyChanged carrying
+    /// the full new value -- the post-read authoritative update.
+    void emitCardTypeChanged(const QString& cardType);
     void sendAgentQuiesced(quint32 reason);
     /// Broadcast one frame whose body is well-formed-length but NON-CANONICAL
     /// CBOR (a non-shortest-form integer) — must fail the client closed.
@@ -142,11 +201,20 @@ public:
     [[nodiscard]] int operationCount() const;
     [[nodiscard]] int cancelledOperationCount() const;
     [[nodiscard]] int getStateCount() const;
+    /// How many LayoutVisual/GetAppearanceFont requests reached this
+    /// fake — proves a client-side "layout-preview" feature-gate refusal
+    /// never dialed the wire (mirrors getStateCount()'s own purpose).
+    [[nodiscard]] int layoutCallCount() const;
+    [[nodiscard]] int appearanceFontCallCount() const;
     [[nodiscard]] int listCredentialsCount() const;
     [[nodiscard]] int getSignResultCount() const;
     [[nodiscard]] QString lastSignCertId() const;
     [[nodiscard]] QByteArray lastSignInputBytes() const;
     [[nodiscard]] QVariantMap lastSignOptions() const;
+    [[nodiscard]] QString lastSignBatchCertId() const;
+    [[nodiscard]] QVariantMap lastSignBatchOptions() const;
+    [[nodiscard]] QStringList lastSignBatchDisplayNames() const;
+    [[nodiscard]] QList<QByteArray> lastSignBatchDocumentBytes() const;
     [[nodiscard]] QString lastCertDerReader() const;
     [[nodiscard]] QString lastCertDerCertId() const;
 
@@ -157,7 +225,10 @@ private:
         std::unique_ptr<QSocketNotifier> notifier;
         std::unique_ptr<LibreSCRS::Agent::Wire::FrameReassembler> reassembler;
     };
-    enum class OpKind : unsigned char { Identity, Photo, Certificates, Sign, Credentials };
+    // TokenInfo rides the SAME Identity1-shaped op-result-ready arm as
+    // Identity (ReadTokenInfo mints NO new result shape) but fireOperation()
+    // serves a DIFFERENT scripted field map for it — the "token" group.
+    enum class OpKind : unsigned char { Identity, Photo, Certificates, Sign, Credentials, TokenInfo, SignBatch };
     struct Op
     {
         quint64 id = 0;
@@ -166,6 +237,11 @@ private:
         bool fired = false;
         bool withRecords = false;      ///< Credentials: listing (true) vs mutation (false)
         bool retainedArtifact = false; ///< Sign: GetSignResult may still serve the artifact
+        // SignBatch: the per-document display names captured off the LIVE
+        // request (echoed back verbatim, mirroring the real agent) — NOT a
+        // Config field like the halt point/code below, which the test author
+        // DOES pre-script.
+        QStringList batchDisplayNames;
     };
 
     void onAcceptable();
@@ -181,7 +257,9 @@ private:
     void broadcastCbor(const LibreSCRS::Agent::Wire::CborValue& value);
     void sendEntryError(Connection* connection, quint64 req, LibreSCRS::Agent::Wire::SyncError error);
     /// Mint + schedule a scripted op; answers op-started on @p connection.
-    void mintOperation(Connection* connection, quint64 req, OpKind kind, bool withRecords);
+    /// @p batchDisplayNames is SignBatch-only (see Op::batchDisplayNames).
+    void mintOperation(Connection* connection, quint64 req, OpKind kind, bool withRecords,
+                       QStringList batchDisplayNames = {});
     void fireOperation(quint64 opId);
     [[nodiscard]] Op* findOperation(quint64 opId);
     [[nodiscard]] LibreSCRS::Agent::Wire::StateReply buildState() const;
@@ -199,6 +277,8 @@ private:
     quint64 m_nextOpId = 0;
     int m_cancelledOps = 0;
     int m_getStateCalls = 0;
+    int m_layoutCalls = 0;
+    int m_appearanceFontCalls = 0;
     int m_listCredentialsCalls = 0;
     int m_getSignResultCalls = 0;
     bool m_hasListing = false;
@@ -206,6 +286,10 @@ private:
     QString m_lastSignCertId;
     QByteArray m_lastSignInputBytes;
     QVariantMap m_lastSignOptions;
+    QString m_lastSignBatchCertId;
+    QVariantMap m_lastSignBatchOptions;
+    QStringList m_lastSignBatchDisplayNames;
+    QList<QByteArray> m_lastSignBatchDocumentBytes;
     QString m_lastCertDerReader;
     QString m_lastCertDerCertId;
 };

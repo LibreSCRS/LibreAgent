@@ -48,7 +48,8 @@ public:
     bool available = true;
     bool installed = true;
     RegistrySnapshot snapshot;
-    QString nextOperationId; // empty -> refuse entry with entryError
+    QStringList featureTokens; // TransportSeam::features()
+    QString nextOperationId;   // empty -> refuse entry with entryError
     SeamError entryError;
     std::optional<TerminalSnapshot> terminal;                 // ctor lost-Finished recovery read
     std::function<std::optional<OperationPayload>()> recover; // GetResult recovery pull
@@ -99,6 +100,21 @@ public:
             return std::nullopt;
         }
         return snapshot;
+    }
+    [[nodiscard]] QStringList features() const override
+    {
+        return featureTokens;
+    }
+    // Not exercised by this seam-mapping corpus (no scenario here scripts
+    // "layout-preview" or calls these); trivial stubs only to satisfy the
+    // pure-virtual contract.
+    [[nodiscard]] std::optional<LayoutResult> layoutVisualSignature(const QString& /*text*/, QRectF /*box*/) override
+    {
+        return std::nullopt;
+    }
+    [[nodiscard]] FdHandle appearanceFont() override
+    {
+        return {};
     }
     void subscribeProperties(const QString& objectId, ObjectKind /*kind*/, PropertyListener* listener) override
     {
@@ -195,7 +211,7 @@ RegistrySnapshot oneReaderOneCard()
 
     QVariantMap cardProps;
     cardProps.insert(QStringLiteral("Capabilities"), 3u); // Pki | IdentityData
-    cardProps.insert(QStringLiteral("PreReadAuthMethod"), QStringLiteral("PaceCan"));
+    cardProps.insert(QStringLiteral("PreReadAuthMethod"), QStringLiteral("Can"));
     cardProps.insert(QStringLiteral("Reader"), QStringLiteral("/reader/0"));
     snapshot.cards.append({QStringLiteral("/card/0"), cardProps});
     return snapshot;
@@ -243,7 +259,7 @@ TEST(SeamRegistry, DiscoversReadersAndCardsFromTheSnapshot)
     EXPECT_EQ(reader->card(), card);
     EXPECT_EQ(card->readerId(), QStringLiteral("/reader/0"));
     EXPECT_EQ(card->capabilities(), (QStringList{QStringLiteral("Pki"), QStringLiteral("IdentityData")}));
-    EXPECT_EQ(card->preReadAuth(), QStringLiteral("PaceCan"));
+    EXPECT_EQ(card->preReadAuth(), QStringLiteral("Can"));
 }
 
 TEST(SeamRegistry, UnavailableAgentYieldsInertClient)
@@ -279,6 +295,10 @@ TEST(SeamMapping, SignOptionsMapToWireTokens)
 {
     ClientOnFake h;
     h.fake->nextOperationId = QStringLiteral("/op/1");
+    // A populated tsaUrl is gated on the "tsa-url" feature token
+    // (AgentCard::startOperation) — script it so this test still exercises
+    // the mapping into the wire-keyed options map, not the local refusal.
+    h.fake->featureTokens = {QStringLiteral("tsa-url")};
     AgentCard* card = h.client->card(QStringLiteral("/card/0"));
     ASSERT_NE(card, nullptr);
 
@@ -585,6 +605,58 @@ TEST(SeamOperation, PhaseUpdatesAreStoredAndRelayed)
     EXPECT_EQ(seenProgress, 0.5);
     EXPECT_EQ(op->phase(), OperationPhase::Reading);
     EXPECT_EQ(op->progress(), 0.5);
+}
+
+// Wire tolerance policy (see ClientCodec.h's file comment): OperationPhase is
+// wire-frozen append-only, so a future agent may report a phase value this
+// build does not name yet. The codec/D-Bus layer carries it through raw with
+// no rejection; AgentOperation is the STATEFUL layer that decides what an
+// unrecognised value means: progress is still delivered (the signal still
+// fires, with the updated fraction), but the held/public phase never
+// regresses to the unrecognised value — it holds the last known-good phase.
+TEST(SeamOperation, UnknownPhaseHoldsLastKnownPhaseButStillDeliversProgress)
+{
+    ClientOnFake h;
+    h.fake->nextOperationId = QStringLiteral("/op/1");
+    AgentCard* card = h.client->card(QStringLiteral("/card/0"));
+    AgentOperation* op = card->readIdentity();
+
+    OperationPhase seenPhase = OperationPhase::Created;
+    double seenProgress = -1.0;
+    int phaseChangedCount = 0;
+    QObject::connect(op, &AgentOperation::phaseChanged, op, [&](OperationPhase phase, double progress) {
+        ++phaseChangedCount;
+        seenPhase = phase;
+        seenProgress = progress;
+    });
+
+    // A real, known phase first, to establish a "last known" baseline.
+    h.fake->soleOperationListener()->onPhaseChanged(OperationPhase::Reading, 0.4);
+    EXPECT_EQ(op->phase(), OperationPhase::Reading);
+
+    // A future value this build does not name (past Done=7).
+    h.fake->soleOperationListener()->onPhaseChanged(static_cast<OperationPhase>(99), 0.8);
+    EXPECT_EQ(phaseChangedCount, 2) << "progress must still be delivered on an unrecognised phase";
+    EXPECT_EQ(seenProgress, 0.8);
+    EXPECT_EQ(seenPhase, OperationPhase::Reading) << "the signal's own phase argument must not regress either";
+    EXPECT_EQ(op->phase(), OperationPhase::Reading) << "the public phase() getter must hold the last known value";
+    EXPECT_EQ(op->progress(), 0.8);
+}
+
+// Wire tolerance policy: OperationStatus is wire-frozen append-only too, so a
+// future agent's terminal outcome may carry a status value this build does
+// not name. AgentOperation treats an unrecognised value as Error — never
+// surfaced as an unnamed enumerator via the public status() getter.
+TEST(SeamOperation, UnknownTerminalStatusIsTreatedAsError)
+{
+    ClientOnFake h;
+    h.fake->nextOperationId = QStringLiteral("/op/1");
+    AgentCard* card = h.client->card(QStringLiteral("/card/0"));
+    AgentOperation* op = card->readIdentity();
+
+    h.fake->soleOperationListener()->onFinished(static_cast<OperationStatus>(7), ErrorCode::None, QString(), QString());
+    EXPECT_TRUE(op->isFinished());
+    EXPECT_EQ(op->status(), OperationStatus::Error);
 }
 
 TEST(SeamOperation, CancelForwardsToTheSeam)

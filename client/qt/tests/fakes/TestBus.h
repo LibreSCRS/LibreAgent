@@ -165,6 +165,13 @@ public:
         runOnThread(m_context, [this, capabilities]() { m_agent->emitCardCapabilitiesChanged(capabilities); });
     }
 
+    /// @brief Emit a PropertiesChanged carrying the full new CardType value —
+    ///        the post-read authoritative update.
+    void emitCardTypeChanged(const QString& cardType)
+    {
+        runOnThread(m_context, [this, cardType]() { m_agent->emitCardTypeChanged(cardType); });
+    }
+
     /// @brief Emit a PropertiesChanged that invalidates Capabilities (GetAll path).
     void invalidateCardCapabilities(unsigned capabilities)
     {
@@ -199,6 +206,23 @@ public:
     {
         int out = 0;
         runOnThread(m_context, [this, &out]() { out = m_agent->cancelledOperationCount(); });
+        return out;
+    }
+
+    /// @brief Manager1.LayoutVisualSignature/GetAppearanceFont calls
+    ///        received so far — proves a client-side feature-gate refusal
+    ///        never dialed the wire (see FakeAgent::layoutCallCount()'s doc
+    ///        comment).
+    [[nodiscard]] int layoutCallCount()
+    {
+        int out = 0;
+        runOnThread(m_context, [this, &out]() { out = m_agent->layoutCallCount(); });
+        return out;
+    }
+    [[nodiscard]] int appearanceFontCallCount()
+    {
+        int out = 0;
+        runOnThread(m_context, [this, &out]() { out = m_agent->appearanceFontCallCount(); });
         return out;
     }
 
@@ -244,8 +268,8 @@ public:
         return out;
     }
 
-    /// @brief The (reader, certId) the fake's Pkcs11_1.CertDer last received
-    ///        (read off the server thread, where the FakeAgent lives).
+    /// @brief Read the verbatim Pkcs11_1.CertDer() in-args the fake captured
+    ///        (marshaled off the server thread, where the FakeAgent lives).
     [[nodiscard]] QString lastCertDerReader()
     {
         QString out;
@@ -256,6 +280,33 @@ public:
     {
         QString out;
         runOnThread(m_context, [this, &out]() { out = m_agent->lastCertDerCertId(); });
+        return out;
+    }
+
+    /// @brief Read the verbatim SignBatch() in-args the fake captured
+    ///        (marshaled off the server thread, where the FakeAgent lives).
+    [[nodiscard]] QString lastSignBatchCertId()
+    {
+        QString out;
+        runOnThread(m_context, [this, &out]() { out = m_agent->lastSignBatchCertId(); });
+        return out;
+    }
+    [[nodiscard]] QVariantMap lastSignBatchOptions()
+    {
+        QVariantMap out;
+        runOnThread(m_context, [this, &out]() { out = m_agent->lastSignBatchOptions(); });
+        return out;
+    }
+    [[nodiscard]] QStringList lastSignBatchDisplayNames()
+    {
+        QStringList out;
+        runOnThread(m_context, [this, &out]() { out = m_agent->lastSignBatchDisplayNames(); });
+        return out;
+    }
+    [[nodiscard]] QList<QByteArray> lastSignBatchDocumentBytes()
+    {
+        QList<QByteArray> out;
+        runOnThread(m_context, [this, &out]() { out = m_agent->lastSignBatchDocumentBytes(); });
         return out;
     }
 

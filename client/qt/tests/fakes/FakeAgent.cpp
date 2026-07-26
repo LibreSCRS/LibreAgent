@@ -17,6 +17,7 @@ namespace LibreSCRS::AgentClient::Fakes {
 namespace {
 constexpr const char* kOperationIface = "org.librescrs.Agent.Operation1";
 constexpr const char* kSignIface = "org.librescrs.Agent.Operation.Sign1";
+constexpr const char* kSignBatchIface = "org.librescrs.Agent.Operation.SignBatch1";
 constexpr const char* kIdentityIface = "org.librescrs.Agent.Operation.Identity1";
 constexpr const char* kCertificatesIface = "org.librescrs.Agent.Operation.Certificates1";
 constexpr const char* kPhotoIface = "org.librescrs.Agent.Operation.Photo1";
@@ -148,6 +149,35 @@ private:
     FakeOperation* m_op;
 };
 
+// --- SignBatch1 adaptor -----------------------------------------------------
+class FakeSignBatchAdaptor : public QDBusAbstractAdaptor
+{
+    Q_OBJECT
+    Q_CLASSINFO("D-Bus Interface", "org.librescrs.Agent.Operation.SignBatch1")
+public:
+    explicit FakeSignBatchAdaptor(FakeOperation* op) : QDBusAbstractAdaptor(op), m_op(op) {}
+
+public Q_SLOTS:
+    // GetResult()->a(sha{sv}u): re-serve the retained rows (the late-
+    // subscriber recovery pull), re-sealing every row fresh from the kept
+    // fds. NoResult is a D-Bus error, mirroring the frozen contract +
+    // FakeSignAdaptor.
+    LibreSCRS::AgentClient::SignBatchRowsWire GetResult()
+    {
+        if (!m_op->m_resultRetained) {
+            m_op->replyNoResult();
+            return {};
+        }
+        return m_op->buildBatchRows();
+    }
+
+Q_SIGNALS:
+    void Result(const LibreSCRS::AgentClient::SignBatchRowsWire& rows);
+
+private:
+    FakeOperation* m_op;
+};
+
 // --- Identity1 adaptor -----------------------------------------------------
 class FakeIdentityAdaptor : public QDBusAbstractAdaptor
 {
@@ -171,6 +201,8 @@ public Q_SLOTS:
 
 Q_SIGNALS:
     void Result(const LibreSCRS::AgentClient::IdentityFieldsWire& fields);
+    // Progressive per-group delivery, strictly ahead of Result above.
+    void Group(const QString& groupKey, const LibreSCRS::AgentClient::IdentityFieldGroupWire& fields);
 
 private:
     FakeOperation* m_op;
@@ -292,18 +324,23 @@ FakeOperation::FakeOperation(QObject* parent, QDBusConnection connection, QStrin
                              bool rawCertResult, QByteArray photoBytes, bool photoEmptyMap, bool announceConsentPhase,
                              bool lostSignalRecoverable, QVariantMap credResult,
                              LibreSCRS::AgentClient::CredentialRecordsWire credRecords, QByteArray signArtifactBytes,
-                             QVariantMap signMeta)
+                             QVariantMap signMeta, bool tokenInfoEmpty, QList<FakeIdentityGroup> identityGroupScript,
+                             QStringList batchDisplayNames, int batchHaltAtIndex, uint batchHaltErrorCode)
     : QObject(parent), m_connection(connection), m_path(std::move(path)), m_kind(kind), m_delayMs(delayMs),
       m_finalStatus(finalStatus), m_finalErrorCode(finalErrorCode), m_suppressResult(suppressResult),
       m_lostSignalRecoverable(lostSignalRecoverable), m_certScript(std::move(certScript)),
       m_rawCertResult(rawCertResult), m_photoBytes(std::move(photoBytes)), m_photoEmptyMap(photoEmptyMap),
       m_announceConsentPhase(announceConsentPhase), m_credResult(std::move(credResult)),
       m_credRecords(std::move(credRecords)), m_signArtifactBytes(std::move(signArtifactBytes)),
-      m_signMeta(std::move(signMeta))
+      m_signMeta(std::move(signMeta)), m_tokenInfoEmpty(tokenInfoEmpty),
+      m_identityGroupScript(std::move(identityGroupScript)), m_batchDisplayNames(std::move(batchDisplayNames)),
+      m_batchHaltAtIndex(batchHaltAtIndex), m_batchHaltErrorCode(batchHaltErrorCode)
 {
     m_opAdaptor = std::make_unique<FakeOperationAdaptor>(this);
     if (m_kind == Kind::Sign) {
         m_resultAdaptor.reset(new FakeSignAdaptor(this));
+    } else if (m_kind == Kind::BatchSign) {
+        m_resultAdaptor.reset(new FakeSignBatchAdaptor(this));
     } else if (m_kind == Kind::Certificates) {
         m_resultAdaptor.reset(new FakeCertificatesAdaptor(this));
     } else if (m_kind == Kind::Photo) {
@@ -323,6 +360,11 @@ FakeOperation::~FakeOperation()
     }
     if (m_keptPhotoFd >= 0) {
         ::close(m_keptPhotoFd);
+    }
+    for (int fd : m_keptBatchFds) {
+        if (fd >= 0) {
+            ::close(fd);
+        }
     }
 }
 
@@ -394,6 +436,24 @@ void FakeOperation::fire()
                 Q_EMIT static_cast<FakeCredentialsAdaptor*>(m_resultAdaptor.get())->Result(m_credResult, m_credRecords);
             }
         }
+    } else if (m_kind == Kind::BatchSign) {
+        // Mirrors the real agent's Operation.SignBatch1.Result contract: the
+        // Result fires whenever at least one document was attempted --
+        // reached here, that is ALWAYS true (an operation is only minted
+        // with a non-empty document list) -- regardless of the aggregate
+        // Finished status (a fully-independently-failed or fully-halted
+        // batch still delivers its per-row detail). suppressResult models
+        // the SAME "GetResult also unavailable" negative case every other
+        // kind's gate does.
+        const bool batchRetained = !m_suppressResult;
+        const bool batchEmitSignal = batchRetained && !m_lostSignalRecoverable;
+        if (batchRetained) {
+            retainBatchFds(); // idempotent -- seals every row so GetResult can re-serve them
+            m_resultRetained = true;
+            if (batchEmitSignal) {
+                Q_EMIT static_cast<FakeSignBatchAdaptor*>(m_resultAdaptor.get())->Result(buildBatchRows());
+            }
+        }
     } else {
         const bool okResult = (m_finalStatus == 0u && !m_suppressResult);
         const bool emitSignal = okResult && !m_lostSignalRecoverable;
@@ -425,8 +485,17 @@ void FakeOperation::fire()
                     emitPhotoResult();
                 }
             } else {
-                // Identity: a{sa{s(sssv)}} with one group/one field, via the typed
-                // adaptor signal (auto-relayed using the registered metatype).
+                // Identity/TokenInfo: a{sa{s(sssv)}} via the typed adaptor
+                // signal (auto-relayed using the registered metatype).
+                // Progressive delivery (Kind::Identity only): stream every
+                // scripted group, in order, strictly before the Result signal
+                // below.
+                if (m_kind == Kind::Identity) {
+                    for (int i = 0; i < m_identityGroupScript.size(); ++i) {
+                        const FakeIdentityGroup& g = m_identityGroupScript.at(i);
+                        Q_EMIT static_cast<FakeIdentityAdaptor*>(m_resultAdaptor.get())->Group(g.key, g.fields);
+                    }
+                }
                 if (emitSignal) {
                     Q_EMIT static_cast<FakeIdentityAdaptor*>(m_resultAdaptor.get())->Result(buildIdentityFields());
                 }
@@ -515,6 +584,12 @@ void FakeOperation::emitRawCertResult()
                              fc.notAfter});
         }
         writeGroup(arg, QStringLiteral("validity"), validity);
+        QList<FieldEntry> security;
+        security.reserve(fc.securityStatus.size());
+        for (const QString& token : fc.securityStatus) {
+            security.append({token, QStringLiteral("cert.security.") + token, token, token});
+        }
+        writeGroup(arg, QStringLiteral("security"), security);
         arg.endMap();
 
         arg << fc.keyUsageBits;
@@ -533,6 +608,48 @@ void FakeOperation::emitRawCertResult()
 
 LibreSCRS::AgentClient::IdentityFieldsWire FakeOperation::buildIdentityFields() const
 {
+    if (m_kind == Kind::TokenInfo) {
+        // "token" group — label/serial_number/manufacturer, matching the
+        // Card1.ReadTokenInfo wire result (rides the SAME Identity1 shape as
+        // ReadIdentity; only the group content differs). m_tokenInfoEmpty
+        // scripts the unsupported-plugin case: a present-but-EMPTY group,
+        // a SUCCESS with zero fields, never an error. An empty inner group
+        // is modeled as the group key being ABSENT from the outer map (the
+        // real agent's own CardReadSnapshot -> wire mapping never inserts a
+        // group whose fields ended up empty — see
+        // Operation1Adaptor.cpp::buildIdentity1Wire), so the client's group
+        // iteration sees zero groups either way.
+        LibreSCRS::AgentClient::IdentityFieldsWire fields;
+        if (!m_tokenInfoEmpty) {
+            LibreSCRS::AgentClient::IdentityFieldGroupWire group;
+            group.insert(QStringLiteral("label"),
+                         LibreSCRS::AgentClient::IdentityFieldWire{QStringLiteral("field.label"),
+                                                                   QStringLiteral("Label"), QStringLiteral("text"),
+                                                                   QDBusVariant(QStringLiteral("Fake Token"))});
+            group.insert(QStringLiteral("serial_number"),
+                         LibreSCRS::AgentClient::IdentityFieldWire{
+                             QStringLiteral("field.serial_number"), QStringLiteral("Serial Number"),
+                             QStringLiteral("text"), QDBusVariant(QStringLiteral("0123456789"))});
+            group.insert(QStringLiteral("manufacturer"),
+                         LibreSCRS::AgentClient::IdentityFieldWire{
+                             QStringLiteral("field.manufacturer"), QStringLiteral("Manufacturer"),
+                             QStringLiteral("text"), QDBusVariant(QStringLiteral("LibreSCRS Fake"))});
+            fields.insert(QStringLiteral("token"), group);
+        }
+        return fields;
+    }
+    // Progressive-streaming scripts (Kind::Identity only, m_identityGroupScript
+    // non-empty): the Result/GetResult payload is the UNION of every scripted
+    // group — the exact wire-level invariant this feature is built on ("final
+    // result == union" of whatever streamed), so a test can assert the two
+    // against each other without hand-duplicating the script.
+    if (m_kind == Kind::Identity && !m_identityGroupScript.isEmpty()) {
+        LibreSCRS::AgentClient::IdentityFieldsWire fields;
+        for (const FakeIdentityGroup& g : m_identityGroupScript) {
+            fields.insert(g.key, g.fields);
+        }
+        return fields;
+    }
     // a{sa{s(sssv)}} with one group/one field — the deterministic payload the
     // Identity1.Result signal AND Identity1.GetResult both serve.
     LibreSCRS::AgentClient::IdentityFieldWire field{QStringLiteral("label_given_name"), QStringLiteral("Given name"),
@@ -572,6 +689,7 @@ LibreSCRS::AgentClient::CertListWire FakeOperation::buildCertificateList() const
         ci.extendedKeyUsageOids = fc.extendedKeyUsageOids;
         ci.chainSubjectCns = fc.chainSubjectCns;
         ci.trustStatus = fc.trustStatus;
+        ci.securityStatus = fc.securityStatus;
         certs.append(ci);
     }
     return certs;
@@ -617,6 +735,45 @@ void FakeOperation::emitPhotoResult()
     if (dup >= 0) {
         ::close(dup);
     }
+}
+
+void FakeOperation::retainBatchFds()
+{
+    // Idempotent, mirroring retainPhotoFd(): one sealed memfd per scripted
+    // document, built ONCE regardless of how many times fire()/GetResult()
+    // calls this. A row at or past m_batchHaltAtIndex seals ZERO bytes -- the
+    // frozen failed-row convention (a real, sealed, empty descriptor, never
+    // an invalid one).
+    if (!m_keptBatchFds.empty() || m_batchDisplayNames.isEmpty()) {
+        return;
+    }
+    m_keptBatchFds.reserve(static_cast<std::size_t>(m_batchDisplayNames.size()));
+    for (int i = 0; i < m_batchDisplayNames.size(); ++i) {
+        const bool halted = m_batchHaltAtIndex >= 0 && i >= m_batchHaltAtIndex;
+        m_keptBatchFds.push_back(makeSealedArtifact(halted ? QByteArray() : m_signArtifactBytes));
+    }
+}
+
+LibreSCRS::AgentClient::SignBatchRowsWire FakeOperation::buildBatchRows() const
+{
+    LibreSCRS::AgentClient::SignBatchRowsWire rows;
+    rows.reserve(m_batchDisplayNames.size());
+    for (int i = 0; i < m_batchDisplayNames.size(); ++i) {
+        const bool halted = m_batchHaltAtIndex >= 0 && i >= m_batchHaltAtIndex;
+        LibreSCRS::AgentClient::SignBatchRowWire row;
+        row.displayName = m_batchDisplayNames.at(i);
+        // QDBusUnixFileDescriptor's ctor dups internally (mirrors
+        // FakeSignAdaptor::GetResult's simpler posture, not fire()'s
+        // Sign-artifact belt-and-suspenders pre-dup): the kept fd stays open
+        // and valid for a later call.
+        const int keptFd =
+            i < static_cast<int>(m_keptBatchFds.size()) ? m_keptBatchFds[static_cast<std::size_t>(i)] : -1;
+        row.artifact = QDBusUnixFileDescriptor(keptFd);
+        row.meta = halted ? QVariantMap{} : effectiveSignMeta();
+        row.errorCode = halted ? m_batchHaltErrorCode : 0u;
+        rows.push_back(std::move(row));
+    }
+    return rows;
 }
 
 // --- WedgedPropertiesAdaptor -----------------------------------------------
@@ -703,6 +860,48 @@ FakeManagedObjects ObjectManagerAdaptor::GetManagedObjects()
     return m_agent->managedObjects();
 }
 
+// --- ManagerAdaptor ---------------------------------------------------------
+ManagerAdaptor::ManagerAdaptor(QObject* parent, QString version, QStringList features, FakeAgent* agent)
+    : QDBusAbstractAdaptor(parent), m_version(std::move(version)), m_features(std::move(features)), m_agent(agent)
+{}
+QString ManagerAdaptor::version() const
+{
+    return m_version;
+}
+QStringList ManagerAdaptor::features() const
+{
+    return m_features;
+}
+
+double ManagerAdaptor::LayoutVisualSignature(const QString& /*text*/, double /*x*/, double /*y*/, double /*width*/,
+                                             double /*height*/, double& lineHeight, QStringList& lines, bool& clipped)
+{
+    ++m_layoutCalls;
+    // Card-independent and scripted: the fake never actually lays out `text`
+    // against the box (that's the agent-side LM call this scripts a stand-in
+    // for), it just serves Config's fixed reply — the point of this fake is
+    // exercising the WIRE round trip, not re-implementing LM.
+    const FakeAgent::Config& config = m_agent->config();
+    lineHeight = config.layoutLineHeight;
+    lines = config.layoutLines;
+    clipped = config.layoutClipped;
+    return config.layoutFontSize;
+}
+
+QDBusUnixFileDescriptor ManagerAdaptor::GetAppearanceFont()
+{
+    ++m_appearanceFontCalls;
+    // Fresh sealed memfd per call (mirrors the Photo adaptor's GetResult
+    // re-seal-per-call posture above): the constructor dup's internally, so
+    // the source fd must still be closed here.
+    const int fd = makeSealedArtifact(m_agent->config().appearanceFontBytes);
+    QDBusUnixFileDescriptor out(fd);
+    if (fd >= 0) {
+        ::close(fd);
+    }
+    return out;
+}
+
 // --- ReaderAdaptor ---------------------------------------------------------
 ReaderAdaptor::ReaderAdaptor(QObject* parent, QString name, bool hasCard, QDBusObjectPath card)
     : QDBusAbstractAdaptor(parent), m_name(std::move(name)), m_hasCard(hasCard), m_card(std::move(card))
@@ -730,9 +929,9 @@ void ReaderAdaptor::setCard(QDBusObjectPath v)
 
 // --- CardAdaptor -----------------------------------------------------------
 CardAdaptor::CardAdaptor(QObject* parent, FakeAgent* agent, uint capabilities, QDBusObjectPath reader,
-                         QString preReadAuth)
+                         QString preReadAuth, QString cardType, QString atrHex)
     : QDBusAbstractAdaptor(parent), m_agent(agent), m_capabilities(capabilities), m_reader(std::move(reader)),
-      m_preReadAuth(std::move(preReadAuth))
+      m_preReadAuth(std::move(preReadAuth)), m_cardType(std::move(cardType)), m_atrHex(std::move(atrHex))
 {}
 uint CardAdaptor::capabilities() const
 {
@@ -746,6 +945,14 @@ QString CardAdaptor::preReadAuthMethod() const
 {
     return m_preReadAuth;
 }
+QString CardAdaptor::cardType() const
+{
+    return m_cardType;
+}
+QString CardAdaptor::atr() const
+{
+    return m_atrHex;
+}
 void CardAdaptor::setCapabilities(uint v)
 {
     m_capabilities = v;
@@ -753,6 +960,10 @@ void CardAdaptor::setCapabilities(uint v)
 void CardAdaptor::setPreReadAuthMethod(QString v)
 {
     m_preReadAuth = std::move(v);
+}
+void CardAdaptor::setCardType(QString v)
+{
+    m_cardType = std::move(v);
 }
 
 QDBusObjectPath CardAdaptor::sendMethodEntryError()
@@ -791,6 +1002,25 @@ QDBusObjectPath CardAdaptor::ReadCertificates()
     }
     return m_agent->mintOperation(FakeOperation::Kind::Certificates);
 }
+
+bool CardAdaptor::lacksPkiCapability() const
+{
+    // Bit 0 == LibreSCRS::Plugin::CardCapabilities::Pki (AgentCapabilities.h's
+    // Cap::Pki mirror). Token info is PKI-adjacent (pkcs15), so it shares
+    // ReadCertificates' real-agent gate bit.
+    return (m_capabilities & 1u) == 0u;
+}
+
+QDBusObjectPath CardAdaptor::ReadTokenInfo()
+{
+    if (lacksPkiCapability()) {
+        return sendMethodEntryError();
+    }
+    if (m_agent->config().failMethodEntry) {
+        return sendMethodEntryError();
+    }
+    return m_agent->mintOperation(FakeOperation::Kind::TokenInfo);
+}
 QDBusObjectPath CardAdaptor::Sign(const QString& certId, const QDBusUnixFileDescriptor& inputFd,
                                   const QVariantMap& options)
 {
@@ -817,6 +1047,42 @@ QDBusObjectPath CardAdaptor::Sign(const QString& certId, const QDBusUnixFileDesc
     }
     m_agent->captureSign(certId, inputBytes, options);
     return m_agent->mintOperation(FakeOperation::Kind::Sign);
+}
+
+QDBusObjectPath CardAdaptor::SignBatch(const LibreSCRS::AgentClient::BatchDocumentsWire& documents,
+                                       const QString& certId, const QVariantMap& options)
+{
+    if (m_agent->config().failMethodEntry) {
+        return sendMethodEntryError();
+    }
+
+    // Honor the in-args exactly like Sign(): dup + read every document fd
+    // synchronously NOW (the client closes its copies as soon as SignBatch()
+    // unwinds), capturing the verbatim per-document names + bytes + the
+    // shared certId/options for the test to assert exact forwarding.
+    QStringList names;
+    QList<QByteArray> allBytes;
+    names.reserve(documents.size());
+    allBytes.reserve(documents.size());
+    for (const LibreSCRS::AgentClient::BatchDocumentWire& doc : documents) {
+        names.append(doc.name);
+        QByteArray bytes;
+        if (doc.fd.isValid()) {
+            int dup = ::dup(doc.fd.fileDescriptor());
+            if (dup >= 0) {
+                ::lseek(dup, 0, SEEK_SET);
+                char buf[4096];
+                ssize_t n = 0;
+                while ((n = ::read(dup, buf, sizeof(buf))) > 0) {
+                    bytes.append(buf, static_cast<int>(n));
+                }
+                ::close(dup);
+            }
+        }
+        allBytes.append(bytes);
+    }
+    m_agent->captureSignBatch(certId, names, allBytes, options);
+    return m_agent->mintOperation(FakeOperation::Kind::BatchSign, /*withCredRecords=*/true, names);
 }
 
 // --- CredentialsAdaptor -----------------------------------------------------
@@ -942,6 +1208,9 @@ void FakeAgent::exportTree()
     m_rootObject = new ContextObject(this);
     m_objectManager = new ObjectManagerAdaptor(m_rootObject, this);
     m_pkcs11Adaptor = new Pkcs11Adaptor(m_rootObject, this);
+    if (m_config.exportManager1) {
+        m_managerAdaptor = new ManagerAdaptor(m_rootObject, m_config.agentVersion, m_config.features, this);
+    }
     m_connection.registerObject(m_rootPath, m_rootObject);
 
     // Reader. A ContextObject (not a plain QObject) so an optional
@@ -958,7 +1227,7 @@ void FakeAgent::exportTree()
     if (m_config.hasCard) {
         m_cardObject = new ContextObject(this);
         m_cardAdaptor = new CardAdaptor(m_cardObject, this, m_config.capabilities, QDBusObjectPath(m_readerPath),
-                                        m_config.preReadAuth);
+                                        m_config.preReadAuth, m_config.cardType, m_config.atrHex);
         new CredentialsAdaptor(m_cardObject, this, m_cardAdaptor);
         if (m_config.wedgeCardProperties) {
             // Attached AFTER CardAdaptor: it shadows Card1's auto-exported
@@ -1054,6 +1323,8 @@ FakeManagedObjects FakeAgent::managedObjects() const
         cardProps.insert(QStringLiteral("Capabilities"), m_cardAdaptor->capabilities());
         cardProps.insert(QStringLiteral("Reader"), QVariant::fromValue(m_cardAdaptor->reader()));
         cardProps.insert(QStringLiteral("PreReadAuthMethod"), m_cardAdaptor->preReadAuthMethod());
+        cardProps.insert(QStringLiteral("CardType"), m_cardAdaptor->cardType());
+        cardProps.insert(QStringLiteral("Atr"), m_cardAdaptor->atr());
         cardIfaces.insert(QStringLiteral("org.librescrs.Agent.Card1"), cardProps);
         out.insert(QDBusObjectPath(m_cardPath), cardIfaces);
     }
@@ -1077,6 +1348,8 @@ FakeManagedObjects FakeAgent::managedObjects() const
         card2Props.insert(QStringLiteral("Capabilities"), m_card2Adaptor->capabilities());
         card2Props.insert(QStringLiteral("Reader"), QVariant::fromValue(m_card2Adaptor->reader()));
         card2Props.insert(QStringLiteral("PreReadAuthMethod"), m_card2Adaptor->preReadAuthMethod());
+        card2Props.insert(QStringLiteral("CardType"), m_card2Adaptor->cardType());
+        card2Props.insert(QStringLiteral("Atr"), m_card2Adaptor->atr());
         card2Ifaces.insert(QStringLiteral("org.librescrs.Agent.Card1"), card2Props);
         out.insert(QDBusObjectPath(m_card2Path), card2Ifaces);
     }
@@ -1088,6 +1361,17 @@ void FakeAgent::captureSign(const QString& certId, const QByteArray& inputBytes,
     m_lastSignCertId = certId;
     m_lastSignInputBytes = inputBytes;
     m_lastSignOptions = options;
+    // A nested map value inside an incoming a{sv} (here: "visualSignature")
+    // arrives as a raw QDBusArgument, NOT a QVariantMap -- Qt's automatic
+    // slot-argument demarshalling only converts the OUTER a{sv} to
+    // QVariantMap, leaving nested complex values undemarshaled. Replace it
+    // with the fully demarshaled QVariantMap (the same scrub Marshal.h's
+    // demarshalVariantMap already applies elsewhere) so a test asserting on
+    // lastSignOptions() can call .toMap() directly, like any other key.
+    if (m_lastSignOptions.contains(QStringLiteral("visualSignature"))) {
+        m_lastSignOptions.insert(QStringLiteral("visualSignature"),
+                                 demarshalVariantMap(m_lastSignOptions.value(QStringLiteral("visualSignature"))));
+    }
 }
 
 QString FakeAgent::lastSignCertId() const
@@ -1105,6 +1389,43 @@ QByteArray FakeAgent::lastSignInputBytes() const
     return m_lastSignInputBytes;
 }
 
+void FakeAgent::captureSignBatch(const QString& certId, const QStringList& displayNames,
+                                 const QList<QByteArray>& documentBytes, const QVariantMap& options)
+{
+    m_lastSignBatchCertId = certId;
+    m_lastSignBatchDisplayNames = displayNames;
+    m_lastSignBatchDocumentBytes = documentBytes;
+    m_lastSignBatchOptions = options;
+    // Same nested-a{sv}-demarshal scrub captureSign() applies: a nested
+    // "visualSignature" value arrives as a raw QDBusArgument, not a
+    // QVariantMap, under Qt's automatic slot-argument demarshalling.
+    if (m_lastSignBatchOptions.contains(QStringLiteral("visualSignature"))) {
+        m_lastSignBatchOptions.insert(
+            QStringLiteral("visualSignature"),
+            demarshalVariantMap(m_lastSignBatchOptions.value(QStringLiteral("visualSignature"))));
+    }
+}
+
+QString FakeAgent::lastSignBatchCertId() const
+{
+    return m_lastSignBatchCertId;
+}
+
+QVariantMap FakeAgent::lastSignBatchOptions() const
+{
+    return m_lastSignBatchOptions;
+}
+
+QStringList FakeAgent::lastSignBatchDisplayNames() const
+{
+    return m_lastSignBatchDisplayNames;
+}
+
+QList<QByteArray> FakeAgent::lastSignBatchDocumentBytes() const
+{
+    return m_lastSignBatchDocumentBytes;
+}
+
 void FakeAgent::captureCertDer(const QString& reader, const QString& certId)
 {
     m_lastCertDerReader = reader;
@@ -1119,7 +1440,7 @@ QString FakeAgent::lastCertDerCertId() const
     return m_lastCertDerCertId;
 }
 
-QDBusObjectPath FakeAgent::mintOperation(FakeOperation::Kind kind, bool withCredRecords)
+QDBusObjectPath FakeAgent::mintOperation(FakeOperation::Kind kind, bool withCredRecords, QStringList batchDisplayNames)
 {
     const QString opPath = QStringLiteral("/org/librescrs/Agent/op/%1").arg(m_opCounter++);
     const int delay = m_config.raceResultBeforeReturn ? 0 : m_config.operationDelayMs;
@@ -1136,7 +1457,9 @@ QDBusObjectPath FakeAgent::mintOperation(FakeOperation::Kind kind, bool withCred
     auto* op = new FakeOperation(this, m_connection, opPath, kind, delay, m_config.finalStatus, m_config.finalErrorCode,
                                  suppressResult, m_config.certScript, m_config.rawCertResult, m_config.photoBytes,
                                  photoEmptyMap, m_config.announceConsentPhase, m_config.lostSignalRecoverable,
-                                 m_config.credResult, credRecords, m_config.signArtifactBytes, m_config.signMeta);
+                                 m_config.credResult, credRecords, m_config.signArtifactBytes, m_config.signMeta,
+                                 m_config.tokenInfoEmpty, m_config.identityGroupScript, std::move(batchDisplayNames),
+                                 m_config.batchHaltAtIndex, m_config.batchHaltErrorCode);
     m_operations.append(op);
     // When raceResultBeforeReturn is set, delay is 0 so start() fires Result +
     // Finished synchronously here, BEFORE we return the path — the client
@@ -1152,6 +1475,16 @@ int FakeAgent::operationCount() const
     return m_opCounter;
 }
 
+int FakeAgent::layoutCallCount() const
+{
+    return m_managerAdaptor != nullptr ? m_managerAdaptor->layoutCallCount() : 0;
+}
+
+int FakeAgent::appearanceFontCallCount() const
+{
+    return m_managerAdaptor != nullptr ? m_managerAdaptor->appearanceFontCallCount() : 0;
+}
+
 void FakeAgent::emitCardCapabilitiesChanged(uint capabilities)
 {
     if (!m_cardAdaptor) {
@@ -1159,6 +1492,15 @@ void FakeAgent::emitCardCapabilitiesChanged(uint capabilities)
     }
     m_cardAdaptor->setCapabilities(capabilities);
     emitCardPropertiesChanged(QVariantMap{{QStringLiteral("Capabilities"), capabilities}});
+}
+
+void FakeAgent::emitCardTypeChanged(const QString& cardType)
+{
+    if (!m_cardAdaptor) {
+        return;
+    }
+    m_cardAdaptor->setCardType(cardType);
+    emitCardPropertiesChanged(QVariantMap{{QStringLiteral("CardType"), cardType}});
 }
 
 void FakeAgent::invalidateCardCapabilities(uint capabilities)
@@ -1308,7 +1650,7 @@ void FakeAgent::setCardPresent(bool present)
     if (present && !m_cardAdaptor) {
         m_cardObject = new ContextObject(this);
         m_cardAdaptor = new CardAdaptor(m_cardObject, this, m_config.capabilities, QDBusObjectPath(m_readerPath),
-                                        m_config.preReadAuth);
+                                        m_config.preReadAuth, m_config.cardType, m_config.atrHex);
         new CredentialsAdaptor(m_cardObject, this, m_cardAdaptor); // a re-inserted card keeps its Credentials1 surface
         if (m_config.wedgeCardProperties) {
             m_cardPropsWedge = new WedgedPropertiesAdaptor(m_cardObject);
@@ -1321,6 +1663,8 @@ void FakeAgent::setCardPresent(bool present)
         cardProps.insert(QStringLiteral("Capabilities"), m_cardAdaptor->capabilities());
         cardProps.insert(QStringLiteral("Reader"), QVariant::fromValue(m_cardAdaptor->reader()));
         cardProps.insert(QStringLiteral("PreReadAuthMethod"), m_cardAdaptor->preReadAuthMethod());
+        cardProps.insert(QStringLiteral("CardType"), m_cardAdaptor->cardType());
+        cardProps.insert(QStringLiteral("Atr"), m_cardAdaptor->atr());
         cardIfaces.insert(QStringLiteral("org.librescrs.Agent.Card1"), cardProps);
         Q_EMIT m_objectManager->InterfacesAdded(QDBusObjectPath(m_cardPath), cardIfaces);
         m_readerAdaptor->setCard(QDBusObjectPath(m_cardPath));

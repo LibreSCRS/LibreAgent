@@ -34,6 +34,7 @@
 
 #include <QByteArray>
 #include <QList>
+#include <QRectF>
 #include <QString>
 #include <QStringList>
 #include <QVariantMap>
@@ -69,8 +70,10 @@ struct SeamError
 /// One discovered registry object: its opaque id plus the property map in the
 /// canonical vocabulary (the agent contract's property names — readers:
 /// "Name" / "HasCard" / "Card"; cards: "Capabilities" / "PreReadAuthMethod" /
-/// "Reader"), with every object reference already flattened to an opaque
-/// QString id.
+/// "Reader" / "CardType" / "Atr"), with every object reference already
+/// flattened to an opaque QString id. CardType/Atr may be absent against an
+/// agent predating this surface (the client's applyProps degrades absence to
+/// its cached/default empty value, never an error).
 struct RegistryObject
 {
     QString id;
@@ -88,7 +91,7 @@ struct RegistrySnapshot
 enum class ObjectKind : unsigned char { Reader, Card };
 
 /// Which typed result an operation binds (== the minting method family).
-enum class OperationKind : unsigned char { Identity, Photo, Certificates, Sign, Credentials };
+enum class OperationKind : unsigned char { Identity, Photo, Certificates, Sign, Credentials, BatchSign };
 
 /// One card-method invocation, already encoded to the wire vocabulary by the
 /// caller (enum options -> token strings via the internal TokenMap): the seam
@@ -100,18 +103,21 @@ struct OperationRequest
         ReadIdentity,
         GetPhoto,
         ReadCertificates,
+        ReadTokenInfo,
         Sign,
+        SignBatch,
         ListCredentials,
         ManagePin,
         ActivateSigningKey,
     };
 
     Method method = Method::ReadIdentity;
-    QString certId;      ///< Sign only.
-    FdHandle document;   ///< Sign only — the document to sign, passed by fd.
-    QString pinId;       ///< ManagePin only.
-    QString verb;        ///< ManagePin only — the wire verb token.
-    QVariantMap options; ///< Sign/ManagePin — wire-keyed option map.
+    QString certId;                       ///< Sign/SignBatch only.
+    FdHandle document;                    ///< Sign only — the document to sign, passed by fd.
+    std::vector<BatchDocument> documents; ///< SignBatch only — one entry per document, passed by fd.
+    QString pinId;                        ///< ManagePin only.
+    QString verb;                         ///< ManagePin only — the wire verb token.
+    QVariantMap options;                  ///< Sign/SignBatch/ManagePin — wire-keyed option map.
 };
 
 /// Outcome of a method-entry call: the minted operation's id, or the entry
@@ -141,6 +147,7 @@ struct OperationPayload
     std::vector<PhotoItem> photos;
     FdHandle signedArtifact;
     QVariantMap signMeta;
+    std::vector<BatchSignRow> batchRows; ///< SignBatch only.
     PinResult pinResult;
     CredentialList credentials;
 };
@@ -190,6 +197,16 @@ public:
     virtual void onFinished(OperationStatus status, ErrorCode errorCode, const QString& msgKey,
                             const QString& msgFallback) = 0;
     virtual void onResult(OperationPayload payload) = 0;
+    /// Progressive delivery: fired zero or more times, in order, strictly
+    /// BEFORE onResult/onFinished for the SAME operation -- a hint only, never
+    /// a substitute for onResult's own eventual complete payload. Only ever
+    /// dispatched for an Identity-kind operation (a transport wires this from
+    /// the D-Bus Operation.Identity1.Group signal / the socket
+    /// "OpIdentityGroup" event, both Identity1-specific); every other kind
+    /// simply never calls it. No recovery pull exists for a group missed
+    /// before this listener subscribed -- see AgentOperation::identityResult()'s
+    /// doc comment for the accumulation contract this implies.
+    virtual void onGroupReady(const FieldGroup& group) = 0;
 };
 
 /// The transport seam proper. One instance per AgentClient, owned by it.
@@ -220,6 +237,35 @@ public:
     /// Bounded discovery snapshot; nullopt when discovery failed (wedged or
     /// absent agent) so the caller can RECONCILE instead of rebuilding.
     [[nodiscard]] virtual std::optional<RegistrySnapshot> fetchRegistry() = 0;
+
+    // ---- feature discovery ---------------------------------------------------
+    /// The optional request/property families the agent advertises — the
+    /// single-sourced `LibreSCRS::Agent::kAgentFeatures` vocabulary
+    /// (FeatureTokens.h), served verbatim as D-Bus `Manager1.Features` (a
+    /// `const` property) or socket `HelloAck.features`. Refreshed once per
+    /// connect (D-Bus: the first probe/registration after the service
+    /// becomes reachable; socket: the handshake) and cached until the agent
+    /// is lost. An agent predating this surface (no `Manager1.Features`
+    /// property at all, or — pre-Hello-vocabulary — nothing) answers
+    /// gracefully with an EMPTY list here, never an error: absence is a
+    /// normal, expected state, not a fault.
+    [[nodiscard]] virtual QStringList features() const = 0;
+
+    // ---- Visual-signature layout preview ---------------------------------
+    /// Bounded synchronous layout call (Manager1.LayoutVisualSignature /
+    /// socket "LayoutVisual") — card-independent, pure CPU: no card, no
+    /// Operation. nullopt on any call failure (agent unreachable, timeout,
+    /// protocol error) OR an entry rejection (invalid geometry). The
+    /// "layout-preview" feature gate is enforced by the CALLER
+    /// (AgentClient), not here — a transport never refuses locally.
+    [[nodiscard]] virtual std::optional<LayoutResult> layoutVisualSignature(const QString& text, QRectF box) = 0;
+    /// The embedded appearance font (Liberation Sans Regular TTF), cached per
+    /// connection (Manager1.GetAppearanceFont / socket "GetAppearanceFont").
+    /// Fetched at most once per connect; invalidated on reconnect. An invalid
+    /// `FdHandle` (see `FdHandle::valid()`) means the fetch failed or has not
+    /// succeeded yet — never an error return, mirroring `features()`'s own
+    /// graceful-degrade posture.
+    [[nodiscard]] virtual FdHandle appearanceFont() = 0;
 
     // ---- per-object property tracking ---------------------------------------
     virtual void subscribeProperties(const QString& objectId, ObjectKind kind, PropertyListener* listener) = 0;

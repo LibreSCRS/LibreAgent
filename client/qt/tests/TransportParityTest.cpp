@@ -20,13 +20,24 @@
 // scenario body reads as ONE driver, not two.
 //
 // ---- corpus (shared subset of DBusIntegrationTest.cpp / SocketIntegrationTest.cpp) ----
-//   identity            IdentityReadDeliversGroupedFields
+//   identity            IdentityReadDeliversGroupedFields,
+//                         IdentityFieldKeysArriveVerbatimWithNoNormalization
+//                         (an unusual, agent-scripted group/field key --
+//                         mixed case, underscores, a dot, a dash -- arrives
+//                         at FieldGroup::key/Field::key byte-for-byte on
+//                         both transports; the pass-through law)
+//   token info          TokenInfoDeliversTokenGroupAcrossTransports (rides the
+//                         SAME Identity1 result shape as identity)
 //   photo               PhotoFdRoundTripContentHash (fd content-hash compared)
 //   certificates        CertificatesEndToEnd (field-for-field)
-//   sign                SignWithTsaUrlProducesIdenticalArtifactAndMeta
+//   trust verdict       CertificateTrustVerdictAndSecurityTokenMatchAcrossTransports
+//                         (trustStatus + the "security" fields-group
+//                         token surface identically on both wires)
+//   sign                SignWithTsaUrlAndVisualSignatureForwardsIdenticallyAcrossTransports
 //                         (artifact fd content-hash + signMeta compared;
-//                         tsaUrl forwarding asymmetry pinned, not "fixed" —
-//                         see the note on that test below)
+//                         tsaUrl + visualSignature now forward identically on
+//                         both transports — the historical asymmetry this
+//                         scenario used to pin is retired)
 //   credentials         CredentialsListManagePinThenRequiresReList
 //                         (list -> manage -> refused-until-relist -> relist ->
 //                         manage again)
@@ -34,11 +45,69 @@
 //   refusal             MethodEntryRefusalProducesFailedOperation
 //   agent-loss mid-op   AgentLossMidOperationTerminalizesLoudly
 //   availability        AvailabilityAppearAndVanish
+//   future ErrorCode    FutureErrorCodeSurfacesIdenticallyAcrossTransports
+//                         (wire tolerance: a raw uint32 value past this
+//                         build's last known ErrorCode surfaces identically —
+//                         end to end — on both transports)
+//   feature tokens      FeatureTokensMatchAcrossTransports (Manager1.Features /
+//                         HelloAck.features from the same kAgentFeatures source;
+//                         an unrecognised extra token surfaces identically)
+//   feature-gated entry MissingTokenInfoFeatureRefusesIdenticallyAcrossTransports
+//                         (readTokenInfo() with "token-info" absent from
+//                         features() refuses at entry — CapabilityMissing,
+//                         operationCount()==0 — before EITHER transport ever
+//                         dials the wire; the gate lives in the transport-
+//                         neutral AgentCard::startOperation)
+//   feature-gated sign  MissingTsaUrlOrVisualSignFeatureRefusesIdenticallyAcrossTransports
+//                         (a sign() carrying tsaUrl/visualSignature with
+//                         "tsa-url"/"visual-sign" absent from features()
+//                         refuses at entry on BOTH transports, exactly like
+//                         the token-info gate above; a plain sign with
+//                         neither option stays ungated)
+//   batch sign          SignBatchHappyPathForwardsIdenticallyAcrossTransports
+//                         (rows/meta/artifact fd content-hash compared),
+//                         SignBatchMidBatchHaltProducesIdenticalRowsAcrossTransports
+//                         (identical per-row halt codes + zero-length
+//                         artifacts from the halt point onward; aggregate Ok
+//                         since >=1 row signed), and
+//                         MissingBatchSignFeatureRefusesIdenticallyAcrossTransports
+//                         (the "batch-sign" gate refuses before either
+//                         transport dials the wire — the document-count gate
+//                         and the shared tsaUrl/visualSignature gate above
+//                         are unit-pinned per-transport in DBusIntegrationTest/
+//                         SocketIntegrationTest instead of duplicated here)
+//   layout preview      LayoutVisualSignatureAndAppearanceFontMatchAcrossTransports
+//                         (card-independent, no-Operation
+//                         LayoutVisualSignature/GetAppearanceFont — result
+//                         fields + font fd content-hash compared;
+//                         appearanceFont() caching proven via
+//                         appearanceFontCallCount()==1 across two calls),
+//                         LayoutTinyBoxClippedArrivesAcrossTransports
+//                         (clipped==true arrives identically), and
+//                         MissingLayoutPreviewFeatureRefusesLocallyAcrossTransports
+//                         (the "layout-preview" gate refuses before either
+//                         transport dials the wire, via
+//                         layoutCallCount()/appearanceFontCallCount()==0)
 //
 // ---- exclusion table (transport-specific; not parametrized here) ----
 //   Socket-only, no D-Bus counterpart:
-//     - HelloAck feature-token capture/gating (AvailabilityHandshake...,
-//       MissingCredentialsFeatureTokenRefusesLocally) — D-Bus has no Hello.
+//     - HelloAck handshake capture (AvailabilityHandshakeFeatureTokensAndReappear)
+//       — the Hello/HelloAck exchange itself is socket-wire-only machinery;
+//       D-Bus's own feature-token exposure (Manager1.Features) is pinned by
+//       AgentDiscoveryTest.cpp, and this corpus's own
+//       FeatureTokensMatchAcrossTransports scenario above already proves the
+//       two converge. NOTE: "D-Bus has no Hello" no longer implies "D-Bus has
+//       no feature-token GATE" — the token-info entry gate is transport-
+//       neutral since it moved into AgentCard::startOperation (see the new
+//       scenario above).
+//     - MissingCredentialsFeatureTokenRefusesLocally (SocketIntegrationTest.cpp)
+//       — the credentials-family gate stays socket-only BY SCOPE, not
+//       architecture: this fix round lifted only the token-info gate to the
+//       transport-neutral entry point; a pre-contract agent's D-Bus
+//       ListCredentials/ManagePin/ActivateSigningKey today still dials the
+//       wire and gets UnknownMethod (mapped to CallError::InvalidArguments,
+//       not CapabilityMissing) — extending the SAME lift there is a tracked
+//       follow-up, not something this corpus already proves converged.
 //     - AgentQuiesced availability semantics — a socket-wire-only event.
 //     - Non-canonical-frame fail-closed policy, the wedged-GetState bounded
 //       probe, the write-after-peer-close EPIPE/SIGPIPE guard, the stale-
@@ -85,19 +154,19 @@
 //       a dedicated bare-discovery case would be redundant with
 //       AgentDiscoveryTest.cpp / the D-Bus and socket integration suites.
 //
-// ---- the pinned tsaUrl asymmetry ----
-// SignOptions::tsaUrl (SignOptions.h) rides in AgentCard::sign()'s wire-keyed
-// options map on BOTH transports, but the two transports do not carry it the
-// same way once it reaches the wire: DBusTransport forwards the whole options
-// a{sv} verbatim, so tsaUrl crosses (agent-side ignored today); the socket
-// wire's sign-opts shape has no tsaUrl field — it is Config-owned there, not
-// per-sign — so SocketTransport::toSignOpts (src/socket/SocketTransport.cpp)
-// drops it with a qCWarning rather than inventing a key the agent never
-// specified. This is a DOCUMENTED divergence, not a bug: the sign scenario
-// below asserts BOTH transports still complete Ok with byte-identical
-// artifacts/meta despite it, and asserts the divergent key-forwarding
-// explicitly instead of pretending it is uniform. It stays this way until the
-// wire's sign-options vocabulary grows a tsaUrl field.
+// ---- the retired tsaUrl asymmetry ----
+// SignOptions::tsaUrl/::visualSignature (SignOptions.h) used to ride in
+// AgentCard::sign()'s wire-keyed options map asymmetrically: DBusTransport
+// forwarded the whole options a{sv} verbatim (tsaUrl crossed, agent-side
+// ignored), while the socket wire's sign-opts shape had no tsaUrl/
+// visualSignature field at all, so SocketTransport::toSignOpts
+// (src/socket/SocketTransport.cpp) dropped both with a qCWarning. Now that
+// the wire's sign-opts vocabulary carries both fields (CDDL's `? tsaUrl`,
+// `? visualSignature`), the drop-with-warning branch is gone: both
+// transports forward both options identically, and the agent honours them
+// end to end. The sign scenario below asserts this directly — identical
+// wire-keyed options AND identical artifact/meta on both transports — rather
+// than pinning a divergence.
 
 #include <LibreSCRS/AgentClient/AgentCapabilities.h>
 #include <LibreSCRS/AgentClient/AgentCard.h>
@@ -118,6 +187,7 @@
 #include <QCryptographicHash>
 #include <QMetaObject>
 #include <QObject>
+#include <QRectF>
 #include <QTemporaryDir>
 #include <QThread>
 #include <QVariantMap>
@@ -146,7 +216,8 @@ struct ParityCert
     QString issuerCn;
     QString notBefore;
     QString notAfter;
-    quint32 trustStatus = 0; // 0 = Trusted, matching both fakes' CertTrustStatus wire numbering
+    quint32 trustStatus = 0;    // 0 = Trusted, matching both fakes' CertTrustStatus wire numbering
+    QStringList securityStatus; // tokens riding the "security" fields-group, mirroring trustStatus
 };
 
 struct ParityCredRecord
@@ -156,11 +227,38 @@ struct ParityCredRecord
     bool canChange = true;
 };
 
+// One scripted progressive field, transport-neutral (each Env::toConfig
+// below hands it to its own fake's wire-typed script). An explicit ORDERED
+// list, unlike the final grouped result map, because streaming order is the
+// entire point of this feature.
+struct ParityIdentityField
+{
+    QString fieldKey;
+    QString labelKey;
+    QString labelFallback;
+    QString type = QStringLiteral("text");
+    QString value;
+};
+struct ParityIdentityGroup
+{
+    QString groupKey;
+    QList<ParityIdentityField> fields;
+};
+
 struct ParityConfig
 {
     quint32 capabilities = 0;
     int operationDelayMs = 15;
+    // Card-state's cardType/atr, scripted identically on both fakes.
+    QString cardType;
+    QString atrHex;
+    // Manager1.Features / HelloAck.features — mirrors both fakes' default
+    // ({"credentials"}); a scenario overrides it to script an extra,
+    // unrecognised token or an agent predating the surface (empty).
+    QStringList features = {QStringLiteral("credentials")};
     bool failMethodEntry = false;
+    quint32 finalStatus = 0;    // 0 Ok / 1 Cancelled / 2 Error
+    quint32 finalErrorCode = 0; // Finished errorCode when finalStatus == Error (may be a future/raw value)
     QByteArray photoBytes;
     QList<ParityCert> certScript;
     QList<ParityCredRecord> credRecords;
@@ -173,6 +271,31 @@ struct ParityConfig
                                        {QStringLiteral("level"), QStringLiteral("b-lt")},
                                        {QStringLiteral("tsaUsed"), true},
                                        {QStringLiteral("chainComplete"), true}};
+    // LayoutVisualSignature / GetAppearanceFont, scripted identically on
+    // both fakes so a client-observed result can be asserted byte-for-byte /
+    // field-for-field equal across transports.
+    double layoutFontSize = 9.5;
+    double layoutLineHeight = 11.4;
+    QStringList layoutLines = {QStringLiteral("Signed by"), QStringLiteral("John Doe")};
+    bool layoutClipped = false;
+    QByteArray appearanceFontBytes = QByteArrayLiteral("PARITY-LIBERATION-SANS-TTF");
+    // Progressive identity-group streaming: an ordered sequence scripted
+    // identically on both fakes so groupReady() order + the final union can
+    // be asserted byte-for-byte / field-for-field equal across transports.
+    // Empty (default): the pre-existing single "personal:given_name" script
+    // on both fakes, unaffected.
+    QList<ParityIdentityGroup> identityGroupScript;
+    // Race the WHOLE op (every scripted group + the final result + Finished)
+    // before the minting call even returns — a late subscriber that missed
+    // every progressive hint must still converge via the terminal result.
+    bool raceResultBeforeReturn = false;
+    // SignBatch scenario only: from THIS 0-based row index onward
+    // (inclusive), every row's artifact is a ZERO-LENGTH sealed/anonymous fd
+    // and its errorCode is batchHaltErrorCode, scripted identically on both
+    // fakes (see FakeAgent::Config::batchHaltAtIndex's own doc comment). -1
+    // (default) means no halt: every row succeeds.
+    int batchHaltAtIndex = -1;
+    quint32 batchHaltErrorCode = 0;
 };
 
 LibreSCRS::Agent::Wire::SignMeta toWireSignMeta(const QVariantMap& meta)
@@ -226,6 +349,20 @@ public:
     {
         return m_harness.cancelledOperationCount();
     }
+    /// The lazy-card-I/O probe: a non-zero count means a content read reached
+    /// the wire (see FakeAgent::operationCount()'s doc comment).
+    [[nodiscard]] int operationCount()
+    {
+        return m_harness.operationCount();
+    }
+    [[nodiscard]] int layoutCallCount()
+    {
+        return m_harness.layoutCallCount();
+    }
+    [[nodiscard]] int appearanceFontCallCount()
+    {
+        return m_harness.appearanceFontCallCount();
+    }
     [[nodiscard]] QString lastSignCertId()
     {
         return m_harness.lastSignCertId();
@@ -238,6 +375,27 @@ public:
     {
         return m_harness.lastSignInputBytes();
     }
+    [[nodiscard]] QString lastSignBatchCertId()
+    {
+        return m_harness.lastSignBatchCertId();
+    }
+    [[nodiscard]] QVariantMap lastSignBatchOptions()
+    {
+        return m_harness.lastSignBatchOptions();
+    }
+    [[nodiscard]] QStringList lastSignBatchDisplayNames()
+    {
+        return m_harness.lastSignBatchDisplayNames();
+    }
+    [[nodiscard]] QList<QByteArray> lastSignBatchDocumentBytes()
+    {
+        return m_harness.lastSignBatchDocumentBytes();
+    }
+    /// The post-read authoritative cardType update.
+    void triggerCardTypeChanged(const QString& cardType)
+    {
+        m_harness.emitCardTypeChanged(cardType);
+    }
 
 private:
     static FakeAgent::Config toConfig(const ParityConfig& cfg)
@@ -245,7 +403,12 @@ private:
         FakeAgent::Config out;
         out.capabilities = cfg.capabilities;
         out.operationDelayMs = cfg.operationDelayMs;
+        out.features = cfg.features;
+        out.cardType = cfg.cardType;
+        out.atrHex = cfg.atrHex;
         out.failMethodEntry = cfg.failMethodEntry;
+        out.finalStatus = cfg.finalStatus;
+        out.finalErrorCode = cfg.finalErrorCode;
         out.photoBytes = cfg.photoBytes;
         for (const ParityCert& c : cfg.certScript) {
             FakeCert fc;
@@ -256,6 +419,7 @@ private:
             fc.notBefore = c.notBefore;
             fc.notAfter = c.notAfter;
             fc.trustStatus = c.trustStatus;
+            fc.securityStatus = c.securityStatus;
             out.certScript.append(fc);
         }
         for (const ParityCredRecord& r : cfg.credRecords) {
@@ -272,6 +436,23 @@ private:
             QVariantMap{{QStringLiteral("outcome"), QStringLiteral("ok")}, {QStringLiteral("blocked"), false}};
         out.signArtifactBytes = cfg.signArtifactBytes;
         out.signMeta = cfg.signMeta;
+        out.layoutFontSize = cfg.layoutFontSize;
+        out.layoutLineHeight = cfg.layoutLineHeight;
+        out.layoutLines = cfg.layoutLines;
+        out.layoutClipped = cfg.layoutClipped;
+        out.appearanceFontBytes = cfg.appearanceFontBytes;
+        for (const ParityIdentityGroup& g : cfg.identityGroupScript) {
+            Fakes::FakeIdentityGroup fg;
+            fg.key = g.groupKey;
+            for (const ParityIdentityField& f : g.fields) {
+                fg.fields.insert(f.fieldKey, LibreSCRS::AgentClient::IdentityFieldWire{f.labelKey, f.labelFallback,
+                                                                                       f.type, QDBusVariant(f.value)});
+            }
+            out.identityGroupScript.append(fg);
+        }
+        out.raceResultBeforeReturn = cfg.raceResultBeforeReturn;
+        out.batchHaltAtIndex = cfg.batchHaltAtIndex;
+        out.batchHaltErrorCode = cfg.batchHaltErrorCode;
         return out;
     }
 
@@ -363,6 +544,26 @@ public:
         runOnThread(m_context, [this, &out]() { out = m_agent->cancelledOperationCount(); });
         return out;
     }
+    /// The lazy-card-I/O probe: a non-zero count means a content read reached
+    /// the wire (see FakeSocketAgent::operationCount()'s doc comment).
+    [[nodiscard]] int operationCount()
+    {
+        int out = 0;
+        runOnThread(m_context, [this, &out]() { out = m_agent->operationCount(); });
+        return out;
+    }
+    [[nodiscard]] int layoutCallCount()
+    {
+        int out = 0;
+        runOnThread(m_context, [this, &out]() { out = m_agent->layoutCallCount(); });
+        return out;
+    }
+    [[nodiscard]] int appearanceFontCallCount()
+    {
+        int out = 0;
+        runOnThread(m_context, [this, &out]() { out = m_agent->appearanceFontCallCount(); });
+        return out;
+    }
     [[nodiscard]] QString lastSignCertId()
     {
         QString out;
@@ -381,6 +582,35 @@ public:
         runOnThread(m_context, [this, &out]() { out = m_agent->lastSignInputBytes(); });
         return out;
     }
+    [[nodiscard]] QString lastSignBatchCertId()
+    {
+        QString out;
+        runOnThread(m_context, [this, &out]() { out = m_agent->lastSignBatchCertId(); });
+        return out;
+    }
+    [[nodiscard]] QVariantMap lastSignBatchOptions()
+    {
+        QVariantMap out;
+        runOnThread(m_context, [this, &out]() { out = m_agent->lastSignBatchOptions(); });
+        return out;
+    }
+    [[nodiscard]] QStringList lastSignBatchDisplayNames()
+    {
+        QStringList out;
+        runOnThread(m_context, [this, &out]() { out = m_agent->lastSignBatchDisplayNames(); });
+        return out;
+    }
+    [[nodiscard]] QList<QByteArray> lastSignBatchDocumentBytes()
+    {
+        QList<QByteArray> out;
+        runOnThread(m_context, [this, &out]() { out = m_agent->lastSignBatchDocumentBytes(); });
+        return out;
+    }
+    /// The post-read authoritative cardType update.
+    void triggerCardTypeChanged(const QString& cardType)
+    {
+        runOnThread(m_context, [this, cardType]() { m_agent->emitCardTypeChanged(cardType); });
+    }
 
 private:
     static FakeSocketAgent::Config toConfig(const ParityConfig& cfg)
@@ -388,7 +618,12 @@ private:
         FakeSocketAgent::Config out;
         out.capabilities = cfg.capabilities;
         out.operationDelayMs = cfg.operationDelayMs;
+        out.features = cfg.features;
+        out.cardType = cfg.cardType;
+        out.atrHex = cfg.atrHex;
         out.failMethodEntry = cfg.failMethodEntry;
+        out.finalStatus = cfg.finalStatus;
+        out.finalErrorCode = cfg.finalErrorCode;
         out.photoBytes = cfg.photoBytes;
         for (const ParityCert& c : cfg.certScript) {
             FakeSocketCert fc;
@@ -399,6 +634,7 @@ private:
             fc.notBefore = c.notBefore;
             fc.notAfter = c.notAfter;
             fc.trustStatus = c.trustStatus;
+            fc.securityStatus = c.securityStatus;
             out.certScript.append(fc);
         }
         for (const ParityCredRecord& r : cfg.credRecords) {
@@ -412,6 +648,24 @@ private:
         // D-Bus side's explicit credResult set above.
         out.signArtifactBytes = cfg.signArtifactBytes;
         out.signMetaOverride = toWireSignMeta(cfg.signMeta);
+        out.layoutFontSize = cfg.layoutFontSize;
+        out.layoutLineHeight = cfg.layoutLineHeight;
+        out.layoutLines = cfg.layoutLines;
+        out.layoutClipped = cfg.layoutClipped;
+        out.appearanceFontBytes = cfg.appearanceFontBytes;
+        for (const ParityIdentityGroup& g : cfg.identityGroupScript) {
+            FakeSocketIdentityGroup fg;
+            fg.key = g.groupKey;
+            for (const ParityIdentityField& f : g.fields) {
+                fg.fields[f.fieldKey.toStdString()] =
+                    LibreSCRS::Agent::Wire::IdentityField{f.labelKey.toStdString(), f.labelFallback.toStdString(),
+                                                          f.type.toStdString(), f.value.toStdString()};
+            }
+            out.identityGroupScript.append(fg);
+        }
+        out.raceResultBeforeReturn = cfg.raceResultBeforeReturn;
+        out.batchHaltAtIndex = cfg.batchHaltAtIndex;
+        out.batchHaltErrorCode = cfg.batchHaltErrorCode;
         return out;
     }
 
@@ -489,6 +743,205 @@ TYPED_TEST(TransportParity, IdentityReadDeliversGroupedFields)
     EXPECT_EQ(givenName->labelFallback, QStringLiteral("Given name"));
 }
 
+// Pass-through law, client side: a group/field key the agent ships MUST reach
+// `FieldGroup::key`/`Field::key` byte-for-byte, whatever shape it has -- an
+// unusual key (mixed case, underscores, a dot, a dash, a digit) is scripted
+// here precisely because it is the kind of string a case-folding or
+// slug-ifying normalization bug would visibly mangle. Both DBusTransport
+// (Marshal.cpp's toFieldGroup, keyed off the QMap iteration key) and
+// SocketTransport (its own toFieldGroup, keyed off the CBOR map key) are
+// proven identical and untouched by this ONE typed-test body.
+TYPED_TEST(TransportParity, IdentityFieldKeysArriveVerbatimWithNoNormalization)
+{
+    using Env = typename TypeParam::Env;
+    static const QString kOddGroupKey = QStringLiteral("Mixed_CASE.Group-1");
+    static const QString kOddFieldKey = QStringLiteral("Weird_Field.Key-2");
+
+    ParityConfig cfg;
+    cfg.capabilities = Cap::IdentityData;
+    cfg.identityGroupScript = {
+        ParityIdentityGroup{kOddGroupKey,
+                            {ParityIdentityField{kOddFieldKey, QStringLiteral("label.odd"), QStringLiteral("Odd Field"),
+                                                 QStringLiteral("text"), QStringLiteral("odd-value")}}},
+    };
+    Env env(cfg);
+
+    AgentCard* card = env.card();
+    ASSERT_NE(card, nullptr);
+    AgentOperation* op = card->readIdentity();
+    ASSERT_NE(op, nullptr);
+    ASSERT_TRUE(waitFor([&]() { return op->isFinished(); }));
+    EXPECT_EQ(op->status(), OperationStatus::Ok);
+
+    const QList<FieldGroup> groups = op->identityResult();
+    const auto group =
+        std::find_if(groups.cbegin(), groups.cend(), [](const FieldGroup& g) { return g.key == kOddGroupKey; });
+    ASSERT_NE(group, groups.cend()) << "the scripted group key must arrive UNCHANGED, not case-folded or slugified";
+    const auto field = std::find_if(group->fields.cbegin(), group->fields.cend(),
+                                    [](const Field& f) { return f.key == kOddFieldKey; });
+    ASSERT_NE(field, group->fields.cend()) << "the scripted field key must arrive UNCHANGED";
+    EXPECT_EQ(field->value, QStringLiteral("odd-value"));
+}
+
+// ---- progressive per-group streaming -----------------------------------------
+
+namespace {
+ParityConfig threeGroupStreamingConfig()
+{
+    ParityConfig cfg;
+    cfg.capabilities = Cap::IdentityData;
+    cfg.features = {QStringLiteral("credentials"), QStringLiteral("identity-stream")};
+    cfg.identityGroupScript = {
+        ParityIdentityGroup{
+            QStringLiteral("personal"),
+            {ParityIdentityField{QStringLiteral("given_name"), QStringLiteral("label.given_name"),
+                                 QStringLiteral("Given name"), QStringLiteral("text"), QStringLiteral("Ana")}}},
+        ParityIdentityGroup{
+            QStringLiteral("address"),
+            {ParityIdentityField{QStringLiteral("city"), QStringLiteral("label.city"), QStringLiteral("City"),
+                                 QStringLiteral("text"), QStringLiteral("Belgrade")}}},
+        ParityIdentityGroup{QStringLiteral("document"),
+                            {ParityIdentityField{QStringLiteral("number"), QStringLiteral("label.number"),
+                                                 QStringLiteral("Document number"), QStringLiteral("text"),
+                                                 QStringLiteral("AB1234567")}}},
+    };
+    return cfg;
+}
+} // namespace
+
+TYPED_TEST(TransportParity, IdentityGroupStreamingDeliversGroupsInOrderBeforeResult)
+{
+    using Env = typename TypeParam::Env;
+    ParityConfig cfg = threeGroupStreamingConfig();
+    Env env(cfg);
+
+    AgentCard* card = env.card();
+    ASSERT_NE(card, nullptr);
+    AgentOperation* op = card->readIdentity();
+    ASSERT_NE(op, nullptr);
+
+    QStringList streamedGroupKeys;
+    bool finishedSeenBeforeAllGroups = false;
+    QObject::connect(op, &AgentOperation::groupReady, op, [&](const FieldGroup& g) {
+        if (op->isFinished()) {
+            finishedSeenBeforeAllGroups = true;
+        }
+        streamedGroupKeys.append(g.key);
+    });
+
+    ASSERT_TRUE(waitFor([&]() { return op->isFinished(); }));
+    EXPECT_EQ(op->status(), OperationStatus::Ok);
+
+    EXPECT_FALSE(finishedSeenBeforeAllGroups) << "every groupReady must fire before finished()";
+    ASSERT_EQ(streamedGroupKeys.size(), 3);
+    EXPECT_EQ(streamedGroupKeys.at(0), QStringLiteral("personal"));
+    EXPECT_EQ(streamedGroupKeys.at(1), QStringLiteral("address"));
+    EXPECT_EQ(streamedGroupKeys.at(2), QStringLiteral("document"));
+
+    // The final result is the UNION of every streamed group -- byte-identical
+    // to what a non-streaming consumer (one that never connects to
+    // groupReady() at all) would see.
+    const QList<FieldGroup> groups = op->identityResult();
+    ASSERT_EQ(groups.size(), 3);
+    QStringList resultGroupKeys;
+    for (const FieldGroup& g : groups) {
+        resultGroupKeys.append(g.key);
+    }
+    std::sort(resultGroupKeys.begin(), resultGroupKeys.end());
+    QStringList expected{QStringLiteral("address"), QStringLiteral("document"), QStringLiteral("personal")};
+    std::sort(expected.begin(), expected.end());
+    EXPECT_EQ(resultGroupKeys, expected);
+}
+
+TYPED_TEST(TransportParity, IdentityGroupStreamingLateSubscriberMissesRacedGroupsButResultConverges)
+{
+    // The whole op (every scripted group + the final result + Finished)
+    // races before the minting call even returns -- the deterministic
+    // "subscribed too late to see any progressive hint" case. groupReady()
+    // has no recovery (unlike the terminal result): a late subscriber must
+    // still see the COMPLETE, correct identityResult() once finished() fires.
+    using Env = typename TypeParam::Env;
+    ParityConfig cfg = threeGroupStreamingConfig();
+    cfg.raceResultBeforeReturn = true;
+    Env env(cfg);
+
+    AgentCard* card = env.card();
+    ASSERT_NE(card, nullptr);
+    AgentOperation* op = card->readIdentity();
+    ASSERT_NE(op, nullptr);
+
+    ASSERT_TRUE(waitFor([&]() { return op->isFinished(); }));
+    EXPECT_EQ(op->status(), OperationStatus::Ok);
+
+    const QList<FieldGroup> groups = op->identityResult();
+    ASSERT_EQ(groups.size(), 3) << "a late subscriber must still converge on the complete result";
+    QStringList resultGroupKeys;
+    for (const FieldGroup& g : groups) {
+        resultGroupKeys.append(g.key);
+    }
+    EXPECT_TRUE(resultGroupKeys.contains(QStringLiteral("personal")));
+    EXPECT_TRUE(resultGroupKeys.contains(QStringLiteral("address")));
+    EXPECT_TRUE(resultGroupKeys.contains(QStringLiteral("document")));
+}
+
+TYPED_TEST(TransportParity, IdentityGroupStreamingAbsentFromFeatureAgentYieldsNoGroupSignals)
+{
+    // An agent predating (or simply not advertising) "identity-stream" never
+    // streams -- identityGroupScript stays empty (the default) exactly as
+    // every other pre-existing scenario leaves it. groupReady() must fire
+    // zero times and the result must still arrive intact.
+    using Env = typename TypeParam::Env;
+    ParityConfig cfg;
+    cfg.capabilities = Cap::IdentityData;
+    cfg.features = {QStringLiteral("credentials")}; // no "identity-stream"
+    Env env(cfg);
+
+    AgentCard* card = env.card();
+    ASSERT_NE(card, nullptr);
+    AgentOperation* op = card->readIdentity();
+    ASSERT_NE(op, nullptr);
+
+    int groupSignalCount = 0;
+    QObject::connect(op, &AgentOperation::groupReady, op, [&](const FieldGroup&) { ++groupSignalCount; });
+
+    ASSERT_TRUE(waitFor([&]() { return op->isFinished(); }));
+    EXPECT_EQ(op->status(), OperationStatus::Ok);
+    EXPECT_EQ(groupSignalCount, 0);
+    EXPECT_FALSE(op->identityResult().isEmpty()) << "the result must stay intact even with no progressive delivery";
+}
+
+// ---- token info (rides the SAME Identity1 result shape as identity) ------
+
+TYPED_TEST(TransportParity, TokenInfoDeliversTokenGroupAcrossTransports)
+{
+    using Env = typename TypeParam::Env;
+    ParityConfig cfg;
+    cfg.capabilities = Cap::Pki;
+    cfg.features = {QStringLiteral("credentials"), QStringLiteral("token-info")};
+    Env env(cfg);
+
+    AgentCard* card = env.card();
+    ASSERT_NE(card, nullptr);
+    AgentOperation* op = card->readTokenInfo();
+    ASSERT_NE(op, nullptr);
+    ASSERT_TRUE(waitFor([&]() { return op->isFinished(); }));
+    EXPECT_EQ(op->status(), OperationStatus::Ok);
+
+    // Both fakes script the SAME "token" group (label/serial_number/
+    // manufacturer) for ReadTokenInfo, rendered through the IDENTICAL
+    // Identity1 result path readIdentity() uses — no new result shape.
+    const QList<FieldGroup> groups = op->identityResult();
+    ASSERT_EQ(groups.size(), 1);
+    EXPECT_EQ(groups.front().key, QStringLiteral("token"));
+    const QList<Field>& fields = groups.front().fields;
+    EXPECT_TRUE(
+        std::any_of(fields.cbegin(), fields.cend(), [](const Field& f) { return f.key == QStringLiteral("label"); }));
+    EXPECT_TRUE(std::any_of(fields.cbegin(), fields.cend(),
+                            [](const Field& f) { return f.key == QStringLiteral("serial_number"); }));
+    EXPECT_TRUE(std::any_of(fields.cbegin(), fields.cend(),
+                            [](const Field& f) { return f.key == QStringLiteral("manufacturer"); }));
+}
+
 // ---- photo: fd content hash --------------------------------------------------
 
 TYPED_TEST(TransportParity, PhotoFdRoundTripContentHash)
@@ -561,51 +1014,88 @@ TYPED_TEST(TransportParity, CertificatesEndToEnd)
     EXPECT_EQ(c.trust, TrustStatus::Trusted);
 }
 
-// ---- sign: identical artifact/meta, the tsaUrl asymmetry pinned ------------
-
-TYPED_TEST(TransportParity, SignWithTsaUrlProducesIdenticalArtifactAndMeta)
+// The trust-verdict append: the SAME scripted trustStatus/securityStatus
+// pair surfaces identically on both transports -- Revoked (5) maps to the
+// client's own Revoked case, and the "security" fields-group token rides
+// CertificateInfo::securityStatus on both wires (dict-key growth, not a new
+// wire member -- see CertSnapshot.h).
+TYPED_TEST(TransportParity, CertificateTrustVerdictAndSecurityTokenMatchAcrossTransports)
 {
     using Env = typename TypeParam::Env;
     ParityConfig cfg;
     cfg.capabilities = Cap::Pki;
+    ParityCert pc;
+    pc.certId = QStringLiteral("cert-parity-revoked");
+    pc.trustStatus = 5; // Revoked
+    pc.securityStatus = QStringList{QStringLiteral("revoked")};
+    cfg.certScript = {pc};
+    Env env(cfg);
+
+    AgentCard* card = env.card();
+    ASSERT_NE(card, nullptr);
+    AgentOperation* op = card->readCertificates();
+    ASSERT_NE(op, nullptr);
+    ASSERT_TRUE(waitFor([&]() { return op->isFinished(); }));
+    EXPECT_EQ(op->status(), OperationStatus::Ok);
+
+    const QList<CertificateInfo> certs = op->certificatesResult();
+    ASSERT_EQ(certs.size(), 1);
+    const CertificateInfo& c = certs.constFirst();
+    EXPECT_EQ(c.trust, TrustStatus::Revoked);
+    EXPECT_EQ(c.securityStatus, (QStringList{QStringLiteral("revoked")}));
+}
+
+// ---- sign: tsaUrl + visualSignature now forward identically ----------
+
+TYPED_TEST(TransportParity, SignWithTsaUrlAndVisualSignatureForwardsIdenticallyAcrossTransports)
+{
+    using Env = typename TypeParam::Env;
+    ParityConfig cfg;
+    cfg.capabilities = Cap::Pki;
+    cfg.features = {QStringLiteral("credentials"), QStringLiteral("tsa-url"), QStringLiteral("visual-sign")};
     Env env(cfg);
 
     AgentCard* card = env.card();
     ASSERT_NE(card, nullptr);
     const QByteArray document = QByteArrayLiteral("the bytes TransportParityTest signs");
     SignOptions options;
-    options.format = SignatureFormat::XAdES;
+    options.format = SignatureFormat::PAdES;
     options.level = SignatureLevel::BT;
-    options.packaging = Packaging::Detached;
-    options.tsaUrl = QStringLiteral("http://tsa.example/parity"); // the pinned asymmetry — see the file header
+    options.packaging = Packaging::Enveloped;
+    options.tsaUrl = QStringLiteral("https://tsa.example/parity");
+    options.visualSignature =
+        QVariantMap{{QStringLiteral("page"), 0},      {QStringLiteral("x"), 10.0},
+                    {QStringLiteral("y"), 20.0},      {QStringLiteral("width"), 150.0},
+                    {QStringLiteral("height"), 60.0}, {QStringLiteral("text"), QStringLiteral("Signed by {cn}")}};
     options.extra.insert(QStringLiteral("reason"), QStringLiteral("parity-suite"));
 
     AgentOperation* op = card->sign(QStringLiteral("cert-for-sign"), makeMemfdDocument(document), options);
     ASSERT_NE(op, nullptr);
     ASSERT_TRUE(waitFor([&]() { return op->isFinished(); }));
-    EXPECT_EQ(op->status(), OperationStatus::Ok) << "both transports must complete Ok despite the tsaUrl asymmetry";
+    EXPECT_EQ(op->status(), OperationStatus::Ok);
 
     // fd in: both fakes read the document synchronously.
     EXPECT_EQ(env.lastSignCertId(), QStringLiteral("cert-for-sign"));
     EXPECT_EQ(env.lastSignInputBytes(), document);
 
-    // The shared sign-opts vocabulary is identical on both wires.
+    // The shared sign-opts vocabulary is identical on both wires — the
+    // historical tsaUrl asymmetry this scenario used to pin is retired: both
+    // transports now forward tsaUrl AND the nested visualSignature map.
     const QVariantMap wireOptions = env.lastSignOptions();
-    EXPECT_EQ(wireOptions.value(QStringLiteral("format")).toString(), QStringLiteral("xades"));
+    EXPECT_EQ(wireOptions.value(QStringLiteral("format")).toString(), QStringLiteral("pades"));
     EXPECT_EQ(wireOptions.value(QStringLiteral("level")).toString(), QStringLiteral("b-t"));
-    EXPECT_EQ(wireOptions.value(QStringLiteral("packaging")).toString(), QStringLiteral("detached"));
+    EXPECT_EQ(wireOptions.value(QStringLiteral("packaging")).toString(), QStringLiteral("enveloped"));
     EXPECT_EQ(wireOptions.value(QStringLiteral("reason")).toString(), QStringLiteral("parity-suite"));
+    EXPECT_EQ(wireOptions.value(QStringLiteral("tsaUrl")).toString(), options.tsaUrl)
+        << "tsaUrl must forward identically on both transports";
 
-    // The pinned asymmetry itself: D-Bus forwards tsaUrl in the options
-    // a{sv}; the socket wire's sign-opts shape has no such field and
-    // SocketTransport drops it (with a qCWarning) instead. NOT a bug to
-    // "fix" here — see SignOptions.h's tsaUrl doc comment and
-    // SocketTransport::toSignOpts's comment (src/socket/SocketTransport.cpp).
-    if constexpr (std::is_same_v<TypeParam, DBusPolicy>) {
-        EXPECT_EQ(wireOptions.value(QStringLiteral("tsaUrl")).toString(), options.tsaUrl);
-    } else {
-        EXPECT_FALSE(wireOptions.contains(QStringLiteral("tsaUrl"))) << "tsaUrl must not cross the socket wire";
-    }
+    const QVariantMap wireVisual = wireOptions.value(QStringLiteral("visualSignature")).toMap();
+    EXPECT_EQ(wireVisual.value(QStringLiteral("page")).toULongLong(), 0ULL);
+    EXPECT_EQ(wireVisual.value(QStringLiteral("x")).toDouble(), 10.0);
+    EXPECT_EQ(wireVisual.value(QStringLiteral("y")).toDouble(), 20.0);
+    EXPECT_EQ(wireVisual.value(QStringLiteral("width")).toDouble(), 150.0);
+    EXPECT_EQ(wireVisual.value(QStringLiteral("height")).toDouble(), 60.0);
+    EXPECT_EQ(wireVisual.value(QStringLiteral("text")).toString(), QStringLiteral("Signed by {cn}"));
 
     // fd content hash + sign meta: both fakes were scripted with the SAME
     // signArtifactBytes/signMeta (ParityConfig's defaults), so these ARE
@@ -617,6 +1107,161 @@ TYPED_TEST(TransportParity, SignWithTsaUrlProducesIdenticalArtifactAndMeta)
     EXPECT_EQ(QCryptographicHash::hash(receivedArtifact, QCryptographicHash::Sha256),
               QCryptographicHash::hash(cfg.signArtifactBytes, QCryptographicHash::Sha256));
     EXPECT_EQ(op->signMeta(), cfg.signMeta);
+}
+
+// ---- feature-gated sign: tsaUrl/visualSignature without their tokens
+// refuses identically on both transports, before either dials the wire ------
+TYPED_TEST(TransportParity, MissingTsaUrlOrVisualSignFeatureRefusesIdenticallyAcrossTransports)
+{
+    using Env = typename TypeParam::Env;
+    ParityConfig cfg;
+    cfg.capabilities = Cap::Pki;
+    cfg.features = {QStringLiteral("credentials")}; // no "tsa-url" / "visual-sign"
+    Env env(cfg);
+
+    AgentClient* client = env.client();
+    ASSERT_TRUE(client->isAvailable());
+    EXPECT_FALSE(client->hasFeature(QStringLiteral("tsa-url")));
+    EXPECT_FALSE(client->hasFeature(QStringLiteral("visual-sign")));
+
+    AgentCard* card = env.card();
+    ASSERT_NE(card, nullptr);
+    const QByteArray document = QByteArrayLiteral("gated sign document");
+
+    SignOptions tsaOptions;
+    tsaOptions.tsaUrl = QStringLiteral("https://tsa.example/gated");
+    AgentOperation* tsaOp = card->sign(QStringLiteral("cert-for-sign"), makeMemfdDocument(document), tsaOptions);
+    ASSERT_NE(tsaOp, nullptr) << "a refused entry mints a failed operation, never nullptr";
+    ASSERT_TRUE(waitFor([&]() { return tsaOp->isFinished(); }));
+    EXPECT_EQ(tsaOp->status(), OperationStatus::Error);
+    EXPECT_EQ(tsaOp->errorCode(), ErrorCode::CapabilityMissing);
+
+    SignOptions visualOptions;
+    visualOptions.visualSignature =
+        QVariantMap{{QStringLiteral("page"), 0},      {QStringLiteral("x"), 0.0},
+                    {QStringLiteral("y"), 0.0},       {QStringLiteral("width"), 100.0},
+                    {QStringLiteral("height"), 50.0}, {QStringLiteral("text"), QStringLiteral("Signed")}};
+    AgentOperation* visualOp = card->sign(QStringLiteral("cert-for-sign"), makeMemfdDocument(document), visualOptions);
+    ASSERT_NE(visualOp, nullptr);
+    ASSERT_TRUE(waitFor([&]() { return visualOp->isFinished(); }));
+    EXPECT_EQ(visualOp->status(), OperationStatus::Error);
+    EXPECT_EQ(visualOp->errorCode(), ErrorCode::CapabilityMissing);
+
+    // Neither refused sign ever reached either transport's fake.
+    EXPECT_EQ(env.operationCount(), 0) << "both refusals must fire before either transport ever dials the wire";
+}
+
+// ---- batch signing: happy path, mid-batch halt, feature-gated refusal -----
+
+TYPED_TEST(TransportParity, SignBatchHappyPathForwardsIdenticallyAcrossTransports)
+{
+    using Env = typename TypeParam::Env;
+    ParityConfig cfg;
+    cfg.capabilities = Cap::Pki;
+    cfg.features = {QStringLiteral("credentials"), QStringLiteral("batch-sign")};
+    Env env(cfg);
+
+    AgentCard* card = env.card();
+    ASSERT_NE(card, nullptr);
+
+    std::vector<BatchDocument> docs;
+    docs.push_back(BatchDocument{QStringLiteral("first.pdf"), makeMemfdDocument(QByteArrayLiteral("doc one bytes"))});
+    docs.push_back(BatchDocument{QStringLiteral("second.pdf"), makeMemfdDocument(QByteArrayLiteral("doc two bytes"))});
+
+    SignOptions options;
+    options.format = SignatureFormat::PAdES;
+    options.level = SignatureLevel::BB;
+
+    AgentOperation* op = card->signBatch(QStringLiteral("cert-for-batch"), std::move(docs), options);
+    ASSERT_NE(op, nullptr);
+    ASSERT_TRUE(waitFor([&]() { return op->isFinished(); }));
+    EXPECT_EQ(op->status(), OperationStatus::Ok);
+
+    EXPECT_EQ(env.lastSignBatchCertId(), QStringLiteral("cert-for-batch"));
+    EXPECT_EQ(env.lastSignBatchDisplayNames(),
+              (QStringList{QStringLiteral("first.pdf"), QStringLiteral("second.pdf")}));
+    const QList<QByteArray> receivedDocs = env.lastSignBatchDocumentBytes();
+    ASSERT_EQ(receivedDocs.size(), 2);
+    EXPECT_EQ(receivedDocs.at(0), QByteArrayLiteral("doc one bytes"));
+    EXPECT_EQ(receivedDocs.at(1), QByteArrayLiteral("doc two bytes"));
+
+    // Both fakes were scripted with the SAME signArtifactBytes/signMeta
+    // (ParityConfig's defaults) — rows, meta, AND artifact content hashes are
+    // asserted byte-for-byte / field-for-field identical across transports.
+    std::vector<BatchSignRow> rows = op->takeBatchResults();
+    ASSERT_EQ(rows.size(), 2U);
+    EXPECT_EQ(rows[0].displayName, QStringLiteral("first.pdf"));
+    EXPECT_EQ(rows[1].displayName, QStringLiteral("second.pdf"));
+    for (const BatchSignRow& row : rows) {
+        EXPECT_EQ(row.error, ErrorCode::None);
+        ASSERT_TRUE(row.artifact.valid());
+        const QByteArray receivedArtifact = readFdAll(row.artifact.get());
+        EXPECT_EQ(receivedArtifact, cfg.signArtifactBytes);
+        EXPECT_EQ(QCryptographicHash::hash(receivedArtifact, QCryptographicHash::Sha256),
+                  QCryptographicHash::hash(cfg.signArtifactBytes, QCryptographicHash::Sha256));
+        EXPECT_EQ(row.meta, cfg.signMeta);
+    }
+}
+
+TYPED_TEST(TransportParity, SignBatchMidBatchHaltProducesIdenticalRowsAcrossTransports)
+{
+    using Env = typename TypeParam::Env;
+    ParityConfig cfg;
+    cfg.capabilities = Cap::Pki;
+    cfg.features = {QStringLiteral("credentials"), QStringLiteral("batch-sign")};
+    cfg.batchHaltAtIndex = 1;
+    cfg.batchHaltErrorCode = static_cast<quint32>(ErrorCode::CredentialBlocked);
+    Env env(cfg);
+
+    AgentCard* card = env.card();
+    ASSERT_NE(card, nullptr);
+
+    std::vector<BatchDocument> docs;
+    for (int i = 0; i < 3; ++i) {
+        docs.push_back(BatchDocument{QStringLiteral("doc-%1.pdf").arg(i), makeMemfdDocument(QByteArrayLiteral("b"))});
+    }
+
+    AgentOperation* op = card->signBatch(QStringLiteral("cert-for-batch"), std::move(docs), SignOptions{});
+    ASSERT_NE(op, nullptr);
+    ASSERT_TRUE(waitFor([&]() { return op->isFinished(); }));
+    EXPECT_EQ(op->status(), OperationStatus::Ok) << "successCount > 0 (row 0 signed) keeps the aggregate Ok";
+
+    std::vector<BatchSignRow> rows = op->takeBatchResults();
+    ASSERT_EQ(rows.size(), 3U);
+    EXPECT_EQ(rows[0].error, ErrorCode::None);
+    ASSERT_TRUE(rows[0].artifact.valid());
+    EXPECT_FALSE(readFdAll(rows[0].artifact.get()).isEmpty());
+    for (std::size_t i = 1; i < rows.size(); ++i) {
+        EXPECT_EQ(rows[i].error, ErrorCode::CredentialBlocked) << "row " << i << " — identical halt code";
+        ASSERT_TRUE(rows[i].artifact.valid()) << "row " << i << " — a valid, zero-length descriptor, never invalid";
+        EXPECT_TRUE(readFdAll(rows[i].artifact.get()).isEmpty()) << "row " << i;
+    }
+}
+
+TYPED_TEST(TransportParity, MissingBatchSignFeatureRefusesIdenticallyAcrossTransports)
+{
+    using Env = typename TypeParam::Env;
+    ParityConfig cfg;
+    cfg.capabilities = Cap::Pki;
+    cfg.features = {QStringLiteral("credentials")}; // no "batch-sign"
+    Env env(cfg);
+
+    AgentClient* client = env.client();
+    ASSERT_TRUE(client->isAvailable());
+    EXPECT_FALSE(client->hasFeature(QStringLiteral("batch-sign")));
+
+    AgentCard* card = env.card();
+    ASSERT_NE(card, nullptr);
+
+    std::vector<BatchDocument> docs;
+    docs.push_back(BatchDocument{QStringLiteral("a.pdf"), makeMemfdDocument(QByteArrayLiteral("b"))});
+
+    AgentOperation* op = card->signBatch(QStringLiteral("cert-for-batch"), std::move(docs), SignOptions{});
+    ASSERT_NE(op, nullptr) << "a refused entry mints a failed operation, never nullptr";
+    ASSERT_TRUE(waitFor([&]() { return op->isFinished(); }));
+    EXPECT_EQ(op->status(), OperationStatus::Error);
+    EXPECT_EQ(op->errorCode(), ErrorCode::CapabilityMissing);
+    EXPECT_EQ(env.operationCount(), 0) << "the gate must refuse before either transport ever dials the wire";
 }
 
 // ---- credentials: list / manage(PinVerb) / mandatory re-list ---------------
@@ -753,6 +1398,35 @@ TYPED_TEST(TransportParity, AgentLossMidOperationTerminalizesLoudly)
     EXPECT_FALSE(env.client()->isAvailable());
 }
 
+// ---- wire tolerance: a future ErrorCode surfaces identically -----------------
+//
+// ErrorCode (ErrorCode.h) is wire-frozen APPEND-ONLY, so a newer agent may
+// send a numeric value past this build's last known one; the client decodes
+// it through raw (uint32 pass-through) rather than failing the operation
+// closed — already ratified on the socket wire (ClientCodec's decodeErrorCode)
+// and, on D-Bus, inherent (a plain signal argument has no decode step to
+// reject anything). This scenario proves the two transports converge on the
+// IDENTICAL raw value end to end, not merely that neither one crashes.
+TYPED_TEST(TransportParity, FutureErrorCodeSurfacesIdenticallyAcrossTransports)
+{
+    using Env = typename TypeParam::Env;
+    ParityConfig cfg;
+    cfg.capabilities = Cap::Pki;
+    cfg.finalStatus = 2;        // Error
+    cfg.finalErrorCode = 10000; // past InvalidDocument=19 -- a future code
+    Env env(cfg);
+
+    AgentCard* card = env.card();
+    ASSERT_NE(card, nullptr);
+    AgentOperation* op = card->sign(QStringLiteral("certid"), makeMemfdDocument({}), SignOptions{});
+    ASSERT_NE(op, nullptr);
+    ASSERT_TRUE(waitFor([&]() { return op->isFinished(); }));
+
+    EXPECT_EQ(op->status(), OperationStatus::Error);
+    EXPECT_EQ(static_cast<quint32>(op->errorCode()), 10000u)
+        << "a future ErrorCode value must surface identically -- raw, unmodified -- on both transports";
+}
+
 // ---- availability: appear / vanish --------------------------------------------
 
 TYPED_TEST(TransportParity, AvailabilityAppearAndVanish)
@@ -781,4 +1455,198 @@ TYPED_TEST(TransportParity, AvailabilityAppearAndVanish)
     EXPECT_TRUE(client->isAvailable());
     ASSERT_TRUE(waitFor([&]() { return client->readers().size() == 1; }))
         << "re-appearance must re-run discovery, not just flip the flag";
+}
+
+// ---- feature discovery: identical on both wires, including an unknown token --
+//
+// Feature discovery is served on both wires from the SAME
+// LibreSCRS::Agent::kAgentFeatures single source of truth (D-Bus
+// Manager1.Features, socket HelloAck.features); this scenario scripts an
+// identical feature list on both fakes — including one token past this
+// client build's known vocabulary — and asserts AgentClient::features()/
+// hasFeature() converge on the IDENTICAL outcome regardless of transport.
+TYPED_TEST(TransportParity, FeatureTokensMatchAcrossTransports)
+{
+    using Env = typename TypeParam::Env;
+    ParityConfig cfg;
+    cfg.capabilities = Cap::Pki;
+    cfg.features = {QStringLiteral("credentials"), QStringLiteral("a-future-token-this-build-does-not-name")};
+    Env env(cfg);
+
+    AgentClient* client = env.client();
+    ASSERT_TRUE(client->isAvailable());
+
+    const QStringList features = client->features();
+    EXPECT_EQ(features.size(), 2) << "both transports must serve the identical scripted set";
+    EXPECT_TRUE(client->hasFeature(QStringLiteral("credentials")));
+    EXPECT_TRUE(client->hasFeature(QStringLiteral("a-future-token-this-build-does-not-name")))
+        << "an unrecognised extra token must surface identically on both transports, never be dropped";
+    EXPECT_FALSE(client->hasFeature(QStringLiteral("nonexistent-token")));
+}
+
+// ---- feature-gated entry: readTokenInfo() without "token-info" refuses
+// identically on both transports, before either ever dials the wire --------
+//
+// Post-fix regression coverage: the "token-info" entry gate now lives in the
+// transport-neutral AgentCard::startOperation (see its comment), not a
+// socket-only special case. Before the lift, a pre-contract agent's
+// ReadTokenInfo dialed the D-Bus wire and got back UnknownMethod, which
+// ErrorNameMap/mapDBusErrorName classifies as CallError::InvalidArguments /
+// ErrorCode::None — a forked taxonomy from the socket wire's local
+// CapabilityMissing refusal. This scenario proves BOTH transports now agree:
+// CapabilityMissing, and — via operationCount() — that neither transport's
+// fake ever saw the request at all.
+TYPED_TEST(TransportParity, MissingTokenInfoFeatureRefusesIdenticallyAcrossTransports)
+{
+    using Env = typename TypeParam::Env;
+    ParityConfig cfg;
+    cfg.capabilities = Cap::Pki;
+    cfg.features = {QStringLiteral("credentials")}; // no "token-info"
+    Env env(cfg);
+
+    AgentClient* client = env.client();
+    ASSERT_TRUE(client->isAvailable());
+    EXPECT_FALSE(client->hasFeature(QStringLiteral("token-info")));
+
+    AgentCard* card = env.card();
+    ASSERT_NE(card, nullptr);
+    AgentOperation* op = card->readTokenInfo();
+    ASSERT_NE(op, nullptr) << "a refused entry mints a failed operation, never nullptr";
+    ASSERT_TRUE(waitFor([&]() { return op->isFinished(); }));
+    EXPECT_EQ(op->status(), OperationStatus::Error);
+    EXPECT_EQ(op->errorCode(), ErrorCode::CapabilityMissing);
+    EXPECT_EQ(op->callError(), CallError::None)
+        << "must classify through the wire taxonomy, never a forked CallError, on either transport";
+    EXPECT_EQ(env.operationCount(), 0) << "the refusal must fire before either transport ever dials the wire";
+}
+
+// ---- Card-type + ATR — identical insertion snapshot AND identical
+// post-read authoritative update, regardless of transport --------------------
+TYPED_TEST(TransportParity, CardTypeAndAtrMatchAcrossTransports)
+{
+    using Env = typename TypeParam::Env;
+    ParityConfig cfg;
+    cfg.capabilities = Cap::IdentityData;
+    cfg.cardType = QStringLiteral("SRB-eID"); // the scripted single-candidate case
+    cfg.atrHex = QStringLiteral("3B7F96000080318065B085040132900085");
+    Env env(cfg);
+
+    AgentCard* card = env.card();
+    ASSERT_NE(card, nullptr);
+    EXPECT_EQ(card->cardType(), QStringLiteral("SRB-eID"))
+        << "insertion must carry the scripted single-candidate cardType identically on both transports";
+    EXPECT_EQ(card->atrHex(), QStringLiteral("3B7F96000080318065B085040132900085"))
+        << "atrHex must be known from insertion identically on both transports";
+
+    // No QSignalSpy here (this target does not link Qt::Test): a plain
+    // connect-and-count is equivalent and avoids the extra link dependency.
+    int cardTypeChangedCount = 0;
+    QObject::connect(card, &AgentCard::cardTypeChanged, [&cardTypeChangedCount]() { ++cardTypeChangedCount; });
+    env.triggerCardTypeChanged(QStringLiteral("SRB-Vehicle"));
+
+    ASSERT_TRUE(waitFor([&]() { return card->cardType() == QStringLiteral("SRB-Vehicle"); }))
+        << "the post-read authoritative update must flip cardType identically on both transports";
+    EXPECT_GE(cardTypeChangedCount, 1);
+}
+
+// ---- Card-independent visual-signature layout preview ------------------
+//
+// Manager1.LayoutVisualSignature / GetAppearanceFont are synchronous, no-card,
+// no-Operation calls — AgentClient::layoutVisualSignature()/appearanceFont()
+// dial neither transport's Operation machinery at all. Both fakes are
+// scripted from the SAME ParityConfig fields (layoutFontSize/layoutLineHeight/
+// layoutLines/layoutClipped/appearanceFontBytes), so a client-observed result
+// must agree field-for-field / byte-for-byte regardless of transport.
+
+TYPED_TEST(TransportParity, LayoutVisualSignatureAndAppearanceFontMatchAcrossTransports)
+{
+    using Env = typename TypeParam::Env;
+    ParityConfig cfg;
+    cfg.features = {QStringLiteral("credentials"), QStringLiteral("layout-preview")};
+    cfg.layoutFontSize = 8.5;
+    cfg.layoutLineHeight = 10.2;
+    cfg.layoutLines = {QStringLiteral("Потписао"), QStringLiteral("Немања")}; // Serbian Cyrillic UTF-8
+    cfg.layoutClipped = false;
+    QByteArray fontBytes = QByteArrayLiteral("\x00\x01\x02"
+                                             "FAKE-TTF-BYTES");
+    for (int i = 0; i < 64; ++i) {
+        fontBytes.append(static_cast<char>(i));
+    }
+    cfg.appearanceFontBytes = fontBytes;
+    const QByteArray expectedFontHash = QCryptographicHash::hash(fontBytes, QCryptographicHash::Sha256);
+    Env env(cfg);
+
+    AgentClient* client = env.client();
+    ASSERT_TRUE(client->isAvailable());
+    ASSERT_TRUE(client->hasFeature(QStringLiteral("layout-preview")));
+
+    const std::optional<LayoutResult> layout =
+        client->layoutVisualSignature(QStringLiteral("Потписао\nНемања"), QRectF(0, 0, 150, 60));
+    ASSERT_TRUE(layout.has_value());
+    EXPECT_DOUBLE_EQ(layout->fontSize, 8.5);
+    EXPECT_DOUBLE_EQ(layout->lineHeight, 10.2);
+    EXPECT_EQ(layout->lines, (QStringList{QStringLiteral("Потписао"), QStringLiteral("Немања")}));
+    EXPECT_FALSE(layout->clipped);
+
+    FdHandle font = client->appearanceFont();
+    ASSERT_TRUE(font.valid());
+    const QByteArray received = readFdAll(font.get());
+    EXPECT_EQ(received, fontBytes);
+    EXPECT_EQ(QCryptographicHash::hash(received, QCryptographicHash::Sha256), expectedFontHash)
+        << "the received font FdHandle's content hash must match the agent-side bytes exactly, identically on "
+           "both transports";
+
+    // A second call is served from the per-connection cache, not a second
+    // wire round trip — layoutCallCount() only counts LayoutVisual requests
+    // (independent from appearanceFont()'s own separate GetAppearanceFont
+    // count), so this proves caching without disturbing that assertion.
+    FdHandle fontAgain = client->appearanceFont();
+    ASSERT_TRUE(fontAgain.valid());
+    EXPECT_EQ(env.appearanceFontCallCount(), 1) << "appearanceFont() must be cached per connection, not re-dialed";
+}
+
+// A box too small to fit even the floor font size is still a VALID call —
+// `clipped` becomes true, and that flag must arrive client-side identically
+// on both transports (its whole reason to ride the wire — see the CDDL
+// `layout` arm's own comment).
+TYPED_TEST(TransportParity, LayoutTinyBoxClippedArrivesAcrossTransports)
+{
+    using Env = typename TypeParam::Env;
+    ParityConfig cfg;
+    cfg.features = {QStringLiteral("layout-preview")};
+    cfg.layoutClipped = true;
+    Env env(cfg);
+
+    AgentClient* client = env.client();
+    ASSERT_TRUE(client->isAvailable());
+
+    const std::optional<LayoutResult> layout =
+        client->layoutVisualSignature(QStringLiteral("Hello World"), QRectF(0, 0, 4, 50));
+    ASSERT_TRUE(layout.has_value());
+    EXPECT_TRUE(layout->clipped) << "clipped==true must arrive client-side identically on both transports";
+}
+
+// Feature-gated local refusal: an agent that does not advertise
+// "layout-preview" is refused WITHOUT either transport ever dialing the wire
+// — mirrors MissingTokenInfoFeatureRefusesIdenticallyAcrossTransports above,
+// via the layoutCallCount()/appearanceFontCallCount() probes instead of
+// operationCount() (neither call mints an Operation).
+TYPED_TEST(TransportParity, MissingLayoutPreviewFeatureRefusesLocallyAcrossTransports)
+{
+    using Env = typename TypeParam::Env;
+    ParityConfig cfg;
+    cfg.features = {QStringLiteral("credentials")}; // no "layout-preview"
+    Env env(cfg);
+
+    AgentClient* client = env.client();
+    ASSERT_TRUE(client->isAvailable());
+    EXPECT_FALSE(client->hasFeature(QStringLiteral("layout-preview")));
+
+    const std::optional<LayoutResult> layout =
+        client->layoutVisualSignature(QStringLiteral("Signed by"), QRectF(0, 0, 150, 60));
+    EXPECT_FALSE(layout.has_value());
+    const FdHandle font = client->appearanceFont();
+    EXPECT_FALSE(font.valid());
+    EXPECT_EQ(env.layoutCallCount(), 0) << "the gate must refuse before either transport ever dials the wire";
+    EXPECT_EQ(env.appearanceFontCallCount(), 0) << "the gate must refuse before either transport ever dials the wire";
 }

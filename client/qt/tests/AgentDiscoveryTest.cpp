@@ -433,6 +433,51 @@ TEST(AgentDiscovery, ReadersAreSortedById)
     EXPECT_LT(ordered.at(0)->id(), ordered.at(1)->id());
 }
 
+// ---- feature discovery (Manager1.Features) ----------------------------------
+
+// The default scripted feature list ({"credentials"}) plus an unknown extra
+// token the client build predates: both must surface through the public API
+// unfiltered (the CDDL-sanctioned forward-compatibility tolerance), and
+// hasFeature() must resolve exactly the scripted set, nothing more.
+TEST(AgentDiscovery, FeaturesReadFromManagerPropertyIncludingUnknownToken)
+{
+    FakeAgent::Config cfg;
+    cfg.capabilities = Cap::Pki;
+    cfg.features = {QStringLiteral("credentials"), QStringLiteral("a-future-token-this-build-does-not-name")};
+    Harness h(cfg);
+
+    auto client = makeClient(h);
+    ASSERT_TRUE(client->isAvailable());
+
+    const QStringList features = client->features();
+    EXPECT_EQ(features.size(), 2);
+    EXPECT_TRUE(features.contains(QStringLiteral("credentials")));
+    EXPECT_TRUE(features.contains(QStringLiteral("a-future-token-this-build-does-not-name")))
+        << "an unrecognised extra feature token must still surface, never be dropped";
+    EXPECT_TRUE(client->hasFeature(QStringLiteral("credentials")));
+    EXPECT_TRUE(client->hasFeature(QStringLiteral("a-future-token-this-build-does-not-name")));
+    EXPECT_FALSE(client->hasFeature(QStringLiteral("nonexistent-token")));
+}
+
+// An agent predating the Manager1.Features property (or Manager1 entirely)
+// must degrade GRACEFULLY: features() empty, hasFeature() false for every
+// token, no error, and the rest of the client stays fully functional
+// (isAvailable/readers unaffected).
+TEST(AgentDiscovery, OldAgentWithoutManagerFeaturesYieldsEmptyFeatures)
+{
+    FakeAgent::Config cfg;
+    cfg.capabilities = Cap::Pki;
+    cfg.exportManager1 = false; // predates the Manager1 interface entirely
+    Harness h(cfg);
+
+    auto client = makeClient(h);
+    ASSERT_TRUE(client->isAvailable());
+    ASSERT_EQ(client->readers().size(), 1);
+
+    EXPECT_TRUE(client->features().isEmpty());
+    EXPECT_FALSE(client->hasFeature(QStringLiteral("credentials")));
+}
+
 // readerWithCardByName() (this file's local re-add): matches on the friendly
 // Name AND requires a resolvable card. reader/0 "Fake" has a card; reader/1
 // "Fake2" is present but empty; an unknown name never matches.

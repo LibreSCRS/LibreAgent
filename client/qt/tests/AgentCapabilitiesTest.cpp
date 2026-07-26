@@ -61,22 +61,21 @@ TEST(AgentCapabilities, ResolveCardStateNotPresentIsNoCard)
 {
     // Capabilities / preAuth are irrelevant when no card is present.
     EXPECT_EQ(resolveCardState(Cap::IdentityData | Cap::Pki, PreReadAuth::None, false, false), UiState::NoCard);
-    EXPECT_EQ(resolveCardState(Cap::Pki, PreReadAuth::PaceCan, false, true), UiState::NoCard);
-    EXPECT_EQ(resolveCardState(0u, PreReadAuth::BacMrz, false, false), UiState::NoCard);
+    EXPECT_EQ(resolveCardState(Cap::Pki, PreReadAuth::Can, false, true), UiState::NoCard);
+    EXPECT_EQ(resolveCardState(0u, PreReadAuth::Mrz, false, false), UiState::NoCard);
 }
 
 TEST(AgentCapabilities, ResolveCardStatePreAuthLatch)
 {
     // A pre-read unlock is required and identity has not been read yet ->
     // PreAuthRequired, regardless of the capability grouping.
-    EXPECT_EQ(resolveCardState(Cap::IdentityData, PreReadAuth::PaceCan, true, false), UiState::PreAuthRequired);
-    EXPECT_EQ(resolveCardState(Cap::IdentityData | Cap::Pki, PreReadAuth::BacMrz, true, false),
-              UiState::PreAuthRequired);
+    EXPECT_EQ(resolveCardState(Cap::IdentityData, PreReadAuth::Can, true, false), UiState::PreAuthRequired);
+    EXPECT_EQ(resolveCardState(Cap::IdentityData | Cap::Pki, PreReadAuth::Mrz, true, false), UiState::PreAuthRequired);
 
     // Once identity has been read the latch clears and we fall through to the
     // coarse grouping.
-    EXPECT_EQ(resolveCardState(Cap::IdentityData, PreReadAuth::PaceCan, true, true), UiState::IdentityOnly);
-    EXPECT_EQ(resolveCardState(Cap::IdentityData | Cap::Pki, PreReadAuth::BacMrz, true, true), UiState::Hybrid);
+    EXPECT_EQ(resolveCardState(Cap::IdentityData, PreReadAuth::Can, true, true), UiState::IdentityOnly);
+    EXPECT_EQ(resolveCardState(Cap::IdentityData | Cap::Pki, PreReadAuth::Mrz, true, true), UiState::Hybrid);
 }
 
 TEST(AgentCapabilities, ResolveCardStateGroupingWhenNoPreAuth)
@@ -141,8 +140,8 @@ TEST(AgentCapabilityTokens, UnrecognizedTokensAreIgnored)
 TEST(AgentCapabilityTokens, PreReadAuthTokenDecode)
 {
     EXPECT_EQ(preReadAuthFromToken(u"None"), PreReadAuth::None);
-    EXPECT_EQ(preReadAuthFromToken(u"BacMrz"), PreReadAuth::BacMrz);
-    EXPECT_EQ(preReadAuthFromToken(u"PaceCan"), PreReadAuth::PaceCan);
+    EXPECT_EQ(preReadAuthFromToken(u"Mrz"), PreReadAuth::Mrz);
+    EXPECT_EQ(preReadAuthFromToken(u"Can"), PreReadAuth::Can);
     // Lenient parse: anything unrecognized (including a future method) is None.
     EXPECT_EQ(preReadAuthFromToken(u"SomethingFuture"), PreReadAuth::None);
     EXPECT_EQ(preReadAuthFromToken(u""), PreReadAuth::None);

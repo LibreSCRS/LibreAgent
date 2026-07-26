@@ -63,7 +63,14 @@ public Q_SLOTS:
     void onFinished(uint status, uint errorCode, const QString& msgKey, const QString& msgFallback);
     void onPropertiesChanged(const QString& iface, const QVariantMap& changed, const QStringList& invalidated);
     void onSignResult(const QDBusUnixFileDescriptor& fd, const QVariantMap& meta);
+    void onSignBatchResult(LibreSCRS::AgentClient::SignBatchRowsWire rows);
     void onIdentityResult(LibreSCRS::AgentClient::IdentityFieldsWire fields);
+    // Progressive delivery: Operation.Identity1.Group(groupKey, fields).
+    // Connected ONLY for OperationKind::Identity (see subscribeOperation) --
+    // never for a GetPhoto/Sign/Certificates/Credentials op, whose object
+    // never exports the Identity1 interface at all, so this signal simply
+    // cannot arrive for them.
+    void onIdentityGroup(QString groupKey, LibreSCRS::AgentClient::IdentityFieldGroupWire fields);
     void onCertificatesResult(LibreSCRS::AgentClient::CertListWire certificates);
     void onPhotoResult(LibreSCRS::AgentClient::PhotoMapWire photos);
     void onCredentialsResult(QVariantMap result, LibreSCRS::AgentClient::CredentialRecordsWire records);
@@ -86,6 +93,9 @@ public:
     [[nodiscard]] bool probeAvailability() override;
     [[nodiscard]] bool agentInstalled() override;
     [[nodiscard]] std::optional<RegistrySnapshot> fetchRegistry() override;
+    [[nodiscard]] QStringList features() const override;
+    [[nodiscard]] std::optional<LayoutResult> layoutVisualSignature(const QString& text, QRectF box) override;
+    [[nodiscard]] FdHandle appearanceFont() override;
     void subscribeProperties(const QString& objectId, ObjectKind kind, PropertyListener* listener) override;
     void unsubscribeProperties(const QString& objectId, PropertyListener* listener) override;
     quint64 requestProperties(const QString& objectId, ObjectKind kind, PropertyListener* listener) override;
@@ -111,6 +121,13 @@ private:
     /// isServiceRegistered helper, which can block ~25 s against a wedged
     /// daemon and would freeze a running outer loop the whole time).
     [[nodiscard]] bool nameHasOwner();
+    /// Re-read `Manager1.Features` (a bounded `Properties.GetAll` on the root
+    /// path) into `m_features`, tolerating an agent that lacks the property —
+    /// or Manager1 entirely — by leaving `m_features` empty. Called at most
+    /// once per connect (guarded by `m_featuresFetched`), from `probeAvailability()`
+    /// and `onServiceRegistered()` alike, so whichever path first observes the
+    /// agent reachable seeds it.
+    void refreshFeatures();
 
     QDBusConnection m_connection;
     QString m_service;
@@ -120,6 +137,14 @@ private:
     QHash<OperationListener*, DBusOperationWatch*> m_operationWatches;
     DerListenerRegistry m_derListeners;
     quint64 m_nextToken = 0; // requestProperties only — DER tokens live in m_derListeners
+    QStringList m_features;
+    bool m_featuresFetched = false; // reset on onServiceUnregistered — "once per connect"
+    // The sealed appearance-font fd, cached per connection exactly like
+    // m_features (fetched at most once per connect, reset on
+    // onServiceUnregistered so a reconnect re-fetches rather than serving a
+    // stale fd from a dead connection).
+    FdHandle m_appearanceFont;
+    bool m_appearanceFontFetched = false;
 };
 
 } // namespace LibreSCRS::AgentClient

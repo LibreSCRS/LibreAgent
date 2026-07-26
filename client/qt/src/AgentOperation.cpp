@@ -12,6 +12,43 @@ namespace LibreSCRS::AgentClient {
 
 namespace {
 Q_LOGGING_CATEGORY(lcAgentOp, "librescrs.agentclient.operation")
+
+// Wire tolerance policy (see ClientCodec.h's file comment for the full
+// table): OperationPhase/OperationStatus are wire-frozen append-only, so the
+// codec/D-Bus layer carries a value this build does not name through RAW
+// rather than rejecting the frame. AgentOperation is the STATEFUL layer that
+// decides what such a value means — these two helpers are its enumerator
+// membership tests, deliberately written as an exhaustive switch (no
+// `default:`) so a future named enumerator appended upstream without
+// updating this file trips a `-Wswitch` build warning instead of silently
+// falling through as "known".
+[[nodiscard]] bool isKnownPhase(OperationPhase phase) noexcept
+{
+    switch (phase) {
+    case OperationPhase::Created:
+    case OperationPhase::Connecting:
+    case OperationPhase::AwaitingConsent:
+    case OperationPhase::Authenticating:
+    case OperationPhase::Reading:
+    case OperationPhase::Signing:
+    case OperationPhase::Timestamping:
+    case OperationPhase::Done:
+        return true;
+    }
+    return false;
+}
+
+[[nodiscard]] bool isKnownStatus(OperationStatus status) noexcept
+{
+    switch (status) {
+    case OperationStatus::Ok:
+    case OperationStatus::Cancelled:
+    case OperationStatus::Error:
+        return true;
+    }
+    return false;
+}
+
 } // namespace
 
 struct AgentOperation::Private final : public OperationListener, public TransportSeam::DerListener
@@ -31,6 +68,8 @@ struct AgentOperation::Private final : public OperationListener, public Transpor
             return OperationKind::Sign;
         case Kind::Credentials:
             return OperationKind::Credentials;
+        case Kind::BatchSign:
+            return OperationKind::BatchSign;
         case Kind::CertificateDer:
             break;
         }
@@ -68,6 +107,7 @@ struct AgentOperation::Private final : public OperationListener, public Transpor
     std::vector<PhotoItem> photos;
     FdHandle signedArtifact;
     QVariantMap signMeta;
+    std::vector<BatchSignRow> batchRows;
     PinResult pinResult;
     CredentialList credentialsResult;
     QByteArray der;
@@ -79,15 +119,34 @@ struct AgentOperation::Private final : public OperationListener, public Transpor
 
     void onPhaseChanged(OperationPhase newPhase, double newProgress) override
     {
-        phase = newPhase;
+        // Wire tolerance: a future agent may report a phase this build does
+        // not name yet (OperationPhase is wire-frozen append-only). Progress
+        // is still delivered either way, but the held/public phase never
+        // regresses to an unrecognised value — it holds the last known-good
+        // phase until (if ever) a recognised one arrives. The signal's own
+        // `phase` argument mirrors the held value too, so a direct slot and
+        // the polled phase() getter never disagree.
+        if (isKnownPhase(newPhase)) {
+            phase = newPhase;
+        }
         progress = newProgress;
-        Q_EMIT q->phaseChanged(newPhase, newProgress);
+        Q_EMIT q->phaseChanged(phase, newProgress);
     }
 
     void onFinished(OperationStatus terminalStatus, ErrorCode code, const QString& msgKey,
                     const QString& msgFallback) override
     {
         q->finalizeTerminal(terminalStatus, code, msgKey, msgFallback);
+    }
+
+    void onGroupReady(const FieldGroup& group) override
+    {
+        // Purely a live forward -- no accumulation, no storage. See
+        // AgentOperation::identityResult()'s doc comment: the eventual
+        // onResult/finished pair is the one and only authoritative source
+        // for the getter; this signal is a progressive hint a consumer may
+        // ignore entirely with no loss.
+        Q_EMIT q->groupReady(group);
     }
 
     void onResult(OperationPayload payload) override
@@ -145,6 +204,9 @@ struct AgentOperation::Private final : public OperationListener, public Transpor
             pinResult = std::move(payload.pinResult);
             credentialsResult = std::move(payload.credentials);
             break;
+        case OperationKind::BatchSign:
+            batchRows = std::move(payload.batchRows);
+            break;
         }
     }
 
@@ -185,6 +247,18 @@ struct AgentOperation::Private final : public OperationListener, public Transpor
             break;
         case OperationKind::Credentials:
             break; // reply presence is the signal — parse regardless
+        case OperationKind::BatchSign:
+            if (payload->batchRows.empty()) {
+                // Mirrors the agent's own SignBatch1.Result contract: the
+                // Result signal (and this pull's equivalent) is never emitted
+                // for an operation that attempted zero documents (Cancelled
+                // before the first document). An empty vector is therefore
+                // indistinguishable from "genuinely missing" and does NOT
+                // count as recovered, exactly like Photo/Identity/
+                // Certificates' own empty-payload rule above.
+                return false;
+            }
+            break;
         }
         storePayload(std::move(*payload));
         resultSeen = true;
@@ -295,6 +369,11 @@ QVariantMap AgentOperation::signMeta() const
     return d->signMeta;
 }
 
+std::vector<BatchSignRow> AgentOperation::takeBatchResults()
+{
+    return std::move(d->batchRows);
+}
+
 PinResult AgentOperation::pinResult() const
 {
     return d->pinResult;
@@ -338,6 +417,16 @@ void AgentOperation::startCertificateDer(TransportSeam* transport, const QString
 void AgentOperation::finalizeTerminal(OperationStatus terminalStatus, ErrorCode code, const QString& msgKey,
                                       const QString& msgFallback)
 {
+    // Wire tolerance: an OperationStatus value this build does not recognise
+    // (a future agent's terminal outcome, wire-frozen append-only, or a
+    // stale wedged-properties read) is treated as Error — normalized HERE,
+    // once, before either branch below runs, so it can never be mistaken for
+    // the Ok-recovery path, never surfaces as an unnamed enumerator via the
+    // public status() getter, and the credentials branch's "recover
+    // regardless of Ok vs Error" comment still holds for it.
+    if (!isKnownStatus(terminalStatus)) {
+        terminalStatus = OperationStatus::Error;
+    }
     // The credentials result diverges from the other typed results. Its Result
     // fires for EVERY completed attempt — the payload carries the per-attempt
     // outcome, so a soft-fail (invalidPin / blocked) legitimately finishes

@@ -82,10 +82,10 @@ QString preAuthToken(Wire::PreReadAuth preAuth)
     switch (preAuth) {
     case Wire::PreReadAuth::None:
         return QStringLiteral("None");
-    case Wire::PreReadAuth::BacMrz:
-        return QStringLiteral("BacMrz");
-    case Wire::PreReadAuth::PaceCan:
-        return QStringLiteral("PaceCan");
+    case Wire::PreReadAuth::Mrz:
+        return QStringLiteral("Mrz");
+    case Wire::PreReadAuth::Can:
+        return QStringLiteral("Can");
     }
     return QStringLiteral("None");
 }
@@ -109,6 +109,11 @@ QVariantMap cardProps(const Wire::CardState& card)
     props.insert(QStringLiteral("Capabilities"), static_cast<uint>(card.caps));
     props.insert(QStringLiteral("PreReadAuthMethod"), preAuthToken(card.preAuth));
     props.insert(QStringLiteral("Reader"), fromStd(card.reader));
+    // Optional on the wire (absent == not yet known / an older agent); the
+    // canonical seam vocabulary always carries the key, empty when absent, so
+    // AgentCard::applyProps sees the same shape regardless of transport.
+    props.insert(QStringLiteral("CardType"), card.cardType ? fromStd(*card.cardType) : QString());
+    props.insert(QStringLiteral("Atr"), card.atr ? fromStd(*card.atr) : QString());
     return props;
 }
 
@@ -175,33 +180,42 @@ SeamError mapErrInfo(const Wire::ErrInfo& err)
 
 // ---- typed op-result payloads -> public value types -----------------------------
 
+// One group's field map (fieldKey -> id-field cell) -> a public FieldGroup
+// keyed by @p groupKey. Shared by toFieldGroups' per-group loop below and by
+// dispatchEvent's OpIdentityGroup case, so the two conversions of this SAME
+// cell shape can never drift apart.
+FieldGroup toFieldGroup(const QString& groupKey, const std::map<std::string, Wire::IdentityField>& cells)
+{
+    FieldGroup group;
+    group.key = groupKey;
+    for (const auto& [fieldKey, cell] : cells) {
+        Field field;
+        field.key = fromStd(fieldKey);
+        const QString type = fromStd(cell.type);
+        field.extra.insert(kFieldExtraLabelKey, fromStd(cell.labelKey));
+        field.extra.insert(kFieldExtraLabelFallback, fromStd(cell.labelFallback));
+        field.extra.insert(kFieldExtraType, type);
+        if (type == kFieldTypeBinary) {
+            // Binary payloads are not display text: the bytes ride
+            // `detail`, the display value stays empty (Marshal.cpp's rule).
+            if (const auto* bytes = std::get_if<std::vector<std::uint8_t>>(&cell.value)) {
+                field.detail = toByteArray(*bytes);
+            } else {
+                field.detail = fromStd(std::get<std::string>(cell.value)).toUtf8();
+            }
+        } else if (const auto* text = std::get_if<std::string>(&cell.value)) {
+            field.value = fromStd(*text);
+        }
+        group.fields.append(std::move(field));
+    }
+    return group;
+}
+
 QList<FieldGroup> toFieldGroups(const Wire::IdentityResult& result)
 {
     QList<FieldGroup> groups;
     for (const auto& [groupKey, cells] : result.fields) {
-        FieldGroup group;
-        group.key = fromStd(groupKey);
-        for (const auto& [fieldKey, cell] : cells) {
-            Field field;
-            field.key = fromStd(fieldKey);
-            const QString type = fromStd(cell.type);
-            field.extra.insert(kFieldExtraLabelKey, fromStd(cell.labelKey));
-            field.extra.insert(kFieldExtraLabelFallback, fromStd(cell.labelFallback));
-            field.extra.insert(kFieldExtraType, type);
-            if (type == kFieldTypeBinary) {
-                // Binary payloads are not display text: the bytes ride
-                // `detail`, the display value stays empty (Marshal.cpp's rule).
-                if (const auto* bytes = std::get_if<std::vector<std::uint8_t>>(&cell.value)) {
-                    field.detail = toByteArray(*bytes);
-                } else {
-                    field.detail = fromStd(std::get<std::string>(cell.value)).toUtf8();
-                }
-            } else if (const auto* text = std::get_if<std::string>(&cell.value)) {
-                field.value = fromStd(*text);
-            }
-            group.fields.append(std::move(field));
-        }
-        groups.append(std::move(group));
+        groups.append(toFieldGroup(fromStd(groupKey), cells));
     }
     return groups;
 }
@@ -217,6 +231,24 @@ QString certFieldValue(const Wire::CertInfo& cert, const char* group, const char
         return {};
     }
     return fromStd(fieldIt->second.value);
+}
+
+// Security-status tokens riding the "security" fields-group (dict-key growth,
+// not its own Wire::CertInfo member) -- one per field, read from each cell's
+// VALUE (not its map key) to stay agnostic of the exact key scheme the agent
+// uses, mirroring Marshal.cpp's D-Bus-side extraction of the same group.
+std::vector<std::string> securityTokens(const Wire::CertInfo& cert)
+{
+    std::vector<std::string> out;
+    const auto groupIt = cert.fields.find("security");
+    if (groupIt == cert.fields.end()) {
+        return out;
+    }
+    out.reserve(groupIt->second.size());
+    for (const auto& [fieldKey, cell] : groupIt->second) {
+        out.push_back(cell.value);
+    }
+    return out;
 }
 
 QStringList toStringList(const std::vector<std::string>& values)
@@ -242,7 +274,10 @@ QList<CertificateInfo> toCertificateInfos(const std::vector<Wire::CertInfo>& cer
         info.notBefore = QDateTime::fromString(certFieldValue(cert, "validity", "notBefore"), Qt::ISODate);
         info.notAfter = QDateTime::fromString(certFieldValue(cert, "validity", "notAfter"), Qt::ISODate);
         // Wire trust verdict -> the client-facing display set; the raw value
-        // rides `extra` (the same collapse Marshal.cpp applies).
+        // rides `extra` (the same collapse Marshal.cpp applies). Revoked (5)
+        // maps to the client's own Revoked case; OfflineUnverified (6) and any
+        // value this build does not yet know about both collapse to Unknown --
+        // the finer "why unknown" distinction rides securityStatus below.
         switch (cert.trustStatus) {
         case 0U:
             info.trust = TrustStatus::Trusted;
@@ -255,10 +290,14 @@ QList<CertificateInfo> toCertificateInfos(const std::vector<Wire::CertInfo>& cer
         case 4U:
             info.trust = TrustStatus::Expired;
             break;
+        case 5U:
+            info.trust = TrustStatus::Revoked;
+            break;
         default:
             info.trust = TrustStatus::Unknown;
             break;
         }
+        info.securityStatus = toStringList(securityTokens(cert));
         info.extra.insert(QStringLiteral("keyUsageBits"), static_cast<uint>(cert.keyUsageBits));
         info.extra.insert(QStringLiteral("extendedKeyUsageOids"), toStringList(cert.ekus));
         info.extra.insert(QStringLiteral("chainSubjectCns"), toStringList(cert.chainSubjectCns));
@@ -384,6 +423,20 @@ OperationPayload toPayload(Wire::OpResult&& result, const std::vector<Wire::Uniq
         payload.signMeta.insert(QStringLiteral("level"), fromStd(sign->meta.level));
         payload.signMeta.insert(QStringLiteral("tsaUsed"), sign->meta.tsaUsed);
         payload.signMeta.insert(QStringLiteral("chainComplete"), sign->meta.chainComplete);
+    } else if (auto* batch = std::get_if<Wire::SignBatchResult>(&result)) {
+        payload.kind = OperationKind::BatchSign;
+        payload.batchRows.reserve(batch->rows.size());
+        for (const Wire::SignBatchRow& row : batch->rows) {
+            BatchSignRow item;
+            item.displayName = fromStd(row.displayName);
+            item.artifact = dupFd(fds[static_cast<std::size_t>(row.artifact)].get());
+            item.meta.insert(QStringLiteral("format"), fromStd(row.meta.format));
+            item.meta.insert(QStringLiteral("level"), fromStd(row.meta.level));
+            item.meta.insert(QStringLiteral("tsaUsed"), row.meta.tsaUsed);
+            item.meta.insert(QStringLiteral("chainComplete"), row.meta.chainComplete);
+            item.error = row.code; // Wire::ErrorCode IS LibreSCRS::AgentClient::ErrorCode (a using-alias)
+            payload.batchRows.push_back(std::move(item));
+        }
     } else if (auto* credentials = std::get_if<Wire::CredentialsResult>(&result)) {
         payload.kind = OperationKind::Credentials;
         payload.pinResult = PinResult::fromVariantMap(credResultToMap(credentials->result));
@@ -395,11 +448,28 @@ OperationPayload toPayload(Wire::OpResult&& result, const std::vector<Wire::Uniq
     return payload;
 }
 
+/// The seam's wire-keyed `visualSignature` QVariantMap -> the wire's
+/// `visual-sig-opts` shape (all six keys required — see SignOptions.h's
+/// doc comment for the exact key set/types this map must carry).
+Wire::VisualSignatureOpts toVisualSignatureOpts(const QVariantMap& v)
+{
+    Wire::VisualSignatureOpts opts;
+    opts.page = v.value(QStringLiteral("page")).toULongLong();
+    opts.x = v.value(QStringLiteral("x")).toDouble();
+    opts.y = v.value(QStringLiteral("y")).toDouble();
+    opts.width = v.value(QStringLiteral("width")).toDouble();
+    opts.height = v.value(QStringLiteral("height")).toDouble();
+    opts.text = v.value(QStringLiteral("text")).toString().toStdString();
+    return opts;
+}
+
 /// The seam's wire-keyed sign-option map -> the CLOSED sign-opts shape of
-/// this wire. Keys outside the CDDL's sign-opts vocabulary cannot be
-/// expressed here (notably tsaUrl: the TSA is Config-owned on this wire, not
-/// a per-sign option) and are dropped with a warning rather than silently
-/// re-spelled into something the agent never specified.
+/// this wire. Every key the CDDL's sign-opts vocabulary defines — including
+/// tsaUrl and visualSignature — forwards identically to both transports;
+/// this used to drop tsaUrl/visualSignature here with a warning (the wire had
+/// no field for them), a documented, pinned asymmetry retired once the socket
+/// wire's sign-opts grew both fields. A key outside the vocabulary entirely
+/// is still dropped with a warning — that part of the contract is unchanged.
 Wire::SignOpts toSignOpts(const QVariantMap& options)
 {
     Wire::SignOpts opts;
@@ -419,6 +489,10 @@ Wire::SignOpts toSignOpts(const QVariantMap& options)
             opts.reason = it->toString().toStdString();
         } else if (key == QLatin1String("location")) {
             opts.location = it->toString().toStdString();
+        } else if (key == QLatin1String("tsaUrl")) {
+            opts.tsaUrl = it->toString().toStdString();
+        } else if (key == QLatin1String("visualSignature")) {
+            opts.visualSignature = toVisualSignatureOpts(it->toMap());
         } else {
             qCWarning(lcSocket) << "sign option" << key << "has no sign-opts field on the socket wire; dropped";
         }
@@ -493,6 +567,14 @@ bool SocketTransport::hasFeature(QLatin1StringView token) const
     return m_features.contains(QString(token));
 }
 
+QStringList SocketTransport::features() const
+{
+    // TransportSeam's public-facing surface: identical to agentFeatures()
+    // (the two names coexist because SocketIntegrationTest.cpp's white-box
+    // suite predates the seam method and asserts on the transport directly).
+    return agentFeatures();
+}
+
 // ---- registry ------------------------------------------------------------------------
 
 std::optional<RegistrySnapshot> SocketTransport::fetchRegistry()
@@ -513,6 +595,60 @@ std::optional<RegistrySnapshot> SocketTransport::fetchRegistry()
         snapshot.readers.append({fromStd(reader.handle), readerProps(reader)});
     }
     return snapshot;
+}
+
+// ---- Visual-signature layout preview -----------------------------------------------
+
+std::optional<LayoutResult> SocketTransport::layoutVisualSignature(const QString& text, QRectF box)
+{
+    Wire::LayoutVisual request;
+    request.text = text.toStdString();
+    request.x = box.x();
+    request.y = box.y();
+    request.width = box.width();
+    request.height = box.height();
+    // Bounded like every other cheap, card-independent synchronous round-trip.
+    SyncResult result = callSync(request, kHandshakeTimeoutMs);
+    if (result.failure != CallError::None) {
+        return std::nullopt;
+    }
+    const auto* layout = std::get_if<Wire::LayoutReply>(&result.reply);
+    if (layout == nullptr) {
+        return std::nullopt; // err-info (entry rejection) or an unexpected arm
+    }
+    LayoutResult out;
+    out.fontSize = layout->fontSize;
+    out.lineHeight = layout->lineHeight;
+    for (const std::string& line : layout->lines) {
+        out.lines.append(fromStd(line));
+    }
+    out.clipped = layout->clipped;
+    return out;
+}
+
+FdHandle SocketTransport::appearanceFont()
+{
+    if (!m_appearanceFontFetched) {
+        // "Once per connect" (this transport's re-handshake-per-reconnect
+        // posture makes that the natural cache-invalidation boundary — see
+        // this member's own doc comment in the header). A failure here
+        // degrades to an invalid cached handle, same posture as m_features.
+        m_appearanceFontFetched = true;
+        SyncResult result = callSync(Wire::GetAppearanceFont{}, kHandshakeTimeoutMs);
+        if (result.failure == CallError::None) {
+            if (const auto* reply = std::get_if<Wire::AppearanceFontReply>(&result.reply)) {
+                if (reply->fd < result.fds.size()) {
+                    m_appearanceFont = dupFd(result.fds[reply->fd].get());
+                }
+            }
+        }
+    }
+    if (!m_appearanceFont.valid()) {
+        return {};
+    }
+    // Dup a fresh handle per call: the cache keeps sole ownership of
+    // m_appearanceFont's descriptor for the connection's lifetime.
+    return dupFd(m_appearanceFont.get());
 }
 
 // ---- per-object property tracking ------------------------------------------------------
@@ -604,6 +740,11 @@ StartOutcome SocketTransport::startOperation(const QString& cardId, OperationReq
                             << ": agent lacks the credentials feature token";
         return outcome;
     }
+    // NOTE: ReadTokenInfo's "token-info" feature-token gate used to live here
+    // too (a socket-only special case); it is now enforced transport-neutrally
+    // in AgentCard::startOperation, BEFORE this method is ever called -- see
+    // that function's comment. This transport never sees a ReadTokenInfo
+    // request the client-side gate would have refused.
 
     switch (request.method) {
     case OperationRequest::Method::ReadIdentity:
@@ -614,6 +755,9 @@ StartOutcome SocketTransport::startOperation(const QString& cardId, OperationReq
         break;
     case OperationRequest::Method::ReadCertificates:
         wire = Wire::ReadCertificates{card};
+        break;
+    case OperationRequest::Method::ReadTokenInfo:
+        wire = Wire::ReadTokenInfo{card};
         break;
     case OperationRequest::Method::Sign: {
         if (!request.document.valid()) {
@@ -628,6 +772,27 @@ StartOutcome SocketTransport::startOperation(const QString& cardId, OperationReq
         sign.opts = toSignOpts(request.options);
         passFds.push_back(request.document.get());
         wire = std::move(sign);
+        break;
+    }
+    case OperationRequest::Method::SignBatch: {
+        Wire::SignBatch batch;
+        batch.card = card;
+        batch.cert = request.certId.toStdString();
+        batch.opts = toSignOpts(request.options);
+        batch.docs.reserve(request.documents.size());
+        for (const BatchDocument& doc : request.documents) {
+            if (!doc.fd.valid()) {
+                outcome.error.callError = CallError::InvalidArguments;
+                outcome.error.message = QStringLiteral("signBatch requires every document to carry a file descriptor");
+                return outcome;
+            }
+            Wire::BatchDocument wireDoc;
+            wireDoc.name = doc.displayName.toStdString();
+            wireDoc.fdIndex = static_cast<std::uint64_t>(passFds.size());
+            batch.docs.push_back(std::move(wireDoc));
+            passFds.push_back(doc.fd.get());
+        }
+        wire = std::move(batch);
         break;
     }
     case OperationRequest::Method::ListCredentials:
@@ -876,6 +1041,11 @@ bool SocketTransport::connectAndHandshake()
     for (const std::string& feature : ack.features) {
         m_features.append(fromStd(feature));
     }
+    // Forget any previously cached appearance-font fd — a fresh
+    // connection may be a different-generation agent serving a different
+    // font, and appearanceFont() re-fetches lazily on next use.
+    m_appearanceFontFetched = false;
+    m_appearanceFont = FdHandle{};
     m_established = true;
     m_quiesced = false;
     // A new connection generation: any ConnectionLost notice still queued
@@ -1123,6 +1293,17 @@ void SocketTransport::dispatchEvent(Wire::DecodedEvent&& decoded, std::vector<Wi
     if (const auto* progress = std::get_if<Wire::OpProgress>(&event)) {
         if (OperationListener* listener = operationListenerFor(progress->op)) {
             listener->onPhaseChanged(progress->phase, progress->progress.value_or(0.0));
+        }
+        return;
+    }
+    if (const auto* group = std::get_if<Wire::OpIdentityGroup>(&event)) {
+        // Progressive delivery, strictly ahead of the SAME op's eventual
+        // OpResultReady below -- the client does not gate this on the
+        // "identity-stream" feature token (unlike a request-side gate): an
+        // agent that does not advertise it simply never writes this frame,
+        // so there is nothing here to refuse.
+        if (OperationListener* listener = operationListenerFor(group->op)) {
+            listener->onGroupReady(toFieldGroup(fromStd(group->groupKey), group->fields));
         }
         return;
     }

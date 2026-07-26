@@ -85,6 +85,12 @@ TEST(ErrorNameMap, AgentTaxonomyRefusalsMapToErrorCode)
         {"org.librescrs.Agent.Error.NotSupported", ErrorCode::CapabilityMissing},
         {"org.librescrs.Agent.Error.InputTooLarge", ErrorCode::InvalidDocument},
         {"org.librescrs.Agent.Error.CommunicationError", ErrorCode::CommunicationError},
+        // GetSignResult's dedicated dead-end name: pinned to the SAME
+        // CommunicationError bucket the unknown-name catch-all already
+        // produced for it before it had its own case (see ErrorNameMap.cpp) --
+        // this row proves the classification is now a deliberate, named
+        // decision rather than an accidental fallthrough.
+        {"org.librescrs.Agent.Error.NoResult", ErrorCode::CommunicationError},
     };
     for (const Row& row : rows) {
         const SeamError e = mapFull(row.name);

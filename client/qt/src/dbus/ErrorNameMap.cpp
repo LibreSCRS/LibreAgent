@@ -49,6 +49,23 @@ SeamError mapAgentErrorShortName(QStringView shortName, const QString& message)
     if (shortName == QLatin1StringView("CommunicationError")) {
         return make(CallError::None, ErrorCode::CommunicationError, shortName, message);
     }
+    // GetSignResult's dedicated dead-end name: nothing retained for this op
+    // (never completed as Sign, the recovery grace window elapsed, or -- an
+    // IDOR-safe agent answers a not-mine op identically to an absent one, by
+    // design -- the caller does not own it). This is the SAME generic bucket
+    // the unknown-name catch-all below already produced for this exact name
+    // before it was pinned (both FakeAgent's D-Bus double and the socket
+    // wire's GetSignResult recovery pull have always been swallowed by that
+    // catch-all in practice); giving it its own case makes that a deliberate,
+    // documented classification instead of an accidental fallthrough. Every
+    // caller of the GetResult recovery pull (DBusTransport::fetchOperationResult
+    // / SocketTransport::fetchOperationResult) already discards the specific
+    // SeamError on a non-reply and reports one fixed CommunicationError at the
+    // AgentOperation layer regardless, so this decision does not change any
+    // observable behaviour today -- it only stops relying on the catch-all.
+    if (shortName == QLatin1StringView("NoResult")) {
+        return make(CallError::None, ErrorCode::CommunicationError, shortName, message);
+    }
 
     // Pre-operation rejections outside the taxonomy: the request itself was
     // unacceptable (fix the request / re-list and retry), or the caller was

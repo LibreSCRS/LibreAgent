@@ -74,9 +74,17 @@ public:
 
     /// @brief True once the terminal outcome was observed (or recovered).
     [[nodiscard]] bool isFinished() const;
-    /// @brief Terminal status; valid after `finished()` (Error before).
+    /// @brief Terminal status; valid after `finished()` (Error before). A
+    ///        terminal status value this build does not recognise (a future
+    ///        agent's outcome; OperationStatus is wire-frozen append-only) is
+    ///        treated as Error rather than surfaced as an unnamed enumerator.
     [[nodiscard]] OperationStatus status() const;
-    /// @brief Last observed phase (Created until the agent reports progress).
+    /// @brief Last observed phase (Created until the agent reports
+    ///        progress). Holds its last known-good value if the agent
+    ///        reports a phase this build does not recognise (OperationPhase
+    ///        is wire-frozen append-only) — `progress()` still advances on
+    ///        such a report, only the phase itself does not regress to the
+    ///        unrecognised value.
     [[nodiscard]] OperationPhase phase() const;
     /// @brief Last observed progress in [0.0, 1.0] (0.0 until reported).
     [[nodiscard]] double progress() const;
@@ -98,6 +106,18 @@ public:
     /// @brief Identity payload of a `readIdentity()` operation; each Field
     ///        carries its wire metadata in `Field::extra` (see IdentityRows.h
     ///        for the canonical keys). Empty otherwise.
+    ///
+    /// @par Accumulation contract
+    /// `identityResult()` is valid, complete, and authoritative once `finished()`
+    /// has fired — regardless of how many (if any) `groupReady()` signals
+    /// arrived first. Progressive groups delivered via `groupReady()` are
+    /// hints only, for a consumer that wants to render incrementally; they
+    /// are never accumulated into this getter and a group missed before a
+    /// consumer connected has no separate recovery (unlike the terminal
+    /// result itself, which the late-subscriber recovery pull always
+    /// converges on — see the class documentation above). An agent that does
+    /// not serve progressive delivery emits no `groupReady()` at all, and
+    /// `identityResult()` is unaffected either way.
     [[nodiscard]] QList<FieldGroup> identityResult() const;
     /// @brief Certificate payload of a `readCertificates()` operation.
     [[nodiscard]] QList<CertificateInfo> certificatesResult() const;
@@ -111,6 +131,12 @@ public:
     [[nodiscard]] FdHandle takeSignedArtifact();
     /// @brief Signature metadata of a `sign()` operation (format/level/...).
     [[nodiscard]] QVariantMap signMeta() const;
+    /// @brief Rows of a `signBatch()` operation — move-only, index-aligned
+    ///        with the request's documents (see `BatchSignRow`'s own doc
+    ///        comment for the failed-row representation: a valid, open,
+    ///        possibly-zero-length `artifact` plus a non-`None` `error`).
+    ///        First call takes ownership; later calls return an empty vector.
+    [[nodiscard]] std::vector<BatchSignRow> takeBatchResults();
     /// @brief Mutation result of a `managePin()` / `activateSigningKey()`
     ///        attempt. Delivered for EVERY completed attempt — including the
     ///        soft-fail outcomes that finish Error — so `PinResult::outcome`
@@ -129,6 +155,14 @@ Q_SIGNALS:
     ///        `finished()`; not every operation kind visits every phase, and
     ///        an operation that fails fast may emit none at all.
     void phaseChanged(LibreSCRS::AgentClient::OperationPhase phase, double progress);
+    /// @brief Progressive identity-field delivery: one field group became
+    ///        available. Zero or more emissions, in order, strictly before
+    ///        `finished()` — see `identityResult()`'s accumulation contract
+    ///        for how this relates to the eventual complete result. Only
+    ///        ever fires for a `readIdentity()` operation (mirrors LibreCelik's
+    ///        existing `cardGroupReady`); every other operation kind emits it
+    ///        never.
+    void groupReady(const LibreSCRS::AgentClient::FieldGroup& group);
     /// @brief The single terminal notification; fires exactly once, ever,
     ///        for this operation. `status()` / `errorCode()` / `callError()`
     ///        / `messageKey()` / `messageFallback()` and the typed result
@@ -145,7 +179,7 @@ private:
     friend class AgentClient; // mints DER operations; agent-vanish/card-removed sweeps
 
     /// Internal operation kind — which typed result this operation binds.
-    enum class Kind : unsigned char { Identity, Photo, Certificates, Sign, Credentials, CertificateDer };
+    enum class Kind : unsigned char { Identity, Photo, Certificates, Sign, Credentials, CertificateDer, BatchSign };
 
     /// Transport-backed ctor: subscribes to the operation's signals and runs
     /// the lost-Finished recovery before returning.

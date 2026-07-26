@@ -112,7 +112,7 @@ TEST(DBusIntegration, ReaderAndCardDiscovery)
 {
     FakeAgent::Config cfg;
     cfg.capabilities = Cap::IdentityData | Cap::Pki;
-    cfg.preReadAuth = QStringLiteral("PaceCan");
+    cfg.preReadAuth = QStringLiteral("Can");
     Harness h(cfg);
 
     auto client = makeClient(h);
@@ -130,7 +130,7 @@ TEST(DBusIntegration, ReaderAndCardDiscovery)
     ASSERT_NE(card, nullptr);
     EXPECT_EQ(card, client->card(h.cardPath()));
     EXPECT_EQ(card->readerId(), h.readerPath());
-    EXPECT_EQ(card->preReadAuth(), QStringLiteral("PaceCan"));
+    EXPECT_EQ(card->preReadAuth(), QStringLiteral("Can"));
     EXPECT_EQ(uiStateFor(capabilityBits(card->capabilities())), UiState::Hybrid);
 }
 
@@ -248,6 +248,49 @@ TEST(DBusIntegration, CertificatesEndToEnd)
     EXPECT_EQ(c.trust, TrustStatus::Trusted);
 }
 
+// ---- public-data DER fetch (Pkcs11_1.CertDer, no consent, no Operation) ----
+//
+// Closes a long-standing transport-parity gap: the socket transport's mirror
+// (SocketIntegrationTest's CertificateDerFetchDeliversBytes /
+// CertificateDerKeyNotFoundMapsErrorCode) had end-to-end coverage over the
+// REAL socket transport; this call's D-Bus counterpart was previously only
+// exercised at the unit level (AgentClientTest/AgentOperationTest against the
+// bare seam), never over a REAL DBusTransport + FakeAgent on a private bus.
+
+TEST(DBusIntegration, CertificateDerFetchDeliversBytes)
+{
+    FakeAgent::Config cfg;
+    cfg.capabilities = Cap::Pki;
+    cfg.certDerBytes = QByteArrayLiteral("\x30\x03\x02\x01\x2a");
+    Harness h(cfg);
+
+    auto client = makeClient(h);
+    ASSERT_TRUE(client->isAvailable());
+
+    AgentOperation* op = client->certificateDer(h.readerPath(), QStringLiteral("cert-der-1"));
+    ASSERT_NE(op, nullptr);
+    ASSERT_TRUE(waitFor([&]() { return op->isFinished(); }));
+    EXPECT_EQ(op->status(), OperationStatus::Ok);
+    EXPECT_EQ(op->certificateDerResult(), cfg.certDerBytes);
+    EXPECT_EQ(h.lastCertDerReader(), h.readerPath());
+    EXPECT_EQ(h.lastCertDerCertId(), QStringLiteral("cert-der-1"));
+}
+
+TEST(DBusIntegration, CertificateDerKeyNotFoundMapsErrorCode)
+{
+    FakeAgent::Config cfg;
+    cfg.capabilities = Cap::Pki;
+    cfg.certDerKeyNotFound = true;
+    Harness h(cfg);
+
+    auto client = makeClient(h);
+    AgentOperation* op = client->certificateDer(h.readerPath(), QStringLiteral("missing"));
+    ASSERT_NE(op, nullptr);
+    ASSERT_TRUE(waitFor([&]() { return op->isFinished(); }));
+    EXPECT_EQ(op->status(), OperationStatus::Error);
+    EXPECT_EQ(op->errorCode(), ErrorCode::KeyNotFound);
+}
+
 // ---- sign: typed SignOptions -> wire dict + fd in, artifact fd + meta out --
 
 TEST(DBusIntegration, SignTypedOptionsToWireAndArtifactBack)
@@ -255,6 +298,10 @@ TEST(DBusIntegration, SignTypedOptionsToWireAndArtifactBack)
     FakeAgent::Config cfg;
     cfg.capabilities = Cap::Pki;
     cfg.operationDelayMs = 15;
+    // tsaUrl is gated on the "tsa-url" feature token (AgentCard::
+    // startOperation) — script it so this exercises the wire encoding, not
+    // the client's local refusal.
+    cfg.features = {QStringLiteral("credentials"), QStringLiteral("tsa-url")};
     Harness h(cfg);
 
     auto client = makeClient(h);
@@ -294,6 +341,319 @@ TEST(DBusIntegration, SignTypedOptionsToWireAndArtifactBack)
     EXPECT_EQ(readFd(artifact.get()), QByteArrayLiteral("FAKE-SIGNED-ARTIFACT"));
     EXPECT_EQ(op->signMeta().value(QStringLiteral("format")).toString(),
               QStringLiteral("pades")); // the fake's fixed meta script
+}
+
+// ---- batch signing: happy path, mid-batch halt, entry gates ----------------
+
+TEST(DBusIntegration, SignBatchHappyPathSignsEveryDocumentUnderOneConsent)
+{
+    FakeAgent::Config cfg;
+    cfg.capabilities = Cap::Pki;
+    cfg.operationDelayMs = 15;
+    cfg.features = {QStringLiteral("credentials"), QStringLiteral("batch-sign")};
+    Harness h(cfg);
+
+    auto client = makeClient(h);
+    AgentCard* card = client->card(h.cardPath());
+    ASSERT_NE(card, nullptr);
+
+    std::vector<BatchDocument> docs;
+    docs.push_back(BatchDocument{QStringLiteral("first.pdf"), makeDocumentFd(QByteArrayLiteral("doc one bytes"))});
+    docs.push_back(BatchDocument{QStringLiteral("second.pdf"), makeDocumentFd(QByteArrayLiteral("doc two bytes"))});
+    docs.push_back(BatchDocument{QStringLiteral("third.pdf"), makeDocumentFd(QByteArrayLiteral("doc three bytes"))});
+
+    SignOptions options;
+    options.format = SignatureFormat::PAdES;
+    options.level = SignatureLevel::BB;
+
+    AgentOperation* op = card->signBatch(QStringLiteral("cert-for-batch"), std::move(docs), options);
+    ASSERT_NE(op, nullptr);
+    ASSERT_TRUE(waitFor([&]() { return op->isFinished(); }));
+    EXPECT_EQ(op->status(), OperationStatus::Ok);
+    EXPECT_EQ(op->errorCode(), ErrorCode::None);
+
+    // fd in: the fake read every document synchronously inside SignBatch().
+    EXPECT_EQ(h.lastSignBatchCertId(), QStringLiteral("cert-for-batch"));
+    EXPECT_EQ(h.lastSignBatchDisplayNames(),
+              (QStringList{QStringLiteral("first.pdf"), QStringLiteral("second.pdf"), QStringLiteral("third.pdf")}));
+    const QList<QByteArray> receivedDocs = h.lastSignBatchDocumentBytes();
+    ASSERT_EQ(receivedDocs.size(), 3);
+    EXPECT_EQ(receivedDocs.at(0), QByteArrayLiteral("doc one bytes"));
+    EXPECT_EQ(receivedDocs.at(1), QByteArrayLiteral("doc two bytes"));
+    EXPECT_EQ(receivedDocs.at(2), QByteArrayLiteral("doc three bytes"));
+
+    std::vector<BatchSignRow> rows = op->takeBatchResults();
+    ASSERT_EQ(rows.size(), 3U);
+    for (std::size_t i = 0; i < rows.size(); ++i) {
+        EXPECT_EQ(rows[i].error, ErrorCode::None);
+        ASSERT_TRUE(rows[i].artifact.valid());
+        EXPECT_EQ(readFd(rows[i].artifact.get()), QByteArrayLiteral("FAKE-SIGNED-ARTIFACT"));
+        EXPECT_EQ(rows[i].meta.value(QStringLiteral("format")).toString(), QStringLiteral("pades"));
+    }
+    EXPECT_EQ(rows[0].displayName, QStringLiteral("first.pdf"));
+    EXPECT_EQ(rows[1].displayName, QStringLiteral("second.pdf"));
+    EXPECT_EQ(rows[2].displayName, QStringLiteral("third.pdf"));
+
+    // Second call returns an empty vector — takeBatchResults() takes ownership once.
+    EXPECT_TRUE(op->takeBatchResults().empty());
+}
+
+// A wrong/blocked signing credential halts the remaining documents: every row
+// from the halt point onward (inclusive) carries the SAME halt code and a
+// valid-but-zero-length artifact — never an invalid fd (the frozen
+// zero-length-sealed-memfd convention). Rows before the halt point still
+// carry their real signed bytes. Because >=1 row succeeded, the aggregate
+// Finished status is still Ok (the pinned "successCount > 0" terminal rule).
+TEST(DBusIntegration, SignBatchMidBatchHaltPreservesEarlierRowsAndZeroesLaterOnes)
+{
+    FakeAgent::Config cfg;
+    cfg.capabilities = Cap::Pki;
+    cfg.operationDelayMs = 15;
+    cfg.features = {QStringLiteral("credentials"), QStringLiteral("batch-sign")};
+    cfg.batchHaltAtIndex = 2;
+    cfg.batchHaltErrorCode = static_cast<uint>(ErrorCode::CredentialWrong);
+    Harness h(cfg);
+
+    auto client = makeClient(h);
+    AgentCard* card = client->card(h.cardPath());
+    ASSERT_NE(card, nullptr);
+
+    std::vector<BatchDocument> docs;
+    for (int i = 0; i < 4; ++i) {
+        docs.push_back(BatchDocument{QStringLiteral("doc-%1.pdf").arg(i), makeDocumentFd(QByteArrayLiteral("bytes"))});
+    }
+
+    AgentOperation* op = card->signBatch(QStringLiteral("cert-for-batch"), std::move(docs), SignOptions{});
+    ASSERT_NE(op, nullptr);
+    ASSERT_TRUE(waitFor([&]() { return op->isFinished(); }));
+    EXPECT_EQ(op->status(), OperationStatus::Ok) << "successCount > 0 (rows 0-1 signed) keeps the aggregate Ok";
+
+    std::vector<BatchSignRow> rows = op->takeBatchResults();
+    ASSERT_EQ(rows.size(), 4U);
+    for (int i = 0; i < 2; ++i) {
+        EXPECT_EQ(rows[static_cast<std::size_t>(i)].error, ErrorCode::None) << "row " << i;
+        ASSERT_TRUE(rows[static_cast<std::size_t>(i)].artifact.valid()) << "row " << i;
+        EXPECT_FALSE(readFd(rows[static_cast<std::size_t>(i)].artifact.get()).isEmpty()) << "row " << i;
+    }
+    for (int i = 2; i < 4; ++i) {
+        EXPECT_EQ(rows[static_cast<std::size_t>(i)].error, ErrorCode::CredentialWrong) << "row " << i;
+        // Failed row: a VALID, open, zero-length descriptor — never invalid.
+        ASSERT_TRUE(rows[static_cast<std::size_t>(i)].artifact.valid()) << "row " << i;
+        EXPECT_TRUE(readFd(rows[static_cast<std::size_t>(i)].artifact.get()).isEmpty()) << "row " << i;
+    }
+}
+
+// A batch halted from the FIRST document (zero rows signed) finishes Error —
+// but Operation.SignBatch1.Result still delivers the per-row detail (>=1 row
+// attempted), so the client's typed result is never silently empty.
+TEST(DBusIntegration, SignBatchHaltedFromFirstDocumentDeliversRowsEvenOnAggregateError)
+{
+    FakeAgent::Config cfg;
+    cfg.capabilities = Cap::Pki;
+    cfg.operationDelayMs = 15;
+    cfg.features = {QStringLiteral("credentials"), QStringLiteral("batch-sign")};
+    cfg.batchHaltAtIndex = 0;
+    cfg.batchHaltErrorCode = static_cast<uint>(ErrorCode::CredentialBlocked);
+    cfg.finalStatus = 2u; // Error — zero rows signed
+    cfg.finalErrorCode = static_cast<uint>(ErrorCode::CredentialBlocked);
+    Harness h(cfg);
+
+    auto client = makeClient(h);
+    AgentCard* card = client->card(h.cardPath());
+    ASSERT_NE(card, nullptr);
+
+    std::vector<BatchDocument> docs;
+    docs.push_back(BatchDocument{QStringLiteral("a.pdf"), makeDocumentFd(QByteArrayLiteral("bytes"))});
+    docs.push_back(BatchDocument{QStringLiteral("b.pdf"), makeDocumentFd(QByteArrayLiteral("bytes"))});
+
+    AgentOperation* op = card->signBatch(QStringLiteral("cert-for-batch"), std::move(docs), SignOptions{});
+    ASSERT_NE(op, nullptr);
+    ASSERT_TRUE(waitFor([&]() { return op->isFinished(); }));
+    EXPECT_EQ(op->status(), OperationStatus::Error);
+    EXPECT_EQ(op->errorCode(), ErrorCode::CredentialBlocked);
+
+    std::vector<BatchSignRow> rows = op->takeBatchResults();
+    ASSERT_EQ(rows.size(), 2U) << "rows must still be delivered — the aggregate Error must not swallow them";
+    for (const BatchSignRow& row : rows) {
+        EXPECT_EQ(row.error, ErrorCode::CredentialBlocked);
+        ASSERT_TRUE(row.artifact.valid());
+        EXPECT_TRUE(readFd(row.artifact.get()).isEmpty());
+    }
+}
+
+// The FakeAgent's raceResultBeforeReturn mode (see the Sign lost-result test
+// above) applies identically to a batch: the Result signal fires before the
+// client subscribes, so recovery goes through Operation.SignBatch1.GetResult
+// — the SAME mechanism Sign1 uses, re-sealing every row (including a would-be
+// zero-length one) fresh.
+TEST(DBusIntegration, SignBatchLostResultRecoveredViaGetResult)
+{
+    FakeAgent::Config cfg;
+    cfg.capabilities = Cap::Pki;
+    cfg.features = {QStringLiteral("credentials"), QStringLiteral("batch-sign")};
+    cfg.raceResultBeforeReturn = true; // Finished (+ Result) fires before the client ever subscribes
+    Harness h(cfg);
+
+    auto client = makeClient(h);
+    AgentCard* card = client->card(h.cardPath());
+    ASSERT_NE(card, nullptr);
+
+    std::vector<BatchDocument> docs;
+    docs.push_back(BatchDocument{QStringLiteral("x.pdf"), makeDocumentFd(QByteArrayLiteral("race doc bytes"))});
+    docs.push_back(BatchDocument{QStringLiteral("y.pdf"), makeDocumentFd(QByteArrayLiteral("race doc bytes 2"))});
+
+    AgentOperation* op = card->signBatch(QStringLiteral("certid"), std::move(docs), SignOptions{});
+    ASSERT_NE(op, nullptr);
+
+    // Recovered SYNCHRONOUSLY in the ctor via GetResult — no waitFor needed.
+    EXPECT_TRUE(op->isFinished());
+    EXPECT_EQ(op->status(), OperationStatus::Ok);
+    std::vector<BatchSignRow> rows = op->takeBatchResults();
+    ASSERT_EQ(rows.size(), 2U) << "GetResult must recover the rows the live signal never delivered";
+    for (const BatchSignRow& row : rows) {
+        ASSERT_TRUE(row.artifact.valid());
+        EXPECT_EQ(readFd(row.artifact.get()), QByteArrayLiteral("FAKE-SIGNED-ARTIFACT"));
+    }
+}
+
+// ---- batch signing: entry gates (never reach the wire) ---------------------
+
+TEST(DBusIntegration, MissingBatchSignFeatureRefusesLocally)
+{
+    FakeAgent::Config cfg;
+    cfg.capabilities = Cap::Pki;
+    cfg.features = {QStringLiteral("credentials")}; // no "batch-sign"
+    Harness h(cfg);
+
+    auto client = makeClient(h);
+    ASSERT_TRUE(client->isAvailable());
+    EXPECT_FALSE(client->hasFeature(QStringLiteral("batch-sign")));
+
+    AgentCard* card = client->card(h.cardPath());
+    ASSERT_NE(card, nullptr);
+
+    std::vector<BatchDocument> docs;
+    docs.push_back(BatchDocument{QStringLiteral("a.pdf"), makeDocumentFd(QByteArrayLiteral("bytes"))});
+
+    AgentOperation* op = card->signBatch(QStringLiteral("cert-for-batch"), std::move(docs), SignOptions{});
+    ASSERT_NE(op, nullptr) << "a refused entry mints a failed operation, never nullptr";
+    ASSERT_TRUE(waitFor([&]() { return op->isFinished(); }));
+    EXPECT_EQ(op->status(), OperationStatus::Error);
+    EXPECT_EQ(op->errorCode(), ErrorCode::CapabilityMissing);
+    EXPECT_EQ(h.operationCount(), 0) << "the gate must refuse before SignBatch ever reaches the wire";
+}
+
+// signBatch shares Sign's own tsaUrl/visualSignature feature-token gate (the
+// SAME code path in AgentCard::startOperation, not a parallel copy) — proven
+// directly against signBatch here rather than assumed from Sign's own test.
+TEST(DBusIntegration, SignBatchWithTsaUrlOrVisualSignatureWithoutTheirFeatureTokensRefusesLocally)
+{
+    FakeAgent::Config cfg;
+    cfg.capabilities = Cap::Pki;
+    cfg.features = {QStringLiteral("credentials"), QStringLiteral("batch-sign")}; // no tsa-url / visual-sign
+    Harness h(cfg);
+
+    auto client = makeClient(h);
+    AgentCard* card = client->card(h.cardPath());
+    ASSERT_NE(card, nullptr);
+
+    std::vector<BatchDocument> tsaDocs;
+    tsaDocs.push_back(BatchDocument{QStringLiteral("a.pdf"), makeDocumentFd(QByteArrayLiteral("bytes"))});
+    SignOptions tsaOptions;
+    tsaOptions.tsaUrl = QStringLiteral("https://tsa.example/gated-batch");
+    AgentOperation* tsaOp = card->signBatch(QStringLiteral("cert-for-batch"), std::move(tsaDocs), tsaOptions);
+    ASSERT_NE(tsaOp, nullptr);
+    ASSERT_TRUE(waitFor([&]() { return tsaOp->isFinished(); }));
+    EXPECT_EQ(tsaOp->status(), OperationStatus::Error);
+    EXPECT_EQ(tsaOp->errorCode(), ErrorCode::CapabilityMissing);
+
+    std::vector<BatchDocument> visualDocs;
+    visualDocs.push_back(BatchDocument{QStringLiteral("b.pdf"), makeDocumentFd(QByteArrayLiteral("bytes"))});
+    SignOptions visualOptions;
+    visualOptions.visualSignature =
+        QVariantMap{{QStringLiteral("page"), 0},      {QStringLiteral("x"), 0.0},
+                    {QStringLiteral("y"), 0.0},       {QStringLiteral("width"), 100.0},
+                    {QStringLiteral("height"), 50.0}, {QStringLiteral("text"), QStringLiteral("Signed")}};
+    AgentOperation* visualOp = card->signBatch(QStringLiteral("cert-for-batch"), std::move(visualDocs), visualOptions);
+    ASSERT_NE(visualOp, nullptr);
+    ASSERT_TRUE(waitFor([&]() { return visualOp->isFinished(); }));
+    EXPECT_EQ(visualOp->status(), OperationStatus::Error);
+    EXPECT_EQ(visualOp->errorCode(), ErrorCode::CapabilityMissing);
+
+    EXPECT_EQ(h.operationCount(), 0) << "both refusals must fire before SignBatch ever reaches the wire";
+}
+
+TEST(DBusIntegration, SignBatchDocumentCountOutsideBoundsRefusesLocally)
+{
+    FakeAgent::Config cfg;
+    cfg.capabilities = Cap::Pki;
+    cfg.features = {QStringLiteral("credentials"), QStringLiteral("batch-sign")};
+    Harness h(cfg);
+
+    auto client = makeClient(h);
+    AgentCard* card = client->card(h.cardPath());
+    ASSERT_NE(card, nullptr);
+
+    // Zero documents.
+    AgentOperation* emptyOp = card->signBatch(QStringLiteral("cert-for-batch"), {}, SignOptions{});
+    ASSERT_NE(emptyOp, nullptr);
+    ASSERT_TRUE(waitFor([&]() { return emptyOp->isFinished(); }));
+    EXPECT_EQ(emptyOp->status(), OperationStatus::Error);
+    EXPECT_EQ(emptyOp->callError(), CallError::InvalidArguments);
+    EXPECT_EQ(emptyOp->errorCode(), ErrorCode::None)
+        << "a local argument refusal is a CallError, never a wire ErrorCode";
+
+    // Thirteen documents (kMaxBatchDocuments == 12).
+    std::vector<BatchDocument> tooMany;
+    for (int i = 0; i < 13; ++i) {
+        tooMany.push_back(BatchDocument{QStringLiteral("doc-%1.pdf").arg(i), makeDocumentFd(QByteArrayLiteral("b"))});
+    }
+    AgentOperation* tooManyOp = card->signBatch(QStringLiteral("cert-for-batch"), std::move(tooMany), SignOptions{});
+    ASSERT_NE(tooManyOp, nullptr);
+    ASSERT_TRUE(waitFor([&]() { return tooManyOp->isFinished(); }));
+    EXPECT_EQ(tooManyOp->status(), OperationStatus::Error);
+    EXPECT_EQ(tooManyOp->callError(), CallError::InvalidArguments);
+
+    EXPECT_EQ(h.operationCount(), 0) << "both refusals must fire before SignBatch ever reaches the wire";
+}
+
+// ---- HelloAck-equivalent feature-token gate (Manager1.Features) ------------
+//
+// The token-info entry gate is transport-neutral (AgentCard::startOperation),
+// not a socket-only special case: an agent whose Manager1.Features never
+// advertises "token-info" predates this surface and is refused LOCALLY,
+// before ReadTokenInfo ever reaches the wire. Before this gate was lifted
+// here, this exact scenario dialed the D-Bus wire, got back UnknownMethod,
+// and surfaced as CallError::InvalidArguments/ErrorCode::None instead of the
+// CapabilityMissing a version-skewed agent should report — mirrors
+// SocketIntegrationTest's MissingTokenInfoFeatureTokenRefusesLocally (the
+// SAME gate; TransportParityTest.cpp's
+// MissingTokenInfoFeatureRefusesIdenticallyAcrossTransports proves the two
+// converge).
+TEST(DBusIntegration, MissingTokenInfoFeatureRefusesLocally)
+{
+    FakeAgent::Config cfg;
+    cfg.capabilities = Cap::Pki;
+    cfg.features = {QStringLiteral("credentials")}; // no "token-info"
+    Harness h(cfg);
+
+    auto client = makeClient(h);
+    ASSERT_TRUE(client->isAvailable());
+    EXPECT_FALSE(client->hasFeature(QStringLiteral("token-info")));
+
+    AgentCard* card = client->card(h.cardPath());
+    ASSERT_NE(card, nullptr);
+
+    AgentOperation* op = card->readTokenInfo();
+    ASSERT_NE(op, nullptr) << "a ReadTokenInfo that is refused at entry mints a FAILED operation, never nullptr";
+    ASSERT_TRUE(waitFor([&]() { return op->isFinished(); }));
+    EXPECT_EQ(op->status(), OperationStatus::Error);
+    EXPECT_EQ(op->errorCode(), ErrorCode::CapabilityMissing);
+    // The gate is mandatory: the request must never have reached the wire —
+    // no Operation1 is minted at all (the lazy-card-I/O probe: see
+    // FakeAgent::operationCount()'s doc comment).
+    EXPECT_EQ(h.operationCount(), 0);
+    EXPECT_TRUE(client->isAvailable()) << "the local refusal must not cost the session";
 }
 
 // ---- credentials: list / manage(PinVerb) / re-list --------------------------

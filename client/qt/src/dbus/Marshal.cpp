@@ -70,6 +70,13 @@ QDBusArgument& operator<<(QDBusArgument& arg, const CertInfoWire& c)
         fields[QStringLiteral("validity")][QStringLiteral("notAfter")] = {
             QStringLiteral("label_not_after"), QStringLiteral("Not after"), QDBusVariant(c.notAfter)};
     }
+    // "security" group: one field per token, keyed by the token itself (the
+    // closed vocabulary guarantees uniqueness) -- mirrors the agent's own
+    // encoding (see CertReadFlow.cpp's makeSecurityGroup).
+    for (const QString& token : c.securityStatus) {
+        fields[QStringLiteral("security")][token] = {QStringLiteral("cert.security.") + token, token,
+                                                     QDBusVariant(token)};
+    }
 
     // chainSubjectCns falls back to [leaf CN] when the caller left it empty
     // (the single-entry chain), so an operator<<-built payload always has a
@@ -116,6 +123,43 @@ const QDBusArgument& operator>>(const QDBusArgument& arg, CertInfoWire& c)
         c.notBefore = val->value(QStringLiteral("notBefore")).value.variant().toString();
         c.notAfter = val->value(QStringLiteral("notAfter")).value.variant().toString();
     }
+    if (const auto sec = fields.constFind(QStringLiteral("security")); sec != fields.constEnd()) {
+        for (auto it = sec->constBegin(); it != sec->constEnd(); ++it) {
+            c.securityStatus.append(it->value.variant().toString());
+        }
+    }
+    return arg;
+}
+
+// (sh) struct marshalling for the SignBatch request's `a(sh) documents`.
+QDBusArgument& operator<<(QDBusArgument& arg, const BatchDocumentWire& d)
+{
+    arg.beginStructure();
+    arg << d.name << d.fd;
+    arg.endStructure();
+    return arg;
+}
+const QDBusArgument& operator>>(const QDBusArgument& arg, BatchDocumentWire& d)
+{
+    arg.beginStructure();
+    arg >> d.name >> d.fd;
+    arg.endStructure();
+    return arg;
+}
+
+// (sha{sv}u) struct marshalling for Operation.SignBatch1's Result/GetResult rows.
+QDBusArgument& operator<<(QDBusArgument& arg, const SignBatchRowWire& r)
+{
+    arg.beginStructure();
+    arg << r.displayName << r.artifact << r.meta << r.errorCode;
+    arg.endStructure();
+    return arg;
+}
+const QDBusArgument& operator>>(const QDBusArgument& arg, SignBatchRowWire& r)
+{
+    arg.beginStructure();
+    arg >> r.displayName >> r.artifact >> r.meta >> r.errorCode;
+    arg.endStructure();
     return arg;
 }
 
@@ -134,6 +178,10 @@ void ensureDBusMetatypes()
         qDBusRegisterMetaType<CertListWire>();
         qDBusRegisterMetaType<PhotoMapWire>();
         qDBusRegisterMetaType<CredentialRecordsWire>();
+        qDBusRegisterMetaType<BatchDocumentWire>();
+        qDBusRegisterMetaType<BatchDocumentsWire>();
+        qDBusRegisterMetaType<SignBatchRowWire>();
+        qDBusRegisterMetaType<SignBatchRowsWire>();
         return true;
     }();
     Q_UNUSED(done)
@@ -172,31 +220,35 @@ FdHandle toFdHandle(const QDBusUnixFileDescriptor& fd)
     return FdHandle{::fcntl(fd.fileDescriptor(), F_DUPFD_CLOEXEC, 0)};
 }
 
+FieldGroup toFieldGroup(const QString& groupKey, const IdentityFieldGroupWire& fields)
+{
+    FieldGroup group;
+    group.key = groupKey;
+    for (auto fieldIt = fields.constBegin(); fieldIt != fields.constEnd(); ++fieldIt) {
+        const IdentityFieldWire& wireField = fieldIt.value();
+        Field field;
+        field.key = fieldIt.key();
+        field.extra.insert(kFieldExtraLabelKey, wireField.labelKey);
+        field.extra.insert(kFieldExtraLabelFallback, wireField.labelFallback);
+        field.extra.insert(kFieldExtraType, wireField.type);
+        const QVariant value = wireField.value.variant();
+        if (wireField.type == kFieldTypeBinary) {
+            // Binary payloads (raw photo bytes etc.) are not display text:
+            // the bytes ride `detail`, the display value stays empty.
+            field.detail = value.toByteArray();
+        } else {
+            field.value = value.toString();
+        }
+        group.fields.append(std::move(field));
+    }
+    return group;
+}
+
 QList<FieldGroup> toFieldGroups(const IdentityFieldsWire& fields)
 {
     QList<FieldGroup> groups;
     for (auto groupIt = fields.constBegin(); groupIt != fields.constEnd(); ++groupIt) {
-        FieldGroup group;
-        group.key = groupIt.key();
-        const IdentityFieldGroupWire& wireGroup = groupIt.value();
-        for (auto fieldIt = wireGroup.constBegin(); fieldIt != wireGroup.constEnd(); ++fieldIt) {
-            const IdentityFieldWire& wireField = fieldIt.value();
-            Field field;
-            field.key = fieldIt.key();
-            field.extra.insert(kFieldExtraLabelKey, wireField.labelKey);
-            field.extra.insert(kFieldExtraLabelFallback, wireField.labelFallback);
-            field.extra.insert(kFieldExtraType, wireField.type);
-            const QVariant value = wireField.value.variant();
-            if (wireField.type == kFieldTypeBinary) {
-                // Binary payloads (raw photo bytes etc.) are not display text:
-                // the bytes ride `detail`, the display value stays empty.
-                field.detail = value.toByteArray();
-            } else {
-                field.value = value.toString();
-            }
-            group.fields.append(std::move(field));
-        }
-        groups.append(std::move(group));
+        groups.append(toFieldGroup(groupIt.key(), groupIt.value()));
     }
     return groups;
 }
@@ -216,7 +268,10 @@ QList<CertificateInfo> toCertificateInfos(const CertListWire& certs)
         // Wire trust verdict -> the client-facing display set. The wire's three
         // untrusted causes (untrusted root / broken chain / invalid cert)
         // collapse to Untrusted; the raw value rides `extra` for consumers
-        // that render the cause.
+        // that render the cause. Revoked (5) maps to the client's own Revoked
+        // case; OfflineUnverified (6) and any value this build does not yet
+        // know about both collapse to Unknown -- the finer "why unknown"
+        // distinction rides securityStatus below for a consumer that cares.
         switch (wire.trustStatus) {
         case 0U:
             info.trust = TrustStatus::Trusted;
@@ -229,10 +284,14 @@ QList<CertificateInfo> toCertificateInfos(const CertListWire& certs)
         case 4U:
             info.trust = TrustStatus::Expired;
             break;
+        case 5U:
+            info.trust = TrustStatus::Revoked;
+            break;
         default:
             info.trust = TrustStatus::Unknown;
             break;
         }
+        info.securityStatus = wire.securityStatus;
         info.extra.insert(QStringLiteral("keyUsageBits"), wire.keyUsageBits);
         info.extra.insert(QStringLiteral("extendedKeyUsageOids"), wire.extendedKeyUsageOids);
         info.extra.insert(QStringLiteral("chainSubjectCns"), wire.chainSubjectCns);
@@ -250,6 +309,21 @@ std::vector<PhotoItem> toPhotoItems(const PhotoMapWire& photos)
         PhotoItem item;
         item.key = it.key();
         item.fd = toFdHandle(it.value());
+        out.push_back(std::move(item));
+    }
+    return out;
+}
+
+std::vector<BatchSignRow> toBatchSignRows(const SignBatchRowsWire& rows)
+{
+    std::vector<BatchSignRow> out;
+    out.reserve(static_cast<std::size_t>(rows.size()));
+    for (const SignBatchRowWire& row : rows) {
+        BatchSignRow item;
+        item.displayName = row.displayName;
+        item.artifact = toFdHandle(row.artifact);
+        item.meta = row.meta;
+        item.error = static_cast<ErrorCode>(row.errorCode);
         out.push_back(std::move(item));
     }
     return out;

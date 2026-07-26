@@ -1,11 +1,13 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 // SPDX-FileCopyrightText: 2026 hirashix0
 #pragma once
+#include <LibreSCRS/AgentClient/ErrorCode.h>
 #include <LibreSCRS/AgentClient/FdHandle.h>
 
 #include <QString>
 #include <QVariant>
 
+#include <cstddef>
 #include <cstdint>
 
 /// @file
@@ -73,8 +75,31 @@ struct SignOptions
     SignatureFormat format = SignatureFormat::PAdES; ///< Signature container format.
     SignatureLevel level = SignatureLevel::BB;       ///< eIDAS AdES conformance level.
     Packaging packaging = Packaging::Enveloped;      ///< Packaging relative to the document.
-    QVariantMap visualSignature;                     ///< Visible-signature placement/appearance; empty means invisible.
-    QString tsaUrl;    ///< Timestamp authority URL; empty means the agent default (Config1's LastTsaUrl/TsaUrls).
+    /// Visible-signature placement/appearance; empty means invisible. PAdES
+    /// only — the agent rejects a populated map paired with any other
+    /// `format` (`Error.UnsupportedSignatureParameter`). Gated on the
+    /// `"visual-sign"` feature token: `AgentCard::sign()` refuses locally
+    /// with `ErrorCode::CapabilityMissing` when this is non-empty and the
+    /// connected agent's `features()` lacks that token, on both transports,
+    /// before the request is ever sent.
+    ///
+    /// Required keys, exactly mirroring the wire's `visualSignature` nested
+    /// map (`wire/librescrs-agent.cddl`'s `visual-sig-opts`) — all six are
+    /// required together, not independently optional:
+    ///   - `"page"` (uint, 0-based)
+    ///   - `"x"`, `"y"`, `"width"`, `"height"` (double, PDF user units;
+    ///     width/height must be positive)
+    ///   - `"text"` (string; may contain `{placeholder}` tokens the engine
+    ///     resolves at sign time)
+    QVariantMap visualSignature;
+    /// Timestamp authority URL for THIS sign only; empty means the agent
+    /// default (Config1's LastTsaUrl/TsaUrls). https-only, non-empty host —
+    /// the agent rejects anything else at method entry
+    /// (`Error.UnsupportedSignatureParameter`), as it does a tsaUrl paired
+    /// with `SignatureLevel::BB` (meaningful only for the timestamped/
+    /// long-term family). Gated on the `"tsa-url"` feature token, the same
+    /// posture as `visualSignature` above.
+    QString tsaUrl;
     QVariantMap extra; ///< Forward-compatible pass-through, as on every result/options struct.
 };
 
@@ -89,6 +114,55 @@ struct PhotoItem
     QString key;       ///< Photo field key (e.g. "portrait").
     FdHandle fd;       ///< Sealed fd carrying the photo bytes; read and close promptly.
     QVariantMap extra; ///< Forward-compatible metadata pass-through, as on every other result/options struct.
+};
+
+/// @brief Minimum/maximum document count for `AgentCard::signBatch()` —
+///        mirrors the wire's frozen `sign-batch` bound (the bus's
+///        per-message fd budget shared by the request's document fds and the
+///        result's artifact fds; see `wire/librescrs-agent.cddl`'s
+///        `sign-batch` comment). Duplicated here rather than shared with a
+///        Core header because this library never links `LibreAgent::Core`
+///        (see `TransportSeam.h`'s file comment) — kept in lockstep with the
+///        Core-side `Operations::kMinBatchDocuments`/`kMaxBatchDocuments` by
+///        convention, the same way the wire's own CDDL/Messages.h comments
+///        already duplicate the bound across independently-linked TUs.
+inline constexpr std::size_t kMinBatchDocuments = 1;  ///< Fewer than this refuses with `CallError::InvalidArguments`.
+inline constexpr std::size_t kMaxBatchDocuments = 12; ///< More than this refuses with `CallError::InvalidArguments`.
+
+/// @brief One document entered into an `AgentCard::signBatch()` request: a
+///        caller-supplied display name (untrusted chrome — echoed back
+///        verbatim on the matching `BatchSignRow` and rendered, sanitized, in
+///        the agent's consent prompt) plus the document's fd.
+///
+/// Move-only (`FdHandle` is move-only): a `signBatch()` call takes
+/// `std::vector<BatchDocument>` by value and moves every fd across the seam.
+struct BatchDocument
+{
+    QString displayName; ///< Untrusted display name, echoed back verbatim on the matching `BatchSignRow`.
+    FdHandle fd;         ///< The document's bytes; ownership moves across the seam with the call.
+};
+
+/// @brief One row of a `signBatch()` result, index-aligned with the request's
+///        `docs` (same order, same count).
+///
+/// A FAILED row (independently failed, or past the halt point of a wrong/
+/// blocked signing credential) carries `error != ErrorCode::None`; its
+/// `artifact` is still a VALID, open handle to the wire's pinned zero-length
+/// sealed memfd (the frozen convention: `h`/the socket fd-index is
+/// non-nullable, so a failed row still resolves a real, just empty,
+/// descriptor) rather than an invalid/closed one — `error` is what a caller
+/// checks to distinguish "failed" from "succeeded with an empty artifact",
+/// never the fd's validity. `meta` is empty/default on a failed row.
+///
+/// Move-only (`FdHandle` is move-only), like `PhotoItem`: a `signBatch()`
+/// result is returned as `std::vector<BatchSignRow>`, never copied.
+struct BatchSignRow
+{
+    QString displayName; ///< Echoed back verbatim from the matching request `BatchDocument`.
+    FdHandle artifact;   ///< Signed bytes on success; a valid zero-length handle on a failed row (see above).
+    QVariantMap
+        meta; ///< Signature metadata (format/level/...), as `AgentOperation::signMeta()`; empty on a failed row.
+    ErrorCode error = ErrorCode::None; ///< `ErrorCode::None` on success; the row's (or halt's) failure code otherwise.
 };
 
 } // namespace LibreSCRS::AgentClient

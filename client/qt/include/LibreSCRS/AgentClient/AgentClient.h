@@ -4,12 +4,17 @@
 #include <LibreSCRS/AgentClient/AgentCard.h>
 #include <LibreSCRS/AgentClient/AgentReader.h>
 #include <LibreSCRS/AgentClient/Export.h>
+#include <LibreSCRS/AgentClient/FdHandle.h>
+#include <LibreSCRS/AgentClient/Types.h>
 
 #include <QList>
 #include <QObject>
+#include <QRectF>
 #include <QString>
+#include <QStringList>
 
 #include <memory>
+#include <optional>
 
 /// @file
 /// @brief Top-level agent client: owns the transport, watches agent
@@ -87,6 +92,54 @@ public:
     ///        operation (parented to this client) whose
     ///        `certificateDerResult()` is valid after `finished()`.
     [[nodiscard]] AgentOperation* certificateDer(const QString& readerId, const QString& certId);
+
+    /// @brief The optional request/property families the CURRENTLY connected
+    ///        agent advertises (empty before the agent is reachable, and for
+    ///        an agent that predates this discovery surface — never an
+    ///        error; see `hasFeature()` for the common membership check).
+    [[nodiscard]] QStringList features() const;
+    /// @brief Whether the agent advertises @p token (`features().contains(token)`).
+    [[nodiscard]] bool hasFeature(const QString& token) const;
+
+    /// @brief Card-independent, synchronous visible-signature layout preview
+    ///        (`Manager1.LayoutVisualSignature` / socket `"LayoutVisual"`) —
+    ///        no card, no `AgentOperation`, just a bounded round-trip. This
+    ///        is the PIXEL-PARITY primitive a preview renderer must use:
+    ///        a GUI client's preview text layout is defined to equal exactly
+    ///        this call's result, which in turn is exactly what a subsequent
+    ///        `AgentCard::sign()` with the same @p text / @p box would stamp
+    ///        (both sides call through the same agent-side computation).
+    ///
+    ///        Gated on the `"layout-preview"` feature token: when the
+    ///        connected agent does not advertise it (including "no agent
+    ///        connected at all"), this returns `std::nullopt` WITHOUT ever
+    ///        dialing the wire — the same local-refusal posture
+    ///        `AgentCard::sign()` applies to `tsaUrl`/`visualSignature`, only
+    ///        without an `AgentOperation` to fail (there is none here to
+    ///        mint). A `nullopt` therefore covers three distinct causes
+    ///        (capability absent, no agent, or a genuine call
+    ///        failure/entry rejection) — callers that need to tell them
+    ///        apart should check `hasFeature("layout-preview")` first.
+    /// @param text UTF-8 text to lay out (the same text a subsequent `sign()`
+    ///        call's `SignOptions::visualSignature` would carry).
+    /// @param box The placement rectangle, PDF user units (the same
+    ///        coordinate space as `SignOptions::visualSignature`'s box). A
+    ///        box too small to fit even the floor font size is still a VALID
+    ///        call — the result's `clipped` becomes `true`.
+    [[nodiscard]] std::optional<LayoutResult> layoutVisualSignature(const QString& text, QRectF box) const;
+
+    /// @brief The embedded appearance font (Liberation Sans Regular TTF)
+    ///        every agent-rendered visible signature uses
+    ///        (`Manager1.GetAppearanceFont` / socket `"GetAppearanceFont"`),
+    ///        cached per connection. A preview renderer loads this SAME font
+    ///        so its glyph metrics agree with `layoutVisualSignature()`'s
+    ///        line breaks and with the font PAdES actually embeds.
+    ///
+    ///        Same `"layout-preview"` gate as `layoutVisualSignature()`
+    ///        above: an invalid handle (`FdHandle::valid() == false`) means
+    ///        either the gate refused locally or the fetch itself failed —
+    ///        never a thrown error.
+    [[nodiscard]] FdHandle appearanceFont() const;
 
 Q_SIGNALS:
     /// @brief The agent appeared/vanished.

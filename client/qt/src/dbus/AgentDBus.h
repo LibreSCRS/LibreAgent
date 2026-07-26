@@ -25,6 +25,9 @@ inline constexpr const char* kRootPath = "/org/librescrs/Agent";
 inline constexpr const char* kObjectManagerIface = "org.freedesktop.DBus.ObjectManager";
 inline constexpr const char* kPropertiesIface = "org.freedesktop.DBus.Properties";
 
+// Root-object interfaces.
+inline constexpr const char* kManagerIface = "org.librescrs.Agent.Manager1";
+
 // Agent object interfaces.
 inline constexpr const char* kReaderIface = "org.librescrs.Agent.Reader1";
 inline constexpr const char* kCardIface = "org.librescrs.Agent.Card1";
@@ -34,6 +37,7 @@ inline constexpr const char* kCredentialsIface = "org.librescrs.Agent.Credential
 // Operation1 + its typed result interfaces.
 inline constexpr const char* kOperationIface = "org.librescrs.Agent.Operation1";
 inline constexpr const char* kSignIface = "org.librescrs.Agent.Operation.Sign1";
+inline constexpr const char* kSignBatchIface = "org.librescrs.Agent.Operation.SignBatch1";
 inline constexpr const char* kIdentityIface = "org.librescrs.Agent.Operation.Identity1";
 inline constexpr const char* kCertificatesIface = "org.librescrs.Agent.Operation.Certificates1";
 inline constexpr const char* kPhotoIface = "org.librescrs.Agent.Operation.Photo1";

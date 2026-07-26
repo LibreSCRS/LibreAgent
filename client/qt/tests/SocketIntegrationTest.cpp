@@ -191,6 +191,30 @@ public:
         runOnThread(m_context, [this, &out]() { out = m_agent->lastSignOptions(); });
         return out;
     }
+    [[nodiscard]] QString lastSignBatchCertId()
+    {
+        QString out;
+        runOnThread(m_context, [this, &out]() { out = m_agent->lastSignBatchCertId(); });
+        return out;
+    }
+    [[nodiscard]] QVariantMap lastSignBatchOptions()
+    {
+        QVariantMap out;
+        runOnThread(m_context, [this, &out]() { out = m_agent->lastSignBatchOptions(); });
+        return out;
+    }
+    [[nodiscard]] QStringList lastSignBatchDisplayNames()
+    {
+        QStringList out;
+        runOnThread(m_context, [this, &out]() { out = m_agent->lastSignBatchDisplayNames(); });
+        return out;
+    }
+    [[nodiscard]] QList<QByteArray> lastSignBatchDocumentBytes()
+    {
+        QList<QByteArray> out;
+        runOnThread(m_context, [this, &out]() { out = m_agent->lastSignBatchDocumentBytes(); });
+        return out;
+    }
     [[nodiscard]] QString lastCertDerReader()
     {
         QString out;
@@ -266,6 +290,10 @@ TEST(SocketIntegration, AvailabilityHandshakeFeatureTokensAndReappear)
     EXPECT_TRUE(transport->isConnected());
     EXPECT_EQ(transport->agentVersion(), QStringLiteral("9.9-socket-fake"));
     EXPECT_TRUE(transport->hasFeature(QLatin1StringView("credentials")));
+    // The PUBLIC AgentClient surface (not just the transport-internal one)
+    // must see the identical HelloAck-captured set.
+    EXPECT_TRUE(client->features().contains(QStringLiteral("credentials")));
+    EXPECT_TRUE(client->hasFeature(QStringLiteral("credentials")));
 
     bool sawUnavailable = false;
     bool sawAvailable = false;
@@ -292,13 +320,34 @@ TEST(SocketIntegration, AvailabilityHandshakeFeatureTokensAndReappear)
     EXPECT_NE(client->card(QLatin1String(kCardId)), nullptr);
 }
 
+// An unrecognised EXTRA feature token (one this client build does not name) is
+// the CDDL-sanctioned forward-compatibility case: it must surface through the
+// public API unfiltered rather than being dropped, and hasFeature() resolves
+// exactly the scripted set.
+TEST(SocketIntegration, FeaturesIncludeUnknownExtraToken)
+{
+    FakeSocketAgent::Config cfg;
+    cfg.capabilities = Cap::Pki;
+    cfg.features = {QStringLiteral("credentials"), QStringLiteral("a-future-token-this-build-does-not-name")};
+    SocketHarness h(cfg);
+
+    auto client = makeClient(h);
+    ASSERT_TRUE(client->isAvailable());
+
+    const QStringList features = client->features();
+    EXPECT_EQ(features.size(), 2);
+    EXPECT_TRUE(client->hasFeature(QStringLiteral("credentials")));
+    EXPECT_TRUE(client->hasFeature(QStringLiteral("a-future-token-this-build-does-not-name")));
+    EXPECT_FALSE(client->hasFeature(QStringLiteral("nonexistent-token")));
+}
+
 // ---- reader/card discovery from GetState ---------------------------------------
 
 TEST(SocketIntegration, ReaderAndCardDiscovery)
 {
     FakeSocketAgent::Config cfg;
     cfg.capabilities = Cap::IdentityData | Cap::Pki;
-    cfg.preReadAuth = QStringLiteral("PaceCan");
+    cfg.preReadAuth = QStringLiteral("Can");
     SocketHarness h(cfg);
 
     auto client = makeClient(h);
@@ -315,7 +364,7 @@ TEST(SocketIntegration, ReaderAndCardDiscovery)
     ASSERT_NE(card, nullptr);
     EXPECT_EQ(card, client->card(QLatin1String(kCardId)));
     EXPECT_EQ(card->readerId(), QLatin1String(kReaderId));
-    EXPECT_EQ(card->preReadAuth(), QStringLiteral("PaceCan"));
+    EXPECT_EQ(card->preReadAuth(), QStringLiteral("Can"));
     EXPECT_EQ(uiStateFor(capabilityBits(card->capabilities())), UiState::Hybrid);
 }
 
@@ -404,6 +453,121 @@ TEST(SocketIntegration, IdentityReadDeliversGroupedFields)
     EXPECT_EQ(givenName->labelFallback, QStringLiteral("Given name"));
 }
 
+// ReadTokenInfo rides the SAME Identity1-shaped op-result-ready arm as
+// ReadIdentity — the FakeSocketAgent scripts a DISTINCT "token" group
+// (label/serial_number/manufacturer), proving the client demarshals it
+// correctly through the identical wire shape.
+TEST(SocketIntegration, ReadTokenInfoDeliversTokenGroup)
+{
+    FakeSocketAgent::Config cfg;
+    cfg.capabilities = Cap::Pki;
+    cfg.features = {QStringLiteral("credentials"), QStringLiteral("token-info")};
+    cfg.operationDelayMs = 15;
+    SocketHarness h(cfg);
+
+    auto client = makeClient(h);
+    AgentCard* card = client->card(QLatin1String(kCardId));
+    ASSERT_NE(card, nullptr);
+
+    AgentOperation* op = card->readTokenInfo();
+    ASSERT_NE(op, nullptr);
+    ASSERT_TRUE(waitFor([&]() { return op->isFinished(); }));
+    EXPECT_EQ(op->status(), OperationStatus::Ok);
+
+    const QList<FieldGroup> groups = op->identityResult();
+    ASSERT_EQ(groups.size(), 1);
+    EXPECT_EQ(groups.front().key, QStringLiteral("token"));
+    const QList<Field>& fields = groups.front().fields;
+    EXPECT_TRUE(
+        std::any_of(fields.cbegin(), fields.cend(), [](const Field& f) { return f.key == QStringLiteral("label"); }));
+    EXPECT_TRUE(std::any_of(fields.cbegin(), fields.cend(),
+                            [](const Field& f) { return f.key == QStringLiteral("serial_number"); }));
+    EXPECT_TRUE(std::any_of(fields.cbegin(), fields.cend(),
+                            [](const Field& f) { return f.key == QStringLiteral("manufacturer"); }));
+}
+
+// The spec's empty-group resilience: an unsupported/best-effort-miss plugin
+// answers a present-but-EMPTY "token" group — a SUCCESS, never an error.
+TEST(SocketIntegration, ReadTokenInfoEmptyGroupIsStillSuccess)
+{
+    FakeSocketAgent::Config cfg;
+    cfg.capabilities = Cap::Pki;
+    cfg.features = {QStringLiteral("credentials"), QStringLiteral("token-info")};
+    cfg.operationDelayMs = 15;
+    cfg.tokenInfoEmpty = true;
+    SocketHarness h(cfg);
+
+    auto client = makeClient(h);
+    AgentCard* card = client->card(QLatin1String(kCardId));
+    ASSERT_NE(card, nullptr);
+
+    AgentOperation* op = card->readTokenInfo();
+    ASSERT_NE(op, nullptr);
+    ASSERT_TRUE(waitFor([&]() { return op->isFinished(); }));
+    EXPECT_EQ(op->status(), OperationStatus::Ok);
+    EXPECT_EQ(op->errorCode(), ErrorCode::None);
+    EXPECT_TRUE(op->identityResult().isEmpty());
+}
+
+// Capability-refused entry: without the PKI bit, ReadTokenInfo throws
+// UnsupportedOnThisCard at method entry (no Operation minted) — the fake
+// enforces the real gate for real.
+TEST(SocketIntegration, ReadTokenInfoRequiresPkiCapability)
+{
+    FakeSocketAgent::Config cfg;
+    cfg.capabilities = Cap::IdentityData; // NO Pki
+    cfg.features = {QStringLiteral("credentials"), QStringLiteral("token-info")};
+    SocketHarness h(cfg);
+
+    auto client = makeClient(h);
+    AgentCard* card = client->card(QLatin1String(kCardId));
+    ASSERT_NE(card, nullptr);
+
+    AgentOperation* op = card->readTokenInfo();
+    ASSERT_NE(op, nullptr) << "a ReadTokenInfo that errors at entry mints a FAILED operation, never nullptr";
+    EXPECT_TRUE(op->isFinished());
+    EXPECT_EQ(op->status(), OperationStatus::Error);
+    EXPECT_EQ(op->errorCode(), ErrorCode::CapabilityMissing);
+}
+
+// Feature-gated entry: an agent predating the "token-info" surface has no
+// such HelloAck token, so the client refuses locally rather than sending a
+// request tag the agent would fail closed on (dropping the whole
+// connection). The gate itself is transport-neutral (AgentCard::
+// startOperation, not a socket-only special case any more) — this test's
+// own socket-specific angle is the white-box SocketTransport::hasFeature()
+// check plus proving the wire never sees the request on THIS transport; the
+// D-Bus counterpart is DBusIntegrationTest's
+// MissingTokenInfoFeatureRefusesLocally, and TransportParityTest.cpp's
+// MissingTokenInfoFeatureRefusesIdenticallyAcrossTransports proves the two
+// converge.
+TEST(SocketIntegration, MissingTokenInfoFeatureTokenRefusesLocally)
+{
+    FakeSocketAgent::Config cfg;
+    cfg.capabilities = Cap::Pki;
+    cfg.features = {QStringLiteral("credentials")}; // no "token-info"
+    SocketHarness h(cfg);
+
+    SocketTransport* transport = nullptr;
+    auto client = makeClient(h, &transport);
+    ASSERT_NE(transport, nullptr);
+    EXPECT_FALSE(transport->hasFeature(QLatin1StringView("token-info")));
+    EXPECT_FALSE(client->hasFeature(QStringLiteral("token-info")));
+
+    AgentCard* card = client->card(QLatin1String(kCardId));
+    ASSERT_NE(card, nullptr);
+
+    AgentOperation* op = card->readTokenInfo();
+    ASSERT_NE(op, nullptr);
+    ASSERT_TRUE(waitFor([&]() { return op->isFinished(); }));
+    EXPECT_EQ(op->status(), OperationStatus::Error);
+    EXPECT_EQ(op->errorCode(), ErrorCode::CapabilityMissing);
+    // The gate is mandatory: the request must never have reached the wire (a
+    // pre-contract agent would fail it closed and drop the WHOLE connection).
+    EXPECT_EQ(h.operationCount(), 0);
+    EXPECT_TRUE(client->isAvailable()) << "the local refusal must not cost the session";
+}
+
 // ---- photo: SCM_RIGHTS fd in-bound, content hash ------------------------------------
 
 TEST(SocketIntegration, PhotoFdRoundTripContentHash)
@@ -479,6 +643,49 @@ TEST(SocketIntegration, CertificatesEndToEnd)
     EXPECT_EQ(c.trust, TrustStatus::Trusted);
 }
 
+// Mirrors the D-Bus transport's own trust-verdict mapping tests
+// (AgentCardTest.cpp) on the socket transport: 5=Revoked maps to the
+// client's Revoked case, 6=OfflineUnverified and any value this build does
+// not recognise both collapse to Unknown, and the "security" fields-group
+// tokens land in CertificateInfo::securityStatus.
+TEST(SocketIntegration, TrustStatusAndSecurityTokensMapAcrossTheVocabulary)
+{
+    FakeSocketAgent::Config cfg;
+    cfg.capabilities = Cap::Pki;
+    cfg.operationDelayMs = 15;
+    FakeSocketCert revoked;
+    revoked.certId = QStringLiteral("revoked-cert");
+    revoked.trustStatus = 5U;
+    revoked.securityStatus = QStringList{QStringLiteral("revoked")};
+    FakeSocketCert offline;
+    offline.certId = QStringLiteral("offline-cert");
+    offline.trustStatus = 6U;
+    offline.securityStatus = QStringList{QStringLiteral("offline-unverified")};
+    FakeSocketCert future;
+    future.certId = QStringLiteral("future-cert");
+    future.trustStatus = 42U; // not yet defined by any agent build
+    cfg.certScript = {revoked, offline, future};
+    SocketHarness h(cfg);
+
+    auto client = makeClient(h);
+    AgentCard* card = client->card(QLatin1String(kCardId));
+    ASSERT_NE(card, nullptr);
+
+    AgentOperation* op = card->readCertificates();
+    ASSERT_NE(op, nullptr);
+    ASSERT_TRUE(waitFor([&]() { return op->isFinished(); }));
+    EXPECT_EQ(op->status(), OperationStatus::Ok);
+
+    const QList<CertificateInfo> certs = op->certificatesResult();
+    ASSERT_EQ(certs.size(), 3);
+    EXPECT_EQ(certs[0].trust, TrustStatus::Revoked);
+    EXPECT_EQ(certs[0].securityStatus, (QStringList{QStringLiteral("revoked")}));
+    EXPECT_EQ(certs[1].trust, TrustStatus::Unknown);
+    EXPECT_EQ(certs[1].securityStatus, (QStringList{QStringLiteral("offline-unverified")}));
+    EXPECT_EQ(certs[2].trust, TrustStatus::Unknown);
+    EXPECT_TRUE(certs[2].securityStatus.isEmpty());
+}
+
 // ---- sign: typed options -> the CLOSED sign-opts map, fd in, artifact fd + meta out --
 
 TEST(SocketIntegration, SignTypedOptionsToWireAndArtifactBack)
@@ -486,6 +693,10 @@ TEST(SocketIntegration, SignTypedOptionsToWireAndArtifactBack)
     FakeSocketAgent::Config cfg;
     cfg.capabilities = Cap::Pki;
     cfg.operationDelayMs = 15;
+    // tsaUrl is gated on the "tsa-url" feature token (AgentCard::
+    // startOperation) — script it so this exercises the wire encoding, not
+    // the client's local refusal.
+    cfg.features = {QStringLiteral("credentials"), QStringLiteral("tsa-url")};
     SocketHarness h(cfg);
 
     auto client = makeClient(h);
@@ -497,9 +708,10 @@ TEST(SocketIntegration, SignTypedOptionsToWireAndArtifactBack)
     options.format = SignatureFormat::XAdES;
     options.level = SignatureLevel::BT;
     options.packaging = Packaging::Detached;
-    // tsaUrl has NO sign-opts field on this wire (the TSA is config-owned) —
-    // the transport must DROP it rather than invent a key.
-    options.tsaUrl = QStringLiteral("http://tsa.example/socket");
+    // tsaUrl now HAS a sign-opts field on this wire — the pinned
+    // asymmetry (this comment used to say the transport must drop it) is
+    // retired; both transports forward it identically.
+    options.tsaUrl = QStringLiteral("https://tsa.example/socket");
     options.extra.insert(QStringLiteral("reason"), QStringLiteral("integration-suite"));
 
     AgentOperation* op = card->sign(QStringLiteral("cert-for-sign"), makeMemfdDocument(document), options);
@@ -516,13 +728,234 @@ TEST(SocketIntegration, SignTypedOptionsToWireAndArtifactBack)
     EXPECT_EQ(wireOptions.value(QStringLiteral("level")).toString(), QStringLiteral("b-t"));
     EXPECT_EQ(wireOptions.value(QStringLiteral("packaging")).toString(), QStringLiteral("detached"));
     EXPECT_EQ(wireOptions.value(QStringLiteral("reason")).toString(), QStringLiteral("integration-suite"));
-    EXPECT_FALSE(wireOptions.contains(QStringLiteral("tsaUrl"))) << "tsaUrl must not cross this wire";
+    EXPECT_EQ(wireOptions.value(QStringLiteral("tsaUrl")).toString(), QStringLiteral("https://tsa.example/socket"))
+        << "tsaUrl now crosses the socket wire";
 
     FdHandle artifact = op->takeSignedArtifact();
     ASSERT_TRUE(artifact.valid());
     EXPECT_EQ(readFdAll(artifact.get()), QByteArrayLiteral("FAKE-SOCKET-ARTIFACT"));
     EXPECT_EQ(op->signMeta().value(QStringLiteral("format")).toString(), QStringLiteral("pades"));
     EXPECT_TRUE(op->signMeta().value(QStringLiteral("tsaUsed")).toBool());
+}
+
+// ---- batch signing: happy path, mid-batch halt, in-order delivery, gates --------------
+
+TEST(SocketIntegration, SignBatchHappyPathSignsEveryDocumentUnderOneConsent)
+{
+    FakeSocketAgent::Config cfg;
+    cfg.capabilities = Cap::Pki;
+    cfg.operationDelayMs = 15;
+    cfg.features = {QStringLiteral("credentials"), QStringLiteral("batch-sign")};
+    SocketHarness h(cfg);
+
+    auto client = makeClient(h);
+    AgentCard* card = client->card(QLatin1String(kCardId));
+    ASSERT_NE(card, nullptr);
+
+    std::vector<BatchDocument> docs;
+    docs.push_back(BatchDocument{QStringLiteral("first.pdf"), makeMemfdDocument(QByteArrayLiteral("doc one bytes"))});
+    docs.push_back(BatchDocument{QStringLiteral("second.pdf"), makeMemfdDocument(QByteArrayLiteral("doc two bytes"))});
+    docs.push_back(BatchDocument{QStringLiteral("third.pdf"), makeMemfdDocument(QByteArrayLiteral("doc three bytes"))});
+
+    SignOptions options;
+    options.format = SignatureFormat::PAdES;
+    options.level = SignatureLevel::BB;
+
+    AgentOperation* op = card->signBatch(QStringLiteral("cert-for-batch"), std::move(docs), options);
+    ASSERT_NE(op, nullptr);
+    ASSERT_TRUE(waitFor([&]() { return op->isFinished(); }));
+    EXPECT_EQ(op->status(), OperationStatus::Ok);
+    EXPECT_EQ(op->errorCode(), ErrorCode::None);
+
+    EXPECT_EQ(h.lastSignBatchCertId(), QStringLiteral("cert-for-batch"));
+    EXPECT_EQ(h.lastSignBatchDisplayNames(),
+              (QStringList{QStringLiteral("first.pdf"), QStringLiteral("second.pdf"), QStringLiteral("third.pdf")}));
+    const QList<QByteArray> receivedDocs = h.lastSignBatchDocumentBytes();
+    ASSERT_EQ(receivedDocs.size(), 3);
+    EXPECT_EQ(receivedDocs.at(0), QByteArrayLiteral("doc one bytes"));
+    EXPECT_EQ(receivedDocs.at(1), QByteArrayLiteral("doc two bytes"));
+    EXPECT_EQ(receivedDocs.at(2), QByteArrayLiteral("doc three bytes"));
+
+    std::vector<BatchSignRow> rows = op->takeBatchResults();
+    ASSERT_EQ(rows.size(), 3U);
+    for (std::size_t i = 0; i < rows.size(); ++i) {
+        EXPECT_EQ(rows[i].error, ErrorCode::None);
+        ASSERT_TRUE(rows[i].artifact.valid());
+        EXPECT_EQ(readFdAll(rows[i].artifact.get()), QByteArrayLiteral("FAKE-SOCKET-ARTIFACT"));
+    }
+    EXPECT_EQ(rows[0].displayName, QStringLiteral("first.pdf"));
+    EXPECT_EQ(rows[1].displayName, QStringLiteral("second.pdf"));
+    EXPECT_EQ(rows[2].displayName, QStringLiteral("third.pdf"));
+    EXPECT_TRUE(op->takeBatchResults().empty()) << "second call must return nothing — ownership taken once";
+}
+
+TEST(SocketIntegration, SignBatchMidBatchHaltPreservesEarlierRowsAndZeroesLaterOnes)
+{
+    FakeSocketAgent::Config cfg;
+    cfg.capabilities = Cap::Pki;
+    cfg.operationDelayMs = 15;
+    cfg.features = {QStringLiteral("credentials"), QStringLiteral("batch-sign")};
+    cfg.batchHaltAtIndex = 2;
+    cfg.batchHaltErrorCode = static_cast<quint32>(ErrorCode::CredentialWrong);
+    SocketHarness h(cfg);
+
+    auto client = makeClient(h);
+    AgentCard* card = client->card(QLatin1String(kCardId));
+    ASSERT_NE(card, nullptr);
+
+    std::vector<BatchDocument> docs;
+    for (int i = 0; i < 4; ++i) {
+        docs.push_back(BatchDocument{QStringLiteral("doc-%1.pdf").arg(i), makeMemfdDocument(QByteArrayLiteral("b"))});
+    }
+
+    AgentOperation* op = card->signBatch(QStringLiteral("cert-for-batch"), std::move(docs), SignOptions{});
+    ASSERT_NE(op, nullptr);
+    ASSERT_TRUE(waitFor([&]() { return op->isFinished(); }));
+    EXPECT_EQ(op->status(), OperationStatus::Ok) << "successCount > 0 (rows 0-1 signed) keeps the aggregate Ok";
+
+    std::vector<BatchSignRow> rows = op->takeBatchResults();
+    ASSERT_EQ(rows.size(), 4U);
+    for (int i = 0; i < 2; ++i) {
+        EXPECT_EQ(rows[static_cast<std::size_t>(i)].error, ErrorCode::None) << "row " << i;
+        ASSERT_TRUE(rows[static_cast<std::size_t>(i)].artifact.valid()) << "row " << i;
+        EXPECT_FALSE(readFdAll(rows[static_cast<std::size_t>(i)].artifact.get()).isEmpty()) << "row " << i;
+    }
+    for (int i = 2; i < 4; ++i) {
+        EXPECT_EQ(rows[static_cast<std::size_t>(i)].error, ErrorCode::CredentialWrong) << "row " << i;
+        ASSERT_TRUE(rows[static_cast<std::size_t>(i)].artifact.valid()) << "row " << i << " — never invalid";
+        EXPECT_TRUE(readFdAll(rows[static_cast<std::size_t>(i)].artifact.get()).isEmpty()) << "row " << i;
+    }
+}
+
+// The socket wire's unicast-FIFO delivery invariant (see the CDDL's
+// op-result-ready comment) covers SignBatch exactly like every non-Sign kind
+// — there is no GetSignBatchResult pull route on this wire, by design; a
+// result written before the client even subscribes still arrives, in order.
+TEST(SocketIntegration, SignBatchResultWrittenBeforeEntryReturnsIsDeliveredInOrder)
+{
+    FakeSocketAgent::Config cfg;
+    cfg.capabilities = Cap::Pki;
+    cfg.features = {QStringLiteral("credentials"), QStringLiteral("batch-sign")};
+    cfg.raceResultBeforeReturn = true;
+    SocketHarness h(cfg);
+
+    auto client = makeClient(h);
+    AgentCard* card = client->card(QLatin1String(kCardId));
+    ASSERT_NE(card, nullptr);
+
+    std::vector<BatchDocument> docs;
+    docs.push_back(BatchDocument{QStringLiteral("x.pdf"), makeMemfdDocument(QByteArrayLiteral("race doc bytes"))});
+    docs.push_back(BatchDocument{QStringLiteral("y.pdf"), makeMemfdDocument(QByteArrayLiteral("race doc bytes 2"))});
+
+    AgentOperation* op = card->signBatch(QStringLiteral("certid"), std::move(docs), SignOptions{});
+    ASSERT_NE(op, nullptr);
+    ASSERT_TRUE(waitFor([&]() { return op->isFinished(); }));
+    EXPECT_EQ(op->status(), OperationStatus::Ok);
+
+    std::vector<BatchSignRow> rows = op->takeBatchResults();
+    ASSERT_EQ(rows.size(), 2U) << "the raced result event must not be lost";
+    for (const BatchSignRow& row : rows) {
+        ASSERT_TRUE(row.artifact.valid());
+        EXPECT_EQ(readFdAll(row.artifact.get()), QByteArrayLiteral("FAKE-SOCKET-ARTIFACT"));
+    }
+}
+
+// ---- batch signing: entry gates (never reach the wire) --------------------------------
+
+TEST(SocketIntegration, MissingBatchSignFeatureRefusesLocally)
+{
+    FakeSocketAgent::Config cfg;
+    cfg.capabilities = Cap::Pki;
+    cfg.features = {QStringLiteral("credentials")}; // no "batch-sign"
+    SocketHarness h(cfg);
+
+    auto client = makeClient(h);
+    ASSERT_TRUE(client->isAvailable());
+    EXPECT_FALSE(client->hasFeature(QStringLiteral("batch-sign")));
+
+    AgentCard* card = client->card(QLatin1String(kCardId));
+    ASSERT_NE(card, nullptr);
+
+    std::vector<BatchDocument> docs;
+    docs.push_back(BatchDocument{QStringLiteral("a.pdf"), makeMemfdDocument(QByteArrayLiteral("b"))});
+
+    AgentOperation* op = card->signBatch(QStringLiteral("cert-for-batch"), std::move(docs), SignOptions{});
+    ASSERT_NE(op, nullptr) << "a refused entry mints a failed operation, never nullptr";
+    ASSERT_TRUE(waitFor([&]() { return op->isFinished(); }));
+    EXPECT_EQ(op->status(), OperationStatus::Error);
+    EXPECT_EQ(op->errorCode(), ErrorCode::CapabilityMissing);
+    EXPECT_EQ(h.operationCount(), 0) << "the gate must refuse before SignBatch ever reaches the wire";
+}
+
+// signBatch shares Sign's own tsaUrl/visualSignature feature-token gate (the
+// SAME code path in AgentCard::startOperation, not a parallel copy) — proven
+// directly against signBatch here rather than assumed from Sign's own test.
+TEST(SocketIntegration, SignBatchWithTsaUrlOrVisualSignatureWithoutTheirFeatureTokensRefusesLocally)
+{
+    FakeSocketAgent::Config cfg;
+    cfg.capabilities = Cap::Pki;
+    cfg.features = {QStringLiteral("credentials"), QStringLiteral("batch-sign")}; // no tsa-url / visual-sign
+    SocketHarness h(cfg);
+
+    auto client = makeClient(h);
+    AgentCard* card = client->card(QLatin1String(kCardId));
+    ASSERT_NE(card, nullptr);
+
+    std::vector<BatchDocument> tsaDocs;
+    tsaDocs.push_back(BatchDocument{QStringLiteral("a.pdf"), makeMemfdDocument(QByteArrayLiteral("bytes"))});
+    SignOptions tsaOptions;
+    tsaOptions.tsaUrl = QStringLiteral("https://tsa.example/gated-batch");
+    AgentOperation* tsaOp = card->signBatch(QStringLiteral("cert-for-batch"), std::move(tsaDocs), tsaOptions);
+    ASSERT_NE(tsaOp, nullptr);
+    ASSERT_TRUE(waitFor([&]() { return tsaOp->isFinished(); }));
+    EXPECT_EQ(tsaOp->status(), OperationStatus::Error);
+    EXPECT_EQ(tsaOp->errorCode(), ErrorCode::CapabilityMissing);
+
+    std::vector<BatchDocument> visualDocs;
+    visualDocs.push_back(BatchDocument{QStringLiteral("b.pdf"), makeMemfdDocument(QByteArrayLiteral("bytes"))});
+    SignOptions visualOptions;
+    visualOptions.visualSignature =
+        QVariantMap{{QStringLiteral("page"), 0},      {QStringLiteral("x"), 0.0},
+                    {QStringLiteral("y"), 0.0},       {QStringLiteral("width"), 100.0},
+                    {QStringLiteral("height"), 50.0}, {QStringLiteral("text"), QStringLiteral("Signed")}};
+    AgentOperation* visualOp = card->signBatch(QStringLiteral("cert-for-batch"), std::move(visualDocs), visualOptions);
+    ASSERT_NE(visualOp, nullptr);
+    ASSERT_TRUE(waitFor([&]() { return visualOp->isFinished(); }));
+    EXPECT_EQ(visualOp->status(), OperationStatus::Error);
+    EXPECT_EQ(visualOp->errorCode(), ErrorCode::CapabilityMissing);
+
+    EXPECT_EQ(h.operationCount(), 0) << "both refusals must fire before SignBatch ever reaches the wire";
+}
+
+TEST(SocketIntegration, SignBatchDocumentCountOutsideBoundsRefusesLocally)
+{
+    FakeSocketAgent::Config cfg;
+    cfg.capabilities = Cap::Pki;
+    cfg.features = {QStringLiteral("credentials"), QStringLiteral("batch-sign")};
+    SocketHarness h(cfg);
+
+    auto client = makeClient(h);
+    AgentCard* card = client->card(QLatin1String(kCardId));
+    ASSERT_NE(card, nullptr);
+
+    AgentOperation* emptyOp = card->signBatch(QStringLiteral("cert-for-batch"), {}, SignOptions{});
+    ASSERT_NE(emptyOp, nullptr);
+    ASSERT_TRUE(waitFor([&]() { return emptyOp->isFinished(); }));
+    EXPECT_EQ(emptyOp->status(), OperationStatus::Error);
+    EXPECT_EQ(emptyOp->callError(), CallError::InvalidArguments);
+
+    std::vector<BatchDocument> tooMany;
+    for (int i = 0; i < 13; ++i) {
+        tooMany.push_back(
+            BatchDocument{QStringLiteral("doc-%1.pdf").arg(i), makeMemfdDocument(QByteArrayLiteral("b"))});
+    }
+    AgentOperation* tooManyOp = card->signBatch(QStringLiteral("cert-for-batch"), std::move(tooMany), SignOptions{});
+    ASSERT_NE(tooManyOp, nullptr);
+    ASSERT_TRUE(waitFor([&]() { return tooManyOp->isFinished(); }));
+    EXPECT_EQ(tooManyOp->status(), OperationStatus::Error);
+    EXPECT_EQ(tooManyOp->callError(), CallError::InvalidArguments);
+
+    EXPECT_EQ(h.operationCount(), 0) << "both refusals must fire before SignBatch ever reaches the wire";
 }
 
 // ---- method-entry refusal: err-info name -> ErrorCode --------------------------------
@@ -612,6 +1045,9 @@ TEST(SocketIntegration, MissingCredentialsFeatureTokenRefusesLocally)
     auto client = makeClient(h, &transport);
     ASSERT_NE(transport, nullptr);
     EXPECT_FALSE(transport->hasFeature(QLatin1StringView("credentials")));
+    // The public surface degrades identically: empty, no error.
+    EXPECT_TRUE(client->features().isEmpty());
+    EXPECT_FALSE(client->hasFeature(QStringLiteral("credentials")));
 
     AgentCard* card = client->card(QLatin1String(kCardId));
     ASSERT_NE(card, nullptr);
@@ -955,7 +1391,7 @@ TEST(SocketIntegration, RequestPropertiesFetchesTheObjectSnapshot)
 {
     FakeSocketAgent::Config cfg;
     cfg.capabilities = Cap::Pki | Cap::PinManagement;
-    cfg.preReadAuth = QStringLiteral("PaceCan");
+    cfg.preReadAuth = QStringLiteral("Can");
     SocketHarness h(cfg);
 
     SocketTransport transport(h.path());
@@ -971,7 +1407,7 @@ TEST(SocketIntegration, RequestPropertiesFetchesTheObjectSnapshot)
     EXPECT_EQ(listener.fetchedToken, token);
     ASSERT_TRUE(listener.fetched.has_value());
     EXPECT_EQ(listener.fetched->value(QStringLiteral("Capabilities")).toUInt(), Cap::Pki | Cap::PinManagement);
-    EXPECT_EQ(listener.fetched->value(QStringLiteral("PreReadAuthMethod")).toString(), QStringLiteral("PaceCan"));
+    EXPECT_EQ(listener.fetched->value(QStringLiteral("PreReadAuthMethod")).toString(), QStringLiteral("Can"));
     EXPECT_EQ(listener.fetched->value(QStringLiteral("Reader")).toString(), QLatin1String(kReaderId));
 
     transport.unsubscribeProperties(QLatin1String(kCardId), &listener);

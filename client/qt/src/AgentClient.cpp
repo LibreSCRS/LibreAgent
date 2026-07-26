@@ -125,6 +125,37 @@ bool AgentClient::agentInstalled() const
     return d->transport && d->transport->agentInstalled();
 }
 
+QStringList AgentClient::features() const
+{
+    return d->transport ? d->transport->features() : QStringList();
+}
+
+bool AgentClient::hasFeature(const QString& token) const
+{
+    return features().contains(token);
+}
+
+std::optional<LayoutResult> AgentClient::layoutVisualSignature(const QString& text, QRectF box) const
+{
+    // Transport-neutral local refusal, mirroring AgentCard::startOperation's
+    // tsaUrl/visualSignature gate — WITHOUT ever dialing the wire. There is
+    // no AgentOperation here to fail entry on, so the refusal shape is
+    // simply "no result", exactly like hasFeature() itself degrades an
+    // absent agent to an empty features() list rather than an error.
+    if (!d->transport || !hasFeature(QStringLiteral("layout-preview"))) {
+        return std::nullopt;
+    }
+    return d->transport->layoutVisualSignature(text, box);
+}
+
+FdHandle AgentClient::appearanceFont() const
+{
+    if (!d->transport || !hasFeature(QStringLiteral("layout-preview"))) {
+        return {};
+    }
+    return d->transport->appearanceFont();
+}
+
 void AgentClient::refreshDiscovery()
 {
     if (!d->transport) {

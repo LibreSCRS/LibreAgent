@@ -33,11 +33,11 @@ constexpr const char* kCardHandle = "card/0";
 
 Wire::PreReadAuth preAuthFromToken(const QString& token)
 {
-    if (token == QLatin1String("BacMrz")) {
-        return Wire::PreReadAuth::BacMrz;
+    if (token == QLatin1String("Mrz")) {
+        return Wire::PreReadAuth::Mrz;
     }
-    if (token == QLatin1String("PaceCan")) {
-        return Wire::PreReadAuth::PaceCan;
+    if (token == QLatin1String("Can")) {
+        return Wire::PreReadAuth::Can;
     }
     return Wire::PreReadAuth::None;
 }
@@ -47,6 +47,44 @@ void setNonBlockingCloexec(int fd)
     ::fcntl(fd, F_SETFD, FD_CLOEXEC);
     const int flags = ::fcntl(fd, F_GETFL, 0);
     ::fcntl(fd, F_SETFL, flags | O_NONBLOCK);
+}
+
+// Wire::SignOpts -> the seam's wire-keyed option QVariantMap. Shared by Sign
+// and SignBatch (the two entry points carry the IDENTICAL sign-opts
+// vocabulary), so the two request handlers below never drift apart.
+QVariantMap signOptsToMap(const Wire::SignOpts& opts)
+{
+    QVariantMap options;
+    options.insert(QStringLiteral("format"), QString::fromStdString(opts.format));
+    options.insert(QStringLiteral("level"), QString::fromStdString(opts.level));
+    options.insert(QStringLiteral("packaging"), QString::fromStdString(opts.packaging));
+    if (opts.allowExpired) {
+        options.insert(QStringLiteral("allowExpired"), *opts.allowExpired);
+    }
+    if (opts.displayName) {
+        options.insert(QStringLiteral("displayName"), QString::fromStdString(*opts.displayName));
+    }
+    if (opts.reason) {
+        options.insert(QStringLiteral("reason"), QString::fromStdString(*opts.reason));
+    }
+    if (opts.location) {
+        options.insert(QStringLiteral("location"), QString::fromStdString(*opts.location));
+    }
+    if (opts.tsaUrl) {
+        options.insert(QStringLiteral("tsaUrl"), QString::fromStdString(*opts.tsaUrl));
+    }
+    if (opts.visualSignature) {
+        const auto& v = *opts.visualSignature;
+        QVariantMap visual;
+        visual.insert(QStringLiteral("page"), static_cast<qulonglong>(v.page));
+        visual.insert(QStringLiteral("x"), v.x);
+        visual.insert(QStringLiteral("y"), v.y);
+        visual.insert(QStringLiteral("width"), v.width);
+        visual.insert(QStringLiteral("height"), v.height);
+        visual.insert(QStringLiteral("text"), QString::fromStdString(v.text));
+        options.insert(QStringLiteral("visualSignature"), visual);
+    }
+    return options;
 }
 
 } // namespace
@@ -276,6 +314,14 @@ Wire::CardState FakeSocketAgent::buildCardState() const
     card.reader = kReaderHandle;
     card.caps = m_config.capabilities;
     card.preAuth = preAuthFromToken(m_config.preReadAuth);
+    // Optional keys: encoded only when scripted non-empty, mirroring the real
+    // agent's empty-until-known / always-known-from-insertion semantics.
+    if (!m_config.cardType.isEmpty()) {
+        card.cardType = m_config.cardType.toStdString();
+    }
+    if (!m_config.atrHex.isEmpty()) {
+        card.atr = m_config.atrHex.toStdString();
+    }
     return card;
 }
 
@@ -334,6 +380,10 @@ std::vector<Wire::CertInfo> FakeSocketAgent::buildCertList() const
             }
         }
         cert.trustStatus = scripted.trustStatus;
+        for (const QString& token : scripted.securityStatus) {
+            cert.fields["security"][token.toStdString()] =
+                Wire::CertField{"cert.security." + token.toStdString(), token.toStdString(), token.toStdString()};
+        }
         certs.push_back(std::move(cert));
     }
     return certs;
@@ -389,6 +439,16 @@ int FakeSocketAgent::getStateCount() const
     return m_getStateCalls;
 }
 
+int FakeSocketAgent::layoutCallCount() const
+{
+    return m_layoutCalls;
+}
+
+int FakeSocketAgent::appearanceFontCallCount() const
+{
+    return m_appearanceFontCalls;
+}
+
 int FakeSocketAgent::listCredentialsCount() const
 {
     return m_listCredentialsCalls;
@@ -414,6 +474,26 @@ QVariantMap FakeSocketAgent::lastSignOptions() const
     return m_lastSignOptions;
 }
 
+QString FakeSocketAgent::lastSignBatchCertId() const
+{
+    return m_lastSignBatchCertId;
+}
+
+QVariantMap FakeSocketAgent::lastSignBatchOptions() const
+{
+    return m_lastSignBatchOptions;
+}
+
+QStringList FakeSocketAgent::lastSignBatchDisplayNames() const
+{
+    return m_lastSignBatchDisplayNames;
+}
+
+QList<QByteArray> FakeSocketAgent::lastSignBatchDocumentBytes() const
+{
+    return m_lastSignBatchDocumentBytes;
+}
+
 QString FakeSocketAgent::lastCertDerReader() const
 {
     return m_lastCertDerReader;
@@ -424,13 +504,15 @@ QString FakeSocketAgent::lastCertDerCertId() const
     return m_lastCertDerCertId;
 }
 
-void FakeSocketAgent::mintOperation(Connection* connection, quint64 req, OpKind kind, bool withRecords)
+void FakeSocketAgent::mintOperation(Connection* connection, quint64 req, OpKind kind, bool withRecords,
+                                    QStringList batchDisplayNames)
 {
     auto op = std::make_unique<Op>();
     op->id = ++m_nextOpId;
     op->kind = kind;
     op->connection = connection;
     op->withRecords = withRecords;
+    op->batchDisplayNames = std::move(batchDisplayNames);
     const quint64 opId = op->id;
     m_operations.push_back(std::move(op));
 
@@ -460,20 +542,70 @@ void FakeSocketAgent::fireOperation(quint64 opId)
 
     const bool ok = m_config.finalStatus == 0;
     const bool suppressResult = m_config.suppressResult || (op->kind == OpKind::Sign && m_config.signRecoverable);
+    // Progressive delivery: every scripted group streams, in order, strictly
+    // before the op-result-ready below for the SAME op — same gating as that
+    // Result (a successful, non-suppressed read), since an unscripted default
+    // (identityGroupScript empty) must stream nothing regardless.
+    if (op->kind == OpKind::Identity && ok && !suppressResult && !m_config.identityGroupScript.isEmpty() &&
+        isLive(op->connection)) {
+        for (const FakeSocketIdentityGroup& g : m_config.identityGroupScript) {
+            Wire::OpIdentityGroup ev;
+            ev.op = op->id;
+            ev.groupKey = g.key.toStdString();
+            ev.fields = g.fields;
+            sendCbor(op->connection, Wire::toCbor(ev));
+        }
+    }
     // A read result only exists on Ok; the credentials result is delivered
-    // for EVERY completed attempt (its payload carries the outcome).
-    const bool emitResult = (ok || op->kind == OpKind::Credentials) && !suppressResult;
+    // for EVERY completed attempt (its payload carries the outcome); the
+    // SignBatch result is delivered whenever >=1 document was attempted --
+    // reached here, that is ALWAYS true (an op is only minted with a
+    // non-empty document list), regardless of the aggregate status.
+    const bool emitResult = (ok || op->kind == OpKind::Credentials || op->kind == OpKind::SignBatch) && !suppressResult;
     if (emitResult && isLive(op->connection)) {
         Wire::OpResultReady ready;
         ready.op = op->id;
         switch (op->kind) {
         case OpKind::Identity: {
             Wire::IdentityResult identity;
-            identity.fields["personal"]["given_name"] =
-                Wire::IdentityField{"label_given_name", "Given name", "text", std::string("Ana")};
-            identity.fields["personal"]["family_name"] =
-                Wire::IdentityField{"label_family_name", "Family name", "text", std::string("Horvat")};
+            if (!m_config.identityGroupScript.isEmpty()) {
+                // The eventual result is the UNION of every scripted group —
+                // the same invariant the D-Bus fake's buildIdentityFields()
+                // enforces for its own script.
+                for (const FakeSocketIdentityGroup& g : m_config.identityGroupScript) {
+                    identity.fields[g.key.toStdString()] = g.fields;
+                }
+            } else {
+                identity.fields["personal"]["given_name"] =
+                    Wire::IdentityField{"label_given_name", "Given name", "text", std::string("Ana")};
+                identity.fields["personal"]["family_name"] =
+                    Wire::IdentityField{"label_family_name", "Family name", "text", std::string("Horvat")};
+            }
             ready.result = std::move(identity);
+            sendCbor(op->connection, Wire::toCbor(ready));
+            break;
+        }
+        case OpKind::TokenInfo: {
+            // "token" group -- label/serial_number/manufacturer, matching
+            // Card1.ReadTokenInfo's wire result (rides the SAME
+            // Identity1-shaped op-result-ready arm as Identity; only the
+            // group content differs). tokenInfoEmpty scripts the
+            // unsupported-plugin case: a present-but-EMPTY group, a SUCCESS
+            // with zero fields, never an error. An empty inner field map is
+            // modeled as the "token" key being ABSENT from the outer
+            // IdentityResult.fields map (mirrors the real agent's own
+            // CardReadSnapshot -> wire mapping, which never inserts a group
+            // whose fields ended up empty).
+            Wire::IdentityResult tokenInfo;
+            if (!m_config.tokenInfoEmpty) {
+                tokenInfo.fields["token"]["label"] =
+                    Wire::IdentityField{"field.label", "Label", "text", std::string("Fake Token")};
+                tokenInfo.fields["token"]["serial_number"] =
+                    Wire::IdentityField{"field.serial_number", "Serial Number", "text", std::string("0123456789")};
+                tokenInfo.fields["token"]["manufacturer"] =
+                    Wire::IdentityField{"field.manufacturer", "Manufacturer", "text", std::string("LibreSCRS Fake")};
+            }
+            ready.result = std::move(tokenInfo);
             sendCbor(op->connection, Wire::toCbor(ready));
             break;
         }
@@ -496,6 +628,34 @@ void FakeSocketAgent::fireOperation(quint64 opId)
             ready.result = Wire::SignResult{0, signMeta()};
             const int raw = artifactFd.get();
             sendCbor(op->connection, Wire::toCbor(ready), std::span<const int>(&raw, 1));
+            break;
+        }
+        case OpKind::SignBatch: {
+            // One memfd per document, in order (fd-index == row position):
+            // a row at or past batchHaltAtIndex seals ZERO bytes -- the
+            // frozen failed-row convention -- and carries the halt code;
+            // every earlier row signs successfully with signArtifactBytes/
+            // signMeta.
+            std::vector<FdHandle> rowFds;
+            std::vector<int> rawFds;
+            rowFds.reserve(static_cast<std::size_t>(op->batchDisplayNames.size()));
+            rawFds.reserve(static_cast<std::size_t>(op->batchDisplayNames.size()));
+            Wire::SignBatchResult batchResult;
+            batchResult.rows.reserve(static_cast<std::size_t>(op->batchDisplayNames.size()));
+            for (int i = 0; i < op->batchDisplayNames.size(); ++i) {
+                const bool halted = m_config.batchHaltAtIndex >= 0 && i >= m_config.batchHaltAtIndex;
+                FdHandle fd = makeMemfdDocument(halted ? QByteArray() : m_config.signArtifactBytes);
+                rawFds.push_back(fd.get());
+                Wire::SignBatchRow row;
+                row.displayName = op->batchDisplayNames.at(i).toStdString();
+                row.artifact = static_cast<std::uint64_t>(i);
+                row.meta = halted ? Wire::SignMeta{} : signMeta();
+                row.code = halted ? static_cast<Wire::ErrorCode>(m_config.batchHaltErrorCode) : Wire::ErrorCode::None;
+                batchResult.rows.push_back(std::move(row));
+                rowFds.push_back(std::move(fd));
+            }
+            ready.result = std::move(batchResult);
+            sendCbor(op->connection, Wire::toCbor(ready), std::span<const int>(rawFds));
             break;
         }
         case OpKind::Credentials: {
@@ -581,6 +741,23 @@ void FakeSocketAgent::handleRequest(Connection* connection, Wire::RequestEnvelop
         mintOperation(connection, req, OpKind::Certificates, false);
         return;
     }
+    if (std::get_if<Wire::ReadTokenInfo>(&body) != nullptr) {
+        // Real-agent capability entry gate: token info is PKI-adjacent
+        // (pkcs15), so it shares ReadCertificates' gate bit (bit 0, Pki) —
+        // enforced FOR REAL here (unlike ReadCertificates above, which only
+        // models the generic failMethodEntry refusal).
+        const bool lacksPki = (m_config.capabilities & 1U) == 0;
+        if (lacksPki) {
+            sendEntryError(connection, req, Wire::SyncError::UnsupportedOnThisCard);
+            return;
+        }
+        if (m_config.failMethodEntry) {
+            sendEntryError(connection, req, m_config.entryError);
+            return;
+        }
+        mintOperation(connection, req, OpKind::TokenInfo, false);
+        return;
+    }
     if (const auto* sign = std::get_if<Wire::Sign>(&body)) {
         if (m_config.failMethodEntry) {
             sendEntryError(connection, req, m_config.entryError);
@@ -594,24 +771,32 @@ void FakeSocketAgent::handleRequest(Connection* connection, Wire::RequestEnvelop
         // before the client closes its copy).
         m_lastSignCertId = QString::fromStdString(sign->cert);
         m_lastSignInputBytes = readFdAll(fds[static_cast<std::size_t>(sign->inFd)].get());
-        QVariantMap options;
-        options.insert(QStringLiteral("format"), QString::fromStdString(sign->opts.format));
-        options.insert(QStringLiteral("level"), QString::fromStdString(sign->opts.level));
-        options.insert(QStringLiteral("packaging"), QString::fromStdString(sign->opts.packaging));
-        if (sign->opts.allowExpired) {
-            options.insert(QStringLiteral("allowExpired"), *sign->opts.allowExpired);
-        }
-        if (sign->opts.displayName) {
-            options.insert(QStringLiteral("displayName"), QString::fromStdString(*sign->opts.displayName));
-        }
-        if (sign->opts.reason) {
-            options.insert(QStringLiteral("reason"), QString::fromStdString(*sign->opts.reason));
-        }
-        if (sign->opts.location) {
-            options.insert(QStringLiteral("location"), QString::fromStdString(*sign->opts.location));
-        }
-        m_lastSignOptions = options;
+        m_lastSignOptions = signOptsToMap(sign->opts);
         mintOperation(connection, req, OpKind::Sign, false);
+        return;
+    }
+    if (const auto* batch = std::get_if<Wire::SignBatch>(&body)) {
+        if (m_config.failMethodEntry) {
+            sendEntryError(connection, req, m_config.entryError);
+            return;
+        }
+        QStringList names;
+        QList<QByteArray> allBytes;
+        names.reserve(static_cast<qsizetype>(batch->docs.size()));
+        allBytes.reserve(static_cast<qsizetype>(batch->docs.size()));
+        for (const Wire::BatchDocument& doc : batch->docs) {
+            names.append(QString::fromStdString(doc.name));
+            if (doc.fdIndex >= fds.size()) {
+                sendEntryError(connection, req, Wire::SyncError::InvalidRequest);
+                return; // fd index outside this frame's SCM_RIGHTS vector
+            }
+            allBytes.append(readFdAll(fds[static_cast<std::size_t>(doc.fdIndex)].get()));
+        }
+        m_lastSignBatchCertId = QString::fromStdString(batch->cert);
+        m_lastSignBatchDisplayNames = names;
+        m_lastSignBatchDocumentBytes = allBytes;
+        m_lastSignBatchOptions = signOptsToMap(batch->opts);
+        mintOperation(connection, req, OpKind::SignBatch, false, names);
         return;
     }
     if (const auto* cancel = std::get_if<Wire::CancelOp>(&body)) {
@@ -640,8 +825,13 @@ void FakeSocketAgent::handleRequest(Connection* connection, Wire::RequestEnvelop
                      std::span<const int>(&raw, 1));
             return;
         }
+        // GetSignResult's dedicated dead-end name (see Messages.h's SyncError
+        // doc comment): the op is unknown, wasn't a Sign op, or nothing was
+        // ever retained for it -- previously improvised via the generic
+        // InvalidRequest, now the real production socket daemon's own name
+        // for this exact case (see LibreDarwin's handleGetSignResult).
         Wire::ErrInfo info;
-        info.code = Wire::SyncError::InvalidRequest;
+        info.code = Wire::SyncError::NoResult;
         info.msgFallback = std::string("no retained result for this operation");
         sendCbor(connection, Wire::makeErrorReply(req, info));
         return;
@@ -657,6 +847,30 @@ void FakeSocketAgent::handleRequest(Connection* connection, Wire::RequestEnvelop
         const auto* derData = reinterpret_cast<const std::uint8_t*>(m_config.certDerBytes.constData());
         reply.der.assign(derData, derData + m_config.certDerBytes.size());
         sendCbor(connection, Wire::makeReply(req, reply));
+        return;
+    }
+    if (std::get_if<Wire::LayoutVisual>(&body) != nullptr) {
+        ++m_layoutCalls;
+        // Card-independent and scripted, exactly like the D-Bus fake's
+        // ManagerAdaptor::LayoutVisualSignature: the fake never actually
+        // lays out the request's text against its box, it just serves
+        // Config's fixed reply -- this exercises the WIRE round trip, not
+        // LM's word-wrap algorithm.
+        Wire::LayoutReply reply;
+        reply.fontSize = m_config.layoutFontSize;
+        reply.lineHeight = m_config.layoutLineHeight;
+        for (const QString& line : m_config.layoutLines) {
+            reply.lines.push_back(line.toStdString());
+        }
+        reply.clipped = m_config.layoutClipped;
+        sendCbor(connection, Wire::makeReply(req, reply));
+        return;
+    }
+    if (std::get_if<Wire::GetAppearanceFont>(&body) != nullptr) {
+        ++m_appearanceFontCalls;
+        FdHandle fontFd = makeMemfdDocument(m_config.appearanceFontBytes);
+        const int raw = fontFd.get();
+        sendCbor(connection, Wire::makeReply(req, Wire::AppearanceFontReply{0}), std::span<const int>(&raw, 1));
         return;
     }
     if (std::get_if<Wire::ListCredentials>(&body) != nullptr) {
@@ -763,6 +977,16 @@ void FakeSocketAgent::emitCardCapabilitiesChanged(quint32 capabilities)
     changed.handle = kCardHandle;
     changed.iface = kCardIface;
     changed.props.emplace("Capabilities", Wire::CborValue::uint(capabilities));
+    broadcastCbor(Wire::toCbor(changed));
+}
+
+void FakeSocketAgent::emitCardTypeChanged(const QString& cardType)
+{
+    m_config.cardType = cardType;
+    Wire::PropertyChanged changed;
+    changed.handle = kCardHandle;
+    changed.iface = kCardIface;
+    changed.props.emplace("CardType", Wire::CborValue(cardType.toStdString()));
     broadcastCbor(Wire::toCbor(changed));
 }
 

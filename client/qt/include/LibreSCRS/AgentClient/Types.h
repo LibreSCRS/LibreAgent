@@ -82,4 +82,23 @@ struct CertificateInfo
     QVariantMap extra; ///< Forward-compatible pass-through, as on every result struct.
 };
 
+/// @brief The card-independent, synchronous visible-signature layout preview
+///        result — `AgentClient::layoutVisualSignature()`'s return value.
+///
+/// Mirrors the agent's `LibreSCRS::Signing::VisualSignatureLayout` /
+/// wire `layout` reply arm field-for-field. `clipped` is PIXEL-PARITY
+/// load-bearing: `true` means even the floor font size does not fit the
+/// requested box, so a renderer MUST install the same clip path the agent's
+/// PAdES emitter installs when it actually stamps the signature — the
+/// preview-parity rule a GUI client's preview renderer depends on (see
+/// `AgentClient::layoutVisualSignature()`'s doc comment).
+struct LayoutResult
+{
+    double fontSize = 0.0;   ///< PDF user units.
+    double lineHeight = 0.0; ///< PDF user units.
+    QStringList lines;       ///< Word-wrapped text, one entry per rendered line.
+    bool clipped = false;    ///< See the struct doc comment.
+    QVariantMap extra;       ///< Forward-compatible pass-through, as on every result struct.
+};
+
 } // namespace LibreSCRS::AgentClient

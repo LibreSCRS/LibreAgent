@@ -16,6 +16,7 @@
 #include <QStringList>
 #include <QVariantMap>
 #include <memory>
+#include <vector>
 
 /// @file
 /// @brief A real `org.librescrs.Agent` peer on a private session bus, for
@@ -34,6 +35,19 @@ using FakeInterfaceProps = LibreSCRS::AgentClient::AgentInterfaceProps;
 using FakeManagedObjects = QMap<QDBusObjectPath, FakeInterfaceProps>;
 
 class FakeAgent;
+
+/// @brief One scripted progressive field group: the ordered payload of ONE
+///        Operation.Identity1.Group(groupKey, fields) signal. Distinct from
+///        the final `buildIdentityFields()` map (keyed, unordered on the
+///        wire) precisely because streaming order is the thing this signal
+///        exists to carry — a plain QMap iterates key-sorted, not in
+///        insertion order, so scripting an explicit ORDERED list is the only
+///        way to pin "these 3 groups arrive in THIS order".
+struct FakeIdentityGroup
+{
+    QString key;
+    LibreSCRS::AgentClient::IdentityFieldGroupWire fields;
+};
 
 /// @brief A custom `org.freedesktop.DBus.Properties` adaptor whose `GetAll`
 ///        deliberately WEDGES by default — it marks the call a delayed reply
@@ -95,6 +109,55 @@ private:
     FakeAgent* m_agent;
 };
 
+/// @brief Manager1 adaptor (root path): Version + Features. Faithful to the
+///        real agent's root-hosted Manager1 interface. FakeAgent::Config::
+///        exportManager1 = false omits this adaptor entirely — models an
+///        agent predating the interface, so a client's Properties.GetAll for
+///        Manager1 fails closed on the root object and MUST degrade to an
+///        empty `features()` there, never an error.
+class ManagerAdaptor : public QDBusAbstractAdaptor
+{
+    Q_OBJECT
+    Q_CLASSINFO("D-Bus Interface", "org.librescrs.Agent.Manager1")
+    Q_PROPERTY(QString Version READ version)
+    Q_PROPERTY(QStringList Features READ features)
+public:
+    ManagerAdaptor(QObject* parent, QString version, QStringList features, FakeAgent* agent);
+    [[nodiscard]] QString version() const;
+    [[nodiscard]] QStringList features() const;
+
+public Q_SLOTS:
+    /// Card-independent, synchronous layout preview. Qt multi-out
+    /// convention: the return value is the FIRST D-Bus out-arg (fontSize);
+    /// lineHeight/lines/clipped ride the trailing non-const-reference
+    /// parameters, in D-Bus out-arg order.
+    double LayoutVisualSignature(const QString& text, double x, double y, double width, double height,
+                                 double& lineHeight, QStringList& lines, bool& clipped);
+    /// The embedded appearance font, sealed into a memfd per call (mirrors
+    /// makeSealedArtifact's posture for Sign/Photo — the fd is dup'd fresh
+    /// per delivery, never handed out shared).
+    QDBusUnixFileDescriptor GetAppearanceFont();
+
+    // Call counters — prove a client-side feature-gate refusal never dials
+    // the wire at all (there is no Operation/op-count to check, unlike a
+    // card method's refused entry).
+    [[nodiscard]] int layoutCallCount() const
+    {
+        return m_layoutCalls;
+    }
+    [[nodiscard]] int appearanceFontCallCount() const
+    {
+        return m_appearanceFontCalls;
+    }
+
+private:
+    QString m_version;
+    QStringList m_features;
+    FakeAgent* m_agent;
+    int m_layoutCalls = 0;
+    int m_appearanceFontCalls = 0;
+};
+
 /// @brief Reader1 adaptor (Name / HasCard / Card properties).
 class ReaderAdaptor : public QDBusAbstractAdaptor
 {
@@ -142,29 +205,58 @@ class CardAdaptor : public QDBusAbstractAdaptor
     Q_PROPERTY(uint Capabilities READ capabilities)
     Q_PROPERTY(QDBusObjectPath Reader READ reader)
     Q_PROPERTY(QString PreReadAuthMethod READ preReadAuthMethod)
+    Q_PROPERTY(QString CardType READ cardType)
+    Q_PROPERTY(QString Atr READ atr)
 public:
-    CardAdaptor(QObject* parent, FakeAgent* agent, uint capabilities, QDBusObjectPath reader, QString preReadAuth);
+    CardAdaptor(QObject* parent, FakeAgent* agent, uint capabilities, QDBusObjectPath reader, QString preReadAuth,
+                QString cardType = {}, QString atrHex = {});
     [[nodiscard]] uint capabilities() const;
     [[nodiscard]] QDBusObjectPath reader() const;
     [[nodiscard]] QString preReadAuthMethod() const;
+    [[nodiscard]] QString cardType() const;
+    [[nodiscard]] QString atr() const;
     void setCapabilities(uint v);
     void setPreReadAuthMethod(QString v);
+    void setCardType(QString v);
 
 public Q_SLOTS:
     QDBusObjectPath ReadIdentity();
     QDBusObjectPath GetPhoto();
     QDBusObjectPath ReadCertificates();
+    /// @brief Lightweight token-info read. Result rides the SAME Identity1
+    ///        result path as ReadIdentity (FakeOperation::Kind::TokenInfo
+    ///        selects a DIFFERENT scripted field map — the "token" group,
+    ///        not "personal"). Gated the same way ReadCertificates is meant
+    ///        to be (real agent: PKI capability bit) — see
+    ///        `lacksPkiCapability()`, which THIS method enforces for real
+    ///        (unlike ReadCertificates above, which only models the generic
+    ///        `failMethodEntry` refusal today).
+    QDBusObjectPath ReadTokenInfo();
     QDBusObjectPath Sign(const QString& certId, const QDBusUnixFileDescriptor& inputFd, const QVariantMap& options);
+    /// @brief Card1.SignBatch(a(sh) documents, s certId, a{sv} options) -> o.
+    ///        Reads each document's fd synchronously (same reasoning as
+    ///        Sign() above), captures the verbatim in-args, and mints a
+    ///        Kind::BatchSign operation carrying the per-document display
+    ///        names (echoed back on the matching result rows).
+    QDBusObjectPath SignBatch(const LibreSCRS::AgentClient::BatchDocumentsWire& documents, const QString& certId,
+                              const QVariantMap& options);
 
 private:
     /// @brief Send the agent's method-entry error (no Operation minted) for the
     ///        active call, returning a sentinel path the client discards.
     QDBusObjectPath sendMethodEntryError();
+    /// @brief The real agent's capability entry gate for ReadTokenInfo: true
+    ///        when THIS card's LIVE Capabilities lack bit 0 (Pki) —
+    ///        UnsupportedOnThisCard, no Operation minted. Token info is
+    ///        PKI-adjacent (pkcs15), so it shares ReadCertificates' gate bit.
+    [[nodiscard]] bool lacksPkiCapability() const;
 
     FakeAgent* m_agent;
     uint m_capabilities;
     QDBusObjectPath m_reader;
     QString m_preReadAuth;
+    QString m_cardType;
+    QString m_atrHex;
 };
 
 /// @brief Credentials1 adaptor; parented to the same `ContextObject` as
@@ -257,7 +349,12 @@ struct FakeCert
     uint keyUsageBits = 0;                 ///< u keyUsageBits
     QStringList extendedKeyUsageOids = {}; ///< as EKU OIDs
     QStringList chainSubjectCns = {};      ///< as ordered leaf..root CN chain
-    uint trustStatus = 255;                ///< u trustStatus (255 = Unknown)
+    uint trustStatus = 255;                ///< u trustStatus (255 = Unknown; 5 = Revoked, 6 = OfflineUnverified)
+    /// Tokens riding the "security" fields-group (dict-key growth), mirroring
+    /// trustStatus -- e.g. {"revoked"} for trustStatus=5, {"offline-unverified"}
+    /// for trustStatus=6. Empty by default (matches the pre-Inc-6 wire, where
+    /// no cert carried a "security" group at all).
+    QStringList securityStatus = {};
 };
 using FakeCertList = QList<FakeCert>;
 
@@ -271,15 +368,20 @@ class FakeOperation : public QObject, protected QDBusContext
 public:
     // Credentials covers ListCredentials AND the ManagePin/ActivateSigningKey
     // mutations: the op's typed Operation.Credentials1 Result carries the
-    // scripted (credResult, credRecords) payload.
-    enum class Kind { Sign, Identity, Certificates, Photo, Credentials };
+    // scripted (credResult, credRecords) payload. TokenInfo rides the SAME
+    // Identity1 result path as Identity (ReadTokenInfo mints NO new result
+    // interface) but buildIdentityFields() serves a DIFFERENT scripted field
+    // map for it — the "token" group.
+    enum class Kind { Sign, Identity, Certificates, Photo, Credentials, TokenInfo, BatchSign };
 
     FakeOperation(QObject* parent, QDBusConnection connection, QString path, Kind kind, int delayMs, uint finalStatus,
                   uint finalErrorCode, bool suppressResult, FakeCertList certScript = {}, bool rawCertResult = false,
                   QByteArray photoBytes = {}, bool photoEmptyMap = false, bool announceConsentPhase = false,
                   bool lostSignalRecoverable = false, QVariantMap credResult = {},
                   LibreSCRS::AgentClient::CredentialRecordsWire credRecords = {},
-                  QByteArray signArtifactBytes = QByteArrayLiteral("FAKE-SIGNED-ARTIFACT"), QVariantMap signMeta = {});
+                  QByteArray signArtifactBytes = QByteArrayLiteral("FAKE-SIGNED-ARTIFACT"), QVariantMap signMeta = {},
+                  bool tokenInfoEmpty = false, QList<FakeIdentityGroup> identityGroupScript = {},
+                  QStringList batchDisplayNames = {}, int batchHaltAtIndex = -1, uint batchHaltErrorCode = 0);
     ~FakeOperation() override;
 
     [[nodiscard]] QString path() const;
@@ -293,6 +395,7 @@ public:
 private:
     friend class FakeOperationAdaptor;
     friend class FakeSignAdaptor;
+    friend class FakeSignBatchAdaptor;
     friend class FakeIdentityAdaptor;
     friend class FakeCertificatesAdaptor;
     friend class FakePhotoAdaptor;
@@ -329,6 +432,19 @@ private:
     ///        chainComplete=false) — preserved so every caller that does not
     ///        pass `signMeta` keeps today's exact values.
     [[nodiscard]] QVariantMap effectiveSignMeta() const;
+    /// @brief Seal one memfd per scripted batch document (idempotent),
+    ///        mirroring `retainPhotoFd()`'s retain-once posture: a row at or
+    ///        past `m_batchHaltAtIndex` seals ZERO bytes (the frozen failed-
+    ///        row convention), every earlier row seals `m_signArtifactBytes`.
+    void retainBatchFds();
+    /// @brief Build the `a(sha{sv}u)` rows `fire()`'s Result signal AND
+    ///        `FakeSignBatchAdaptor::GetResult()` both serve, from the
+    ///        already-retained per-row fds (`retainBatchFds()` must have run
+    ///        first). Each row's fd is handed out via `QDBusUnixFileDescriptor`'s
+    ///        own internal dup (mirrors `FakeSignAdaptor::GetResult()`'s
+    ///        posture, not `fire()`'s Sign-artifact belt-and-suspenders
+    ///        pre-dup) — `m_keptBatchFds` stays open for a later call.
+    [[nodiscard]] LibreSCRS::AgentClient::SignBatchRowsWire buildBatchRows() const;
 
     QDBusConnection m_connection;
     QString m_path;
@@ -352,6 +468,20 @@ private:
     LibreSCRS::AgentClient::CredentialRecordsWire m_credRecords; // aa{sv} records (empty for a mutation)
     QByteArray m_signArtifactBytes; // Sign1 Result/GetResult artifact bytes (default: "FAKE-SIGNED-ARTIFACT")
     QVariantMap m_signMeta;         // Sign1 Result/GetResult meta map (empty -> effectiveSignMeta()'s default)
+    bool m_tokenInfoEmpty = false;  // Kind::TokenInfo: serve a present-but-EMPTY "token" group (SUCCESS, 0 fields)
+    // Progressive-delivery script (Kind::Identity only; ignored otherwise).
+    // Empty (default) streams nothing -- every pre-existing test's exact
+    // buildIdentityFields() output is unaffected. Every scripted entry fires
+    // live, in order, from fire(), strictly before the Result signal.
+    QList<FakeIdentityGroup> m_identityGroupScript;
+    // Kind::BatchSign scripting: the per-document display names captured off
+    // the LIVE SignBatch() request (echoed back verbatim, mirroring the real
+    // agent — NOT a Config field like every other script here), plus the
+    // halt point/code the test author DOES pre-script via Config.
+    QStringList m_batchDisplayNames;
+    int m_batchHaltAtIndex = -1;
+    uint m_batchHaltErrorCode = 0;
+    std::vector<int> m_keptBatchFds; // one owned, sealed memfd per row (for GetResult recovery)
     std::unique_ptr<class FakeOperationAdaptor> m_opAdaptor;
     std::unique_ptr<QObject> m_resultAdaptor;
 };
@@ -376,6 +506,13 @@ public:
         uint capabilities = 0;
         bool hasCard = true;
         QString preReadAuth = QStringLiteral("None");
+        // Card1.CardType / Card1.Atr the initial card carries (Card1.Reader).
+        // Empty (default) models the ambiguous/not-yet-known case; atrHex is
+        // realistically always non-empty in production (an ATR is always
+        // known at insertion) but stays scriptable-empty here too for the
+        // "agent predating this surface" absence case.
+        QString cardType;
+        QString atrHex;
         int operationDelayMs = 5;            ///< delay before an op fires its result/finished
         uint finalStatus = 0;                ///< 0 Ok / 1 Cancelled / 2 Error
         uint finalErrorCode = 0;             ///< Finished errorCode when status==Error
@@ -387,6 +524,11 @@ public:
         FakeCertList certScript;            ///< certs ReadCertificates emits on its Certificates1.Result
         bool failMethodEntry =
             false; ///< ReadIdentity/GetPhoto/ReadCertificates/Sign send a D-Bus error at entry (no Operation minted)
+        /// ReadTokenInfo's Identity1 result carries a present-but-EMPTY
+        /// "token" group instead of the scripted label/serial_number/
+        /// manufacturer fields — the unsupported/best-effort-miss plugin
+        /// case, a SUCCESS with zero fields (never an error).
+        bool tokenInfoEmpty = false;
         bool rawCertResult = false; ///< emit the cert Result as a hand-marshalled raw signal (bypasses operator<<)
         QByteArray photoBytes;      ///< bytes the GetPhoto Photo1.Result sealed memfd carries ("personal:photo")
         bool photoEmptyMap =
@@ -417,12 +559,58 @@ public:
         /// chainComplete=false); scriptable for the same cross-transport
         /// reason as signArtifactBytes above.
         QVariantMap signMeta;
+        /// SignBatch: from THIS 0-based row index onward (inclusive), every
+        /// row's artifact is a ZERO-LENGTH sealed memfd and its errorCode is
+        /// batchHaltErrorCode — the SAME per-row halt-code convention the
+        /// real agent's Operation.SignBatch1.Result freezes (a wrong/blocked
+        /// signing credential halts the remaining documents). -1 (default)
+        /// means no halt: every row succeeds with signArtifactBytes/signMeta,
+        /// mirroring a normal Sign per document. batchHaltAtIndex==0 with a
+        /// single-document batch models an all-failed batch.
+        int batchHaltAtIndex = -1;
+        uint batchHaltErrorCode = 0;
         /// Attach a `WedgedPropertiesAdaptor` to the card object at construction
         /// time, shadowing its auto-exported Properties interface (GetAll never
         /// replies until scripted via `scriptCardGetAll`). Requires hasCard=true.
         bool wedgeCardProperties = false;
         /// Ditto for the (always-present) reader object.
         bool wedgeReaderProperties = false;
+        /// Manager1.Version the fake serves. Unused by any client today (kept
+        /// for interface fidelity with the real agent's root-hosted Manager1).
+        QString agentVersion = QStringLiteral("0.0-fake-dbus");
+        /// Manager1.Features the fake serves when exportManager1 is true —
+        /// mirrors FakeSocketAgent::Config::features's default/shape (drop
+        /// "credentials" to script an agent predating the credential request
+        /// family on THIS wire too).
+        QStringList features = {QStringLiteral("credentials")};
+        /// Whether the fake exports Manager1 AT ALL (default true). false
+        /// models an agent predating this interface entirely: a client's
+        /// Properties.GetAll("...Manager1") on the root object fails closed,
+        /// and features() must degrade to an empty list, never an error.
+        bool exportManager1 = true;
+        /// Manager1.LayoutVisualSignature's scripted reply. Defaults
+        /// model a plausible two-line layout; a cross-transport parity test
+        /// scripts these to the SAME values on both fakes for an exact
+        /// comparison, and a tiny-box test scripts layoutClipped=true (the
+        /// field's whole reason to ride the wire).
+        double layoutFontSize = 9.5;
+        double layoutLineHeight = 11.4;
+        QStringList layoutLines = {QStringLiteral("Signed by"), QStringLiteral("John Doe")};
+        bool layoutClipped = false;
+        /// Manager1.GetAppearanceFont's scripted bytes, sealed into a memfd
+        /// per call. Default is a small deterministic stand-in (NOT a real
+        /// TTF) — a content-hash-comparison test scripts real bytes
+        /// explicitly.
+        QByteArray appearanceFontBytes = QByteArrayLiteral("FAKE-LIBERATION-SANS-TTF");
+        /// Ordered per-group sequence a ReadIdentity op streams via
+        /// Operation.Identity1.Group BEFORE its Result (see FakeIdentityGroup's
+        /// own doc comment for why this is an explicit ordered list rather
+        /// than a QMap). Empty (default) streams nothing — every
+        /// pre-existing test is unaffected. When non-empty, buildIdentityFields()
+        /// also switches from the historical fixed "personal:given_name"
+        /// script to the UNION of this list, so Result/GetResult always
+        /// matches what streamed.
+        QList<FakeIdentityGroup> identityGroupScript;
     };
 
     FakeAgent(QDBusConnection connection, Config config, QObject* parent = nullptr);
@@ -457,6 +645,14 @@ public:
     [[nodiscard]] FakeManagedObjects managedObjects() const;
     [[nodiscard]] Config& config();
 
+    /// @brief How many Manager1.LayoutVisualSignature/GetAppearanceFont calls
+    ///        reached this fake — proves a client-side "layout-preview"
+    ///        feature-gate refusal never dialed the wire at all (there is no
+    ///        Operation/op-count to check for these two card-independent
+    ///        calls, unlike a refused card method's entry).
+    [[nodiscard]] int layoutCallCount() const;
+    [[nodiscard]] int appearanceFontCallCount() const;
+
     /// @brief Total Operation1 objects minted so far (ReadIdentity/GetPhoto/
     ///        ReadCertificates/Sign). The lazy-card-I/O probe: classification +
     ///        discovery mint ZERO ops, so a non-zero count means a content read.
@@ -465,8 +661,11 @@ public:
     /// @brief Mint a scripted operation object, returning its path. A
     ///        Credentials MUTATION passes @p withCredRecords = false: the real
     ///        agent's mutation Result carries only the a{sv} outcome — records
-    ///        ride ListCredentials results alone.
-    QDBusObjectPath mintOperation(FakeOperation::Kind kind, bool withCredRecords = true);
+    ///        ride ListCredentials results alone. @p batchDisplayNames is
+    ///        BatchSign-only: the per-document names captured off the LIVE
+    ///        SignBatch() request (see FakeOperation's own doc comment).
+    QDBusObjectPath mintOperation(FakeOperation::Kind kind, bool withCredRecords = true,
+                                  QStringList batchDisplayNames = {});
 
     /// @brief Capture the verbatim Sign() in-args (CardAdaptor::Sign dups +
     ///        reads inputFd synchronously, before the client closes its fd).
@@ -477,6 +676,20 @@ public:
     [[nodiscard]] QString lastSignCertId() const;
     [[nodiscard]] QVariantMap lastSignOptions() const;
     [[nodiscard]] QByteArray lastSignInputBytes() const;
+
+    /// @brief Capture the verbatim SignBatch() in-args (CardAdaptor::SignBatch
+    ///        dups + reads every document fd synchronously, before the client
+    ///        closes its copies).
+    void captureSignBatch(const QString& certId, const QStringList& displayNames,
+                          const QList<QByteArray>& documentBytes, const QVariantMap& options);
+
+    /// @brief Last SignBatch() certId / options / per-document display names
+    ///        and input bytes (index-aligned), as the fake actually received
+    ///        them on the wire.
+    [[nodiscard]] QString lastSignBatchCertId() const;
+    [[nodiscard]] QVariantMap lastSignBatchOptions() const;
+    [[nodiscard]] QStringList lastSignBatchDisplayNames() const;
+    [[nodiscard]] QList<QByteArray> lastSignBatchDocumentBytes() const;
 
     /// @brief Record + read the (reader, certId) the last Pkcs11_1.CertDer call
     ///        carried, so a test can assert the client addressed the right card.
@@ -523,6 +736,12 @@ public:
     ///        agent, which never relies on `invalidated`). Lets a test assert the
     ///        client applies `changed` without a Get round-trip.
     void emitCardCapabilitiesChanged(uint capabilities);
+
+    /// @brief Change the card's CardType and emit a Properties.PropertiesChanged
+    ///        carrying the FULL new value — the post-read authoritative update
+    ///        (IdentityReadFlow resolving CardData::cardType), mirroring
+    ///        emitCardCapabilitiesChanged's pattern.
+    void emitCardTypeChanged(const QString& cardType);
 
     /// @brief Change the card's Capabilities and emit a PropertiesChanged that
     ///        marks the property `invalidated` (empty `changed`), forcing the
@@ -601,6 +820,7 @@ private:
     WedgedPropertiesAdaptor* m_cardPropsWedge = nullptr;
     WedgedPropertiesAdaptor* m_readerPropsWedge = nullptr;
     ObjectManagerAdaptor* m_objectManager = nullptr;
+    ManagerAdaptor* m_managerAdaptor = nullptr; // null when Config::exportManager1 is false
     ReaderAdaptor* m_readerAdaptor = nullptr;
     CardAdaptor* m_cardAdaptor = nullptr;
     Pkcs11Adaptor* m_pkcs11Adaptor = nullptr;
@@ -617,6 +837,11 @@ private:
     QString m_lastSignCertId;
     QVariantMap m_lastSignOptions;
     QByteArray m_lastSignInputBytes;
+
+    QString m_lastSignBatchCertId;
+    QVariantMap m_lastSignBatchOptions;
+    QStringList m_lastSignBatchDisplayNames;
+    QList<QByteArray> m_lastSignBatchDocumentBytes;
 
     QString m_lastCertDerReader;
     QString m_lastCertDerCertId;

@@ -190,16 +190,16 @@ enum class UiState : std::uint32_t {
 }
 
 /// @brief Decode the verbatim pre-read-auth wire token AgentCard::preReadAuth()
-///        forwards ("None" / "BacMrz" / "PaceCan"). Anything unrecognized —
+///        forwards ("None" / "Mrz" / "Can"). Anything unrecognized —
 ///        including a future appended method — decodes to PreReadAuth::None,
 ///        matching the lifted client's lenient parse.
 [[nodiscard]] inline PreReadAuth preReadAuthFromToken(QStringView token) noexcept
 {
-    if (token == QLatin1String("BacMrz")) {
-        return PreReadAuth::BacMrz;
+    if (token == QLatin1String("Mrz")) {
+        return PreReadAuth::Mrz;
     }
-    if (token == QLatin1String("PaceCan")) {
-        return PreReadAuth::PaceCan;
+    if (token == QLatin1String("Can")) {
+        return PreReadAuth::Can;
     }
     return PreReadAuth::None;
 }

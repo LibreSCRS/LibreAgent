@@ -96,6 +96,9 @@ public:
     [[nodiscard]] bool probeAvailability() override;
     [[nodiscard]] bool agentInstalled() override;
     [[nodiscard]] std::optional<RegistrySnapshot> fetchRegistry() override;
+    [[nodiscard]] QStringList features() const override;
+    [[nodiscard]] std::optional<LayoutResult> layoutVisualSignature(const QString& text, QRectF box) override;
+    [[nodiscard]] FdHandle appearanceFont() override;
     void subscribeProperties(const QString& objectId, ObjectKind kind, PropertyListener* listener) override;
     void unsubscribeProperties(const QString& objectId, PropertyListener* listener) override;
     quint64 requestProperties(const QString& objectId, ObjectKind kind, PropertyListener* listener) override;
@@ -217,6 +220,12 @@ private:
     bool m_quiesced = false;    // an AgentQuiesced arrived; cleared by a successful re-probe
     QString m_agentVersion;
     QStringList m_features;
+    // The sealed appearance-font fd, cached per connection — reset in
+    // connectAndHandshake() alongside m_features (every reconnect re-runs the
+    // handshake from scratch on this transport, unlike D-Bus's persistent
+    // connection, so "once per connect" naturally falls out of that reset).
+    FdHandle m_appearanceFont;
+    bool m_appearanceFontFetched = false;
 
     RegistryListener* m_registry = nullptr;
     QHash<PropertyListener*, PropertyWatch> m_propertyWatches;

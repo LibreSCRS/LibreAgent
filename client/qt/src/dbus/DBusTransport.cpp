@@ -17,6 +17,8 @@
 #include <QLoggingCategory>
 #include <QVariant>
 
+#include <fcntl.h> // F_DUPFD_CLOEXEC (appearanceFont's per-call dup)
+
 namespace {
 Q_LOGGING_CATEGORY(lcTransport, "librescrs.agentclient.dbus")
 } // namespace
@@ -46,6 +48,8 @@ const char* typedIfaceFor(OperationKind kind)
         return kSignIface;
     case OperationKind::Credentials:
         return kOperationCredentialsIface;
+    case OperationKind::BatchSign:
+        return kSignBatchIface;
     }
     return kOperationIface; // unreachable for a valid enumerator
 }
@@ -107,12 +111,25 @@ void DBusOperationWatch::onSignResult(const QDBusUnixFileDescriptor& fd, const Q
     listener->onResult(std::move(payload));
 }
 
+void DBusOperationWatch::onSignBatchResult(SignBatchRowsWire rows)
+{
+    OperationPayload payload;
+    payload.kind = OperationKind::BatchSign;
+    payload.batchRows = toBatchSignRows(rows);
+    listener->onResult(std::move(payload));
+}
+
 void DBusOperationWatch::onIdentityResult(IdentityFieldsWire fields)
 {
     OperationPayload payload;
     payload.kind = OperationKind::Identity;
     payload.identity = toFieldGroups(fields);
     listener->onResult(std::move(payload));
+}
+
+void DBusOperationWatch::onIdentityGroup(QString groupKey, IdentityFieldGroupWire fields)
+{
+    listener->onGroupReady(toFieldGroup(groupKey, fields));
 }
 
 void DBusOperationWatch::onCertificatesResult(CertListWire certificates)
@@ -188,7 +205,82 @@ bool DBusTransport::nameHasOwner()
 
 bool DBusTransport::probeAvailability()
 {
-    return nameHasOwner();
+    const bool hasOwner = nameHasOwner();
+    if (hasOwner && !m_featuresFetched) {
+        // The ctor's initial probe is never preceded by a serviceRegistered
+        // signal (the watcher only reports FUTURE transitions), so this is
+        // the seed path for an agent already running at construction time.
+        refreshFeatures();
+        m_featuresFetched = true;
+    }
+    return hasOwner;
+}
+
+void DBusTransport::refreshFeatures()
+{
+    QDBusMessage call = QDBusMessage::createMethodCall(m_service, QLatin1String(kRootPath),
+                                                       QLatin1String(kPropertiesIface), QStringLiteral("GetAll"));
+    call.setArguments(QList<QVariant>{QLatin1String(kManagerIface)});
+    // Bounded exactly like every other discovery-path property read. An agent
+    // predating this property (or Manager1 entirely) answers with a D-Bus
+    // error or an incomplete map — both degrade to an empty list below,
+    // never surfaced as a failure: absence is expected, not a fault.
+    const QDBusMessage reply = cappedCall(m_connection, call, kHandshakeTimeoutMs);
+    m_features.clear();
+    if (reply.type() != QDBusMessage::ReplyMessage || reply.arguments().isEmpty()) {
+        return;
+    }
+    const QVariantMap props = demarshalVariantMap(reply.arguments().constFirst());
+    m_features = props.value(QStringLiteral("Features")).toStringList();
+}
+
+QStringList DBusTransport::features() const
+{
+    return m_features;
+}
+
+std::optional<LayoutResult> DBusTransport::layoutVisualSignature(const QString& text, QRectF box)
+{
+    QDBusMessage call = QDBusMessage::createMethodCall(
+        m_service, QLatin1String(kRootPath), QLatin1String(kManagerIface), QStringLiteral("LayoutVisualSignature"));
+    call.setArguments(QList<QVariant>{text, box.x(), box.y(), box.width(), box.height()});
+    // Bounded like every other cheap, card-independent synchronous round-trip
+    // (kHandshakeTimeoutMs — see ClientTimeouts.h's own budget-class doc).
+    const QDBusMessage reply = cappedCall(m_connection, call, kHandshakeTimeoutMs);
+    if (reply.type() != QDBusMessage::ReplyMessage || reply.arguments().size() < 4) {
+        return std::nullopt;
+    }
+    LayoutResult out;
+    out.fontSize = reply.arguments().at(0).toDouble();
+    out.lineHeight = reply.arguments().at(1).toDouble();
+    out.lines = reply.arguments().at(2).toStringList();
+    out.clipped = reply.arguments().at(3).toBool();
+    return out;
+}
+
+FdHandle DBusTransport::appearanceFont()
+{
+    if (!m_appearanceFontFetched) {
+        // "Once per connect", exactly like refreshFeatures(): a failure here
+        // degrades to an invalid cached handle rather than being retried
+        // sooner than the next reconnect (onServiceUnregistered resets the
+        // flag below).
+        m_appearanceFontFetched = true;
+        QDBusMessage call = QDBusMessage::createMethodCall(
+            m_service, QLatin1String(kRootPath), QLatin1String(kManagerIface), QStringLiteral("GetAppearanceFont"));
+        const QDBusMessage reply = cappedCall(m_connection, call, kHandshakeTimeoutMs);
+        if (reply.type() == QDBusMessage::ReplyMessage && !reply.arguments().isEmpty()) {
+            m_appearanceFont = toFdHandle(qvariant_cast<QDBusUnixFileDescriptor>(reply.arguments().constFirst()));
+        }
+    }
+    if (!m_appearanceFont.valid()) {
+        return {};
+    }
+    // Dup a fresh handle per call: the cache keeps sole ownership of
+    // m_appearanceFont's descriptor for the connection's lifetime, mirroring
+    // toFdHandle's own O_CLOEXEC-dup posture for every other fd this
+    // transport hands out.
+    return FdHandle{::fcntl(m_appearanceFont.get(), F_DUPFD_CLOEXEC, 0)};
 }
 
 bool DBusTransport::agentInstalled()
@@ -306,6 +398,9 @@ StartOutcome DBusTransport::startOperation(const QString& cardId, OperationReque
     case OperationRequest::Method::ReadCertificates:
         method = QStringLiteral("ReadCertificates");
         break;
+    case OperationRequest::Method::ReadTokenInfo:
+        method = QStringLiteral("ReadTokenInfo");
+        break;
     case OperationRequest::Method::Sign:
         method = QStringLiteral("Sign");
         args << request.certId;
@@ -314,6 +409,22 @@ StartOutcome DBusTransport::startOperation(const QString& cardId, OperationReque
         args << QVariant::fromValue(QDBusUnixFileDescriptor(request.document.get()));
         args << request.options;
         break;
+    case OperationRequest::Method::SignBatch: {
+        method = QStringLiteral("SignBatch");
+        // Frozen arg order: (a(sh) documents, s certId, a{sv} options) — the
+        // documents array comes FIRST, unlike Sign's (certId, fd, options).
+        BatchDocumentsWire docs;
+        docs.reserve(static_cast<qsizetype>(request.documents.size()));
+        for (const BatchDocument& doc : request.documents) {
+            // QDBusUnixFileDescriptor dups; the request's handles stay owned
+            // by the request and close with it, same as Sign's document above.
+            docs.append(BatchDocumentWire{doc.displayName, QDBusUnixFileDescriptor(doc.fd.get())});
+        }
+        args << QVariant::fromValue(docs);
+        args << request.certId;
+        args << request.options;
+        break;
+    }
     case OperationRequest::Method::ListCredentials:
         iface = kCredentialsIface;
         method = QStringLiteral("ListCredentials");
@@ -379,10 +490,24 @@ void DBusTransport::subscribeOperation(const QString& operationId, OperationKind
         m_connection.connect(m_service, operationId, QLatin1String(kSignIface), QStringLiteral("Result"), watch,
                              SLOT(onSignResult(QDBusUnixFileDescriptor, QVariantMap)));
         break;
+    case OperationKind::BatchSign:
+        // a(sha{sv}u) demarshaled into the registered SignBatchRowsWire.
+        m_connection.connect(m_service, operationId, QLatin1String(kSignBatchIface), QStringLiteral("Result"), watch,
+                             SLOT(onSignBatchResult(LibreSCRS::AgentClient::SignBatchRowsWire)));
+        break;
     case OperationKind::Identity:
         // a{sa{s(sssv)}} demarshaled into the registered IdentityFieldsWire.
         m_connection.connect(m_service, operationId, QLatin1String(kIdentityIface), QStringLiteral("Result"), watch,
                              SLOT(onIdentityResult(LibreSCRS::AgentClient::IdentityFieldsWire)));
+        // Progressive per-group delivery (Group(s groupKey, a{s(sssv)}
+        // fields)), strictly ahead of the Result above for the SAME op.
+        // Connected unconditionally -- the client does not gate its OWN
+        // subscription on the "identity-stream" feature token (unlike a
+        // request-side gate): an agent that does not advertise the token
+        // simply never emits this signal, so subscribing costs nothing extra
+        // against an older agent.
+        m_connection.connect(m_service, operationId, QLatin1String(kIdentityIface), QStringLiteral("Group"), watch,
+                             SLOT(onIdentityGroup(QString, LibreSCRS::AgentClient::IdentityFieldGroupWire)));
         break;
     case OperationKind::Certificates:
         // a(sba{sa{s(ssv)}}uasasu) demarshaled into the registered CertListWire.
@@ -522,6 +647,18 @@ std::optional<OperationPayload> DBusTransport::fetchOperationResult(const QStrin
         payload.photos = toPhotoItems(photos);
         return payload;
     }
+    case OperationKind::BatchSign: {
+        if (args.isEmpty()) {
+            return std::nullopt;
+        }
+        SignBatchRowsWire rows;
+        const QVariant& arg = args.at(0);
+        if (arg.metaType().id() == qMetaTypeId<QDBusArgument>()) {
+            arg.value<QDBusArgument>() >> rows;
+        }
+        payload.batchRows = toBatchSignRows(rows);
+        return payload;
+    }
     }
     return std::nullopt; // unreachable for a valid enumerator
 }
@@ -587,6 +724,10 @@ void DBusTransport::cancelCertificateDer(quint64 token, DerListener* listener)
 
 void DBusTransport::onServiceRegistered(const QString& /*service*/)
 {
+    if (!m_featuresFetched) {
+        refreshFeatures();
+        m_featuresFetched = true;
+    }
     if (m_registry != nullptr) {
         m_registry->onServiceRegistered();
     }
@@ -594,6 +735,17 @@ void DBusTransport::onServiceRegistered(const QString& /*service*/)
 
 void DBusTransport::onServiceUnregistered(const QString& /*service*/)
 {
+    // The agent (and with it, whatever it advertised) is gone: forget the
+    // cached list so a stale feature survives neither past a real death nor a
+    // different-generation agent that re-registers with a different set —
+    // the next registration re-seeds it via onServiceRegistered() above.
+    m_featuresFetched = false;
+    m_features.clear();
+    // Same "forget on death, re-fetch on the next connect" posture for
+    // the cached appearance-font fd — a different-generation agent could
+    // serve a different font, and a dead one's fd must never be handed out.
+    m_appearanceFontFetched = false;
+    m_appearanceFont = FdHandle{};
     if (m_registry != nullptr) {
         m_registry->onServiceUnregistered();
     }
