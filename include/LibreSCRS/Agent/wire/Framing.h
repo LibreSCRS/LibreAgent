@@ -33,9 +33,13 @@ inline constexpr std::size_t kFrameHeaderBytes = 2 * sizeof(std::uint32_t);
 // message bodies stay small.
 inline constexpr std::size_t kMaxFrameBytes = 1u << 20; // 1 MiB
 
-// Max ancillary fds accepted on one frame (defence-in-depth; results carry at
-// most a small number of artifact/photo fds).
-inline constexpr std::size_t kMaxFrameFds = 8;
+// Max ancillary fds accepted on one frame (defence-in-depth). A SignBatch
+// relays one fd per document on the request leg and one artifact fd per row on
+// the result leg, so this ceiling must cover kMaxBatchDocuments (12) with room
+// for an auxiliary fd. It mirrors the reference dbus-daemon's
+// max_message_unix_fds default (16), giving the macOS socket transport the same
+// per-message fd budget the D-Bus surface relies on (see BatchSignFlow.h).
+inline constexpr std::size_t kMaxFrameFds = 16;
 
 enum class FrameError : std::uint8_t {
     PeerClosed, // EOF before a complete frame
