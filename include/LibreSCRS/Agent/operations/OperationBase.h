@@ -21,7 +21,7 @@
 
 namespace LibreSCRS::Agent::Operations {
 
-class OperationBase : public OperationPhaseSink
+class OperationBase : public OperationPhaseSink, public GroupSink
 {
 public:
     // Construct with the shared OperationState BEFORE the channel is
@@ -183,6 +183,17 @@ public:
     // AwaitingConsent and Authenticating from outside this class. Calls
     // are forwarded to the same internal setPhase the worker uses.
     void setPhase(std::uint32_t phase) noexcept override;
+
+    // GroupSink override -- public surface so IdentityReadFlow (which holds a
+    // GroupSink&) can push each field group from outside this class, exactly
+    // like setPhase above. Forwarded one hop to the channel's emitGroup,
+    // called on the SAME worker thread (inside doWork(), synchronously
+    // within the flow's own run()) that already calls emitResult/setPhase
+    // today -- no new cross-thread hop, no new lifetime hazard: an in-flight
+    // doWork() keeps this object (and m_channel) alive by the same
+    // abandoned-worker-is-detached-not-destroyed contract emitResult already
+    // relies on (see the class doc comment above keepAlive()).
+    void groupReady(const GroupSnapshot& group) noexcept override;
 
 protected:
     // Subclass implements the actual work. Runs on the worker thread.

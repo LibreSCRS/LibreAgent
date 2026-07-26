@@ -49,11 +49,39 @@ LibreSCRS::Auth::AuthRequirement paceReq(PaceSecretKind kind)
 class FakeReader final : public CardReader
 {
 public:
-    ReadOutcome read(LibreSCRS::SmartCard::CardSession&, const CandidateList&, LibreSCRS::CancelToken) override
+    ReadOutcome read(LibreSCRS::SmartCard::CardSession&, const CandidateList&, LibreSCRS::CancelToken,
+                     GroupReadCallback onGroup = {}) override
     {
+        if (onGroup) {
+            for (const GroupSnapshot& g : groupsToStream) {
+                onGroup(g);
+            }
+        }
         return outcome;
     }
     ReadOutcome outcome;
+    // Scripted groups streamed (in order) via onGroup, BEFORE this returns
+    // outcome — models the plugin's own progressive delivery. Empty
+    // (default) streams nothing, exactly like production's onGroup==empty.
+    std::vector<GroupSnapshot> groupsToStream;
+
+    // Not exercised by this flow's suite (TokenInfoReadFlowTest.cpp owns the
+    // dedicated fake); a well-formed default keeps this class non-abstract.
+    GroupSnapshot readTokenInfo(LibreSCRS::SmartCard::CardSession&, const CandidateList&,
+                                LibreSCRS::CancelToken) override
+    {
+        return {};
+    }
+};
+
+class RecordingGroupSink final : public GroupSink
+{
+public:
+    void groupReady(const GroupSnapshot& group) noexcept override
+    {
+        groups.push_back(group);
+    }
+    std::vector<GroupSnapshot> groups;
 };
 
 class FakePrompter final : public PrompterClientBase
@@ -127,6 +155,7 @@ struct Harness
     PromptSerializer serializer;
     CredentialCache cache;
     RecordingPhaseSink phaseSink;
+    RecordingGroupSink groupSink;
     LibreSCRS::CancelSource source;
 
     // Default-Ok outcome so the success scenarios don't have to set it.
@@ -154,6 +183,7 @@ struct Harness
             .serializer = serializer,
             .cache = cache,
             .phaseSink = phaseSink,
+            .groupSink = groupSink,
             .cardKey = "card-A",
             .requester = requester,
             .artifact = artifact,
@@ -378,4 +408,59 @@ TEST(IdentityReadFlow, AuthenticatingThenReadingFireAroundTheRead)
     ASSERT_NE(authenticating, phases.end());
     ASSERT_NE(reading, phases.end());
     EXPECT_LT(authenticating, reading) << "Authenticating must precede Reading";
+}
+
+TEST(IdentityReadFlow, StreamsGroupsToSinkInOrderBeforeReturning)
+{
+    // The reader streams 3 groups via onGroup before its read() call returns;
+    // the flow must forward every one, in order, to the group sink -- and do
+    // so BEFORE run() itself returns (so a caller emitting groupSink calls as
+    // wire pushes can never emit a group after its own Result).
+    Harness h;
+    GroupSnapshot g1;
+    g1.groupKey = "personal";
+    GroupSnapshot g2;
+    g2.groupKey = "address";
+    GroupSnapshot g3;
+    g3.groupKey = "document";
+    h.reader.groupsToStream = {g1, g2, g3};
+
+    auto result = h.make().run();
+
+    EXPECT_EQ(result.outcome, IdentityReadFlow::Outcome::Ok);
+    ASSERT_EQ(h.groupSink.groups.size(), 3u);
+    EXPECT_EQ(h.groupSink.groups[0].groupKey, "personal");
+    EXPECT_EQ(h.groupSink.groups[1].groupKey, "address");
+    EXPECT_EQ(h.groupSink.groups[2].groupKey, "document");
+}
+
+TEST(IdentityReadFlow, NoGroupsStreamedWhenReaderStreamsNone)
+{
+    // Default Harness reader streams nothing (groupsToStream is empty) --
+    // the sink must see zero calls, mirroring an agent build with no
+    // streaming surface at all.
+    Harness h;
+    auto result = h.make().run();
+    EXPECT_EQ(result.outcome, IdentityReadFlow::Outcome::Ok);
+    EXPECT_TRUE(h.groupSink.groups.empty());
+}
+
+TEST(IdentityReadFlow, StreamedGroupsAreIgnoredOnAFailedRead)
+{
+    // A candidate may stream a group and then still fail the overall read;
+    // the flow forwards whatever streamed (a documented hint-only caveat --
+    // see LmCardReader::read's own comment) but the ERROR outcome itself is
+    // unaffected by streaming having happened at all.
+    Harness h;
+    GroupSnapshot g1;
+    g1.groupKey = "personal";
+    h.reader.groupsToStream = {g1};
+    h.reader.outcome = ReadOutcome{ReadOutcome::Status::ParseError, std::nullopt, "malformed"};
+
+    auto result = h.make().run();
+
+    EXPECT_EQ(result.outcome, IdentityReadFlow::Outcome::Error);
+    EXPECT_EQ(result.code, ErrorCode::ParseError);
+    ASSERT_EQ(h.groupSink.groups.size(), 1u);
+    EXPECT_EQ(h.groupSink.groups[0].groupKey, "personal");
 }

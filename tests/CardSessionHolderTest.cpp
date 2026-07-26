@@ -127,16 +127,16 @@ TEST(CardSessionHolder, ResolvesPreReadAuthOnceAndClearsOnInvalidate)
     int opens = 0;
     int preReadCalls = 0;
     CandidateList candidates{
-        std::make_shared<PreReadStubPlugin>("pace", Cap::IdentityData, PreReadAuthMethod::PaceCan, &preReadCalls)};
+        std::make_shared<PreReadStubPlugin>("pace", Cap::IdentityData, PreReadAuthMethod::Can, &preReadCalls)};
     CardSessionHolder h{"R", makeCountingFactory(opens), makeCandidateResolver(candidates),
                         std::make_shared<LibreSCRS::SmartCard::CardMap>()};
 
-    EXPECT_EQ(h.fullResolution().preReadAuth, PreReadAuthMethod::PaceCan);
-    EXPECT_EQ(h.fullResolution().preReadAuth, PreReadAuthMethod::PaceCan);
+    EXPECT_EQ(h.fullResolution().preReadAuth, PreReadAuthMethod::Can);
+    EXPECT_EQ(h.fullResolution().preReadAuth, PreReadAuthMethod::Can);
     EXPECT_EQ(preReadCalls, 1) << "pre-read auth is memoized per held session (plugin queried once)";
 
     h.invalidate();
-    EXPECT_EQ(h.fullResolution().preReadAuth, PreReadAuthMethod::PaceCan);
+    EXPECT_EQ(h.fullResolution().preReadAuth, PreReadAuthMethod::Can);
     EXPECT_EQ(preReadCalls, 2) << "invalidate() clears the memo so the next call re-resolves";
 }
 
@@ -145,13 +145,13 @@ TEST(CardSessionHolder, FullResolutionFromHeldSession)
     int opens = 0;
     int preReadCalls = 0;
     CandidateList candidates{std::make_shared<PreReadStubPlugin>("pace", Cap::IdentityData | Cap::PKI,
-                                                                 PreReadAuthMethod::PaceCan, &preReadCalls)};
+                                                                 PreReadAuthMethod::Can, &preReadCalls)};
     CardSessionHolder h{"R", makeCountingFactory(opens), makeCandidateResolver(candidates),
                         std::make_shared<LibreSCRS::SmartCard::CardMap>()};
 
     auto r = h.fullResolution();
     EXPECT_EQ(r.capabilities, static_cast<std::uint32_t>(Cap::IdentityData | Cap::PKI));
-    EXPECT_EQ(r.preReadAuth, PreReadAuthMethod::PaceCan);
+    EXPECT_EQ(r.preReadAuth, PreReadAuthMethod::Can);
     EXPECT_FALSE(r.candidates.empty());
     EXPECT_EQ(opens, 1) << "fullResolution() resolves on the single held session";
 }

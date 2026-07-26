@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -89,6 +90,80 @@ TEST(SignatureParams, ResolveSignLevelUpgradesDefaultedBbOnlyWhenTsaConfigured)
     // A non-b-b configured default is taken verbatim (no derivation either way).
     EXPECT_EQ(sp::resolveSignLevel(std::nullopt, "b-t", /*hasTsa=*/false), "b-t");
     EXPECT_EQ(sp::resolveSignLevel(std::nullopt, "b-t", /*hasTsa=*/true), "b-t");
+}
+
+TEST(SignatureParams, IsValidTsaUrlRequiresHttpsAndANonEmptyHost)
+{
+    EXPECT_TRUE(sp::isValidTsaUrl("https://tsa.example.com"));
+    EXPECT_TRUE(sp::isValidTsaUrl("https://tsa.example.com/ts"));
+    EXPECT_TRUE(sp::isValidTsaUrl("https://127.0.0.1:8080/ts"));
+
+    EXPECT_FALSE(sp::isValidTsaUrl("http://tsa.example.com")) << "plaintext is never accepted";
+    EXPECT_FALSE(sp::isValidTsaUrl("https://")) << "no host at all";
+    EXPECT_FALSE(sp::isValidTsaUrl("https:///ts")) << "empty host before the path";
+    EXPECT_FALSE(sp::isValidTsaUrl("")) << "empty string";
+    EXPECT_FALSE(sp::isValidTsaUrl("ftp://tsa.example.com")) << "wrong scheme";
+    EXPECT_FALSE(sp::isValidTsaUrl("tsa.example.com")) << "missing scheme entirely";
+}
+
+TEST(SignatureParams, IsValidVisualGeometryRequiresNonNegativePageAndPositiveSize)
+{
+    EXPECT_TRUE(sp::isValidVisualGeometry(0, 5.0, 10.0, 100.0, 50.0));
+    EXPECT_TRUE(sp::isValidVisualGeometry(3, 0.0, 0.0, 1.0, 1.0));
+
+    EXPECT_FALSE(sp::isValidVisualGeometry(-1, 0.0, 0.0, 100.0, 50.0)) << "negative page";
+    EXPECT_FALSE(sp::isValidVisualGeometry(0, 0.0, 0.0, 0.0, 50.0)) << "zero width";
+    EXPECT_FALSE(sp::isValidVisualGeometry(0, 0.0, 0.0, 100.0, 0.0)) << "zero height";
+    EXPECT_FALSE(sp::isValidVisualGeometry(0, 0.0, 0.0, -5.0, 50.0)) << "negative width";
+    EXPECT_FALSE(sp::isValidVisualGeometry(0, 0.0, 0.0, 100.0, -5.0)) << "negative height";
+}
+
+TEST(SignatureParams, IsValidVisualGeometryRejectsNonFiniteXYWidthHeight)
+{
+    // A finite-guard on all four floats: `+inf`/`-inf`/NaN would otherwise
+    // pass the plain positivity checks above and reach LmSeams's
+    // `static_cast<int>(std::lround(...))` narrowing, which is UB for a
+    // non-finite double. CBOR (both daemons) and D-Bus `d` both carry these
+    // values canonically, so this must be rejected at method entry, not
+    // downstream in LmSigner.
+    constexpr double kInf = std::numeric_limits<double>::infinity();
+    constexpr double kNegInf = -std::numeric_limits<double>::infinity();
+    constexpr double kNan = std::numeric_limits<double>::quiet_NaN();
+
+    EXPECT_FALSE(sp::isValidVisualGeometry(0, 0.0, 0.0, kInf, 50.0)) << "+inf width";
+    EXPECT_FALSE(sp::isValidVisualGeometry(0, kNan, 0.0, 100.0, 50.0)) << "NaN x";
+    EXPECT_FALSE(sp::isValidVisualGeometry(0, 0.0, kNegInf, 100.0, 50.0)) << "-inf y";
+
+    // Round out the vector for the other two fields + the sign asymmetry
+    // (+inf must not sneak past a "> 0" comparison the way it would for a
+    // naive positivity check).
+    EXPECT_FALSE(sp::isValidVisualGeometry(0, kInf, 0.0, 100.0, 50.0)) << "+inf x";
+    EXPECT_FALSE(sp::isValidVisualGeometry(0, 0.0, kInf, 100.0, 50.0)) << "+inf y";
+    EXPECT_FALSE(sp::isValidVisualGeometry(0, 0.0, 0.0, kNegInf, 50.0)) << "-inf width";
+    EXPECT_FALSE(sp::isValidVisualGeometry(0, 0.0, 0.0, 100.0, kNan)) << "NaN height";
+    EXPECT_FALSE(sp::isValidVisualGeometry(0, 0.0, 0.0, 100.0, kInf)) << "+inf height";
+}
+
+// isValidLayoutRect is the page-less rectangle gate isValidVisualGeometry
+// itself now delegates to -- Manager1.LayoutVisualSignature's box has no page
+// index. Covering it directly (rather than only transitively via the tests
+// above) pins the shared helper's own contract.
+TEST(SignatureParams, IsValidLayoutRectRequiresPositiveFiniteSize)
+{
+    EXPECT_TRUE(sp::isValidLayoutRect(5.0, 10.0, 100.0, 50.0));
+    EXPECT_TRUE(sp::isValidLayoutRect(0.0, 0.0, 1.0, 1.0));
+
+    EXPECT_FALSE(sp::isValidLayoutRect(0.0, 0.0, 0.0, 50.0)) << "zero width";
+    EXPECT_FALSE(sp::isValidLayoutRect(0.0, 0.0, 100.0, 0.0)) << "zero height";
+    EXPECT_FALSE(sp::isValidLayoutRect(0.0, 0.0, -5.0, 50.0)) << "negative width";
+    EXPECT_FALSE(sp::isValidLayoutRect(0.0, 0.0, 100.0, -5.0)) << "negative height";
+
+    constexpr double kInf = std::numeric_limits<double>::infinity();
+    constexpr double kNan = std::numeric_limits<double>::quiet_NaN();
+    EXPECT_FALSE(sp::isValidLayoutRect(kInf, 0.0, 100.0, 50.0)) << "+inf x";
+    EXPECT_FALSE(sp::isValidLayoutRect(0.0, kNan, 100.0, 50.0)) << "NaN y";
+    EXPECT_FALSE(sp::isValidLayoutRect(0.0, 0.0, kInf, 50.0)) << "+inf width";
+    EXPECT_FALSE(sp::isValidLayoutRect(0.0, 0.0, 100.0, kNan)) << "NaN height";
 }
 
 TEST(SignatureParams, IsQualifiedSignLevelClassifiesTheTimestampedFamily)

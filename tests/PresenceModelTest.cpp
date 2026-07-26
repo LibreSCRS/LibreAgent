@@ -123,6 +123,34 @@ TEST(PresenceModel, CardCapabilitiesResolvedFromAtrWithoutOpeningSession)
     EXPECT_EQ(reg.cards()[0].capabilities, 0x3u) << "capabilities must be published from the ATR-only union on insert";
 }
 
+TEST(PresenceModel, CardInsertedPublishesUppercaseHexAtrWithNoSeparators)
+{
+    ObjectRegistry reg;
+    FakeResolver res;
+    PresenceModel model(reg, res);
+    model.onReaderAdded("Acme CL 0");
+
+    model.onCardInserted("Acme CL 0", {0x3B, 0x7F, 0x96, 0x00});
+
+    ASSERT_EQ(reg.cards().size(), 1u);
+    EXPECT_EQ(reg.cards()[0].atrHex, "3B7F9600") << "atrHex must be the full ATR, uppercase, no separators";
+}
+
+TEST(PresenceModel, CardInsertedLeavesCardTypeEmptyUntilTheHeldSessionResolvesIt)
+{
+    ObjectRegistry reg;
+    FakeResolver res; // resolvePlugin() matches (single ATR-table hit) -- capabilities is non-zero
+    PresenceModel model(reg, res);
+    model.onReaderAdded("Acme CL 0");
+
+    model.onCardInserted("Acme CL 0", {0x3B, 0x01});
+
+    ASSERT_EQ(reg.cards().size(), 1u);
+    EXPECT_TRUE(reg.cards()[0].cardType.empty())
+        << "cardType needs the held-session candidate list (AID probing included) to resolve unambiguously; the "
+           "ATR-only insertion path never sets it, even when the ATR-table fast path matched a plugin";
+}
+
 TEST(PresenceModel, CardRemovedDropsCardObjectButKeepsReader)
 {
     ObjectRegistry reg;

@@ -44,10 +44,31 @@ public:
     [[nodiscard]] bool hasMrz(const std::string& cardKey) const;
 
     // Drop everything stored for one card (e.g. on CardRemoved / ReaderRemoved).
+    // ALSO resets any retry context markCredentialWrong recorded for this card
+    // (a full entry erase) -- callers that evict as a SIDE EFFECT of an
+    // unrelated failure (e.g. a wrong signing PIN evicting the pre-read CAN so
+    // a retry re-establishes cleanly) use this, not markCredentialWrong, since
+    // that failure carries no claim about the CAN/MRZ having been wrong.
     void invalidate(const std::string& cardKey);
 
     // Drop everything (shutdown / idle-exit).
     void clear();
+
+    // Record that the CAN/MRZ collected for @p cardKey was rejected by the
+    // card: evicts the now-known-wrong cached value (same effect as
+    // invalidate(), so the rejected secret is never replayed) AND bumps a
+    // per-card attempt counter + remembers @p errorMsgKey, so the NEXT
+    // requestCredential() prompt for this card carries that context (see
+    // PromptOptions::attempt / PromptOptions::lastError) instead of either
+    // silently reusing the rejected value or prompting cold.
+    //
+    // Call this ONLY when the failure genuinely means "the pre-read CAN/MRZ
+    // was wrong" (the eMRTD read flows' AuthFailed branch). A signing-PIN
+    // failure that incidentally evicts the CAN/MRZ cache as a side effect
+    // (SignFlow / RawCryptoFlow / BatchSignFlow) must keep calling plain
+    // invalidate() -- it has no claim about the CAN/MRZ, and a fresh PACE
+    // cycle after a PIN failure has no wrong-CAN history to report.
+    void markCredentialWrong(const std::string& cardKey, std::string errorMsgKey);
 
     // Cache-or-prompt helper invoked by the agent's credential provider
     // callback. Returns a CredentialResult populated from cache on hit,
@@ -87,9 +108,22 @@ private:
     {
         std::optional<Secret> can;
         std::optional<Secret> mrz;
+        // Retry context maintained by markCredentialWrong(): the number of
+        // CAN/MRZ collections rejected by the card so far for this card (0 ==
+        // no known failure), and the msgKey of the most recent such failure.
+        // Reset only by a full-entry erase (invalidate() / clear()).
+        std::uint32_t failedAttempts = 0;
+        std::string lastErrorKey;
     };
     mutable std::mutex m_mutex;
     std::map<std::string, Entry> m_entries;
+
+    // Populate @p opts.attempt / @p opts.lastError from @p cardKey's retry
+    // context, iff a prior failure was recorded (failedAttempts > 0). Leaves
+    // @p opts untouched (defaults: no context) on a card with no recorded
+    // failure -- the first-ever prompt for a card. `attempt` numbers the
+    // prompt about to be shown (one past the failures already recorded).
+    void applyRetryContext(const std::string& cardKey, PromptOptions& opts) const;
 };
 
 template <typename PrompterT>
@@ -128,7 +162,9 @@ CredentialCache::requestCredential(const std::string& cardKey, const LibreSCRS::
         if (auto cached = getCan(cardKey)) {
             return buildOk(PrompterWire::kKindCan, *cached);
         }
-        const auto prompt = prompter.requestCan(options);
+        PromptOptions promptOpts = options;
+        applyRetryContext(cardKey, promptOpts);
+        const auto prompt = prompter.requestCan(promptOpts);
         if (prompt.status == PromptStatus::Cancelled) {
             if (userCancelled != nullptr) {
                 userCancelled->store(true, std::memory_order_relaxed);
@@ -148,7 +184,9 @@ CredentialCache::requestCredential(const std::string& cardKey, const LibreSCRS::
         if (auto cached = getMrz(cardKey)) {
             return buildOk(PrompterWire::kKindMrz, *cached);
         }
-        const auto prompt = prompter.requestMrz(options);
+        PromptOptions promptOpts = options;
+        applyRetryContext(cardKey, promptOpts);
+        const auto prompt = prompter.requestMrz(promptOpts);
         if (prompt.status == PromptStatus::Cancelled) {
             if (userCancelled != nullptr) {
                 userCancelled->store(true, std::memory_order_relaxed);

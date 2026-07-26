@@ -11,11 +11,13 @@
 // case is a true known-answer test, not a tautology against the same code path.
 #include <LibreSCRS/Agent/util/Sha256Hex.h> // sha256Hex (certId)
 #include <LibreSCRS/Agent/operations/LmSeams.h>
+#include "../src/operations/LmSignResultMapping.h" // mapSigningResultStatus (extracted, unit-testable)
 
 #include <LibreSCRS/Auth/ErrorKeys.h>
 #include <LibreSCRS/CancelToken.h>
 #include <LibreSCRS/Plugin/CardPlugin.h>
 #include <LibreSCRS/Plugin/PluginTypes.h>
+#include <LibreSCRS/Signing/SigningResult.h>
 #include <LibreSCRS/SmartCard/CardSession.h>
 #include <gtest/gtest.h>
 #include <cstdint>
@@ -28,6 +30,7 @@
 
 using namespace LibreSCRS::Agent;
 using namespace LibreSCRS::Agent::Operations;
+namespace sign = LibreSCRS::Signing;
 
 namespace {
 
@@ -200,6 +203,36 @@ TEST(LmCertReaderRouting, ThrowingCandidateIsSkippedThenNextOwnerWins)
     auto outcome = LmCertificateReader{}.read(*session, candidates, source.token());
     EXPECT_EQ(outcome.status, CertReadOutcome::Status::Ok);
     ASSERT_EQ(outcome.certs.size(), 1u) << "a throwing candidate is skipped, the next owner wins";
+}
+
+// --- mapSigningResultStatus (BatchSignFlow's halt-code seam) ---------------
+//
+// BatchSignFlow's own unit tests exercise a fake Signer and can only prove
+// its OWN classification of SignOutcome::Status::AuthFailed/CardBlocked into
+// the two halt codes (ErrorCode::CredentialWrong/CredentialBlocked) — they
+// never invoke LmSigner, so they would silently miss a regression in HOW an
+// LM SigningResult is classified into those two statuses in the first
+// place. These two cases close that gap: LM's own PinVerificationFailed and
+// CardBlocked statuses, constructed via their real named factories (no live
+// card, no signing engine), must still reach the exact two SignOutcome
+// values BatchSignFlow halts a batch on.
+
+TEST(LmSeamsResultMapping, PinVerificationFailedMapsToTheStatusBatchSignFlowHaltsOn)
+{
+    const auto result = sign::SigningResult::pinVerificationFailed(LibreSCRS::Auth::ErrorKeys::genericComm());
+    EXPECT_EQ(mapSigningResultStatus(result), SignOutcome::Status::AuthFailed);
+}
+
+TEST(LmSeamsResultMapping, CardBlockedMapsToTheStatusBatchSignFlowHaltsOn)
+{
+    const auto result = sign::SigningResult::cardBlocked(LibreSCRS::Auth::ErrorKeys::genericComm());
+    EXPECT_EQ(mapSigningResultStatus(result), SignOutcome::Status::CardBlocked);
+}
+
+TEST(LmSeamsResultMapping, OkMapsToOk)
+{
+    const auto result = sign::SigningResult::okWithBytes({0x01, 0x02});
+    EXPECT_EQ(mapSigningResultStatus(result), SignOutcome::Status::Ok);
 }
 
 // --- signingDiagnosticIsModuleLoadFailure (EngineUnavailable bridge) -

@@ -4,6 +4,7 @@
 #include <LibreSCRS/Agent/operations/CardPluginRouting.h> // identityCandidates
 #include <LibreSCRS/Agent/operations/FlowPrelude.h>
 #include <LibreSCRS/Agent/operations/OperationBase.h> // Phase enum
+#include <LibreSCRS/Auth/ErrorKeys.h>                 // ErrorKeys::preReadAuthFailed
 #include <atomic>
 #include <cstdint>
 #include <memory>
@@ -107,7 +108,14 @@ IdentityReadFlow::Result IdentityReadFlow::run()
     // so the Authenticating→Reading split is intentionally coarse.
     m_deps.phaseSink.setPhase(static_cast<std::uint32_t>(OperationPhase::Authenticating));
     m_deps.phaseSink.setPhase(static_cast<std::uint32_t>(OperationPhase::Reading));
-    auto readOutcome = m_deps.reader.read(*session, idCands, m_deps.token);
+    // Forward each streamed group straight to the sink, in the order the
+    // reader produces them. Fires zero or more times DURING the call below,
+    // strictly before it returns -- so every group this run() ever streams
+    // is behind us by the time the Result assembled further down is
+    // returned, let alone emitted by the caller (ReadIdentityOperation emits
+    // Result only AFTER flow.run() returns).
+    auto readOutcome = m_deps.reader.read(*session, idCands, m_deps.token,
+                                          [this](const GroupSnapshot& g) { m_deps.groupSink.groupReady(g); });
     // A cancelled token wins over the read status: on shutdown the token is the
     // agent-wide shutdown-cancel token, so bailing here returns Cancelled BEFORE
     // the AuthFailed branch below touches the credential cache — which an
@@ -120,12 +128,15 @@ IdentityReadFlow::Result IdentityReadFlow::run()
         // not be replayed from cache on the next attempt. Evict the agent-side
         // cached secret for this card AND clear LM's per-session PACE cache so a
         // retry re-prompts rather than silently re-using the rejected secret.
-        // Strictly the auth-failure path: parse/comm errors leave a correct
-        // cached secret in place. (The session is closed when run() returns; the
-        // LM clear is belt-and-suspenders today and stays correct for a future
-        // that holds the session open across retries.)
+        // markCredentialWrong (not plain invalidate) also remembers WHY, so the
+        // next prompt for this card carries retry context (attempt count +
+        // msgKey) instead of a cold re-prompt. Strictly the auth-failure path:
+        // parse/comm errors leave a correct cached secret in place. (The
+        // session is closed when run() returns; the LM clear is belt-and-
+        // suspenders today and stays correct for a future that holds the
+        // session open across retries.)
         if (readOutcome.status == ReadOutcome::Status::AuthFailed) {
-            m_deps.cache.invalidate(m_deps.cardKey);
+            m_deps.cache.markCredentialWrong(m_deps.cardKey, LibreSCRS::Auth::ErrorKeys::preReadAuthFailed().key);
             session->clearCachedPaceCredentials();
         }
         // A broken/absent prompter (not the card) caused the secret to be
@@ -134,6 +145,13 @@ IdentityReadFlow::Result IdentityReadFlow::run()
         const ErrorCode code = prompterFailed->load(std::memory_order_relaxed) ? ErrorCode::PrompterError
                                                                                : mapReadStatus(readOutcome.status);
         return makeError(code, "op.read_failed", std::move(readOutcome.msgFallback));
+    }
+
+    // Push the authoritative cardType (if the plugin populated one) through to
+    // the property-update path BEFORE the snapshot is moved out — this is the
+    // single point every fresh identity read passes through.
+    if (m_deps.onCardType && !readOutcome.snapshot->cardType.empty()) {
+        m_deps.onCardType(readOutcome.snapshot->cardType);
     }
 
     return Result{

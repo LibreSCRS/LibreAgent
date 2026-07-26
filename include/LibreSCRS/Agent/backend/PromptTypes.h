@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <optional>
 #include <string>
+#include <vector>
 
 namespace LibreSCRS::Agent {
 
@@ -26,6 +27,29 @@ struct PromptOptions
     std::string pinLabel;
     std::uint32_t minLength = 0;
     std::uint32_t maxLength = 0;
+    // Client-supplied display names of every document a batch sign covers
+    // (BatchSignFlow's consent prompt). UNTRUSTED, unlike `artifact` above,
+    // which stays the agent-owned trusted category token for the whole
+    // request ("signature-batch" for a batch) -- this list is rendered in
+    // the prompter's description zone alongside it, never used as the
+    // trusted label itself. Empty for every single-secret prompt that is not
+    // a batch sign. The prompter-facing wire plumbing for this list (the
+    // RequestSecret option carrying it) is added alongside the consent
+    // surface that renders it; this field is the dependency seam a flow
+    // populates today.
+    std::vector<std::string> artifacts;
+    // Retry context for a CAN/MRZ prompt re-issued after the card rejected
+    // the value collected last time for the SAME card: `attempt` numbers
+    // this prompt (2 = second attempt, ...) and `lastError` carries the
+    // msgKey of the failure that triggered the retry (e.g.
+    // LibreSCRS::Auth::ErrorKeys::preReadAuthFailed().key). Both stay at
+    // their default (0 / empty) on the first-ever prompt for a card --
+    // CredentialCache::requestCredential populates them only on a genuine
+    // re-prompt (see CredentialCache::markCredentialWrong). PIN prompts
+    // never set these; the pre-read PACE secret is the only surface this
+    // seam covers today.
+    std::uint32_t attempt = 0;
+    std::string lastError;
 };
 
 enum class PromptStatus : std::uint8_t {

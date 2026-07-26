@@ -2,6 +2,7 @@
 // SPDX-FileCopyrightText: 2026 hirashix0
 #pragma once
 #include <array>
+#include <cmath> // std::isfinite
 #include <cstddef>
 #include <cstdint>
 #include <optional>
@@ -143,6 +144,57 @@ inline constexpr std::array<std::string_view, 4> kImplementedSignLevels{"b-b", "
         return "b-t";
     }
     return configuredDefault;
+}
+
+// A lightweight pre-flight filter for a per-request `tsaUrl` sign option
+// (mirrors LM's own `staticTsaChecked`, but https-ONLY -- this wire never
+// permits a plaintext TSA endpoint, unlike LM's http-tolerant factory):
+// non-empty, begins with "https://", and a non-empty host token follows the
+// scheme before the next '/' (or end of string). Rejects "https:///path"
+// (empty host) and anything without the scheme. Full RFC 3986 validation is
+// NOT attempted here -- libcurl does that at transport time; this only
+// catches the obvious method-entry mistakes (wrong/missing scheme, empty
+// host) the same way the other closed-set validators above do.
+[[nodiscard]] inline bool isValidTsaUrl(const std::string& url) noexcept
+{
+    constexpr std::string_view kPrefix = "https://";
+    if (url.size() <= kPrefix.size() || url.compare(0, kPrefix.size(), kPrefix) != 0) {
+        return false;
+    }
+    const std::string_view rest{url.data() + kPrefix.size(), url.size() - kPrefix.size()};
+    const auto hostEnd = rest.find('/');
+    const std::string_view host = rest.substr(0, hostEnd);
+    return !host.empty();
+}
+
+// Geometry gate for any visual-signature-appearance RECTANGLE this wire
+// carries -- shared by both the per-request `Sign` option's `visualSignature`
+// box (below) and the card-independent `Manager1.LayoutVisualSignature`
+// box: a strictly positive width/height, and ALL FOUR of x/y/width/height
+// finite (mirrors LM's own `VisualSignatureParams::Builder::rect`
+// precondition, which throws `std::invalid_argument` for the same
+// violations) -- checked at method entry so a malformed rectangle is a clean
+// method-entry rejection, never an exception (or UB) surfacing out of LM. The
+// finite check matters beyond mere sanity: both call sites narrow these
+// doubles into LM's integer `Rect` via `static_cast<int>(std::lround(...))`,
+// and `std::lround` on +-inf/NaN is unspecified behaviour, with the
+// subsequent narrowing cast of an out-of-range double to `int` being
+// undefined behaviour -- both CBOR (both daemons) and D-Bus's `d` type carry
+// +-inf/NaN canonically, so this must be rejected here, at the one shared
+// entry point every daemon calls through, rather than trusted to be finite
+// downstream.
+[[nodiscard]] inline bool isValidLayoutRect(double x, double y, double width, double height) noexcept
+{
+    return std::isfinite(x) && std::isfinite(y) && std::isfinite(width) && std::isfinite(height) && width > 0.0 &&
+           height > 0.0;
+}
+
+// Sign's `visualSignature` option additionally carries a non-negative
+// zero-based page index alongside the rectangle above.
+[[nodiscard]] inline bool isValidVisualGeometry(std::int64_t page, double x, double y, double width,
+                                                double height) noexcept
+{
+    return page >= 0 && isValidLayoutRect(x, y, width, height);
 }
 
 } // namespace LibreSCRS::Agent::Operations::SignatureParams

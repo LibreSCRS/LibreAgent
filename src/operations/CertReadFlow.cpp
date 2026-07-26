@@ -6,6 +6,7 @@
 #include <LibreSCRS/Agent/operations/CardPluginRouting.h> // pkiCandidates
 #include <LibreSCRS/Agent/operations/FlowPrelude.h>
 #include <LibreSCRS/Agent/operations/OperationBase.h> // Phase enum
+#include <LibreSCRS/Auth/ErrorKeys.h>                 // ErrorKeys::preReadAuthFailed
 #include <atomic>
 #include <cstdint>
 #include <memory>
@@ -37,6 +38,76 @@ CertReadFlow::Result makeCancelled()
         .msgKey = "op.cancelled",
         .msgFallback = "Operation cancelled",
     };
+}
+
+// Human label for a security-status token, used as the labelFallback on the
+// "security" group's field. Falls back to the token itself (still readable,
+// e.g. for a value a future agent adds that this build does not yet know the
+// pretty text for -- never happens today since the vocabulary is closed, but
+// keeps the helper total rather than partial).
+std::string securityTokenLabel(const std::string& token)
+{
+    if (token == "trusted") {
+        return "Trusted";
+    }
+    if (token == "untrusted-root") {
+        return "Untrusted Root";
+    }
+    if (token == "broken-chain") {
+        return "Broken Chain";
+    }
+    if (token == "invalid") {
+        return "Invalid";
+    }
+    if (token == "expired") {
+        return "Expired";
+    }
+    if (token == "revoked") {
+        return "Revoked";
+    }
+    if (token == "offline-unverified") {
+        return "Offline (Unverified)";
+    }
+    return token;
+}
+
+// Build the "security" GroupSnapshot from the resolved security-status
+// tokens -- one field per token, keyed by the token itself (the closed
+// vocabulary guarantees uniqueness, so no ordinal scheme is needed). Returns
+// an empty (fields-less) group when @p tokens is empty; the caller only
+// appends a non-empty group so a cert with no tokens carries no stray
+// "security" key.
+GroupSnapshot makeSecurityGroup(const std::vector<std::string>& tokens)
+{
+    GroupSnapshot g;
+    g.groupKey = "security";
+    g.labelKey = "cert.group.security";
+    g.labelFallback = "Security";
+    g.fields.reserve(tokens.size());
+    for (const auto& token : tokens) {
+        FieldSnapshot f;
+        f.fieldKey = token;
+        f.labelKey = "cert.security." + token;
+        f.labelFallback = securityTokenLabel(token);
+        f.type = FieldType::Text;
+        f.textValue = token;
+        g.fields.push_back(std::move(f));
+    }
+    return g;
+}
+
+// Apply a resolved TrustVerdict to a parsed CertSnapshot: sets trustStatus +
+// securityStatus (the agent-internal mirror) AND appends the "security"
+// fields-group the wire actually carries them through (dict-key growth on
+// BOTH wires -- see CertSnapshot.h). The two are written together here, from
+// the SAME verdict, so they can never drift apart.
+void applyTrustVerdict(CertSnapshot& cert, const TrustVerdict& verdict)
+{
+    cert.trustStatus = static_cast<std::uint32_t>(verdict.status);
+    cert.securityStatus = verdict.securityStatus;
+    if (!verdict.securityStatus.empty()) {
+        cert.fields.push_back(makeSecurityGroup(verdict.securityStatus));
+    }
 }
 
 ErrorCode mapCertStatus(CertReadOutcome::Status s) noexcept
@@ -118,14 +189,26 @@ CertReadFlow::Result CertReadFlow::run()
     if (outcome.status != CertReadOutcome::Status::Ok) {
         // A wrong pre-read secret must not be replayed on the next attempt.
         // (readCertificates rarely surfaces AuthFailed — see LmCertificateReader
-        // — but keep the eviction symmetric with IdentityReadFlow.)
+        // — but keep the eviction symmetric with IdentityReadFlow, including the
+        // retry-context bookkeeping markCredentialWrong records.)
         if (outcome.status == CertReadOutcome::Status::AuthFailed) {
-            m_deps.cache.invalidate(m_deps.cardKey);
+            m_deps.cache.markCredentialWrong(m_deps.cardKey, LibreSCRS::Auth::ErrorKeys::preReadAuthFailed().key);
             session->clearCachedPaceCredentials();
         }
         const ErrorCode code =
             prompterFailed->load(std::memory_order_relaxed) ? ErrorCode::PrompterError : mapCertStatus(outcome.status);
         return makeError(code, "op.read_failed", std::move(outcome.msgFallback));
+    }
+
+    // Resolve each cert's trust verdict from its DER (index-aligned with
+    // outcome.certs) via the injected seam, and stitch it into the parsed
+    // snapshot. Best-effort defensive bound: a producer that ever desyncs the
+    // two vectors (should never happen -- see CertReadOutcome::derBytes'
+    // comment) just leaves the trailing certs at their parser default
+    // (Unknown, no security tokens) rather than reading out of bounds.
+    for (std::size_t i = 0; i < outcome.certs.size() && i < outcome.derBytes.size(); ++i) {
+        const auto verdict = m_deps.trustVerifier.verify(outcome.derBytes[i], {});
+        applyTrustVerdict(outcome.certs[i], verdict);
     }
 
     return CertReadFlow::Result{

@@ -67,6 +67,74 @@ std::vector<std::uint8_t> makeSelfSignedV3Der(const char* commonName, const char
     return out;
 }
 
+// Mint a self-signed v3 RSA cert carrying the V10-audit extension set (SAN,
+// IAN, basicConstraints, SKI, AKI, CRL DPs, AIA, certificate policies) so the
+// vocabulary-append KAT below can assert each typed group agent-side. A
+// helper local to this TU -- distinct from makeSelfSignedV3Der so the plain
+// keyUsage KATs above stay minimal and unaffected by this richer extension set.
+std::vector<std::uint8_t> makeRichV3Der(const char* commonName)
+{
+    EVP_PKEY* pkey = EVP_RSA_gen(2048);
+    EXPECT_NE(pkey, nullptr);
+    X509* x = X509_new();
+    EXPECT_NE(x, nullptr);
+
+    X509_set_version(x, 2);
+    ASN1_INTEGER_set(X509_get_serialNumber(x), 0x5678);
+    X509_gmtime_adj(X509_getm_notBefore(x), 0);
+    X509_gmtime_adj(X509_getm_notAfter(x), 60L * 60 * 24 * 365);
+    X509_set_pubkey(x, pkey);
+
+    X509_NAME* name = X509_get_subject_name(x);
+    X509_NAME_add_entry_by_txt(name, "CN", MBSTRING_ASC, reinterpret_cast<const unsigned char*>(commonName), -1, -1, 0);
+    X509_set_issuer_name(x, name); // self-signed: issuer == subject
+
+    X509V3_CTX ctx;
+    X509V3_set_ctx_nodb(&ctx);
+    X509V3_set_ctx(&ctx, x, x, nullptr, nullptr, 0);
+
+    const auto addExt = [&](int nid, const char* value) {
+        X509_EXTENSION* ext = X509V3_EXT_conf_nid(nullptr, &ctx, nid, value);
+        EXPECT_NE(ext, nullptr) << "failed to build extension nid=" << nid << " value=" << value;
+        if (ext != nullptr) {
+            X509_add_ext(x, ext, -1);
+            X509_EXTENSION_free(ext);
+        }
+    };
+    addExt(NID_subject_key_identifier, "hash");
+    // SKI must exist on the (self-)issuer cert BEFORE AKI's "keyid" lookup runs.
+    addExt(NID_authority_key_identifier, "keyid:always");
+    addExt(NID_basic_constraints, "critical,CA:TRUE,pathlen:1");
+    addExt(NID_subject_alt_name, "DNS:example.org,email:pera@example.org");
+    addExt(NID_issuer_alt_name, "DNS:issuer.example.org");
+    addExt(NID_crl_distribution_points, "URI:https://example.org/crl.der");
+    addExt(NID_info_access, "OCSP;URI:https://example.org/ocsp,caIssuers;URI:https://example.org/ca.crt");
+    // certificatePolicies has no bare-OID X509V3_EXT_conf_nid shortcut (it
+    // needs a CONF "@section" for anything beyond the plainest form) --
+    // built directly via the ASN.1 stack API instead.
+    if (CERTIFICATEPOLICIES* cp = sk_POLICYINFO_new_null()) {
+        if (POLICYINFO* pi = POLICYINFO_new()) {
+            pi->policyid = OBJ_txt2obj("2.23.140.1.2.1", 1);
+            sk_POLICYINFO_push(cp, pi);
+            X509_add1_ext_i2d(x, NID_certificate_policies, cp, 0, X509V3_ADD_APPEND);
+        }
+        CERTIFICATEPOLICIES_free(cp);
+    }
+
+    EXPECT_GT(X509_sign(x, pkey, EVP_sha256()), 0);
+
+    unsigned char* der = nullptr;
+    const int len = i2d_X509(x, &der);
+    std::vector<std::uint8_t> out;
+    if (len > 0 && der != nullptr) {
+        out.assign(der, der + len);
+    }
+    OPENSSL_free(der);
+    X509_free(x);
+    EVP_PKEY_free(pkey);
+    return out;
+}
+
 std::optional<std::string> field(const CertSnapshot& s, const std::string& group, const std::string& key)
 {
     for (const auto& g : s.fields) {
@@ -144,4 +212,90 @@ TEST(LmCertReaderKat, GarbageDerYieldsDiagnosticNotCrash)
     EXPECT_FALSE(s.signingCapable) << "unparseable cert is never a usable signing handle";
     EXPECT_TRUE(field(s, "diagnostic", "parseError").has_value()) << "failure surfaced in the reserved group";
     EXPECT_TRUE(s.chainSubjectCns.empty()) << "no PKCS#15 label leaks into chainSubjectCns";
+}
+
+// --- V10 vocabulary-append KATs -------------------------------------------
+// The audit found these fields available agent-side (LM's ParsedCertificate
+// already exposes them) but not yet on the wire; each assertion below is the
+// regression lock for the append.
+
+TEST(LmCertReaderKat, SanAndIanDecodePerType)
+{
+    const auto der = makeRichV3Der("Rich Cert");
+    ASSERT_FALSE(der.empty());
+    LibreSCRS::Plugin::CertificateData cd;
+    cd.derBytes = der;
+    const CertSnapshot s = certSnapshotFromDer(cd);
+
+    EXPECT_EQ(field(s, "san", "dns0"), "example.org");
+    EXPECT_EQ(field(s, "san", "email1"), "pera@example.org");
+    EXPECT_EQ(field(s, "ian", "dns0"), "issuer.example.org");
+}
+
+TEST(LmCertReaderKat, BasicConstraintsDecodesCaAndPathLen)
+{
+    const auto der = makeRichV3Der("Rich Cert");
+    ASSERT_FALSE(der.empty());
+    LibreSCRS::Plugin::CertificateData cd;
+    cd.derBytes = der;
+    const CertSnapshot s = certSnapshotFromDer(cd);
+
+    EXPECT_EQ(field(s, "basicConstraints", "isCa"), "true");
+    EXPECT_EQ(field(s, "basicConstraints", "pathLen"), "1");
+}
+
+TEST(LmCertReaderKat, SubjectAndAuthorityKeyIdentifierAreCleanHex)
+{
+    const auto der = makeRichV3Der("Rich Cert");
+    ASSERT_FALSE(der.empty());
+    LibreSCRS::Plugin::CertificateData cd;
+    cd.derBytes = der;
+    const CertSnapshot s = certSnapshotFromDer(cd);
+
+    const auto ski = field(s, "cert", "subjectKeyIdentifier");
+    ASSERT_TRUE(ski.has_value());
+    // Colon-separated upper-hex, no ASN.1 tag/length prefix bytes leaking in
+    // (a raw extnValue dump would start with "0414" for a 20-byte SKI).
+    EXPECT_EQ(ski->find("04:14:"), std::string::npos) << *ski;
+    EXPECT_NE(ski->find(':'), std::string::npos) << *ski;
+
+    const auto aki = field(s, "cert", "authorityKeyIdentifier");
+    ASSERT_TRUE(aki.has_value());
+    EXPECT_NE(aki->find(':'), std::string::npos) << *aki;
+}
+
+TEST(LmCertReaderKat, CrlDpAiaAndPoliciesDecode)
+{
+    const auto der = makeRichV3Der("Rich Cert");
+    ASSERT_FALSE(der.empty());
+    LibreSCRS::Plugin::CertificateData cd;
+    cd.derBytes = der;
+    const CertSnapshot s = certSnapshotFromDer(cd);
+
+    EXPECT_EQ(field(s, "crlDp", "url0"), "https://example.org/crl.der");
+    EXPECT_EQ(field(s, "aia", "ocsp0"), "https://example.org/ocsp");
+    EXPECT_EQ(field(s, "aia", "caIssuers0"), "https://example.org/ca.crt");
+    ASSERT_TRUE(field(s, "certificatePolicies", "policy0").has_value());
+}
+
+TEST(LmCertReaderKat, CriticalExtensionLabelSuffixAndNoDuplicateRawDump)
+{
+    const auto der = makeRichV3Der("Rich Cert");
+    ASSERT_FALSE(der.empty());
+    LibreSCRS::Plugin::CertificateData cd;
+    cd.derBytes = der;
+    const CertSnapshot s = certSnapshotFromDer(cd);
+
+    // basicConstraints was minted "critical" above; the generic "ext" dump
+    // must not carry a SECOND (raw hex) row for an OID already served by a
+    // typed group -- the raw "ext" group, if present at all here, must not
+    // contain the BasicConstraints OID.
+    for (const auto& g : s.fields) {
+        if (g.groupKey != "ext") {
+            continue;
+        }
+        for (const auto& f : g.fields) {
+            EXPECT_NE(f.fieldKey, "2.5.29.19") << "BasicConstraints must not duplicate into the raw ext dump";
+        }
+    }
 }

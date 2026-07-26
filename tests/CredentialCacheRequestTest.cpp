@@ -43,15 +43,22 @@ struct FakePrompter
     PromptResult mrzResult = PromptResult{PromptStatus::Error, std::nullopt, "uninitialised"};
     int canCalls = 0;
     int mrzCalls = 0;
+    // The options CredentialCache actually handed to the most recent
+    // requestCan/requestMrz call -- lets retry-context tests observe
+    // attempt/lastError without a real D-Bus round trip.
+    PromptOptions lastCanOptions;
+    PromptOptions lastMrzOptions;
 
-    PromptResult requestCan(const PromptOptions&)
+    PromptResult requestCan(const PromptOptions& options)
     {
         ++canCalls;
+        lastCanOptions = options;
         return canResult;
     }
-    PromptResult requestMrz(const PromptOptions&)
+    PromptResult requestMrz(const PromptOptions& options)
     {
         ++mrzCalls;
+        lastMrzOptions = options;
         return mrzResult;
     }
 };
@@ -208,4 +215,100 @@ TEST(CredentialCacheRequest, AbsentPaceKindYieldsError)
     EXPECT_EQ(result.status, CredentialResult::Status::Error);
     EXPECT_EQ(prompter.canCalls, 0);
     EXPECT_EQ(prompter.mrzCalls, 0);
+}
+
+// -- Retry context (attempt / lastError) --------------------------------
+
+TEST(CredentialCacheRequest, FirstEverCanPromptCarriesNoRetryContext)
+{
+    CredentialCache cache;
+    FakePrompter prompter;
+    prompter.canResult = PromptResult{PromptStatus::Ok, String{"654321"}, ""};
+    PromptOptions opts;
+    (void)cache.requestCredential("card-A", paceReq(PaceSecretKind::Can), prompter, opts);
+    ASSERT_EQ(prompter.canCalls, 1);
+    EXPECT_EQ(prompter.lastCanOptions.attempt, 0u) << "the first-ever prompt for a card must carry no attempt count";
+    EXPECT_TRUE(prompter.lastCanOptions.lastError.empty());
+}
+
+TEST(CredentialCacheRequest, CanRePromptAfterMarkCredentialWrongCarriesAttemptAndLastError)
+{
+    CredentialCache cache;
+    cache.markCredentialWrong("card-A", "librescrs.error.preRead.authFailed");
+
+    FakePrompter prompter;
+    prompter.canResult = PromptResult{PromptStatus::Ok, String{"654321"}, ""};
+    PromptOptions opts;
+    auto result = cache.requestCredential("card-A", paceReq(PaceSecretKind::Can), prompter, opts);
+
+    EXPECT_EQ(result.status, CredentialResult::Status::Ok);
+    ASSERT_EQ(prompter.canCalls, 1);
+    EXPECT_EQ(prompter.lastCanOptions.attempt, 2u) << "one prior failure -> this is the second attempt";
+    EXPECT_EQ(prompter.lastCanOptions.lastError, "librescrs.error.preRead.authFailed");
+}
+
+TEST(CredentialCacheRequest, MrzRePromptAfterMarkCredentialWrongCarriesAttemptAndLastError)
+{
+    CredentialCache cache;
+    cache.markCredentialWrong("card-A", "librescrs.error.preRead.authFailed");
+
+    FakePrompter prompter;
+    prompter.mrzResult = PromptResult{PromptStatus::Ok, String{"P<UTOERIKSSON<<ANNA<MARIA"}, ""};
+    PromptOptions opts;
+    (void)cache.requestCredential("card-A", paceReq(PaceSecretKind::Mrz), prompter, opts);
+
+    ASSERT_EQ(prompter.mrzCalls, 1);
+    EXPECT_EQ(prompter.lastMrzOptions.attempt, 2u);
+    EXPECT_EQ(prompter.lastMrzOptions.lastError, "librescrs.error.preRead.authFailed");
+}
+
+TEST(CredentialCacheRequest, SecondConsecutiveFailureBumpsAttemptToThree)
+{
+    CredentialCache cache;
+    cache.markCredentialWrong("card-A", "librescrs.error.preRead.authFailed");
+    cache.markCredentialWrong("card-A", "librescrs.error.preRead.authFailed");
+
+    FakePrompter prompter;
+    prompter.canResult = PromptResult{PromptStatus::Ok, String{"654321"}, ""};
+    PromptOptions opts;
+    (void)cache.requestCredential("card-A", paceReq(PaceSecretKind::Can), prompter, opts);
+
+    ASSERT_EQ(prompter.canCalls, 1);
+    EXPECT_EQ(prompter.lastCanOptions.attempt, 3u) << "two prior failures -> this is the third attempt";
+}
+
+TEST(CredentialCacheRequest, InvalidateAfterMarkCredentialWrongClearsRetryContext)
+{
+    // invalidate() (plain, full-entry erase) resets retry context too -- the
+    // side-effect eviction path (a wrong signing PIN) must not leave a stale
+    // "wrong CAN" claim attached to a later, unrelated prompt.
+    CredentialCache cache;
+    cache.markCredentialWrong("card-A", "librescrs.error.preRead.authFailed");
+    cache.invalidate("card-A");
+
+    FakePrompter prompter;
+    prompter.canResult = PromptResult{PromptStatus::Ok, String{"654321"}, ""};
+    PromptOptions opts;
+    (void)cache.requestCredential("card-A", paceReq(PaceSecretKind::Can), prompter, opts);
+
+    ASSERT_EQ(prompter.canCalls, 1);
+    EXPECT_EQ(prompter.lastCanOptions.attempt, 0u)
+        << "invalidate() must fully clear retry context, not just the secret";
+    EXPECT_TRUE(prompter.lastCanOptions.lastError.empty());
+}
+
+TEST(CredentialCacheRequest, CacheHitAfterMarkCredentialWrongNeverReachesThePrompter)
+{
+    // A retry re-collecting a CORRECT secret is cached normally; a later,
+    // unrelated cache HIT for the same card must not prompt at all (so no
+    // question of retry context arises on that path).
+    CredentialCache cache;
+    cache.markCredentialWrong("card-A", "librescrs.error.preRead.authFailed");
+    cache.putCan("card-A", String{"654321"}); // simulates a since-corrected, now-cached CAN
+
+    FakePrompter prompter;
+    PromptOptions opts;
+    auto result = cache.requestCredential("card-A", paceReq(PaceSecretKind::Can), prompter, opts);
+    EXPECT_EQ(result.status, CredentialResult::Status::Ok);
+    EXPECT_EQ(prompter.canCalls, 0) << "cache hit must not prompt regardless of recorded retry context";
 }

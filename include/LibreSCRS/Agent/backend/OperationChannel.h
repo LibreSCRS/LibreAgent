@@ -50,6 +50,27 @@ struct PhotoField
 };
 using PhotoResult = std::vector<PhotoField>;
 
+// One row of a Card1.SignBatch result, index-aligned with the request's
+// documents. Mirrors SignedArtifact's shape (bytes + meta) plus this row's OWN
+// `displayName` (the client-supplied, per-document chrome the consent prompt
+// also showed) and `code` (None on a successfully signed row). `bytes` is
+// empty on a failed row -- sealing it into the wire's pinned
+// zero-length-sealed-memfd convention (D-Bus `h` is non-nullable) is a
+// transport concern, done by the Linux channel exactly like SignedArtifact's
+// bytes are sealed for the single-document Sign1.Result. Deliberately a
+// DISTINCT type from operations/BatchSignFlow.h's own BatchSignRow (which
+// carries the flow's per-field breakdown, not this channel-level bytes+meta
+// shape) -- SignOperation::doWork() draws the same distinction for
+// SignedArtifact vs SignFlow::Result, and this mirrors it for the batch.
+struct BatchSignedRow
+{
+    std::string displayName;
+    std::vector<std::uint8_t> bytes;
+    SignMeta meta;
+    ErrorCode code{ErrorCode::None};
+};
+using BatchSignResult = std::vector<BatchSignedRow>;
+
 // One credential-management result. `op` carries the uniform outcome payload
 // (outcome token + retriesLeft/blocked/pinActivated/keyActivated) surfaced for
 // EVERY completed management attempt — including InvalidPin/Blocked, where
@@ -72,6 +93,7 @@ using ResultPayload = std::variant<CardReadSnapshot,          // ReadIdentity   
                                    std::vector<CertSnapshot>, // ReadCertificates -> Certificates1.Result
                                    PhotoResult,               // GetPhoto         -> Photo1.Result
                                    SignedArtifact,            // Sign             -> Sign1.Result
+                                   BatchSignResult,           // SignBatch        -> SignBatch1.Result
                                    CredentialResult>;         // Credentials1     -> Credentials1.Result
 
 // Per-operation emit-only channel the lifecycle core drives. Cancel rides
@@ -94,6 +116,18 @@ public:
     // "op.memfd_failed"); Identity/Certificates deliver inline and always return
     // true. A future macOS inline impl returns true.
     [[nodiscard]] virtual bool emitResult(const ResultPayload& result) noexcept = 0;
+    // Emit one progressively-available identity field group, ahead of the
+    // eventual emitResult/emitFinished pair (Identity1.Group on Linux; the
+    // socket "OpIdentityGroup" event on macOS). Unlike emitResult this is NOT
+    // pure virtual: every OperationChannel implementation shares this one
+    // interface regardless of kind, but only an Identity1-hosting channel
+    // ever has a Group signal to marshal — every other kind's channel simply
+    // never receives a call here (GroupSink is wired to a NullGroupSink at
+    // the GetPhotoOperation call site instead of this channel's owning
+    // OperationBase; Sign/Certificates/Credentials never wire a real
+    // GroupSink at all), so the default no-op is dead code in production,
+    // kept only as defense-in-depth.
+    virtual void emitGroup(const GroupSnapshot& /*group*/) noexcept {}
 };
 
 } // namespace LibreSCRS::Agent::Operations

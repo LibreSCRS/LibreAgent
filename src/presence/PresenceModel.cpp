@@ -5,6 +5,7 @@
 #include <LibreSCRS/Agent/presence/ObjectRegistry.h>
 #include <LibreSCRS/Agent/PresenceTypes.h>
 #include <LibreSCRS/Agent/operations/CardPluginRouting.h>
+#include <LibreSCRS/Agent/util/HexEncode.h>
 #include <LibreSCRS/Auth/AuthRequirement.h>
 #include <string>
 #include <utility>
@@ -77,8 +78,22 @@ void PresenceModel::onCardInserted(const std::string& readerName, const std::vec
     // session.
     const auto preReadAuth = LibreSCRS::Auth::PreReadAuthMethod::None;
 
+    // ATR is available synchronously (PC/SC hands it back at insertion, before
+    // any session is opened) — uppercase hex, no separators, the full ATR.
+    // cardType, in contrast, needs the held-session candidate list (AID-probed
+    // plugins included), which this ATR-only fast path does not have; it stays
+    // empty here and is resolved by the per-reader worker at the same deferred
+    // point as capabilities/preReadAuth above (single-candidate pluginId, else
+    // empty), authoritatively overwritten by a real read thereafter.
+    const std::string atrHex = toHex(atr, '\0', true);
+
     const ObjectId readerId = m_readerIds.at(readerName);
-    m_registry.addCard(CardState{.id = cardId, .reader = readerId, .capabilities = caps, .preReadAuth = preReadAuth});
+    m_registry.addCard(CardState{.id = cardId,
+                                 .reader = readerId,
+                                 .capabilities = caps,
+                                 .preReadAuth = preReadAuth,
+                                 .cardType = {}, // resolved later on the held session; see the comment above
+                                 .atrHex = atrHex});
 
     // Make the parent reader's HasCard/Card live: the transport backend emits
     // a properties-changed notification so clients observing Reader1 see the

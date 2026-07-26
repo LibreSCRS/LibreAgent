@@ -9,6 +9,7 @@
 #include <LibreSCRS/Agent/operations/PromptSerializer.h>
 #include <LibreSCRS/Agent/operations/Seams.h>
 #include <LibreSCRS/CancelToken.h>
+#include <functional>
 #include <optional>
 #include <string>
 
@@ -16,9 +17,10 @@ namespace LibreSCRS::Agent::Operations {
 
 class CardSessionHolder;
 
-// References-only dependency bundle. Every member is a reference; the
-// caller (typically ReadIdentityOperation or GetPhotoOperation)
-// guarantees the references outlive the flow's run() invocation.
+// Mostly-references dependency bundle (the sole exception is onCardType, a
+// value callback). The caller (typically ReadIdentityOperation or
+// GetPhotoOperation) guarantees the references outlive the flow's run()
+// invocation.
 struct IdentityReadFlowDeps
 {
     // Per-reader shared-session holder: the flow acquires the (reused) session
@@ -38,6 +40,14 @@ struct IdentityReadFlowDeps
     // its state machine. The production seam is the hosting OperationBase;
     // tests pass a recording fake to assert ordering.
     OperationPhaseSink& phaseSink;
+    // Group sink: receives each field group, in read order, as the plugin
+    // streams it during the read below -- strictly ahead of this run()'s own
+    // one-shot Result, which stays the complete, authoritative set
+    // regardless of what streamed. The production seam is the hosting
+    // OperationBase (ReadIdentityOperation) or a NullGroupSink
+    // (GetPhotoOperation -- see that seam's own doc comment for why); tests
+    // pass a recording fake to assert order.
+    GroupSink& groupSink;
     std::string cardKey;
     // Caller-identity chrome surfaced in the consent prompt so the user can
     // attribute the credential request. requester: a human-meaningful label
@@ -49,6 +59,16 @@ struct IdentityReadFlowDeps
     std::string requester;
     std::string artifact;
     LibreSCRS::CancelToken token;
+    // Fired with the freshly-read CardData::cardType (via CardReadSnapshot)
+    // right before a successful run() returns its Result — the SINGLE choke
+    // point every fresh identity read passes through (ReadIdentity AND a
+    // GetPhoto cache miss, on both daemons), so a caller with a card-property
+    // update path to push into (the backend's Card1/card-state authoritative
+    // cardType) wires this ONCE instead of duplicating the push at every call
+    // site. Not invoked when the snapshot's cardType is empty (nothing new to
+    // report) or the flow returns Cancelled/Error. Default (unset): a no-op,
+    // for callers/tests with no property-update path to drive.
+    std::function<void(const std::string&)> onCardType;
 };
 
 // Pure orchestration — no LM types in the public Result surface, no bus, no

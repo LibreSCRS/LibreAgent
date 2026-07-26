@@ -71,6 +71,15 @@ public:
     // a plain B-B sign never touches it.
     void recordLastTsaUrlUsed(const std::string& url);
 
+    // The current trust-store service (same instance rebuild() builds for the
+    // signing engine), for a consumer that needs to VALIDATE a chain rather
+    // than sign anything -- currently LmTrustVerifier. Deliberately reuses
+    // this provider's already-built, config-observed TrustStoreService rather
+    // than constructing a second one: a second instance would double the TSL
+    // network fetches and config-change wiring for no benefit. Null when the
+    // trust store could not be built from the current config (see rebuild()).
+    [[nodiscard]] std::shared_ptr<LibreSCRS::Trust::TrustStoreService> trustSnapshot() const;
+
 private:
     void rebuild(); // builds a fresh engine from the current ConfigStore snapshot
 

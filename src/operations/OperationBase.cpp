@@ -173,6 +173,16 @@ void OperationBase::setPhase(std::uint32_t phase) noexcept
     }
 }
 
+void OperationBase::groupReady(const GroupSnapshot& group) noexcept
+{
+    // One hop to the channel, exactly like setPhase's emitPropertiesChanged
+    // forward above. A null channel (test/no-bus) is a silent no-op, same
+    // posture as emitResult's own null-channel branch.
+    if (m_channel) {
+        m_channel->emitGroup(group);
+    }
+}
+
 void OperationBase::armWatchdogIfNeeded(std::uint32_t newPhase)
 {
     constexpr auto kAuthenticating = static_cast<std::uint32_t>(OperationPhase::Authenticating);

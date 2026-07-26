@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 // SPDX-FileCopyrightText: 2026 hirashix0
 #pragma once
-#include <LibreSCRS/Agent/value/CardInfo.h>
 #include <LibreSCRS/Auth/AuthRequirement.h>
 #include <cstdint>
 #include <memory>

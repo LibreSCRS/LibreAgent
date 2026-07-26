@@ -3,7 +3,12 @@
 #pragma once
 #include <LibreSCRS/Agent/operations/Seams.h>
 #include <LibreSCRS/Plugin/CardPlugin.h>
+#include <cstdint>
 #include <memory>
+#include <span>
+#include <string>
+#include <string_view>
+#include <vector>
 
 namespace LibreSCRS::Agent::Operations {
 
@@ -14,7 +19,9 @@ class LmCardReader final : public CardReader
 {
 public:
     ReadOutcome read(LibreSCRS::SmartCard::CardSession& session, const CandidateList& candidates,
-                     LibreSCRS::CancelToken token) override;
+                     LibreSCRS::CancelToken token, GroupReadCallback onGroup = {}) override;
+    GroupSnapshot readTokenInfo(LibreSCRS::SmartCard::CardSession& session, const CandidateList& candidates,
+                                LibreSCRS::CancelToken token) override;
 };
 
 // Stateless cert router: holds no plugin. read() iterates the passed candidates
@@ -59,6 +66,29 @@ public:
 };
 
 class SigningEngineProvider;
+
+// Production TrustVerifier: wraps LM's Trust::TrustStore, configured from
+// ConfigStore's TslSources/TslCacheDir. Reuses the SigningEngineProvider's
+// already-built TrustStoreService (SigningEngineProvider::trustSnapshot())
+// rather than constructing a second trust store -- see that method's comment.
+// No TSL source configured, or the trust store unavailable, answers
+// TrustVerdict{OfflineUnverified, {"offline-unverified"}}; otherwise walks
+// issuers up from the leaf via TrustStore::findIssuerOf (the card supplies
+// only the leaf DER; LM's validateChain does not walk issuers itself --
+// mirrors LibreCelik's own certificate-hierarchy chain walk) and validates the
+// assembled chain, mapping LM's Trust::TrustStore::ChainStatus onto
+// CertTrustStatus by an explicit switch (pinned ordinal alignment via
+// static_assert in the .cpp).
+class LmTrustVerifier final : public TrustVerifier
+{
+public:
+    explicit LmTrustVerifier(SigningEngineProvider& engine) : m_engine(engine) {}
+    TrustVerdict verify(std::span<const std::uint8_t> leafDer,
+                        std::span<const std::vector<std::uint8_t>> chainDer) override;
+
+private:
+    SigningEngineProvider& m_engine;
+};
 
 // Production Signer: resolves certId against the live card (anti-TOCTOU DER
 // re-assert), enforces the per-level expired-cert gate, then drives the
@@ -113,5 +143,66 @@ struct SigningSelection
 [[nodiscard]] std::optional<SigningSelection> selectSigningCandidate(const CandidateList& candidates,
                                                                      const std::string& certId,
                                                                      LibreSCRS::SmartCard::CardSession& session);
+
+// --- Card-independent visual-signature layout preview --------------------
+//
+// Manager1.LayoutVisualSignature / GetAppearanceFont are synchronous, pure-CPU
+// calls with NO card and NO Operation object — the same request/reply round
+// trip a client uses to render a PIXEL-PARITY preview of the visible-signature
+// appearance a subsequent `Card1.Sign` would actually stamp. Both platform
+// daemons (LibreLinux's D-Bus ManagerObject, LibreDarwin's SocketFrontend) call
+// through these TWO free functions rather than each re-deriving the LM call
+// itself, so the computation is defined exactly once (unlike the validation
+// orchestration around `Sign`'s `visualSignature` option, which the two
+// daemons still duplicate copy-paste style — a known, separately-tracked
+// asymmetry this does not repeat).
+
+// Mirrors LM's `Signing::Rect` field-for-field (PDF user units) without
+// naming the LM type in this public header — the same seam-boundary
+// invariant the file comment above states ("all LM Signing types stay inside
+// LmSeams.cpp"). Caller validates via `SignatureParams::isValidLayoutRect`
+// BEFORE calling `layoutVisualSignature` below; an invalid box is a
+// method-entry rejection each daemon performs itself (mirrors `Sign`'s own
+// `visualSignature` geometry gate), not something this function re-checks.
+struct LayoutBox
+{
+    double x{0.0};
+    double y{0.0};
+    double width{0.0};
+    double height{0.0};
+};
+
+// Mirrors LM's `Signing::VisualSignatureLayout` field-for-field (fontSize,
+// lineHeight, lines, clipped) — see that header's own doc comment for the
+// full word-wrap/clipping contract this pass-through inherits unchanged.
+// `clipped == true` is pixel-parity load-bearing: it tells the caller to
+// install the SAME clip path the PAdES emitter installs when it stamps the
+// real signature, so a preview that omits it would silently diverge from the
+// signed output.
+struct VisualLayoutResult
+{
+    double fontSize{0.0};
+    double lineHeight{0.0};
+    std::vector<std::string> lines;
+    bool clipped{false};
+};
+
+// The ONE production entry point every platform daemon calls through for
+// `Manager1.LayoutVisualSignature`. Narrows @p box (already validated by the
+// caller) to LM's integer `Rect` exactly like `buildSigningRequest` narrows
+// `Sign`'s `visualSignature` option (`static_cast<int>(std::lround(...))`),
+// then forwards @p textUtf8 verbatim to LM's own `layoutVisualSignature`.
+[[nodiscard]] VisualLayoutResult layoutVisualSignature(std::string_view textUtf8, LayoutBox box);
+
+// The embedded appearance font's raw bytes (Liberation Sans Regular TTF) —
+// the ONE production entry point every platform daemon calls through for
+// `Manager1.GetAppearanceFont`. Copies LM's `embeddedAppearanceFontData()`
+// span into a caller-owned buffer (rather than returning the span itself) so
+// this public header never names `std::span<const std::byte>` tied to an
+// LM-owned static array across the seam boundary; each daemon seals/anonymises
+// the returned bytes into its own reply fd (`SealedMemfd`/`anonFdFromBytes`).
+// Non-empty, deterministic, and identical byte-for-byte on every call — LM's
+// own contract for the underlying span.
+[[nodiscard]] std::vector<std::uint8_t> appearanceFontBytes();
 
 } // namespace LibreSCRS::Agent::Operations

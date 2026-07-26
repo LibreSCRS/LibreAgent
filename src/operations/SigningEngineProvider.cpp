@@ -111,6 +111,12 @@ EngineSnapshot SigningEngineProvider::snapshot() const
     return EngineSnapshot{.engine = m_engine, .boundTsaUrl = m_boundTsaUrl};
 }
 
+std::shared_ptr<LibreSCRS::Trust::TrustStoreService> SigningEngineProvider::trustSnapshot() const
+{
+    std::lock_guard lock(m_mutex);
+    return m_trust;
+}
+
 void SigningEngineProvider::recordLastTsaUrlUsed(const std::string& url)
 {
     if (!url.empty()) {

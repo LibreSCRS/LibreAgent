@@ -120,6 +120,46 @@ TEST(CredentialCache, ClearWipesEverything)
     EXPECT_FALSE(c.hasCan(kCardB));
 }
 
+TEST(CredentialCache, MarkCredentialWrongEvictsBothCanAndMrz)
+{
+    CredentialCache c;
+    c.putCan(kCardA, Secret{"123456"});
+    c.putMrz(kCardA, Secret{"MRZ"});
+
+    c.markCredentialWrong(kCardA, "librescrs.error.preRead.authFailed");
+
+    EXPECT_FALSE(c.hasCan(kCardA));
+    EXPECT_FALSE(c.hasMrz(kCardA));
+}
+
+TEST(CredentialCache, MarkCredentialWrongOnUnknownCardIsNotACrash)
+{
+    // First-ever failure for a card that was never put(): the entry is
+    // default-constructed on demand. Not directly observable via the public
+    // getters (they only report can/mrz), but must not misbehave.
+    CredentialCache c;
+    c.markCredentialWrong(kCardA, "librescrs.error.preRead.authFailed");
+    EXPECT_FALSE(c.hasCan(kCardA));
+    EXPECT_FALSE(c.hasMrz(kCardA));
+}
+
+TEST(CredentialCache, InvalidateAfterMarkCredentialWrongFullyResetsRetryContext)
+{
+    // invalidate() (a full-entry erase) is the ONLY way retry context resets
+    // short of clear(); callers that evict as a side effect of an unrelated
+    // failure (e.g. a wrong signing PIN) rely on this to avoid attaching a
+    // stale "wrong CAN" claim to an unrelated future prompt. Exercised
+    // end-to-end (attempt count observably back at "no context") in
+    // CredentialCacheRequestTest, which can see PromptOptions; here we only
+    // pin that invalidate() does not throw/crash on an entry markCredentialWrong
+    // touched.
+    CredentialCache c;
+    c.markCredentialWrong(kCardA, "librescrs.error.preRead.authFailed");
+    c.invalidate(kCardA);
+    EXPECT_FALSE(c.hasCan(kCardA));
+    EXPECT_FALSE(c.hasMrz(kCardA));
+}
+
 TEST(CredentialCache, EmptyKeyIsValidKey)
 {
     // Empty string is a degenerate but valid std::map key — no card has

@@ -28,6 +28,11 @@ struct CertReadFlowDeps
     // resolved candidate plugin list from it instead of opening fresh each run.
     CardSessionHolder& holder;
     CertificateReader& certReader;
+    // Computes each cert's trust verdict from its DER (certReader.read()'s
+    // outcome.derBytes, index-aligned with outcome.certs). Called once per
+    // returned cert, after a successful read, before the result reaches the
+    // wire.
+    TrustVerifier& trustVerifier;
     PrompterClientBase& prompter;
     PromptSerializer& serializer;
     CredentialCache& cache;
