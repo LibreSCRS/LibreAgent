@@ -56,6 +56,7 @@ agent_core_test(ConfigStoreTest)
 agent_core_test(CredentialCacheRequestTest)
 agent_core_test(CredentialCacheTest)
 agent_core_test(ErrorTaxonomyTest)
+agent_core_test(FieldKeyParityTest)
 agent_core_test(IdentityReadFlowTest)
 agent_core_test(IdentityTest)
 agent_core_test(LeaseManagerTest)
@@ -63,6 +64,8 @@ agent_core_test(LmCertReaderKatTest)
 agent_core_test(LmRawCryptoTest)
 agent_core_test(LmSeamsCompileTest)
 agent_core_test(LmSeamsRoutingTest)
+agent_core_test(LmSigningRequestBuilderTest)
+agent_core_test(LmTrustVerifierTest)
 agent_core_test(LoggingTest)
 agent_core_test(ObjectRegistryTest)
 agent_core_test(OperationBaseTest)
@@ -75,12 +78,14 @@ agent_core_test(PrompterConformanceTest)
 agent_core_test(PropertyEmissionThrottlerTest)
 agent_core_test(RateLimiterTest)
 agent_core_test(RawCryptoFlowTest)
+agent_core_test(BatchSignFlowTest)
 agent_core_test(RsaPublicKeyTest)
 agent_core_test(SeamsCompileTest)
 agent_core_test(Sha256HexTest)
 agent_core_test(SignatureParamsTest)
 agent_core_test(SignGateTest)
 agent_core_test(SigningEngineProviderTest)
+agent_core_test(TokenInfoReadFlowTest)
 agent_core_test(WatchdogTest)
 agent_core_test(ZombieWorkerDrainTest)
 agent_core_test(PrompterKeepAliveDrainTest)
@@ -92,7 +97,7 @@ agent_core_test(Pkcs11SecurityTest)
 
 # The OpenSSL-KAT TUs mint keys/certs with OpenSSL directly (LibreAgent::Core links it
 # PRIVATE, so its headers are not propagated) — link Crypto explicitly.
-foreach(_kat IN ITEMS LmCertReaderKatTest LmRawCryptoTest RsaPublicKeyTest)
+foreach(_kat IN ITEMS LmCertReaderKatTest LmRawCryptoTest LmTrustVerifierTest RsaPublicKeyTest)
     target_link_libraries(${_kat} PRIVATE OpenSSL::Crypto)
 endforeach()
 
@@ -103,10 +108,13 @@ endforeach()
 foreach(_internal IN ITEMS
         OperationManagerTest
         CardSessionHolderTest
+        FieldKeyParityTest
         IdentityReadFlowTest
         LmSeamsRoutingTest
         CertReadFlowTest
+        TokenInfoReadFlowTest
         RawCryptoFlowTest
+        BatchSignFlowTest
         PrompterKeepAliveDrainTest)
     target_compile_definitions(${_internal} PRIVATE LIBRESCRS_INTERNAL_BUILD)
 endforeach()
@@ -160,5 +168,23 @@ agent_core_test(CredentialErrorMappingTest)
 # read cache; secret cache untouched). Pure value/cache types — no LM-internal
 # card session, so no LIBRESCRS_INTERNAL_BUILD.
 agent_core_test(CredentialSnapshotCacheTest)
+
+# LM-parity oracle for Manager1.LayoutVisualSignature/GetAppearanceFont —
+# needs BOTH LibreAgent::Core (the LM-linked layout/font seam in LmSeams.h)
+# AND LibreAgent::Wire (Messages.h/ClientCodec.h's codec), so it's the one
+# test in this file with an ADDITIONAL LIBREAGENT_BUILD_WIRE guard (every
+# other agent_core_test() above needs Core alone). Proves the wire-served
+# values decode identically to a direct LM call — see the test file's own
+# header comment.
+if(LIBREAGENT_BUILD_WIRE)
+    add_executable(VisualLayoutServiceTest VisualLayoutServiceTest.cpp)
+    target_link_libraries(VisualLayoutServiceTest PRIVATE
+        LibreAgent::Core
+        LibreAgent::Wire
+        GTest::gtest
+        GTest::gtest_main)
+    target_include_directories(VisualLayoutServiceTest PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+    add_test(NAME VisualLayoutServiceTest COMMAND VisualLayoutServiceTest)
+endif()
 
 endif() # LIBREAGENT_BUILD_CORE

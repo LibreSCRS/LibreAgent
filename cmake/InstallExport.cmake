@@ -64,10 +64,14 @@ if(LIBREAGENT_BUILD_WIRE)
         # Wire's headers when Core is enabled. When Core is OFF, that call
         # never runs, so a CORE=OFF, WIRE=ON install would otherwise ship the
         # LibreAgentWire archive with NO public headers at all — install
-        # Wire's own subtree (include/LibreSCRS/Agent/wire/) plus
-        # OperationPhase.h (the other wire-stable enum header this component's
-        # headers/tests sit alongside) specifically.
-        install(FILES include/LibreSCRS/Agent/OperationPhase.h
+        # Wire's own subtree (include/LibreSCRS/Agent/wire/) plus the other
+        # std-only top-level headers this component's tests sit alongside:
+        # OperationPhase.h (wire-stable enums) and FeatureTokens.h (the
+        # feature-token catalog — LM-free like Wire itself, so a Wire-only
+        # consumer, e.g. the LibreDarwin socket daemon, can still reach it).
+        install(FILES
+                include/LibreSCRS/Agent/OperationPhase.h
+                include/LibreSCRS/Agent/FeatureTokens.h
             DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/LibreSCRS/Agent)
         install(DIRECTORY include/LibreSCRS/Agent/wire
             DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/LibreSCRS/Agent

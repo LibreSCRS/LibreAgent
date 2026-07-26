@@ -69,10 +69,12 @@ if(LIBREAGENT_BUILD_CORE)
         src/operations/CardSessionHolder.cpp
         src/operations/IdentityReadFlow.cpp
         src/operations/CertReadFlow.cpp
+        src/operations/TokenInfoReadFlow.cpp
         src/operations/CredentialListFlow.cpp
         src/operations/PinChangeFlow.cpp
         src/operations/KeyActivationFlow.cpp
         src/operations/SignFlow.cpp
+        src/operations/BatchSignFlow.cpp
         src/operations/RawCryptoFlow.cpp
         src/operations/PropertyEmissionThrottler.cpp
         src/operations/RateLimiter.cpp
@@ -121,10 +123,12 @@ if(LIBREAGENT_BUILD_CORE)
     set_source_files_properties(
         src/operations/IdentityReadFlow.cpp
         src/operations/CertReadFlow.cpp
+        src/operations/TokenInfoReadFlow.cpp
         src/operations/CredentialListFlow.cpp
         src/operations/PinChangeFlow.cpp
         src/operations/KeyActivationFlow.cpp
         src/operations/SignFlow.cpp
+        src/operations/BatchSignFlow.cpp
         src/operations/RawCryptoFlow.cpp
         # AgentCore.cpp inlines the raw-crypto flow (make_shared over the same
         # credential-flow teardown), so it inherits the same GCC 16 false positive.
