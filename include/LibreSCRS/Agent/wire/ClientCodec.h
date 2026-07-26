@@ -22,21 +22,53 @@
 //     parseRequest already applies on the server side);
 //   - a whole reply arm / event `t` this client does not (yet) recognise is
 //     NOT an error: it decodes into UnknownReply / UnknownEvent, never a
-//     throw, never nullopt;
-//   - ErrorCode (ErrorCode.h) is wire-frozen APPEND-ONLY, so an unrecognised
-//     numeric VALUE -- one a newer agent appended past this build's last
-//     known code -- decodes through verbatim (static_cast) instead of
-//     nullopt-ing; the client treats it as opaque display/log data, it does
-//     not branch on it.
-// This value-level tolerance is ErrorCode-SPECIFIC. Unknown values of the
-// OTHER, semantically-branching closed enums on this wire (OperationStatus,
-// OperationPhase, QuiesceReason, PreReadAuth, ...) are NOT covered yet and
-// still decode to std::nullopt, pending a broader cross-mirror tolerance
-// decision for those.
-// Only genuinely malformed input (bad CBOR, a required field missing/wrong
-// type inside an otherwise-recognised shape, the err-info code/name XOR
-// violated, an out-of-range fd-index, an unrecognised value of one of those
-// still-closed enums) yields std::nullopt.
+//     throw, never nullopt. (Two NESTED discriminators stay strict on
+//     purpose and are NOT covered by this escape hatch: an op-result `kind`
+//     outside its five closed alternatives, and public-key's `kty` outside
+//     RSA/EC -- see those decoders' own comments in ClientCodec.cpp.)
+//
+// On top of that structural tolerance, every closed enum VALUE living inside
+// an otherwise-recognised shape is tolerant too: a decode NEVER fails just
+// because it saw an enumerator value this build does not have a name for.
+// Two mechanics, depending on the wire representation:
+//   - NUMERIC enums -- ErrorCode, OperationPhase, OperationStatus,
+//     PreReadAuth, QuiesceReason -- are all wire-frozen APPEND-ONLY, so a
+//     value past this build's last known one is a FUTURE value, not a
+//     malformed one: it decodes through RAW via a width-bounded static_cast
+//     (the same pattern ErrorCode originated). The codec stays a dumb,
+//     stateless carrier here -- it never rejects on enumerator membership,
+//     only on a value too wide for that enum's OWN underlying storage to
+//     represent losslessly (which really would be malformed: two distinct
+//     future values silently aliasing onto one stored value). What an
+//     unrecognised value MEANS is decided entirely by the STATEFUL layer
+//     that consumes the decoded struct, never here:
+//       * OperationPhase: AgentOperation (client/qt) still delivers the
+//         progress fraction, but its public phase() HOLDS the last
+//         known-good phase rather than regressing to the unrecognised one.
+//       * OperationStatus: AgentOperation treats an unrecognised terminal
+//         status as Error.
+//       * PreReadAuth: the transport's card-property mapping (e.g.
+//         SocketTransport's preAuthToken()) treats an unrecognised value the
+//         same as the default, None.
+//       * QuiesceReason: nothing branches on it client-side today, so an
+//         unrecognised reason is inertly a "generic quiesce" -- no separate
+//         mapping is needed.
+//       * ErrorCode: unchanged from before this policy existed -- opaque
+//         display/log data the client never branches on.
+//   - TEXT-TOKEN enums -- CredentialOutcome, and err-info's named SyncError
+//     alternative -- have no numeric width to bound, so an unrecognised
+//     token DEGRADES AT DECODE instead of being carried raw: CredentialOutcome
+//     -> Unspecified; a sync-error name -> SyncError::CommunicationError (the
+//     exact classification an unrecognised D-Bus error name already falls
+//     back to on the other transport, so both transports converge on the
+//     same generic-protocol-error outcome). The original wire token is lost
+//     in this case -- there is no "raw text" representation any typed
+//     consumer of this wire wants.
+//
+// Only genuinely malformed input still yields std::nullopt: bad CBOR, a
+// required field missing/wrong type inside an otherwise-recognised shape,
+// the err-info code/name XOR violated, an out-of-range fd-index, or a
+// numeric enum value too wide for its own underlying storage to represent.
 //
 // Replies carry no per-arm tag (every reply shares `t: "Reply"`; CDDL:105)
 // — the arms are discriminated STRUCTURALLY, by which keys are present
@@ -62,17 +94,23 @@ struct UnknownEvent
 };
 
 // reply-ok arms (CDDL:118-119: hello-ack, op-started, state, cert-list,
-// cert-der, public-key, config, ack, raw-signature, sign-recovery) plus the
-// error arm (err-info, modelled as ErrInfo) and UnknownReply.
+// cert-der, public-key, config, ack, raw-signature, sign-recovery, layout,
+// appearance-font) plus the error arm (err-info, modelled as ErrInfo) and
+// UnknownReply.
 // sign-recovery's payload (`result: sign-result`) is byte-identical to the
 // Sign op-result-ready payload, so it reuses SignResult rather than adding
 // a distinct wrapper type.
-using ReplyVariant = std::variant<HelloAck, OpStarted, StateReply, CertListReply, CertDerReply, PublicKeyReply,
-                                  ConfigReply, AckReply, RawSignatureReply, SignResult, ErrInfo, UnknownReply>;
+using ReplyVariant =
+    std::variant<HelloAck, OpStarted, StateReply, CertListReply, CertDerReply, PublicKeyReply, ConfigReply, AckReply,
+                 RawSignatureReply, LayoutReply, AppearanceFontReply, SignResult, ErrInfo, UnknownReply>;
 
-// event arms (CDDL:156-186) plus UnknownEvent.
+// event arms (CDDL:156-186) plus UnknownEvent. OpIdentityGroup is a
+// progressive hint ahead of the SAME op's eventual OpResultReady (see the
+// CDDL `op-identity-group` comment) -- an older client build that lists this
+// variant without it would simply decode the frame into UnknownEvent
+// instead, the ordinary forward-compat path every event here already has.
 using EventVariant = std::variant<ReaderAdded, ReaderRemoved, CardAdded, CardRemoved, PropertyChanged, ConfigChanged,
-                                  OpProgress, OpResultReady, OpFinished, AgentQuiesced, UnknownEvent>;
+                                  OpProgress, OpIdentityGroup, OpResultReady, OpFinished, AgentQuiesced, UnknownEvent>;
 
 struct DecodedReply
 {

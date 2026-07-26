@@ -13,6 +13,7 @@
 
 #include <array>
 #include <cstdint>
+#include <cstring>
 #include <vector>
 
 using namespace LibreSCRS::Agent::Wire;
@@ -159,6 +160,62 @@ TEST(Framing, PeerClosedFailsClosed)
     const auto frame = recvFrame(sp.fds[1]);
     ASSERT_FALSE(frame.has_value());
     EXPECT_EQ(frame.error(), FrameError::PeerClosed);
+}
+
+// The declared/received fd-COUNT checks above (FdMismatchFailsClosed,
+// TooManyFdsFailsClosed) never exercise the kernel's own MSG_CTRUNC signal —
+// they either short a well-behaved sendFrame peer or race past it entirely.
+// MSG_CTRUNC fires when the ancillary (SCM_RIGHTS) data attached to a
+// recvmsg call does not fit the receiver's control buffer (sized for
+// kMaxFrameFds): the kernel truncates it (closing whatever didn't fit) and
+// sets the flag instead of silently dropping fds unnoticed. A well-behaved
+// sendFrame caller can never trigger this (it caps passFds at kMaxFrameFds
+// before ever calling sendmsg), so this test bypasses sendFrame and crafts
+// the raw sendmsg itself — the only way to prove recvExact's `msg_flags &
+// MSG_CTRUNC` branch (Framing.cpp) fails closed instead of quietly losing
+// fds past the cap.
+TEST(Framing, ControlMessageTruncatedFailsClosed)
+{
+    SocketPair sp;
+    int pipefd[2]{-1, -1};
+    ASSERT_EQ(::pipe(pipefd), 0);
+
+    // Twice kMaxFrameFds worth of ancillary fds (same underlying pipe read
+    // end, duplicated by value in the SCM_RIGHTS array — the kernel dups each
+    // array slot independently on delivery) attached to a control buffer
+    // sized for only kMaxFrameFds: too big to fit, guaranteeing MSG_CTRUNC.
+    constexpr std::size_t kOverflowCount = kMaxFrameFds * 2;
+    const std::vector<int> manyFds(kOverflowCount, pipefd[0]);
+
+    const std::vector<std::uint8_t> body{0x01};
+    const auto framed = encodeFrame(body, static_cast<std::uint32_t>(kMaxFrameFds)); // header count is irrelevant here
+
+    iovec iov{};
+    iov.iov_base = const_cast<std::uint8_t*>(framed.data());
+    iov.iov_len = framed.size();
+
+    const std::size_t ctrlBytes = sizeof(int) * kOverflowCount;
+    std::vector<std::uint8_t> control(CMSG_SPACE(ctrlBytes));
+    msghdr msg{};
+    msg.msg_iov = &iov;
+    msg.msg_iovlen = 1;
+    msg.msg_control = control.data();
+    msg.msg_controllen = static_cast<socklen_t>(control.size());
+    cmsghdr* c = CMSG_FIRSTHDR(&msg);
+    ASSERT_NE(c, nullptr);
+    c->cmsg_level = SOL_SOCKET;
+    c->cmsg_type = SCM_RIGHTS;
+    c->cmsg_len = CMSG_LEN(ctrlBytes);
+    std::memcpy(CMSG_DATA(c), manyFds.data(), ctrlBytes);
+
+    ASSERT_GE(::sendmsg(sp.fds[0], &msg, 0), 0);
+
+    const auto frame = recvFrame(sp.fds[1]);
+    ASSERT_FALSE(frame.has_value());
+    EXPECT_EQ(frame.error(), FrameError::Io);
+
+    ::close(pipefd[0]);
+    ::close(pipefd[1]);
 }
 
 TEST(Framing, SendAfterPeerCloseFailsWithIoInsteadOfSigpipe)

@@ -32,11 +32,30 @@ fd-index = uint                 ; index into the frame's SCM_RIGHTS fd vector
 
 capabilities   = uint .bits capability-bit
 capability-bit = ( Pki: 0, IdentityData: 1, EmrtdCrypto: 2, PinManagement: 3 )   ; .bits RHS is a plain group
-pre-read-auth  = &( None: 0, BacMrz: 1, PaceCan: 2 )
+; Tolerance (client decode): pre-read-auth is wire-frozen append-only; a value
+; past Can=2 (a future unlock method this client build does not name yet)
+; MUST NOT fail the frame -- decode it through raw, numeric, unmodified. What
+; an unrecognised value MEANS is a client-side concern, not the codec's: the
+; card-property mapping (e.g. the socket transport's preAuthToken()) treats
+; it the same as the default, None.
+pre-read-auth  = &( None: 0, Mrz: 1, Can: 2 )
+; Tolerance (client decode): op-phase and op-status are both wire-frozen
+; append-only; a value past this build's last named one is a FUTURE value,
+; not a malformed one -- decode it through raw. Degradation is decided by the
+; STATEFUL client layer that consumes the decoded value, never the codec: an
+; unrecognised op-phase still delivers the progress fraction but the public
+; "current phase" holds the last known-good one instead of regressing to the
+; unrecognised value (AgentOperation on the Qt client; the Swift mirror's
+; OperationDriver); an unrecognised op-status is treated as Error.
 op-phase  = &( Created: 0, Connecting: 1, AwaitingConsent: 2, Authenticating: 3,
                Reading: 4, Signing: 5, Timestamping: 6, Done: 7 )
 op-status = &( Ok: 0, Cancelled: 1, Error: 2 )
 ; 20 stable, append-only values — MUST match LibreAgent value/ErrorTaxonomy.h.
+; Tolerance (client decode): a value past InvalidDocument=19 -- a code a newer
+; agent appended -- decodes through raw (the ORIGINAL tolerance this wire
+; shipped with; every other numeric enum above/below now follows the same
+; rule). The client treats it as opaque display/log data and never branches
+; on it.
 error-code = &( None: 0, CardRemoved: 1, CredentialWrong: 2, CredentialBlocked: 3,
   CommunicationError: 4, ParseError: 5, UnsupportedCard: 6, AuthFailed: 7,
   PrompterError: 8, CapabilityMissing: 9, WatchdogTimeout: 10, KeyNotFound: 11,
@@ -46,17 +65,40 @@ error-code = &( None: 0, CardRemoved: 1, CredentialWrong: 2, CredentialBlocked: 
 ; ---- requests (client -> agent) ----
 request  = { req: uint, req-body }
 req-body = ( hello // get-state // read-identity // get-photo //
-  read-certificates // sign // get-cert-der // get-config // set-config // reset-config //
+  read-certificates // read-token-info // sign // sign-batch // get-cert-der // get-config // set-config // reset-config //
   cancel-op // get-sign-result // pk-login // pk-logout // pk-public-key // pk-sign-raw // pk-decrypt //
-  list-credentials // manage-pin // activate-signing-key )
+  list-credentials // manage-pin // activate-signing-key // layout-visual // get-appearance-font )
 
 hello             = ( t: "Hello", proto: uint, ? client: tstr )
 get-state         = ( t: "GetState" )
 read-identity     = ( t: "ReadIdentity", card: handle )
 get-photo         = ( t: "GetPhoto", card: handle )
 read-certificates = ( t: "ReadCertificates", card: handle )
+; Lightweight token-info read (PKCS#15 TokenInfo or equivalent). Result rides
+; the EXISTING op-result-ready kind "Identity" (identity-result below) — a
+; single "token" group: label/serial_number/manufacturer — never a new result
+; shape. Gated behind the "token-info" hello-ack feature token (see
+; hello-ack) + the PKI capability bit (token info is PKI-adjacent, the same
+; gate read-certificates uses). An unsupported/best-effort-miss plugin
+; answers a PRESENT "token" group with ZERO fields -- a SUCCESS, never an
+; error (the spec's empty-group resilience).
+read-token-info   = ( t: "ReadTokenInfo", card: handle )
 ; Card1.Sign: the document to sign rides SCM_RIGHTS (referenced by `in`).
 sign              = ( t: "Sign", card: handle, cert: cert-id, in: fd-index, opts: sign-opts )
+; Card1.SignBatch: N documents signed under ONE consent + credential prompt,
+; sharing certId/opts across the whole batch (the same sign-opts a single
+; Sign already uses, reused verbatim) -- only each document's identity/bytes
+; vary per entry. Each document's bytes ride SCM_RIGHTS, referenced by
+; fdIndex exactly like sign's single `in`. Entry validated to 1-12 documents
+; (bounded by the bus's per-message fd budget, shared by this request's
+; document fds and the Result signal's artifact fds); 0 or more than 12 is
+; Error.InvalidRequest, no Operation minted. One consent covers the whole
+; batch: the PIN is collected once and held agent-side only for the batch's
+; duration, discarded once every document has been attempted. A wrong or
+; blocked credential halts the remaining documents (they are not attempted;
+; their row carries the SAME halt code) rather than re-prompting per file.
+sign-batch        = ( t: "SignBatch", card: handle, cert: cert-id, docs: [* batch-document], opts: sign-opts )
+batch-document    = { name: tstr, fdIndex: fd-index }
 ; Pkcs11_1 seam — ALL methods reader-addressed (the canonical Pkcs11_1 interface takes
 ; a reader object path + certId; the resolution seams are reader-path-keyed and
 ; the login lease is per-token/per-reader-slot). NO PIN args (protected-auth);
@@ -86,10 +128,39 @@ manage-pin           = ( t: "ManagePin",          card: handle, pinId: tstr,
                          verb: cred-verb, ? activateKey: bool )
 activate-signing-key = ( t: "ActivateSigningKey", card: handle )
 cred-verb = "change" / "unblock" / "activate_pin"
+; Card-independent, synchronous visible-signature layout preview -- no
+; card, no Operation object (unlike every request above). x/y/width/height
+; mirror visual-sig-opts' rectangle field-for-field (PDF user units,
+; float64); validated at method entry the SAME way (non-negative-free --
+; there is no page here -- all four finite, width/height strictly positive),
+; Error.InvalidRequest otherwise. Gated behind the "layout-preview" feature
+; token (see hello-ack) -- client-side local refusal before the request is
+; ever sent, mirroring tsaUrl/visualSignature's own posture.
+layout-visual = ( t: "LayoutVisual", text: tstr, x: float64, y: float64, width: float64, height: float64 )
+; The embedded appearance font (Liberation Sans Regular TTF) rides the SAME
+; fd-index/SCM_RIGHTS mechanism as every other fd-carrying reply on this
+; wire (sign-result's `artifact`, photo-result's `fd`) -- never inlined as
+; `bstr`, so a client that never asks for it pays no bandwidth. Gated behind
+; the "layout-preview" feature token, same as layout-visual above.
+get-appearance-font = ( t: "GetAppearanceFont" )
 ; Card1.Sign options: format/level/packaging + optional per-sign chrome.
-; NO `tsa` — the TSA is Config1-owned (TsaUrls/LastTsaUrl), not a per-sign option.
+; tsaUrl overrides the agent's configured TSA (TsaUrls/LastTsaUrl) for THIS
+; ONE sign (https-only, non-empty host — validated at method entry); absent
+; uses the configured default. Meaningful only for the timestamped/long-term
+; family — paired with level "b-b" it is rejected at entry, not silently
+; ignored (Error.UnsupportedSignatureParameter). Gated behind the "tsa-url"
+; feature token (client-side local refusal before the request is ever sent;
+; unrelated to this grammar, which the agent still enforces server-side).
+; visualSignature attaches a PAdES visible-signature appearance; rejected at
+; method entry on any other format. Gated behind the "visual-sign" feature
+; token, same posture as tsaUrl above.
 sign-opts     = { format: tstr, level: tstr, packaging: tstr,
-                  ? allowExpired: bool, ? displayName: tstr, ? reason: tstr, ? location: tstr }
+                  ? allowExpired: bool, ? displayName: tstr, ? reason: tstr, ? location: tstr,
+                  ? tsaUrl: tstr, ? visualSignature: visual-sig-opts }
+; page is 0-based; x/y/width/height are PDF user units (float64). All six
+; fields are REQUIRED once visualSignature itself is present — only the outer
+; sign-opts key is optional.
+visual-sig-opts = { page: uint, x: float64, y: float64, width: float64, height: float64, text: tstr }
 
 ; Config1 is a TYPED property set. Only a SUBSET is settable over the wire;
 ; TslCacheDir/AiaCacheDir/PluginDir are file-only (a wire-settable PluginDir is a
@@ -109,14 +180,31 @@ reply    = { t: "Reply", req: uint, ( reply-ok // ( err: err-info ) ) }
 err-info = { ( code: error-code // name: sync-error ), ? msgKey: tstr, ? msgFallback: tstr }
 ; Named synchronous-method errors (D-Bus Error.* names). Includes the Card1.Sign
 ; method-entry rejections (no Operation minted): UnsupportedOnThisCard,
-; UnsupportedSignatureParameter, InputTooLarge, RateLimited.
+; UnsupportedSignatureParameter, InputTooLarge, RateLimited. "NoResult" is
+; GetSignResult's own dedicated dead-end: the op has no retained Sign result to
+; serve (never completed as Sign, the recovery grace window elapsed, or the
+; requester does not own it -- the last two are DELIBERATELY indistinguishable
+; on the wire, an IDOR-safety rule, not a decode ambiguity). Pinned as a named
+; classification (see the tolerance note just below for how a client maps it),
+; not merely a fallback token.
+; Tolerance (client decode): sync-error is a TEXT-token enum, unlike the
+; numeric ones above -- there is no width to bound an unrecognised token
+; against, so it DEGRADES AT DECODE to "CommunicationError" (the same
+; generic-protocol-error bucket an unrecognised D-Bus error name already
+; falls back to on the other transport) instead of failing the err-info map
+; (and the whole reply frame) closed. The original token is not retained.
+; This DEGRADE fallback is distinct from "NoResult"'s own classification --
+; both a client that already knows "NoResult" and one that does not (an older
+; build, pre-degrade) converge on the SAME CommunicationError outcome (see
+; ErrorNameMap.cpp's mapAgentErrorShortName), so an older client cannot
+; distinguish the two paths behaviourally either way.
 sync-error = "UnknownCard" / "KeyNotFound" / "NotAuthorized" / "UserNotLoggedIn" /
              "UnknownConfigKey" / "ReadOnlyConfig" / "InvalidConfigValue" / "UnsupportedProtocol" /
              "AuthFailed" / "CommunicationError" / "NotSupported" /
              "UnsupportedOnThisCard" / "UnsupportedSignatureParameter" /
-             "InputTooLarge" / "RateLimited" / "UnknownCredential" / "InvalidRequest"
+             "InputTooLarge" / "RateLimited" / "UnknownCredential" / "InvalidRequest" / "NoResult"
 reply-ok = ( hello-ack // op-started // state // cert-list // cert-der // public-key //
-             config // ack // raw-signature // sign-recovery )
+             config // ack // raw-signature // sign-recovery // layout // appearance-font )
 ; `features` advertises optional request families this agent understands; the
 ; client MUST gate the credential requests (ListCredentials / ManagePin /
 ; ActivateSigningKey) on the "credentials" token and fall back to read-only when
@@ -126,8 +214,26 @@ reply-ok = ( hello-ack // op-started // state // cert-list // cert-der // public
 ; and answers such a frame by failing it closed and dropping the connection, so a
 ; client that skips the gate loses its whole session instead of getting a clean
 ; per-request error.
-hello-ack     = ( kind: "HelloAck", agentVer: tstr, features: [* tstr] )   ; Manager1.Version
-op-started    = ( op: uint )    ; async op id (ReadIdentity/GetPhoto/ReadCertificates/Sign/
+; Feature-token vocabulary — the SET of tokens this agent may actually serve in
+; `features`, single-sourced from LibreSCRS::Agent::kAgentFeatures
+; (include/LibreSCRS/Agent/FeatureTokens.h) and served verbatim on both wires
+; (this HelloAck field; the mirrored D-Bus `Manager1.Features` property).
+; `features` stays the open `[* tstr]` below, NOT a closed CDDL enumeration —
+; a client tolerates any EXTRA token a newer agent advertises (see the gate
+; note above). This comment documents which tokens are actually LIVE today; a
+; guard test (tests/wire/FeatureTokensGuardTest.cpp) keeps it and the array in
+; lockstep, so an append to one without the other fails closed:
+;   "credentials"
+;   "card-type"
+;   "token-info"
+;   "trust-status"
+;   "tsa-url"
+;   "visual-sign"
+;   "layout-preview"
+;   "identity-stream"
+;   "batch-sign"
+hello-ack     = ( kind: "HelloAck", agentVer: tstr, features: [* tstr] )   ; agentVer<->Manager1.Version; features<->Manager1.Features
+op-started    = ( op: uint )    ; async op id (ReadIdentity/GetPhoto/ReadCertificates/ReadTokenInfo/Sign/SignBatch/
                                 ;   ListCredentials/ManagePin/ActivateSigningKey)
 state         = ( readers: [* reader-state], cards: [* card-state] )
 cert-list     = ( certs: [* cert-info] )
@@ -138,12 +244,67 @@ config        = ( entries: { * config-key => any } )
 ack           = ( ok: true )
 raw-signature = ( sig: bstr )              ; Pkcs11.SignRaw / Decrypt result
 sign-recovery = ( result: sign-result )    ; GetSignResult reply (Sign-only, within the grace window)
+; LayoutVisual's reply. fontSize/lineHeight are PDF user units (float64,
+; mirroring the request's own rectangle units); lines is the word-wrapped
+; text, one entry per rendered line. `clipped` is PIXEL-PARITY load-bearing —
+; see LibreSCRS::Signing::VisualSignatureLayout's own doc comment — true iff
+; even the floor font size does not fit the box, in which case a renderer
+; MUST install the same clip path the PAdES emitter installs when it stamps
+; the real signature. Discriminated by `kind` like hello-ack (the only other
+; reply-ok arm to use that key) rather than by a key unique to this arm alone
+; — `kind: "Layout"` never collides with `kind: "HelloAck"`.
+layout          = ( kind: "Layout", fontSize: float64, lineHeight: float64, lines: [* tstr], clipped: bool )
+; GetAppearanceFont's reply — the embedded Liberation Sans Regular TTF
+; bytes, ridden as an fd exactly like sign-result's `artifact` / photo-result's
+; `fd` (never inlined as `bstr`).
+appearance-font = ( fd: fd-index )
 
 reader-state = { handle: handle, name: tstr, hasCard: bool, ? card: handle }
-card-state   = { handle: handle, reader: handle, caps: capabilities, preAuth: pre-read-auth }
+; cardType/atr are appended (feature-gated "card-type"): cardType is
+; empty-until-known (absent from the map until the agent has a value — either
+; the single-candidate pluginId resolved at the same deferred point as caps/
+; preAuth, or the authoritative CardData::cardType from a completed read,
+; pushed to an already-published card via a `property-changed` event carrying
+; iface "org.librescrs.Agent.Card1" (see that event's own vocabulary comment
+; below)); atr is uppercase hex, no separators, the full session ATR,
+; always present from insertion onward. Both keys are OPTIONAL so an older
+; client decoding a newer agent's frame (nothing to do here, append-only) and
+; a newer client decoding an OLDER agent's frame (the keys are simply absent)
+; both degrade to empty strings, never a decode failure.
+card-state   = { handle: handle, reader: handle, caps: capabilities, preAuth: pre-read-auth,
+                 ? cardType: tstr, ? atr: tstr }
 ; Mirror the canonical Certificates1.Result a(sba{sa{s(ssv)}}uasasu) grouped
 ; shape — grouped fields (group -> field -> [labelKey, labelFallback, value]) plus
 ; keyUsageBits, ekus, chainSubjectCns, trustStatus. No DER on the wire.
+; `fields` group keys (dict-key growth is lawful and append-only on this
+; map): subject | issuer | validity | publicKey | cert | ext |
+; basicConstraints | san | ian | crlDp | aia | certificatePolicies |
+; security. The V10 vocabulary-append groups (basicConstraints/san/ian/
+; crlDp/aia/certificatePolicies) mirror LM's typed X.509 extension
+; accessors (BasicConstraints/SubjectAltName/IssuerAltName/
+; CRLDistributionPoints/AuthorityInfoAccess/CertificatePolicies); the
+; generic "ext" group never duplicates an OID a typed group already
+; decoded, and a critical extension's labelFallback carries a
+; " (Critical)" suffix. `cert` also gained subjectKeyIdentifier /
+; authorityKeyIdentifier (clean colon-hex, distinct from the raw
+; ASN.1-wrapped extnValue "ext" would otherwise show for those two OIDs)
+; and a signatureAlgorithm OID fallback for an unrecognised description.
+; `security` is the trustStatus's own token vocabulary (see below), one
+; field per token keyed by the token itself, value == the token.
+; trustStatus: 0 Trusted, 1 UntrustedRoot, 2 BrokenChain,
+; 3 InvalidCertificate, 4 Expired, 5 Revoked, 6 OfflineUnverified,
+; 255 Unknown. Computed by the agent's TrustVerifier seam (LM
+; Trust::TrustStore, configured from TslSources/TslCacheDir); no TSL
+; source configured (or the trust store unavailable) yields 6
+; OfflineUnverified. Revoked (5) is reserved vocabulary — no revocation
+; (OCSP/CRL) check is wired yet, so the agent never emits it today.
+; Matching security-status tokens (closed vocabulary: "trusted",
+; "untrusted-root", "broken-chain", "invalid", "expired", "revoked",
+; "offline-unverified") ride the "security" group.
+; Tolerance (client decode): trustStatus is a raw u32, wire-frozen
+; append-only like error-code above; a value past OfflineUnverified=6 --
+; a verdict a newer agent appended -- decodes through raw and the client
+; maps it to Unknown at the mapping layer, never failing the decode.
 cert-info    = { certId: cert-id, signingCapable: bool,
                  fields: { * tstr => { * tstr => cert-field } },
                  keyUsageBits: uint, ekus: [* tstr], chainSubjectCns: [* tstr], trustStatus: uint }
@@ -151,12 +312,30 @@ cert-field   = [ labelKey: tstr, labelFallback: tstr, value: tstr ]   ; (ssv): v
 
 ; ---- events (agent -> client, unsolicited) ----
 event = { reader-added // reader-removed // card-added // card-removed //
-          property-changed // config-changed // op-progress // op-result-ready //
-          op-finished // agent-quiesced }
+          property-changed // config-changed // op-progress // op-identity-group //
+          op-result-ready // op-finished // agent-quiesced }
 reader-added     = ( t: "ReaderAdded",   reader: reader-state )
 reader-removed   = ( t: "ReaderRemoved", handle: handle )
 card-added       = ( t: "CardAdded",     card: card-state )
 card-removed     = ( t: "CardRemoved",   handle: handle )
+; The wire SHAPE stays free-form (`iface: tstr, props: { * tstr => any }`) --
+; append-tolerant like `features` above -- but only two interfaces actually
+; ever emit this event today (the SOCKET daemon only; the D-Bus daemon uses
+; its native org.freedesktop.DBus.Properties.PropertiesChanged signal per
+; interface instead of this event, so this vocabulary has no D-Bus-side
+; equivalent to cross-check against). A guard test
+; (tests/wire/PropertyChangedVocabGuardTest.cpp) pins the iface SET below; an
+; iface this comment does not list, or a listed one this comment drops, fails
+; the guard. Per-iface `props` keys are documented here but NOT
+; guard-tested (there is no single-sourced production array to pin them
+; against, unlike `features`' kAgentFeatures) --
+;   iface "org.librescrs.Agent.Card1": pushed when a card's cardType resolves
+;     after insertion (see card-state's own comment above) --
+;     props: { CardType: tstr }
+;   iface "org.librescrs.Agent.Reader1": pushed on a reader's hasCard/card
+;     transition --
+;     props: { HasCard: bool, ? Card: tstr }  (Card present only when
+;     HasCard is true)
 property-changed = ( t: "PropertyChanged", handle: handle, iface: tstr, props: { * tstr => any } )
 config-changed   = ( t: "ConfigChanged", key: config-key )   ; Config1.Changed(key) — client re-reads via GetConfig
 ; Operation1 progress properties: Phase + Progress/IsIndeterminate/WatchdogTimeoutSeconds.
@@ -167,27 +346,54 @@ op-progress = ( t: "OpProgress", op: uint, phase: op-phase,
 ; Delivery invariant — a result cannot be missed by subscribing late, which is
 ; why op-result-ready needs no pull-based recovery and get-sign-result is
 ; Sign-only:
-;   Every frame of an op (the op-started reply, op-progress, op-result-ready,
-;   op-finished) is written to the connection that issued the request, in order,
-;   on one serial queue. Delivery eligibility is established when the connection
-;   is accepted — before the request that starts the op is parsed — so there is no
-;   separate subscription channel to arm afterwards and nothing to race. A client
-;   that reads its socket late loses nothing: unread frames stay queued. The
-;   result cannot overtake the op-started reply either, because that reply is
-;   enqueued inside the same serial-queue block that starts the op, and writes
-;   drain FIFO.
+;   Every frame of an op (the op-started reply, op-progress, op-identity-group,
+;   op-result-ready, op-finished) is written to the connection that issued the
+;   request, in order, on one serial queue. Delivery eligibility is established
+;   when the connection is accepted — before the request that starts the op is
+;   parsed — so there is no separate subscription channel to arm afterwards and
+;   nothing to race. A client that reads its socket late loses nothing: unread
+;   frames stay queued. The result cannot overtake the op-started reply either,
+;   because that reply is enqueued inside the same serial-queue block that
+;   starts the op, and writes drain FIFO.
 ;   Losing the connection is not a late subscriber: it cancels the op and evicts
 ;   its recovery state, and a reconnect is issued a fresh connId/CallerToken, so
 ;   there is no cross-connection resume to serve.
+; Progressive identity-read delivery: a ReadIdentity (or a GetPhoto cache-miss
+; read, which never reaches this arm — see the field-group source's own doc
+; comment) pushes ONE op-identity-group frame per field group as the card
+; plugin produces it, all of them written — same serial queue, same ordering
+; guarantee as above — strictly BEFORE the eventual op-result-ready for that
+; op. A client that renders incrementally does not need to wait for the final
+; grouped result; one that ignores this frame entirely still gets the
+; complete set from op-result-ready, which stays authoritative and is
+; unchanged by this event's existence — a group delivered here is a
+; progressive hint, never a substitute for it. `fields` mirrors
+; identity-result's own per-group map shape (the SAME id-field tuple), one
+; group's worth rather than the whole grouped dict. Gated behind the
+; "identity-stream" feature token (see hello-ack): an agent that does not
+; advertise it never writes this frame at all; a client is not required to
+; gate its OWN handling of it on the token (unlike every request-side gate
+; above) because receiving an event needs no request to have been sent
+; differently — the asymmetry is that this is push-only, not
+; request/response. An older client build that does not recognise
+; "OpIdentityGroup" at all skips it via the wire-wide unknown-`t`-tag
+; tolerance, exactly like any other event it does not understand.
+op-identity-group = ( t: "OpIdentityGroup", op: uint, groupKey: tstr,
+                       fields: { * tstr => id-field } )
 op-result-ready = ( t: "OpResultReady", op: uint, result: op-result )
 op-finished = ( t: "OpFinished", op: uint, status: op-status, code: error-code,
                 msgKey: tstr, msgFallback: tstr )
 ; system-lifecycle: the agent quiesced card access (sleep / lock / user-switch).
 agent-quiesced = ( t: "AgentQuiesced", reason: quiesce-reason )
+; Tolerance (client decode): quiesce-reason is wire-frozen append-only, like
+; pre-read-auth; an unrecognised reason decodes through raw. Nothing on the
+; client branches on the value today, so an unrecognised one is inertly a
+; "generic quiesce" -- the event still degrades agent availability the same
+; way regardless of which reason it names.
 quiesce-reason = &( SystemSleep: 0, ScreenLocked: 1, SessionInactive: 2, Shutdown: 3 )
 
 ; ---- op result payloads (Sign also served by GetSignResult within the grace window) ----
-op-result = identity-result / photo-result / cert-list-result / sign-result / credentials-result
+op-result = identity-result / photo-result / cert-list-result / sign-result / sign-batch-result / credentials-result
 ; Mirror the canonical Identity1.Result a{sa{s(sssv)}} grouped 4-tuple
 ; (labelKey, labelFallback, type, value). Photo fields are omitted (fetch via GetPhoto).
 identity-result  = { kind: "Identity",     fields: { * tstr => { * tstr => id-field } } }
@@ -196,6 +402,18 @@ photo-result     = { kind: "Photo",        photos: [* { key: tstr, fd: fd-index 
 cert-list-result = { kind: "Certificates", certs: [* cert-info] }
 sign-result      = { kind: "Sign",         artifact: fd-index, meta: sign-meta }
 sign-meta = { format: tstr, level: tstr, tsaUsed: bool, chainComplete: bool }
+; SignBatch's result: one row per input document, in the SAME order. A
+; successful row's `artifact` is the signed AdES bytes; a failed row's
+; `artifact` is the wire's pinned zero-length-sealed-memfd convention (a
+; non-nullable fd still resolves, to zero bytes) -- this grammar cannot
+; distinguish the two by shape alone, that invariant is upheld by whichever
+; layer seals the memfd. `errorCode` is None on a successful row; every row
+; from the halt point onward (inclusive of the row that triggered it)
+; carries the SAME halt code. Tolerance (client decode): errorCode is the
+; same raw u32, wire-frozen append-only `error-code` as every other
+; errorCode field on this wire -- an unrecognised value decodes through raw.
+sign-batch-result = { kind: "SignBatch", rows: [* sign-batch-row] }
+sign-batch-row    = { displayName: tstr, artifact: fd-index, meta: sign-meta, errorCode: error-code }
 
 ; Credentials results. A MUTATION op (ManagePin/ActivateSigningKey)
 ; emits EXACTLY ONE op-result-ready per operation — for EVERY completed
@@ -214,6 +432,10 @@ credentials-result = { kind: "Credentials", result: cred-result,
                        records: [* cred-record] }
 cred-result = { outcome: cred-outcome, ? retriesLeft: uint, blocked: bool,
                 ? pinActivated: bool, ? keyActivated: bool }
+; Tolerance (client decode): cred-outcome is a TEXT-token enum, exactly like
+; sync-error above -- an unrecognised token DEGRADES AT DECODE to
+; "unspecified" instead of failing the cred-result (and thus the whole
+; op-result-ready) closed. The original token is not retained.
 cred-outcome = "unspecified" / "ok" / "userCancelled" / "missingFields" /
                "invalidPin" / "blocked" / "pluginError" / "unsupported" /
                "keyActivationFailed" / "cardRemoved"

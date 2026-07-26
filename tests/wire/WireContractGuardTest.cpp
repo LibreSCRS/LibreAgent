@@ -114,8 +114,8 @@ static_assert(u(CardCapabilities::PinManagement) == (1u << 3),
 
 // --- LM PreReadAuthMethod <-> CDDL `pre-read-auth` ---------------------------
 static_assert(u(PreReadAuthMethod::None) == 0u, "wire contract: PreReadAuthMethod::None drifted from 0");
-static_assert(u(PreReadAuthMethod::BacMrz) == 1u, "wire contract: PreReadAuthMethod::BacMrz drifted from 1");
-static_assert(u(PreReadAuthMethod::PaceCan) == 2u, "wire contract: PreReadAuthMethod::PaceCan drifted from 2");
+static_assert(u(PreReadAuthMethod::Mrz) == 1u, "wire contract: PreReadAuthMethod::Mrz drifted from 1");
+static_assert(u(PreReadAuthMethod::Can) == 2u, "wire contract: PreReadAuthMethod::Can drifted from 2");
 
 // --- LibreAgent OperationPhase / OperationStatus <-> CDDL `op-phase`/`op-status` ---
 static_assert(u(OperationPhase::Created) == 0u, "wire contract: op-phase Created drifted from 0");
@@ -246,6 +246,8 @@ constexpr const char* syncErrorWireName(SyncError e) noexcept
         return "UnknownCredential";
     case SyncError::InvalidRequest: // appended for credential management
         return "InvalidRequest";
+    case SyncError::NoResult: // appended: GetSignResult's dedicated dead-end name
+        return "NoResult";
     }
     return nullptr; // not a SyncError value (used to probe past the end for the count)
 }
@@ -444,15 +446,16 @@ static_assert(kCredRecordKeys.size() == 23u, "wire contract: cred-record has 23 
 // wire/Messages.{h,cpp}, and this table (bump kMessageTagCount). The
 // MessagesRoundTripTest proves each tag actually encodes/decodes; this only pins
 // that the vocabulary did not silently change size.
-constexpr std::array<std::string_view, 30> kMessageTags{
-    // requests (20)
-    "Hello", "GetState", "ReadIdentity", "GetPhoto", "ReadCertificates", "Sign", "GetCertDer", "GetConfig", "SetConfig",
-    "ResetConfig", "CancelOp", "GetSignResult", "Pkcs11.Login", "Pkcs11.Logout", "Pkcs11.PublicKey", "Pkcs11.SignRaw",
-    "Pkcs11.Decrypt", "ListCredentials", "ManagePin", "ActivateSigningKey",
-    // events (10)
+constexpr std::array<std::string_view, 35> kMessageTags{
+    // requests (24)
+    "Hello", "GetState", "ReadIdentity", "GetPhoto", "ReadCertificates", "ReadTokenInfo", "Sign", "SignBatch",
+    "GetCertDer", "GetConfig", "SetConfig", "ResetConfig", "CancelOp", "GetSignResult", "Pkcs11.Login", "Pkcs11.Logout",
+    "Pkcs11.PublicKey", "Pkcs11.SignRaw", "Pkcs11.Decrypt", "ListCredentials", "ManagePin", "ActivateSigningKey",
+    "LayoutVisual", "GetAppearanceFont",
+    // events (11)
     "ReaderAdded", "ReaderRemoved", "CardAdded", "CardRemoved", "PropertyChanged", "ConfigChanged", "OpProgress",
-    "OpResultReady", "OpFinished", "AgentQuiesced"};
-constexpr std::size_t kMessageTagCount = 30; // 20 requests + 10 events
+    "OpIdentityGroup", "OpResultReady", "OpFinished", "AgentQuiesced"};
+constexpr std::size_t kMessageTagCount = 35; // 24 requests + 11 events
 static_assert(kMessageTags.size() == kMessageTagCount,
               "wire contract: socket message vocabulary changed; update the CDDL + wire/Messages + this guard");
 
@@ -604,11 +607,11 @@ TEST(WireContractGuard, MacOsAnchorsHold)
             break;
         }
     }
-    for (const auto method : {PreReadAuthMethod::None, PreReadAuthMethod::BacMrz, PreReadAuthMethod::PaceCan}) {
+    for (const auto method : {PreReadAuthMethod::None, PreReadAuthMethod::Mrz, PreReadAuthMethod::Can}) {
         switch (method) { // no default
         case PreReadAuthMethod::None:
-        case PreReadAuthMethod::BacMrz:
-        case PreReadAuthMethod::PaceCan:
+        case PreReadAuthMethod::Mrz:
+        case PreReadAuthMethod::Can:
             break;
         }
     }

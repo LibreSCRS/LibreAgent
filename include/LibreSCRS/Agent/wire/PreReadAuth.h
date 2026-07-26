@@ -23,14 +23,14 @@ namespace LibreSCRS::Agent::Wire {
 /// until the mirror is updated to match — never edit one side without the
 /// other.
 ///
-/// @note The pre-read-auth vocabulary is slated for a credential-centric
-///       rename in a future increment. This mirrors what is authoritative
-///       TODAY; the parity asserts are exactly what forces the two to move
-///       together when that rename lands.
+/// Each value names the *credential* the host must collect, not the
+/// protocol run against the card — a plugin may use either BAC or PACE to
+/// consume an MRZ-derived secret, and which protocol is actually selected
+/// is plugin business, not something this enum encodes.
 enum class PreReadAuth : std::uint8_t {
-    None = 0,    ///< No pre-read authentication required.
-    BacMrz = 1,  ///< ICAO 9303 Basic Access Control derived from MRZ.
-    PaceCan = 2, ///< PACE using a Card Access Number.
+    None = 0, ///< No pre-read authentication required.
+    Mrz = 1,  ///< MRZ-derived secret (ICAO 9303 Basic Access Control or PACE).
+    Can = 2,  ///< Card Access Number (PACE).
 };
 
 } // namespace LibreSCRS::Agent::Wire

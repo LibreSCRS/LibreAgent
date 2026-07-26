@@ -21,6 +21,13 @@
 //       ever fit ErrorCode's uint32 wire width still nullopts.
 //   (h) parseReply's entry point rejects well-formed-but-non-canonical CBOR,
 //       not just malformed CBOR.
+//   (i) the SAME append tolerance as (g), generalized to every other closed
+//       enum on this wire (OperationPhase, OperationStatus, PreReadAuth,
+//       QuiesceReason numeric raw carry; CredentialOutcome/sync-error TEXT
+//       token decode-time degrade), each still bounded by its own
+//       underlying-type width. Degradation MEANING (hold-last-phase,
+//       status-as-Error, ...) is asserted at the AgentOperation layer
+//       (client/qt/tests/SeamMappingTest.cpp), not here.
 #include <LibreSCRS/Agent/wire/ClientCodec.h>
 
 #include <gtest/gtest.h>
@@ -162,6 +169,11 @@ TEST(ClientCodec, EncodeRequestEveryTypeRoundTripsThroughServerParse)
     expectRequestRoundTrip(17, PkPublicKey{"reader/0", "certid"});
     expectRequestRoundTrip(18, PkSignRaw{"reader/0", "certid", {0xDE, 0xAD}});
     expectRequestRoundTrip(19, PkDecrypt{"reader/0", "certid", {0xBE, 0xEF}});
+    expectRequestRoundTrip(
+        25, SignBatch{"card/0",
+                      "abc123",
+                      {BatchDocument{"invoice-1.pdf", 0}, BatchDocument{"invoice-2.pdf", 1}},
+                      SignOpts{"pades", "b-b", "enveloped", std::nullopt, std::nullopt, std::nullopt, std::nullopt}});
     expectRequestRoundTrip(20, ListCredentials{"reader/0:card/0"});
     expectRequestRoundTrip(21, ManagePin{"reader/0:card/0", "sign:0x92", "change", std::nullopt});
     expectRequestRoundTrip(22, ManagePin{"reader/0:card/0", "user:0x01", "activate_pin", std::optional<bool>{true}});
@@ -201,7 +213,7 @@ TEST(ClientCodec, StateReplyRoundTrips)
     StateReply state;
     state.readers.push_back(ReaderState{"r1", "Reader One", true, std::string("c1")});
     state.readers.push_back(ReaderState{"r2", "Reader Two", false, std::nullopt}); // exercises optText absent
-    state.cards.push_back(CardState{"c1", "r1", 0x3, PreReadAuth::PaceCan});
+    state.cards.push_back(CardState{"c1", "r1", 0x3, PreReadAuth::Can});
     expectReplyRoundTrip(3, state, [](std::uint64_t r, const StateReply& a) { return makeReply(r, a); });
 }
 
@@ -280,6 +292,56 @@ TEST(ClientCodec, NamedErrorReplyRoundTrips)
                          [](std::uint64_t r, const ErrInfo& a) { return makeErrorReply(r, a); });
 }
 
+// GetSignResult's dedicated dead-end name: a pinned member of sync-error now,
+// not a borrowed stand-in -- must round-trip like every other named member
+// above, AND (the genuinely distinguishing assertion) decoding the literal
+// wire string "NoResult" must land on the real SyncError::NoResult value, NOT
+// the degrade-to-CommunicationError bucket an unrecognised token falls into
+// (ErrInfoDegradesUnrecognisedSyncErrorNameToCommunicationError below) --
+// before this name was pinned, "NoResult" on the wire was indistinguishable
+// from any other unknown token and silently landed there too.
+TEST(ClientCodec, NamedErrorReplyNoResultRoundTripsAndDoesNotDegrade)
+{
+    expectReplyRoundTrip(16, ErrInfo{SyncError::NoResult, std::nullopt, std::nullopt},
+                         [](std::uint64_t r, const ErrInfo& a) { return makeErrorReply(r, a); });
+
+    CborValue::Map err;
+    err.emplace("name", CborValue(std::string("NoResult")));
+    CborValue::Map reply;
+    reply.emplace("t", CborValue(std::string("Reply")));
+    reply.emplace("req", CborValue::uint(31));
+    reply.emplace("err", CborValue(std::move(err)));
+    const auto bytes = CborValue(std::move(reply)).encode();
+    const auto decoded = parseReply(bytes, noFds());
+    ASSERT_TRUE(decoded.has_value());
+    ASSERT_TRUE(std::holds_alternative<ErrInfo>(decoded->reply));
+    const auto& err_ = std::get<ErrInfo>(decoded->reply);
+    ASSERT_TRUE(std::holds_alternative<SyncError>(err_.code));
+    EXPECT_EQ(std::get<SyncError>(err_.code), SyncError::NoResult);
+}
+
+// (i) sync-error is a TEXT-token enum: an unrecognised name has no numeric
+// width to bound, so it DEGRADES AT DECODE to CommunicationError -- the
+// generic-protocol-error bucket an unrecognised D-Bus error name already
+// falls back to on the other transport -- instead of failing the err-info
+// map (and the whole reply frame) closed.
+TEST(ClientCodec, ErrInfoDegradesUnrecognisedSyncErrorNameToCommunicationError)
+{
+    CborValue::Map err;
+    err.emplace("name", CborValue(std::string("FutureError")));
+    CborValue::Map reply;
+    reply.emplace("t", CborValue(std::string("Reply")));
+    reply.emplace("req", CborValue::uint(30));
+    reply.emplace("err", CborValue(std::move(err)));
+    const auto bytes = CborValue(std::move(reply)).encode();
+    const auto decoded = parseReply(bytes, noFds());
+    ASSERT_TRUE(decoded.has_value());
+    ASSERT_TRUE(std::holds_alternative<ErrInfo>(decoded->reply));
+    const auto& err_ = std::get<ErrInfo>(decoded->reply);
+    ASSERT_TRUE(std::holds_alternative<SyncError>(err_.code));
+    EXPECT_EQ(std::get<SyncError>(err_.code), SyncError::CommunicationError);
+}
+
 // (g) same append-tolerance, on err-info's numeric `code` arm: a code past
 // InvalidDocument=19 -- simulating a newer agent -- decodes, it does not
 // nullopt just because this build doesn't have a name for it.
@@ -303,6 +365,19 @@ TEST(ClientCodec, NumericErrorReplyRejectsCodeAboveUint32Range)
     reply.emplace("err", CborValue(std::move(err)));
     const auto bytes = CborValue(std::move(reply)).encode();
     EXPECT_FALSE(parseReply(bytes, noFds()).has_value());
+}
+
+// (g) the exact upper boundary of the raw-pass-through width check: UINT32_MAX
+// itself -- the LAST value that still fits ErrorCode's uint32_t underlying
+// type -- must decode through raw rather than nullopt. Complements the two
+// tests above, which pin an arbitrary future value (20) and the first value
+// that overflows the width (UINT32_MAX + 1); this one pins the boundary value
+// itself, distinguishing "one past the edge" from "exactly at the edge".
+TEST(ClientCodec, NumericErrorReplyToleratesErrorCodeAtUint32MaxBoundary)
+{
+    expectReplyRoundTrip(
+        30, ErrInfo{static_cast<ErrorCode>(std::numeric_limits<std::uint32_t>::max()), std::nullopt, std::nullopt},
+        [](std::uint64_t r, const ErrInfo& a) { return makeErrorReply(r, a); });
 }
 
 // (e) err-info code/name XOR (CDDL:105-113): both present, or neither, is
@@ -411,7 +486,77 @@ TEST(ClientCodec, ReaderRemovedRoundTrips)
 
 TEST(ClientCodec, CardAddedRoundTrips)
 {
-    expectEventRoundTrip(CardAdded{CardState{"c1", "r1", 0x3, PreReadAuth::PaceCan}});
+    expectEventRoundTrip(CardAdded{CardState{"c1", "r1", 0x3, PreReadAuth::Can}});
+}
+
+// cardType/atr round-trip once populated (the single-candidate/held-
+// session-resolved case, or a post-read authoritative update).
+TEST(ClientCodec, CardAddedRoundTripsWithCardTypeAndAtr)
+{
+    CardState cs{"c1", "r1", 0x3, PreReadAuth::Can};
+    cs.cardType = "SRB-eID";
+    cs.atr = "3B7F96000080318065B085040132900085";
+    expectEventRoundTrip(CardAdded{cs});
+}
+
+// cardType/atr are OPTIONAL keys -- an older agent's frame (or one that
+// simply has not resolved cardType yet) omits them entirely. Absence must
+// decode to empty (nullopt), never fail the frame closed.
+TEST(ClientCodec, CardStateDecodesMissingCardTypeAndAtrAsEmpty)
+{
+    CborValue::Map card;
+    card.emplace("handle", CborValue(std::string("c1")));
+    card.emplace("reader", CborValue(std::string("r1")));
+    card.emplace("caps", CborValue::uint(0));
+    card.emplace("preAuth", CborValue::uint(0));
+    CborValue::Map ev;
+    ev.emplace("t", CborValue(std::string("CardAdded")));
+    ev.emplace("card", CborValue(std::move(card)));
+    const auto bytes = CborValue(std::move(ev)).encode();
+    const auto decoded = parseEvent(bytes, noFds());
+    ASSERT_TRUE(decoded.has_value());
+    ASSERT_TRUE(std::holds_alternative<CardAdded>(decoded->event));
+    const auto& got = std::get<CardAdded>(decoded->event).card;
+    EXPECT_FALSE(got.cardType.has_value());
+    EXPECT_FALSE(got.atr.has_value());
+}
+
+// (i) PreReadAuth append-tolerance: a value past Can=2 -- a future unlock
+// method this build does not name -- decodes through raw rather than failing
+// the frame closed. What it MEANS (default to None) is a client-layer
+// concern (SocketTransport's preAuthToken()), not asserted at this layer.
+TEST(ClientCodec, CardStateToleratesAppendedPreAuthValue)
+{
+    CborValue::Map card;
+    card.emplace("handle", CborValue(std::string("c1")));
+    card.emplace("reader", CborValue(std::string("r1")));
+    card.emplace("caps", CborValue::uint(0));
+    card.emplace("preAuth", CborValue::uint(9)); // past Can=2
+    CborValue::Map ev;
+    ev.emplace("t", CborValue(std::string("CardAdded")));
+    ev.emplace("card", CborValue(std::move(card)));
+    const auto bytes = CborValue(std::move(ev)).encode();
+    const auto decoded = parseEvent(bytes, noFds());
+    ASSERT_TRUE(decoded.has_value());
+    ASSERT_TRUE(std::holds_alternative<CardAdded>(decoded->event));
+    EXPECT_EQ(static_cast<std::uint8_t>(std::get<CardAdded>(decoded->event).card.preAuth), 9u);
+}
+
+// (i) the tolerance is bounded by PreReadAuth's own uint8_t underlying
+// storage: a preAuth value that doesn't fit a byte at all is still
+// malformed -- it would silently alias two distinct future values.
+TEST(ClientCodec, CardStateRejectsPreAuthAboveUint8Range)
+{
+    CborValue::Map card;
+    card.emplace("handle", CborValue(std::string("c1")));
+    card.emplace("reader", CborValue(std::string("r1")));
+    card.emplace("caps", CborValue::uint(0));
+    card.emplace("preAuth", CborValue::uint(256));
+    CborValue::Map ev;
+    ev.emplace("t", CborValue(std::string("CardAdded")));
+    ev.emplace("card", CborValue(std::move(card)));
+    const auto bytes = CborValue(std::move(ev)).encode();
+    EXPECT_FALSE(parseEvent(bytes, noFds()).has_value());
 }
 
 TEST(ClientCodec, CardRemovedRoundTrips)
@@ -446,6 +591,77 @@ TEST(ClientCodec, OpFinishedRoundTrips)
     expectEventRoundTrip(OpFinished{25, OperationStatus::Ok, ErrorCode::None, "", ""});
 }
 
+// (i) OperationPhase append-tolerance: a phase past this build's last known
+// value (Done=7) -- as a newer agent would send -- decodes through raw
+// rather than failing the frame closed. Hold-last-phase degradation is a
+// client-layer (AgentOperation) concern, asserted in SeamMappingTest.cpp, not
+// here -- the codec is a stateless carrier.
+TEST(ClientCodec, OpProgressToleratesAppendedPhaseValue)
+{
+    CborValue::Map ev;
+    ev.emplace("t", CborValue(std::string("OpProgress")));
+    ev.emplace("op", CborValue::uint(50));
+    ev.emplace("phase", CborValue::uint(99)); // past Done=7
+    const auto bytes = CborValue(std::move(ev)).encode();
+    const auto decoded = parseEvent(bytes, noFds());
+    ASSERT_TRUE(decoded.has_value());
+    ASSERT_TRUE(std::holds_alternative<OpProgress>(decoded->event));
+    const auto& progress = std::get<OpProgress>(decoded->event);
+    EXPECT_EQ(progress.op, 50u);
+    EXPECT_EQ(static_cast<std::uint32_t>(progress.phase), 99u);
+}
+
+// (i) the tolerance is bounded by OperationPhase's own uint32_t underlying
+// storage, exactly like ErrorCode's width check.
+TEST(ClientCodec, OpProgressRejectsPhaseAboveUint32Range)
+{
+    CborValue::Map ev;
+    ev.emplace("t", CborValue(std::string("OpProgress")));
+    ev.emplace("op", CborValue::uint(51));
+    ev.emplace("phase", CborValue::uint(static_cast<std::uint64_t>(std::numeric_limits<std::uint32_t>::max()) + 1));
+    const auto bytes = CborValue(std::move(ev)).encode();
+    EXPECT_FALSE(parseEvent(bytes, noFds()).has_value());
+}
+
+// (i) OperationStatus append-tolerance, combined with the pre-existing
+// ErrorCode tolerance in the SAME frame: a status past Error=2 AND a code
+// past InvalidDocument=19 both decode through raw. Status degradation
+// ("treat as Error") is a client-layer (AgentOperation) concern, asserted in
+// SeamMappingTest.cpp, not here.
+TEST(ClientCodec, OpFinishedToleratesAppendedStatusAndErrorCodeValues)
+{
+    CborValue::Map ev;
+    ev.emplace("t", CborValue(std::string("OpFinished")));
+    ev.emplace("op", CborValue::uint(52));
+    ev.emplace("status", CborValue::uint(7)); // past Error=2
+    ev.emplace("code", CborValue::uint(10000));
+    ev.emplace("msgKey", CborValue(std::string("")));
+    ev.emplace("msgFallback", CborValue(std::string("")));
+    const auto bytes = CborValue(std::move(ev)).encode();
+    const auto decoded = parseEvent(bytes, noFds());
+    ASSERT_TRUE(decoded.has_value());
+    ASSERT_TRUE(std::holds_alternative<OpFinished>(decoded->event));
+    const auto& finished = std::get<OpFinished>(decoded->event);
+    EXPECT_EQ(finished.op, 52u);
+    EXPECT_EQ(static_cast<std::uint32_t>(finished.status), 7u);
+    EXPECT_EQ(static_cast<std::uint32_t>(finished.code), 10000u);
+}
+
+// (i) the tolerance is bounded by OperationStatus's own uint32_t underlying
+// storage.
+TEST(ClientCodec, OpFinishedRejectsStatusAboveUint32Range)
+{
+    CborValue::Map ev;
+    ev.emplace("t", CborValue(std::string("OpFinished")));
+    ev.emplace("op", CborValue::uint(53));
+    ev.emplace("status", CborValue::uint(static_cast<std::uint64_t>(std::numeric_limits<std::uint32_t>::max()) + 1));
+    ev.emplace("code", CborValue::uint(0));
+    ev.emplace("msgKey", CborValue(std::string("")));
+    ev.emplace("msgFallback", CborValue(std::string("")));
+    const auto bytes = CborValue(std::move(ev)).encode();
+    EXPECT_FALSE(parseEvent(bytes, noFds()).has_value());
+}
+
 // (g) ErrorCode is wire-frozen APPEND-ONLY (ErrorCode.h): a code past this
 // build's last known value (InvalidDocument=19) -- as a newer agent would
 // send -- must decode through, not fail closed like OperationStatus/etc.
@@ -466,12 +682,99 @@ TEST(ClientCodec, AgentQuiescedRoundTrips)
     expectEventRoundTrip(AgentQuiesced{QuiesceReason::ScreenLocked});
 }
 
+// (i) QuiesceReason append-tolerance: a reason past Shutdown=3 -- a future
+// one -- decodes through raw rather than failing the frame closed.
+TEST(ClientCodec, AgentQuiescedToleratesAppendedReasonValue)
+{
+    CborValue::Map ev;
+    ev.emplace("t", CborValue(std::string("AgentQuiesced")));
+    ev.emplace("reason", CborValue::uint(42)); // past Shutdown=3
+    const auto bytes = CborValue(std::move(ev)).encode();
+    const auto decoded = parseEvent(bytes, noFds());
+    ASSERT_TRUE(decoded.has_value());
+    ASSERT_TRUE(std::holds_alternative<AgentQuiesced>(decoded->event));
+    EXPECT_EQ(static_cast<std::uint8_t>(std::get<AgentQuiesced>(decoded->event).reason), 42u);
+}
+
+// (i) the tolerance is bounded by QuiesceReason's own uint8_t underlying
+// storage, exactly like PreReadAuth's width check.
+TEST(ClientCodec, AgentQuiescedRejectsReasonAboveUint8Range)
+{
+    CborValue::Map ev;
+    ev.emplace("t", CborValue(std::string("AgentQuiesced")));
+    ev.emplace("reason", CborValue::uint(256));
+    const auto bytes = CborValue(std::move(ev)).encode();
+    EXPECT_FALSE(parseEvent(bytes, noFds()).has_value());
+}
+
 TEST(ClientCodec, OpResultReadyIdentityRoundTrips)
 {
     IdentityResult idResult;
     idResult.fields["MRZ"]["Name"] = IdentityField{"name.key", "Name", "text", std::string("JOHN DOE")};
     idResult.fields["MRZ"]["Raw"] = IdentityField{"raw.key", "Raw", "binary", CborValue::Bytes{0x01, 0x02}};
     expectEventRoundTrip(OpResultReady{20, idResult});
+}
+
+// Progressive per-group delivery: ONE group's field map -- the SAME (sssv)
+// cell shape as one entry of OpResultReadyIdentity's own outer map above,
+// carried by its own event rather than nested inside the grouped Result.
+TEST(ClientCodec, OpIdentityGroupRoundTrips)
+{
+    OpIdentityGroup group;
+    group.op = 20;
+    group.groupKey = "MRZ";
+    group.fields["Name"] = IdentityField{"name.key", "Name", "text", std::string("JOHN DOE")};
+    group.fields["Raw"] = IdentityField{"raw.key", "Raw", "binary", CborValue::Bytes{0x01, 0x02}};
+    expectEventRoundTrip(group);
+}
+
+// Adversarial group/field KEY survives the agent-side WIRE ENCODE hop
+// verbatim: `encodeOpResult`'s Identity arm (Messages.cpp) is the one
+// production encode path a plugin-supplied group/field string actually
+// crosses on its way to the wire -- the client-side fakes (FakeAgent /
+// FakeSocketAgent, see FieldKeyParityTest / TransportParityTest) build wire
+// structures directly and never touch it, so this hop was previously backed
+// only by a manual read of encodeIdentityFieldsMap/encodeOpResult, never by a
+// test that actually drives an unusual key through it. Mirrors the group/
+// field string TransportParityTest already proved survives the CLIENT-side
+// conversions (`Mixed_CASE.Group-1` / `Weird_Field.Key-2` -- same adversarial
+// strings, so this closes the identical gap on the agent-side encode leg
+// instead of just re-proving the client leg again).
+TEST(ClientCodec, IdentityResultAdversarialGroupAndFieldKeysSurviveEncodeOpResultVerbatim)
+{
+    constexpr std::string_view kGroupKey = "Mixed_CASE.Group-1";
+    constexpr std::string_view kFieldKey = "Weird_Field.Key-2";
+
+    IdentityResult idResult;
+    idResult.fields[std::string(kGroupKey)][std::string(kFieldKey)] =
+        IdentityField{"label.key", "Label", "text", std::string("value")};
+
+    // (a) byte-stable round-trip via the shared helper (toCbor -> parseEvent
+    // -> re-encode -> bytes match) -- proves the whole frame, not just the
+    // key, is unharmed.
+    expectEventRoundTrip(OpResultReady{50, idResult});
+
+    // (b) the DIRECT assertion the follow-up asked for: decode via the
+    // client-role ClientCodec and read the actual map key back out, rather
+    // than trusting byte-equality to imply it. Deliberately re-decodes
+    // (rather than reusing (a)'s internals) so this test stands on its own.
+    const auto bytes = toCbor(OpResultReady{50, idResult}).encode();
+    const auto decoded = parseEvent(bytes, noFds());
+    ASSERT_TRUE(decoded.has_value());
+    ASSERT_TRUE(std::holds_alternative<OpResultReady>(decoded->event));
+    const auto& ready = std::get<OpResultReady>(decoded->event);
+    ASSERT_TRUE(std::holds_alternative<IdentityResult>(ready.result));
+    const auto& decodedIdentity = std::get<IdentityResult>(ready.result);
+
+    const auto groupIt = decodedIdentity.fields.find(std::string(kGroupKey));
+    ASSERT_NE(groupIt, decodedIdentity.fields.end())
+        << "group key was mutated/dropped somewhere between encodeOpResult and ClientCodec decode";
+    const auto fieldIt = groupIt->second.find(std::string(kFieldKey));
+    ASSERT_NE(fieldIt, groupIt->second.end())
+        << "field key was mutated/dropped somewhere between encodeOpResult and ClientCodec decode";
+    EXPECT_EQ(fieldIt->second.labelKey, "label.key");
+    ASSERT_TRUE(std::holds_alternative<std::string>(fieldIt->second.value));
+    EXPECT_EQ(std::get<std::string>(fieldIt->second.value), "value");
 }
 
 // (f) fd-index: Photo items reference fds by index; a valid index round-trips.
@@ -510,6 +813,40 @@ TEST(ClientCodec, OpResultReadySignRoundTripsWithValidFdIndexAndRejectsInvalid)
     EXPECT_FALSE(parseEvent(bytes, fdVec).has_value());
 }
 
+// (f) fd-index: every row's artifact is fd-referenced, including a FAILED
+// row's -- the wire's zero-length-sealed-memfd convention still resolves a
+// real index, never an absent one.
+TEST(ClientCodec, OpResultReadySignBatchRoundTripsWithValidFdIndices)
+{
+    SignBatchResult batch;
+    batch.rows.push_back(SignBatchRow{"invoice-1.pdf", 0, SignMeta{"pades", "b-b", false, false}, ErrorCode::None});
+    batch.rows.push_back(SignBatchRow{"invoice-2.pdf", 1, SignMeta{}, ErrorCode::CredentialWrong});
+    const int fdVec[] = {5, 6};
+    expectEventRoundTrip(OpResultReady{29, batch}, fdVec);
+}
+
+// (f) fd-index: an out-of-range row artifact index is malformed -> nullopt.
+TEST(ClientCodec, OpResultReadySignBatchRejectsOutOfRangeFdIndex)
+{
+    SignBatchResult batch;
+    batch.rows.push_back(SignBatchRow{"invoice-1.pdf", 9, SignMeta{"pades", "b-b", false, false}, ErrorCode::None});
+    const auto bytes = toCbor(OpResultReady{30, batch}).encode();
+    const int fdVec[] = {5}; // only index 0 valid; artifact=9 is out of range
+    EXPECT_FALSE(parseEvent(bytes, fdVec).has_value());
+}
+
+// (g) SignBatch row errorCode is the SAME append-tolerant numeric ErrorCode
+// as every other errorCode field on this wire: a value past this build's
+// last known code decodes through raw rather than failing the row closed.
+TEST(ClientCodec, OpResultReadySignBatchRowToleratesAppendedErrorCodeValue)
+{
+    SignBatchResult batch;
+    batch.rows.push_back(
+        SignBatchRow{"invoice-1.pdf", 0, SignMeta{"pades", "b-b", false, false}, static_cast<ErrorCode>(20)});
+    const int fdVec[] = {5};
+    expectEventRoundTrip(OpResultReady{31, batch}, fdVec);
+}
+
 TEST(ClientCodec, OpResultReadyCredentialsListRoundTrips)
 {
     CredentialsResult listing;
@@ -536,6 +873,31 @@ TEST(ClientCodec, OpResultReadyCredentialsKeyActivationFailedRoundTrips)
     keyFail.result.pinActivated = true;
     keyFail.result.keyActivated = false;
     expectEventRoundTrip(OpResultReady{27, keyFail});
+}
+
+// (i) cred-outcome is a TEXT-token enum: an unrecognised token has no
+// numeric width to bound, so it DEGRADES AT DECODE to Unspecified instead of
+// failing the cred-result (and the whole op-result-ready event) closed.
+TEST(ClientCodec, CredResultDegradesUnrecognisedOutcomeTokenToUnspecified)
+{
+    CborValue::Map credResult;
+    credResult.emplace("outcome", CborValue(std::string("futureOutcome")));
+    credResult.emplace("blocked", CborValue(false));
+    CborValue::Map result;
+    result.emplace("kind", CborValue(std::string("Credentials")));
+    result.emplace("result", CborValue(std::move(credResult)));
+    result.emplace("records", CborValue(CborValue::Array{}));
+    CborValue::Map ev;
+    ev.emplace("t", CborValue(std::string("OpResultReady")));
+    ev.emplace("op", CborValue::uint(54));
+    ev.emplace("result", CborValue(std::move(result)));
+    const auto bytes = CborValue(std::move(ev)).encode();
+    const auto decoded = parseEvent(bytes, noFds());
+    ASSERT_TRUE(decoded.has_value());
+    ASSERT_TRUE(std::holds_alternative<OpResultReady>(decoded->event));
+    const auto& ready = std::get<OpResultReady>(decoded->event);
+    ASSERT_TRUE(std::holds_alternative<CredentialsResult>(ready.result));
+    EXPECT_EQ(std::get<CredentialsResult>(ready.result).result.outcome, CredentialOutcome::Unspecified);
 }
 
 // An OpResultReady whose nested op-result `kind` is not one of the five
@@ -598,6 +960,124 @@ TEST(ClientCodec, ParseReplyRejectsNonMapTopLevel)
 TEST(ClientCodec, ParseEventRejectsNonMapTopLevel)
 {
     EXPECT_FALSE(parseEvent(CborValue::uint(7).encode(), noFds()).has_value());
+}
+
+// ---- defaulted operator== smoke (this task's struct sweep) -----------------
+//
+// Every reply arm / op-result payload / event struct that lacked its own
+// equality operator now spells `bool operator==(const T&) const = default;`.
+// A defaulted comparison operator can silently do the wrong thing if a field
+// is later added without the compiler ever complaining (unlike a hand-written
+// operator that forgets a field, `= default` always widens correctly -- but
+// the more relevant risk here is a COPY-PASTE mistake in the class body, e.g.
+// forgetting a member entirely before the operator== line, which nothing else
+// catches). These four cases -- one per struct category this task touched --
+// each construct two field-identical instances (must compare equal) and one
+// instance differing in exactly one field (must compare unequal), proving the
+// defaulted operator genuinely compares by value instead of being vacuously
+// true/false or only comparing a leading field.
+TEST(ClientCodec, DefaultedOperatorEqualsComparesByValueReplyArms)
+{
+    const HelloAck helloA{"4.3.0", {"credentials", "batch-sign"}};
+    const HelloAck helloB{"4.3.0", {"credentials", "batch-sign"}};
+    const HelloAck helloC{"4.3.1", {"credentials", "batch-sign"}};
+    EXPECT_EQ(helloA, helloB);
+    EXPECT_NE(helloA, helloC);
+
+    EXPECT_EQ(AckReply{}, AckReply{});
+
+    const ErrInfo errA{SyncError::UnknownCard, std::optional<std::string>{"k"}, std::nullopt};
+    const ErrInfo errB{SyncError::UnknownCard, std::optional<std::string>{"k"}, std::nullopt};
+    const ErrInfo errC{ErrorCode::CardRemoved, std::optional<std::string>{"k"}, std::nullopt};
+    EXPECT_EQ(errA, errB);
+    EXPECT_NE(errA, errC);
+
+    StateReply stateA{{ReaderState{"r1", "Reader", true, std::optional<std::string>{"c1"}}}, {}};
+    StateReply stateB = stateA;
+    StateReply stateC = stateA;
+    stateC.readers[0].hasCard = false;
+    EXPECT_EQ(stateA, stateB);
+    EXPECT_NE(stateA, stateC);
+}
+
+TEST(ClientCodec, DefaultedOperatorEqualsComparesByValueOpResultPayloads)
+{
+    IdentityResult idA;
+    idA.fields["MRZ"]["Name"] = IdentityField{"name.key", "Name", "text", std::string("JOHN")};
+    IdentityResult idB = idA;
+    IdentityResult idC = idA;
+    idC.fields["MRZ"]["Name"] = IdentityField{"name.key", "Name", "text", std::string("JANE")};
+    EXPECT_EQ(idA, idB);
+    EXPECT_NE(idA, idC);
+
+    const SignResult signA{7, SignMeta{"pades", "b-b", true, false}};
+    const SignResult signB{7, SignMeta{"pades", "b-b", true, false}};
+    const SignResult signC{8, SignMeta{"pades", "b-b", true, false}};
+    EXPECT_EQ(signA, signB);
+    EXPECT_NE(signA, signC);
+
+    SignBatchResult batchA;
+    batchA.rows.push_back(SignBatchRow{"a.pdf", 1, SignMeta{"pades", "b-b", false, false}, ErrorCode::None});
+    SignBatchResult batchB = batchA;
+    SignBatchResult batchC = batchA;
+    batchC.rows[0].code = ErrorCode::CredentialWrong;
+    EXPECT_EQ(batchA, batchB);
+    EXPECT_NE(batchA, batchC);
+
+    // OpResultReady wraps OpResult (a std::variant) -- proves the outer
+    // struct's defaulted == genuinely reaches through the variant, not just
+    // comparing `op`.
+    const OpResultReady readyA{5, signA};
+    const OpResultReady readyB{5, signB};
+    const OpResultReady readyC{5, signC};
+    EXPECT_EQ(readyA, readyB);
+    EXPECT_NE(readyA, readyC);
+}
+
+TEST(ClientCodec, DefaultedOperatorEqualsComparesByValueEvents)
+{
+    std::map<std::string, CborValue> propsA;
+    propsA.emplace("CardType", CborValue(std::string("SRB-eID")));
+    PropertyChanged pcA{"c1", "org.librescrs.Agent.Card1", propsA};
+    PropertyChanged pcB = pcA;
+    PropertyChanged pcC = pcA;
+    pcC.props["CardType"] = CborValue(std::string("SRB-vehicle"));
+    EXPECT_EQ(pcA, pcB);
+    EXPECT_NE(pcA, pcC);
+
+    const OpFinished finA{9, OperationStatus::Ok, ErrorCode::None, "", ""};
+    const OpFinished finB{9, OperationStatus::Ok, ErrorCode::None, "", ""};
+    const OpFinished finC{9, OperationStatus::Error, ErrorCode::CardRemoved, "op.failed", "Card removed"};
+    EXPECT_EQ(finA, finB);
+    EXPECT_NE(finA, finC);
+
+    const AgentQuiesced qA{QuiesceReason::ScreenLocked};
+    const AgentQuiesced qB{QuiesceReason::ScreenLocked};
+    const AgentQuiesced qC{QuiesceReason::Shutdown};
+    EXPECT_EQ(qA, qB);
+    EXPECT_NE(qA, qC);
+}
+
+TEST(ClientCodec, DefaultedOperatorEqualsComparesByValueCredentialsAndOpIdentityGroup)
+{
+    const CredentialOpResult credOutcomeA{CredentialOutcome::Ok, std::optional<int>{3}, false, std::nullopt,
+                                          std::nullopt};
+    CredentialsResult credA{credOutcomeA, {}};
+    CredentialsResult credB = credA;
+    CredentialsResult credC = credA;
+    credC.result.retriesLeft = 2;
+    EXPECT_EQ(credA, credB);
+    EXPECT_NE(credA, credC);
+
+    OpIdentityGroup grpA;
+    grpA.op = 20;
+    grpA.groupKey = "MRZ";
+    grpA.fields["Name"] = IdentityField{"name.key", "Name", "text", std::string("JOHN")};
+    OpIdentityGroup grpB = grpA;
+    OpIdentityGroup grpC = grpA;
+    grpC.groupKey = "Registration";
+    EXPECT_EQ(grpA, grpB);
+    EXPECT_NE(grpA, grpC);
 }
 
 } // namespace

@@ -24,6 +24,7 @@
 // whole request/reply/event model, both server-role (Messages.h) and
 // client-role (ClientCodec.h) — an LM/Qt/OpenSSL include added to any header
 // in that chain fails this target with a file-not-found error.
+#include <LibreSCRS/Agent/FeatureTokens.h>
 #include <LibreSCRS/Agent/wire/ErrorCode.h>
 #include <LibreSCRS/Agent/OperationPhase.h>
 #include <LibreSCRS/Agent/wire/CredentialWire.h>
@@ -40,8 +41,10 @@ static_assert(static_cast<std::uint32_t>(ErrorCode::InvalidDocument) == 19u);
 static_assert(static_cast<std::uint32_t>(OperationStatus::Cancelled) == 1u);
 
 static_assert(static_cast<std::uint8_t>(PreReadAuth::None) == 0u);
-static_assert(static_cast<std::uint8_t>(PreReadAuth::BacMrz) == 1u);
-static_assert(static_cast<std::uint8_t>(PreReadAuth::PaceCan) == 2u);
+static_assert(static_cast<std::uint8_t>(PreReadAuth::Mrz) == 1u);
+static_assert(static_cast<std::uint8_t>(PreReadAuth::Can) == 2u);
 
 static_assert(static_cast<int>(CredentialOutcome::Unspecified) == 0);
 static_assert(static_cast<int>(CredentialOutcome::CardRemoved) == 9);
+
+static_assert(LibreSCRS::Agent::kAgentFeatures.size() == 9);

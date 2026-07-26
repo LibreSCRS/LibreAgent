@@ -78,6 +78,53 @@ std::expected<std::optional<bool>, WireError> fOptBool(const Map& m, std::string
     }
     return std::optional<bool>{*v};
 }
+std::expected<double, WireError> fDouble(const Map& m, std::string_view k)
+{
+    const auto it = m.find(k);
+    if (it == m.end()) {
+        return std::unexpected(WireError::MissingField);
+    }
+    const auto v = it->second.asDouble();
+    if (!v) {
+        return std::unexpected(WireError::WrongType);
+    }
+    return *v;
+}
+
+// `visualSignature`'s nested map: all six fields are REQUIRED once the map
+// itself is present (only the outer sign-opts key is optional).
+std::expected<VisualSignatureOpts, WireError> parseVisualSignatureOpts(const CborValue& v)
+{
+    const auto* m = v.asMap();
+    if (m == nullptr) {
+        return std::unexpected(WireError::WrongType);
+    }
+    auto page = fUint(*m, "page");
+    if (!page) {
+        return std::unexpected(page.error());
+    }
+    auto x = fDouble(*m, "x");
+    if (!x) {
+        return std::unexpected(x.error());
+    }
+    auto y = fDouble(*m, "y");
+    if (!y) {
+        return std::unexpected(y.error());
+    }
+    auto width = fDouble(*m, "width");
+    if (!width) {
+        return std::unexpected(width.error());
+    }
+    auto height = fDouble(*m, "height");
+    if (!height) {
+        return std::unexpected(height.error());
+    }
+    auto text = fText(*m, "text");
+    if (!text) {
+        return std::unexpected(text.error());
+    }
+    return VisualSignatureOpts{*page, *x, *y, *width, *height, std::move(*text)};
+}
 
 std::expected<SignOpts, WireError> parseSignOpts(const CborValue& v)
 {
@@ -113,8 +160,40 @@ std::expected<SignOpts, WireError> parseSignOpts(const CborValue& v)
     if (!location) {
         return std::unexpected(location.error());
     }
-    return SignOpts{std::move(*format),      std::move(*level),  std::move(*packaging), *allowExpired,
-                    std::move(*displayName), std::move(*reason), std::move(*location)};
+    auto tsaUrl = fOptText(*m, "tsaUrl");
+    if (!tsaUrl) {
+        return std::unexpected(tsaUrl.error());
+    }
+    std::optional<VisualSignatureOpts> visualSignature;
+    if (const auto it = m->find("visualSignature"); it != m->end()) {
+        auto parsed = parseVisualSignatureOpts(it->second);
+        if (!parsed) {
+            return std::unexpected(parsed.error());
+        }
+        visualSignature = std::move(*parsed);
+    }
+    return SignOpts{std::move(*format),   std::move(*level),       std::move(*packaging),
+                    *allowExpired,        std::move(*displayName), std::move(*reason),
+                    std::move(*location), std::move(*tsaUrl),      std::move(visualSignature)};
+}
+
+// batch-document = { name: tstr, fdIndex: fd-index } -- one Card1.SignBatch
+// document entry.
+std::expected<BatchDocument, WireError> parseBatchDocument(const CborValue& v)
+{
+    const auto* m = v.asMap();
+    if (m == nullptr) {
+        return std::unexpected(WireError::WrongType);
+    }
+    auto name = fText(*m, "name");
+    if (!name) {
+        return std::unexpected(name.error());
+    }
+    auto fdIndex = fUint(*m, "fdIndex");
+    if (!fdIndex) {
+        return std::unexpected(fdIndex.error());
+    }
+    return BatchDocument{std::move(*name), *fdIndex};
 }
 
 // --- outbound sub-type encoders ----------------------------------------------
@@ -126,6 +205,18 @@ CborValue arrOfText(const std::vector<std::string>& v)
         a.push_back(CborValue(s));
     }
     return CborValue(std::move(a));
+}
+
+CborValue encodeVisualSignatureOpts(const VisualSignatureOpts& v)
+{
+    Map m;
+    m.emplace("page", CborValue::uint(v.page));
+    m.emplace("x", CborValue(v.x));
+    m.emplace("y", CborValue(v.y));
+    m.emplace("width", CborValue(v.width));
+    m.emplace("height", CborValue(v.height));
+    m.emplace("text", CborValue(v.text));
+    return CborValue(std::move(m));
 }
 
 CborValue encodeSignOpts(const SignOpts& o)
@@ -145,6 +236,12 @@ CborValue encodeSignOpts(const SignOpts& o)
     }
     if (o.location) {
         m.emplace("location", CborValue(*o.location));
+    }
+    if (o.tsaUrl) {
+        m.emplace("tsaUrl", CborValue(*o.tsaUrl));
+    }
+    if (o.visualSignature) {
+        m.emplace("visualSignature", encodeVisualSignatureOpts(*o.visualSignature));
     }
     return CborValue(std::move(m));
 }
@@ -168,6 +265,12 @@ CborValue encodeCardState(const CardState& c)
     m.emplace("reader", CborValue(c.reader));
     m.emplace("caps", CborValue::uint(c.caps));
     m.emplace("preAuth", CborValue::uint(static_cast<std::uint64_t>(c.preAuth)));
+    if (c.cardType) {
+        m.emplace("cardType", CborValue(*c.cardType));
+    }
+    if (c.atr) {
+        m.emplace("atr", CborValue(*c.atr));
+    }
     return CborValue(std::move(m));
 }
 
@@ -203,6 +306,24 @@ CborValue encodeSignMeta(const SignMeta& s)
     m.emplace("level", CborValue(s.level));
     m.emplace("tsaUsed", CborValue(s.tsaUsed));
     m.emplace("chainComplete", CborValue(s.chainComplete));
+    return CborValue(std::move(m));
+}
+
+CborValue encodeBatchDocument(const BatchDocument& d)
+{
+    Map m;
+    m.emplace("name", CborValue(d.name));
+    m.emplace("fdIndex", CborValue::uint(d.fdIndex));
+    return CborValue(std::move(m));
+}
+
+CborValue encodeSignBatchRow(const SignBatchRow& r)
+{
+    Map m;
+    m.emplace("displayName", CborValue(r.displayName));
+    m.emplace("artifact", CborValue::uint(r.artifact));
+    m.emplace("meta", encodeSignMeta(r.meta));
+    m.emplace("errorCode", CborValue::uint(static_cast<std::uint64_t>(r.code)));
     return CborValue(std::move(m));
 }
 
@@ -310,6 +431,29 @@ CborValue encodeCredRecord(const CredentialRecord& rec)
     return CborValue(std::move(m));
 }
 
+// One group's field map (fieldKey -> id-field tuple) -- the SAME shape as one
+// entry of IdentityResult's outer `fields` dict, and the entirety of
+// OpIdentityGroup's own `fields`. Shared by encodeOpResult's Identity arm
+// below and toCbor(OpIdentityGroup) further down so the two encodings of
+// this cell shape can never drift apart.
+Map encodeIdentityFieldsMap(const std::map<std::string, IdentityField>& cells)
+{
+    Map inner;
+    for (const auto& [key, cell] : cells) {
+        Array tuple; // id-field = [labelKey, labelFallback, type, value]
+        tuple.push_back(CborValue(cell.labelKey));
+        tuple.push_back(CborValue(cell.labelFallback));
+        tuple.push_back(CborValue(cell.type));
+        if (std::holds_alternative<std::string>(cell.value)) {
+            tuple.push_back(CborValue(std::get<std::string>(cell.value)));
+        } else {
+            tuple.push_back(CborValue(std::get<Bytes>(cell.value)));
+        }
+        inner.emplace(key, CborValue(std::move(tuple)));
+    }
+    return inner;
+}
+
 CborValue encodeOpResult(const OpResult& r)
 {
     return std::visit(
@@ -320,20 +464,7 @@ CborValue encodeOpResult(const OpResult& r)
                 m.emplace("kind", CborValue("Identity"));
                 Map groups;
                 for (const auto& [group, cells] : arm.fields) {
-                    Map inner;
-                    for (const auto& [key, cell] : cells) {
-                        Array tuple; // id-field = [labelKey, labelFallback, type, value]
-                        tuple.push_back(CborValue(cell.labelKey));
-                        tuple.push_back(CborValue(cell.labelFallback));
-                        tuple.push_back(CborValue(cell.type));
-                        if (std::holds_alternative<std::string>(cell.value)) {
-                            tuple.push_back(CborValue(std::get<std::string>(cell.value)));
-                        } else {
-                            tuple.push_back(CborValue(std::get<Bytes>(cell.value)));
-                        }
-                        inner.emplace(key, CborValue(std::move(tuple)));
-                    }
-                    groups.emplace(group, CborValue(std::move(inner)));
+                    groups.emplace(group, CborValue(encodeIdentityFieldsMap(cells)));
                 }
                 m.emplace("fields", CborValue(std::move(groups)));
             } else if constexpr (std::is_same_v<T, PhotoResult>) {
@@ -357,6 +488,14 @@ CborValue encodeOpResult(const OpResult& r)
                 m.emplace("kind", CborValue("Sign"));
                 m.emplace("artifact", CborValue::uint(arm.artifact));
                 m.emplace("meta", encodeSignMeta(arm.meta));
+            } else if constexpr (std::is_same_v<T, SignBatchResult>) {
+                m.emplace("kind", CborValue("SignBatch"));
+                Array rows;
+                rows.reserve(arm.rows.size());
+                for (const auto& row : arm.rows) {
+                    rows.push_back(encodeSignBatchRow(row));
+                }
+                m.emplace("rows", CborValue(std::move(rows)));
             } else { // CredentialsResult
                 m.emplace("kind", CborValue("Credentials"));
                 m.emplace("result", encodeCredResult(arm.result));
@@ -396,11 +535,25 @@ CborValue encodeRequestBody(const Request& body)
             } else if constexpr (std::is_same_v<T, ReadCertificates>) {
                 m.emplace("t", CborValue("ReadCertificates"));
                 m.emplace("card", CborValue(r.card));
+            } else if constexpr (std::is_same_v<T, ReadTokenInfo>) {
+                m.emplace("t", CborValue("ReadTokenInfo"));
+                m.emplace("card", CborValue(r.card));
             } else if constexpr (std::is_same_v<T, Sign>) {
                 m.emplace("t", CborValue("Sign"));
                 m.emplace("card", CborValue(r.card));
                 m.emplace("cert", CborValue(r.cert));
                 m.emplace("in", CborValue::uint(r.inFd));
+                m.emplace("opts", encodeSignOpts(r.opts));
+            } else if constexpr (std::is_same_v<T, SignBatch>) {
+                m.emplace("t", CborValue("SignBatch"));
+                m.emplace("card", CborValue(r.card));
+                m.emplace("cert", CborValue(r.cert));
+                Array docs;
+                docs.reserve(r.docs.size());
+                for (const auto& doc : r.docs) {
+                    docs.push_back(encodeBatchDocument(doc));
+                }
+                m.emplace("docs", CborValue(std::move(docs)));
                 m.emplace("opts", encodeSignOpts(r.opts));
             } else if constexpr (std::is_same_v<T, GetCertDer>) {
                 m.emplace("t", CborValue("GetCertDer"));
@@ -452,9 +605,18 @@ CborValue encodeRequestBody(const Request& body)
                 if (r.activateKey) {
                     m.emplace("activateKey", CborValue(*r.activateKey));
                 }
-            } else { // ActivateSigningKey
+            } else if constexpr (std::is_same_v<T, ActivateSigningKey>) {
                 m.emplace("t", CborValue("ActivateSigningKey"));
                 m.emplace("card", CborValue(r.card));
+            } else if constexpr (std::is_same_v<T, LayoutVisual>) {
+                m.emplace("t", CborValue("LayoutVisual"));
+                m.emplace("text", CborValue(r.text));
+                m.emplace("x", CborValue(r.x));
+                m.emplace("y", CborValue(r.y));
+                m.emplace("width", CborValue(r.width));
+                m.emplace("height", CborValue(r.height));
+            } else { // GetAppearanceFont
+                m.emplace("t", CborValue("GetAppearanceFont"));
             }
             return CborValue(std::move(m));
         },
@@ -509,6 +671,8 @@ std::string_view syncErrorName(SyncError e) noexcept
         return "UnknownCredential";
     case SyncError::InvalidRequest:
         return "InvalidRequest";
+    case SyncError::NoResult:
+        return "NoResult";
     }
     return "UnknownCard"; // unreachable (all enumerators handled)
 }
@@ -571,6 +735,12 @@ std::expected<RequestEnvelope, WireError> parseRequest(std::span<const std::uint
             return std::unexpected(card.error());
         }
         env.body = ReadCertificates{std::move(*card)};
+    } else if (t == "ReadTokenInfo") {
+        auto card = oneString("card");
+        if (!card) {
+            return std::unexpected(card.error());
+        }
+        env.body = ReadTokenInfo{std::move(*card)};
     } else if (t == "Sign") {
         auto card = fText(*m, "card");
         if (!card) {
@@ -593,6 +763,41 @@ std::expected<RequestEnvelope, WireError> parseRequest(std::span<const std::uint
             return std::unexpected(opts.error());
         }
         env.body = Sign{std::move(*card), std::move(*cert), *inFd, std::move(*opts)};
+    } else if (t == "SignBatch") {
+        auto card = fText(*m, "card");
+        if (!card) {
+            return std::unexpected(card.error());
+        }
+        auto cert = fText(*m, "cert");
+        if (!cert) {
+            return std::unexpected(cert.error());
+        }
+        const auto docsIt = m->find("docs");
+        if (docsIt == m->end()) {
+            return std::unexpected(WireError::MissingField);
+        }
+        const auto* docsArr = docsIt->second.asArray();
+        if (docsArr == nullptr) {
+            return std::unexpected(WireError::WrongType);
+        }
+        std::vector<BatchDocument> docs;
+        docs.reserve(docsArr->size());
+        for (const auto& item : *docsArr) {
+            auto doc = parseBatchDocument(item);
+            if (!doc) {
+                return std::unexpected(doc.error());
+            }
+            docs.push_back(std::move(*doc));
+        }
+        const auto optsIt = m->find("opts");
+        if (optsIt == m->end()) {
+            return std::unexpected(WireError::MissingField);
+        }
+        auto opts = parseSignOpts(optsIt->second);
+        if (!opts) {
+            return std::unexpected(opts.error());
+        }
+        env.body = SignBatch{std::move(*card), std::move(*cert), std::move(docs), std::move(*opts)};
     } else if (t == "GetCertDer") {
         auto reader = fText(*m, "reader");
         if (!reader) {
@@ -706,6 +911,30 @@ std::expected<RequestEnvelope, WireError> parseRequest(std::span<const std::uint
             return std::unexpected(card.error());
         }
         env.body = ActivateSigningKey{std::move(*card)};
+    } else if (t == "LayoutVisual") {
+        auto text = fText(*m, "text");
+        if (!text) {
+            return std::unexpected(text.error());
+        }
+        auto x = fDouble(*m, "x");
+        if (!x) {
+            return std::unexpected(x.error());
+        }
+        auto y = fDouble(*m, "y");
+        if (!y) {
+            return std::unexpected(y.error());
+        }
+        auto width = fDouble(*m, "width");
+        if (!width) {
+            return std::unexpected(width.error());
+        }
+        auto height = fDouble(*m, "height");
+        if (!height) {
+            return std::unexpected(height.error());
+        }
+        env.body = LayoutVisual{std::move(*text), *x, *y, *width, *height};
+    } else if (t == "GetAppearanceFont") {
+        env.body = GetAppearanceFont{};
     } else {
         return std::unexpected(WireError::UnknownMessage);
     }
@@ -844,6 +1073,28 @@ CborValue makeReply(std::uint64_t req, const RawSignatureReply& r)
     return reply;
 }
 
+CborValue makeReply(std::uint64_t req, const LayoutReply& l)
+{
+    CborValue reply = makeReplyBase(req);
+    Map arm;
+    arm.emplace("kind", CborValue("Layout"));
+    arm.emplace("fontSize", CborValue(l.fontSize));
+    arm.emplace("lineHeight", CborValue(l.lineHeight));
+    arm.emplace("lines", arrOfText(l.lines));
+    arm.emplace("clipped", CborValue(l.clipped));
+    mergeInto(reply, std::move(arm));
+    return reply;
+}
+
+CborValue makeReply(std::uint64_t req, const AppearanceFontReply& a)
+{
+    CborValue reply = makeReplyBase(req);
+    Map arm;
+    arm.emplace("fd", CborValue::uint(a.fd));
+    mergeInto(reply, std::move(arm));
+    return reply;
+}
+
 CborValue makeSignRecoveryReply(std::uint64_t req, const SignResult& sr)
 {
     CborValue reply = makeReplyBase(req);
@@ -938,6 +1189,15 @@ CborValue toCbor(const OpProgress& e)
     if (e.watchdogSecs) {
         m.emplace("watchdogSecs", CborValue::uint(*e.watchdogSecs));
     }
+    return CborValue(std::move(m));
+}
+CborValue toCbor(const OpIdentityGroup& e)
+{
+    Map m;
+    m.emplace("t", CborValue("OpIdentityGroup"));
+    m.emplace("op", CborValue::uint(e.op));
+    m.emplace("groupKey", CborValue(e.groupKey));
+    m.emplace("fields", CborValue(encodeIdentityFieldsMap(e.fields)));
     return CborValue(std::move(m));
 }
 CborValue toCbor(const OpResultReady& e)

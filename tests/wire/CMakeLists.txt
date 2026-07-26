@@ -28,6 +28,29 @@ target_include_directories(WireHeadersTest PRIVATE ${CMAKE_SOURCE_DIR}/include)
 target_link_libraries(WireHeadersTest PRIVATE GTest::gtest GTest::gtest_main)
 add_test(NAME WireHeadersTest COMMAND WireHeadersTest)
 
+# 7. FeatureTokensGuardTest: ties LibreSCRS::Agent::kAgentFeatures
+#    (FeatureTokens.h, std-only, no LM/Qt/sdbus-c++) back to the CDDL comment
+#    documenting the same vocabulary. Dependency-light like WireHeadersTest
+#    above -- no LibreAgent::Wire link needed -- so it stays reachable from a
+#    Core-less (LIBREAGENT_BUILD_CORE=OFF, LIBREAGENT_BUILD_WIRE=ON) build too.
+add_executable(FeatureTokensGuardTest FeatureTokensGuardTest.cpp)
+target_include_directories(FeatureTokensGuardTest PRIVATE ${CMAKE_SOURCE_DIR}/include)
+target_link_libraries(FeatureTokensGuardTest PRIVATE GTest::gtest GTest::gtest_main)
+target_compile_definitions(FeatureTokensGuardTest PRIVATE
+    LIBRESCRS_AGENT_WIRE_CDDL="${CMAKE_SOURCE_DIR}/wire/librescrs-agent.cddl")
+add_test(NAME FeatureTokensGuardTest COMMAND FeatureTokensGuardTest)
+
+# 8. PropertyChangedVocabGuardTest: ties the CDDL comment documenting the
+#    `property-changed` event's served `iface` vocabulary back to the set
+#    this task hand-verified against the socket daemon (the only producer of
+#    this event). CDDL-text-only like FeatureTokensGuardTest above -- no
+#    LibreAgent library link needed.
+add_executable(PropertyChangedVocabGuardTest PropertyChangedVocabGuardTest.cpp)
+target_link_libraries(PropertyChangedVocabGuardTest PRIVATE GTest::gtest GTest::gtest_main)
+target_compile_definitions(PropertyChangedVocabGuardTest PRIVATE
+    LIBRESCRS_AGENT_WIRE_CDDL="${CMAKE_SOURCE_DIR}/wire/librescrs-agent.cddl")
+add_test(NAME PropertyChangedVocabGuardTest COMMAND PropertyChangedVocabGuardTest)
+
 if(LIBREAGENT_BUILD_WIRE)
     # 3. CborRoundTripTest is the actual behavioural test of the canonical-CBOR
     #    codec this component ships: byte-stable round-trips + fail-closed

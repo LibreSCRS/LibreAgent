@@ -152,6 +152,24 @@ public:
         }
         return *v;
     }
+    // A REQUIRED double field (unlike optDouble above): absent marks the
+    // reader malformed too. First needed by LayoutReply's fontSize/lineHeight
+    // (op-progress's `progress` is the only other wire double, and it is
+    // genuinely optional).
+    double doubleField(std::string_view k)
+    {
+        const auto it = m_m.find(k);
+        if (it == m_m.end()) {
+            m_ok = false;
+            return 0.0;
+        }
+        const auto v = it->second.asDouble();
+        if (!v) {
+            m_ok = false;
+            return 0.0;
+        }
+        return *v;
+    }
     Bytes bytes(std::string_view k)
     {
         const auto it = m_m.find(k);
@@ -242,17 +260,73 @@ std::optional<ErrorCode> decodeErrorCode(std::uint64_t v)
     // is not malformed, it is this build simply not knowing the name yet. The
     // enum's underlying type is uint32_t, so every value that fits uint32 is a
     // well-defined ErrorCode; only reject a value too wide for the wire field
-    // to ever carry (mirrors u32()'s width check above). This tolerance is
-    // ErrorCode-SPECIFIC: OperationStatus, OperationPhase, QuiesceReason and
-    // PreReadAuth below stay fail-closed on an unrecognised value, because
-    // those are semantically-branching closed enums, not opaque display data.
+    // to ever carry (mirrors u32()'s width check above). This was the
+    // ORIGINAL, ErrorCode-specific tolerance; OperationStatus, OperationPhase,
+    // QuiesceReason and PreReadAuth below now follow the identical rule (see
+    // the comment ahead of decodeOperationPhase).
     if (v > static_cast<std::uint64_t>(std::numeric_limits<std::uint32_t>::max())) {
         return std::nullopt;
     }
     return static_cast<ErrorCode>(static_cast<std::uint32_t>(v));
 }
 
-std::optional<SyncError> decodeSyncError(const std::string& s)
+// OperationPhase/OperationStatus (Agent/OperationPhase.h) and PreReadAuth/
+// QuiesceReason (this wire's own two enums) are ALL, like ErrorCode above,
+// wire-frozen APPEND-ONLY closed enums carried as a plain wire `uint`: a
+// value past this build's last known enumerator is a FUTURE value, not a
+// malformed one, and decodes through raw via the same width-bounded
+// static_cast ErrorCode already uses. The codec stays a dumb, stateless
+// carrier -- it never rejects on enumerator membership, only on a value too
+// wide for the enum's OWN underlying-type storage (uint32_t for the two
+// Operation enums, uint8_t for the two wire-local ones) to represent
+// losslessly, which really would be malformed (a silent alias between two
+// distinct future values). Deciding what an unrecognised value MEANS is left
+// entirely to the stateful layer that consumes the decoded struct -- never
+// here (see ClientCodec.h's file comment for the per-enum policy table).
+
+std::optional<OperationPhase> decodeOperationPhase(std::uint64_t v)
+{
+    if (v > static_cast<std::uint64_t>(std::numeric_limits<std::uint32_t>::max())) {
+        return std::nullopt;
+    }
+    return static_cast<OperationPhase>(static_cast<std::uint32_t>(v));
+}
+
+std::optional<OperationStatus> decodeOperationStatus(std::uint64_t v)
+{
+    if (v > static_cast<std::uint64_t>(std::numeric_limits<std::uint32_t>::max())) {
+        return std::nullopt;
+    }
+    return static_cast<OperationStatus>(static_cast<std::uint32_t>(v));
+}
+
+std::optional<PreReadAuth> decodePreReadAuth(std::uint64_t v)
+{
+    if (v > static_cast<std::uint64_t>(std::numeric_limits<std::uint8_t>::max())) {
+        return std::nullopt;
+    }
+    return static_cast<PreReadAuth>(static_cast<std::uint8_t>(v));
+}
+
+std::optional<QuiesceReason> decodeQuiesceReason(std::uint64_t v)
+{
+    if (v > static_cast<std::uint64_t>(std::numeric_limits<std::uint8_t>::max())) {
+        return std::nullopt;
+    }
+    return static_cast<QuiesceReason>(static_cast<std::uint8_t>(v));
+}
+
+// sync-error (CDDL) is a TEXT-token closed enum -- unlike the numeric ones
+// above, there is no matching-width concept to bound an unrecognised token
+// against, so it DEGRADES AT DECODE instead of being carried raw: an
+// unmatched token maps to SyncError::CommunicationError, exactly the bucket
+// mapAgentErrorShortName's own "unknown agent-namespace name" fallback
+// already classifies an unrecognised D-Bus error name into on the other
+// transport (SocketTransport.cpp's mapErrInfo re-derives the wire name from
+// this value and feeds it through that SAME table), so both transports
+// converge on the same generic-protocol-error outcome. This never returns
+// nullopt -- the original wire token is not retained on the degrade path.
+SyncError decodeSyncError(const std::string& s)
 {
     static constexpr SyncError kAll[] = {
         SyncError::UnknownCard,
@@ -272,16 +346,21 @@ std::optional<SyncError> decodeSyncError(const std::string& s)
         SyncError::RateLimited,
         SyncError::UnknownCredential,
         SyncError::InvalidRequest,
+        SyncError::NoResult,
     };
     for (const auto e : kAll) {
         if (syncErrorName(e) == s) {
             return e;
         }
     }
-    return std::nullopt;
+    return SyncError::CommunicationError; // unrecognised token -> generic protocol error
 }
 
-std::optional<CredentialOutcome> decodeCredOutcome(const std::string& s)
+// cred-outcome (CDDL) is the other TEXT-token closed enum on this wire. Same
+// decode-time degrade rule as sync-error above: an unrecognised token is not
+// malformed, it degrades to Unspecified (the value this wire already uses
+// for "no meaningful outcome") -- never nullopt.
+CredentialOutcome decodeCredOutcome(const std::string& s)
 {
     if (s == "unspecified") {
         return CredentialOutcome::Unspecified;
@@ -313,7 +392,7 @@ std::optional<CredentialOutcome> decodeCredOutcome(const std::string& s)
     if (s == "cardRemoved") {
         return CredentialOutcome::CardRemoved;
     }
-    return std::nullopt;
+    return CredentialOutcome::Unspecified; // unrecognised token -> generic/uninitialized outcome
 }
 
 // --- shared sub-type decoders -------------------------------------------------
@@ -340,13 +419,19 @@ std::optional<CardState> decodeCardState(const Map& m)
     cs.reader = r.text("reader");
     cs.caps = r.u32("caps");
     const auto preAuthRaw = r.uint("preAuth");
+    // Optional, append-only: absent (an older agent, or not yet known) decodes
+    // to nullopt -- never a decode failure. A present-but-wrong-typed value
+    // still fails closed via optText (ok() drops to false).
+    cs.cardType = r.optText("cardType");
+    cs.atr = r.optText("atr");
     if (!r.ok()) {
         return std::nullopt;
     }
-    if (preAuthRaw > static_cast<std::uint64_t>(PreReadAuth::PaceCan)) {
+    const auto preAuth = decodePreReadAuth(preAuthRaw);
+    if (!preAuth) {
         return std::nullopt;
     }
-    cs.preAuth = static_cast<PreReadAuth>(preAuthRaw);
+    cs.preAuth = *preAuth;
     return cs;
 }
 
@@ -450,6 +535,35 @@ std::optional<SignResult> decodeSignResultFields(const Map& m, std::span<const i
     return SignResult{artifact, std::move(*meta)};
 }
 
+// sign-batch-row = { displayName: tstr, artifact: fd-index, meta: sign-meta,
+// errorCode: error-code }. `errorCode` follows the SAME raw-tolerant policy
+// as every other numeric ErrorCode field on this wire (decodeErrorCode):
+// an unrecognised value (one a newer agent appended) decodes through raw
+// rather than failing the row -- see decodeErrorCode's own comment.
+std::optional<SignBatchRow> decodeSignBatchRow(const Map& m, std::span<const int> fds)
+{
+    FieldReader r(m);
+    auto displayName = r.text("displayName");
+    const auto artifact = r.uint("artifact");
+    const Map* metaMap = r.map("meta");
+    const auto codeRaw = r.uint("errorCode");
+    if (!r.ok()) {
+        return std::nullopt;
+    }
+    if (artifact >= fds.size()) {
+        return std::nullopt;
+    }
+    auto meta = decodeSignMeta(*metaMap);
+    if (!meta) {
+        return std::nullopt;
+    }
+    const auto code = decodeErrorCode(codeRaw);
+    if (!code) {
+        return std::nullopt;
+    }
+    return SignBatchRow{std::move(displayName), artifact, std::move(*meta), *code};
+}
+
 std::optional<PhotoItem> decodePhotoItem(const Map& m, std::span<const int> fds)
 {
     FieldReader r(m);
@@ -495,12 +609,8 @@ std::optional<CredentialOpResult> decodeCredOpResult(const Map& m)
     if (!r.ok()) {
         return std::nullopt;
     }
-    const auto outcome = decodeCredOutcome(outcomeStr);
-    if (!outcome) {
-        return std::nullopt;
-    }
     CredentialOpResult cr;
-    cr.outcome = *outcome;
+    cr.outcome = decodeCredOutcome(outcomeStr);
     cr.retriesLeft = retriesLeft;
     cr.blocked = blocked;
     cr.pinActivated = pinActivated;
@@ -716,6 +826,42 @@ std::optional<RawSignatureReply> decodeRawSignatureReply(const Map& m)
     return RawSignatureReply{std::move(sig)};
 }
 
+// layout = ( kind: "Layout", fontSize, lineHeight, lines, clipped ) — the
+// caller has already checked kind == "Layout" via the shared "kind" dispatch
+// hello-ack also uses (see parseReply).
+std::optional<LayoutReply> decodeLayoutReply(const Map& m)
+{
+    FieldReader r(m);
+    const auto fontSize = r.doubleField("fontSize");
+    const auto lineHeight = r.doubleField("lineHeight");
+    const Array* linesArr = r.array("lines");
+    const auto clipped = r.boolean("clipped");
+    if (!r.ok()) {
+        return std::nullopt;
+    }
+    auto lines = textArray(*linesArr);
+    if (!lines) {
+        return std::nullopt;
+    }
+    return LayoutReply{fontSize, lineHeight, std::move(*lines), clipped};
+}
+
+// appearance-font = ( fd: fd-index ) — the same out-of-range-is-malformed
+// bounds check every other fd-carrying reply payload applies (SignResult's
+// artifact, PhotoItem's fd).
+std::optional<AppearanceFontReply> decodeAppearanceFontReply(const Map& m, std::span<const int> fds)
+{
+    FieldReader r(m);
+    const auto fd = r.uint("fd");
+    if (!r.ok()) {
+        return std::nullopt;
+    }
+    if (fd >= fds.size()) {
+        return std::nullopt;
+    }
+    return AppearanceFontReply{fd};
+}
+
 // err-info = { ( code: error-code // name: sync-error ), ? msgKey, ? msgFallback }
 // (CDDL:105-113): exactly one of code/name, never both, never neither.
 std::optional<ErrInfo> decodeErrInfo(const Map& m)
@@ -742,11 +888,7 @@ std::optional<ErrInfo> decodeErrInfo(const Map& m)
         if (!r.ok()) {
             return std::nullopt;
         }
-        const auto se = decodeSyncError(raw);
-        if (!se) {
-            return std::nullopt;
-        }
-        code = *se;
+        code = decodeSyncError(raw);
     }
     const auto msgKey = r.optText("msgKey");
     const auto msgFallback = r.optText("msgFallback");
@@ -757,6 +899,28 @@ std::optional<ErrInfo> decodeErrInfo(const Map& m)
 }
 
 // --- op-result (op-result-ready payload) decoder ------------------------------
+
+// One group's field map (fieldKey -> id-field tuple): the SAME shape as one
+// entry of IdentityResult's outer `fields` dict, and the entirety of
+// OpIdentityGroup's own `fields`. Shared by decodeOpResult's Identity arm
+// below and decodeOpIdentityGroup further down so the two decodings of this
+// cell shape can never drift apart. nullopt on any malformed field tuple.
+std::optional<std::map<std::string, IdentityField>> decodeIdentityFieldsMap(const Map& fields)
+{
+    std::map<std::string, IdentityField> cells;
+    for (const auto& [fieldKey, fieldVal] : fields) {
+        const auto* tuple = fieldVal.asArray();
+        if (tuple == nullptr) {
+            return std::nullopt;
+        }
+        auto f = decodeIdField(*tuple);
+        if (!f) {
+            return std::nullopt;
+        }
+        cells.emplace(fieldKey, std::move(*f));
+    }
+    return cells;
+}
 
 std::optional<OpResult> decodeOpResult(const Map& m, std::span<const int> fds)
 {
@@ -777,19 +941,11 @@ std::optional<OpResult> decodeOpResult(const Map& m, std::span<const int> fds)
             if (inner == nullptr) {
                 return std::nullopt;
             }
-            std::map<std::string, IdentityField> cells;
-            for (const auto& [fieldKey, fieldVal] : *inner) {
-                const auto* tuple = fieldVal.asArray();
-                if (tuple == nullptr) {
-                    return std::nullopt;
-                }
-                auto f = decodeIdField(*tuple);
-                if (!f) {
-                    return std::nullopt;
-                }
-                cells.emplace(fieldKey, std::move(*f));
+            auto cells = decodeIdentityFieldsMap(*inner);
+            if (!cells) {
+                return std::nullopt;
             }
-            out.fields.emplace(group, std::move(cells));
+            out.fields.emplace(group, std::move(*cells));
         }
         return OpResult{std::move(out)};
     }
@@ -841,6 +997,27 @@ std::optional<OpResult> decodeOpResult(const Map& m, std::span<const int> fds)
             return std::nullopt;
         }
         return OpResult{std::move(*sr)};
+    }
+    if (kind == "SignBatch") {
+        FieldReader r(m);
+        const Array* rowsArr = r.array("rows");
+        if (!r.ok()) {
+            return std::nullopt;
+        }
+        SignBatchResult out;
+        out.rows.reserve(rowsArr->size());
+        for (const auto& item : *rowsArr) {
+            const auto* rm = item.asMap();
+            if (rm == nullptr) {
+                return std::nullopt;
+            }
+            auto row = decodeSignBatchRow(*rm, fds);
+            if (!row) {
+                return std::nullopt;
+            }
+            out.rows.push_back(std::move(*row));
+        }
+        return OpResult{std::move(out)};
     }
     if (kind == "Credentials") {
         FieldReader r(m);
@@ -960,15 +1137,35 @@ std::optional<OpProgress> decodeOpProgress(const Map& m)
     if (!r.ok()) {
         return std::nullopt;
     }
-    if (phaseRaw > static_cast<std::uint64_t>(OperationPhase::Done)) {
+    const auto phase = decodeOperationPhase(phaseRaw);
+    if (!phase) {
         return std::nullopt;
     }
     OpProgress out;
     out.op = op;
-    out.phase = static_cast<OperationPhase>(phaseRaw);
+    out.phase = *phase;
     out.progress = progress;
     out.indeterminate = indeterminate;
     out.watchdogSecs = watchdogSecs;
+    return out;
+}
+std::optional<OpIdentityGroup> decodeOpIdentityGroup(const Map& m)
+{
+    FieldReader r(m);
+    const auto op = r.uint("op");
+    auto groupKey = r.text("groupKey");
+    const Map* fields = r.map("fields");
+    if (!r.ok()) {
+        return std::nullopt;
+    }
+    auto cells = decodeIdentityFieldsMap(*fields);
+    if (!cells) {
+        return std::nullopt;
+    }
+    OpIdentityGroup out;
+    out.op = op;
+    out.groupKey = std::move(groupKey);
+    out.fields = std::move(*cells);
     return out;
 }
 std::optional<OpResultReady> decodeOpResultReady(const Map& m, std::span<const int> fds)
@@ -996,7 +1193,8 @@ std::optional<OpFinished> decodeOpFinished(const Map& m)
     if (!r.ok()) {
         return std::nullopt;
     }
-    if (statusRaw > static_cast<std::uint64_t>(OperationStatus::Error)) {
+    const auto status = decodeOperationStatus(statusRaw);
+    if (!status) {
         return std::nullopt;
     }
     const auto code = decodeErrorCode(codeRaw);
@@ -1005,7 +1203,7 @@ std::optional<OpFinished> decodeOpFinished(const Map& m)
     }
     OpFinished out;
     out.op = op;
-    out.status = static_cast<OperationStatus>(statusRaw);
+    out.status = *status;
     out.code = *code;
     out.msgKey = std::move(msgKey);
     out.msgFallback = std::move(msgFallback);
@@ -1018,10 +1216,11 @@ std::optional<AgentQuiesced> decodeAgentQuiesced(const Map& m)
     if (!r.ok()) {
         return std::nullopt;
     }
-    if (reasonRaw > static_cast<std::uint64_t>(QuiesceReason::Shutdown)) {
+    const auto reason = decodeQuiesceReason(reasonRaw);
+    if (!reason) {
         return std::nullopt;
     }
-    return AgentQuiesced{static_cast<QuiesceReason>(reasonRaw)};
+    return AgentQuiesced{*reason};
 }
 
 } // namespace
@@ -1064,7 +1263,7 @@ std::optional<DecodedReply> parseReply(std::span<const std::uint8_t> body, std::
         }
         return DecodedReply{reqId, std::move(*err)};
     }
-    if (const auto* kindVal = findKey(*m, "kind")) { // hello-ack = ( kind: "HelloAck", ... )
+    if (const auto* kindVal = findKey(*m, "kind")) { // hello-ack / layout = ( kind: "HelloAck"/"Layout", ... )
         const auto* k = kindVal->asText();
         if (k != nullptr && *k == "HelloAck") {
             auto v = decodeHelloAck(*m);
@@ -1073,10 +1272,24 @@ std::optional<DecodedReply> parseReply(std::span<const std::uint8_t> body, std::
             }
             return DecodedReply{reqId, std::move(*v)};
         }
-        return std::nullopt; // "kind" present but not the one reply arm that uses it
+        if (k != nullptr && *k == "Layout") {
+            auto v = decodeLayoutReply(*m);
+            if (!v) {
+                return std::nullopt;
+            }
+            return DecodedReply{reqId, std::move(*v)};
+        }
+        return std::nullopt; // "kind" present but not one of the reply arms that use it
     }
     if (has(*m, "op")) {
         auto v = decodeOpStarted(*m);
+        if (!v) {
+            return std::nullopt;
+        }
+        return DecodedReply{reqId, std::move(*v)};
+    }
+    if (has(*m, "fd")) { // appearance-font = ( fd: fd-index )
+        auto v = decodeAppearanceFontReply(*m, fds);
         if (!v) {
             return std::nullopt;
         }
@@ -1214,6 +1427,13 @@ std::optional<DecodedEvent> parseEvent(std::span<const std::uint8_t> body, std::
     }
     if (tag == "OpProgress") {
         auto v = decodeOpProgress(*m);
+        if (!v) {
+            return std::nullopt;
+        }
+        return DecodedEvent{std::move(*v)};
+    }
+    if (tag == "OpIdentityGroup") {
+        auto v = decodeOpIdentityGroup(*m);
         if (!v) {
             return std::nullopt;
         }

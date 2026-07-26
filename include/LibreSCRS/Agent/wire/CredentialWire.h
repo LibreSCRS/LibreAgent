@@ -73,6 +73,7 @@ struct CredentialOpResult
     std::optional<int> retriesLeft;
     bool blocked = false;
     std::optional<bool> pinActivated, keyActivated;
+    [[nodiscard]] bool operator==(const CredentialOpResult&) const = default;
 };
 
 } // namespace LibreSCRS::Agent::Wire

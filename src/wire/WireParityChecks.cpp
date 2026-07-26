@@ -39,8 +39,13 @@ using AgentRecord = LibreSCRS::Agent::CredentialRecord;
 // wire currently sends) — an LM renumber must be caught even if this repo's
 // wire code has not yet been touched to react to it.
 static_assert(std::to_underlying(Wire::PreReadAuth::None) == std::to_underlying(PreReadAuthMethod::None));
-static_assert(std::to_underlying(Wire::PreReadAuth::BacMrz) == std::to_underlying(PreReadAuthMethod::BacMrz));
-static_assert(std::to_underlying(Wire::PreReadAuth::PaceCan) == std::to_underlying(PreReadAuthMethod::PaceCan));
+static_assert(std::to_underlying(Wire::PreReadAuth::Mrz) == std::to_underlying(PreReadAuthMethod::Mrz));
+static_assert(std::to_underlying(Wire::PreReadAuth::Can) == std::to_underlying(PreReadAuthMethod::Can));
+
+// Underlying-type parity too: a value-only check would still pass if one
+// side quietly changed from `int` to e.g. `std::uint8_t` while every
+// existing value happened to still fit.
+static_assert(std::is_same_v<std::underlying_type_t<Wire::PreReadAuth>, std::underlying_type_t<PreReadAuthMethod>>);
 
 // ---- Wire::CredentialOutcome <-> LibreSCRS::Agent::CredentialOutcome -------
 // Every enumerator Messages.cpp's credOutcomeToken() serializes, including

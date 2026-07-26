@@ -91,11 +91,22 @@ TEST(MessagesRoundTrip, EveryRequestType)
     expectStable({4, ReadIdentity{"reader/0:card/0"}});
     expectStable({5, GetPhoto{"reader/0:card/0"}});
     expectStable({6, ReadCertificates{"reader/0:card/0"}});
+    expectStable({20, ReadTokenInfo{"reader/0:card/0"}});
     expectStable({7, Sign{"card/0", "abc123", 0,
                           SignOpts{"pades", "b-lt", "enveloped", true, std::string("Doc"), std::string("why"),
                                    std::string("Belgrade")}}});
     expectStable({8, Sign{"card/0", "abc123", 2,
                           SignOpts{"auto", "b-b", "auto", std::nullopt, std::nullopt, std::nullopt, std::nullopt}}});
+    // tsaUrl + visualSignature (nested map) round-trip byte-stable.
+    expectStable({21, Sign{"card/0", "abc123", 0,
+                           SignOpts{"pades", "b-t", "enveloped", std::nullopt, std::nullopt, std::nullopt, std::nullopt,
+                                    std::string("https://tsa.example.com/ts"),
+                                    VisualSignatureOpts{1, 10.5, 20.25, 150.0, 60.0, "Signed by {cn}"}}}});
+    expectStable(
+        {22, SignBatch{"card/0",
+                       "abc123",
+                       {BatchDocument{"invoice-1.pdf", 0}, BatchDocument{"invoice-2.pdf", 1}},
+                       SignOpts{"pades", "b-b", "enveloped", std::nullopt, std::nullopt, std::nullopt, std::nullopt}}});
     expectStable({9, GetCertDer{"reader/0", "certid"}});
     expectStable({10, GetConfig{}});
     expectStable({11, SetConfig{"DefaultLevel", CborValue(std::string("b-t"))}});
@@ -127,6 +138,19 @@ TEST(MessagesRoundTrip, CredentialManagementRequestsRoundTrip)
     // ManagePin with activateKey PRESENT=false (round-trip keeps the explicit false).
     expectStable({33, ManagePin{"reader/0:card/0", "user:0x01", "unblock", std::optional<bool>{false}}});
     expectStable({34, ActivateSigningKey{"reader/0:card/0"}});
+}
+
+// Card-independent visual-signature layout preview requests.
+TEST(MessagesRoundTrip, LayoutRequestsRoundTrip)
+{
+    expectStable({35, LayoutVisual{"Signed by\nJohn Doe", 10.5, 20.25, 150.0, 60.0}});
+    // Serbian Cyrillic UTF-8 text round-trips byte-stable.
+    expectStable({36, LayoutVisual{"Потписао\nНемања", 0.0, 0.0, 200.0, 50.0}});
+    // A tiny (but still positive) box — the caller's isValidLayoutRect gate
+    // admits this; whether the RESULT is clipped is an LM/agent concern, not
+    // this wire's (VisualLayoutServiceTest exercises the clipped==true case).
+    expectStable({37, LayoutVisual{"Hello World", 0.0, 0.0, 4.0, 50.0}});
+    expectStable({38, GetAppearanceFont{}});
 }
 
 // Tolerant decode: an unknown EXTRA map key inside a known request is ignored
@@ -354,16 +378,49 @@ TEST(MessagesRoundTrip, SignResultEventCarriesFdIndexNotBytes)
     EXPECT_TRUE(result->find("artifact")->asUInt().has_value());
 }
 
+// Card-state's cardType/atr are OPTIONAL keys, encoded only when known
+// (empty-until-known semantics; never an empty-string key). This is the first
+// real byte growth of this wire -- everything else on it is append-only in
+// SHAPE but every existing fixture stayed byte-identical.
+TEST(MessagesRoundTrip, CardStateOmitsCardTypeAndAtrWhenUnset)
+{
+    const CborValue c = toCbor(CardAdded{CardState{"c1", "r1", 0x3, PreReadAuth::Can}});
+    const auto* card = c.find("card");
+    ASSERT_NE(card, nullptr);
+    EXPECT_EQ(card->find("cardType"), nullptr);
+    EXPECT_EQ(card->find("atr"), nullptr);
+}
+
+TEST(MessagesRoundTrip, CardStateEncodesCardTypeAndAtrWhenSet)
+{
+    CardState cs{"c1", "r1", 0x3, PreReadAuth::Can};
+    cs.cardType = "SRB-eID";
+    cs.atr = "3B7F96000080318065B085040132900085";
+    const CborValue c = toCbor(CardAdded{cs});
+    const auto* card = c.find("card");
+    ASSERT_NE(card, nullptr);
+    ASSERT_NE(card->find("cardType"), nullptr);
+    EXPECT_EQ(*card->find("cardType")->asText(), "SRB-eID");
+    ASSERT_NE(card->find("atr"), nullptr);
+    EXPECT_EQ(*card->find("atr")->asText(), "3B7F96000080318065B085040132900085");
+}
+
 TEST(MessagesRoundTrip, EveryEventEncodesWithItsTag)
 {
     EXPECT_EQ(*toCbor(ReaderAdded{ReaderState{"r", "n", false, std::nullopt}}).find("t")->asText(), "ReaderAdded");
     EXPECT_EQ(*toCbor(ReaderRemoved{"r"}).find("t")->asText(), "ReaderRemoved");
-    EXPECT_EQ(*toCbor(CardAdded{CardState{"c", "r", 0x3, PreReadAuth::PaceCan}}).find("t")->asText(), "CardAdded");
+    EXPECT_EQ(*toCbor(CardAdded{CardState{"c", "r", 0x3, PreReadAuth::Can}}).find("t")->asText(), "CardAdded");
     EXPECT_EQ(*toCbor(CardRemoved{"c"}).find("t")->asText(), "CardRemoved");
     EXPECT_EQ(*toCbor(ConfigChanged{"DefaultLevel"}).find("t")->asText(), "ConfigChanged");
     EXPECT_EQ(
         *toCbor(OpProgress{1, OperationPhase::Signing, std::nullopt, std::nullopt, std::nullopt}).find("t")->asText(),
         "OpProgress");
+    {
+        OpIdentityGroup group;
+        group.op = 1;
+        group.groupKey = "personal";
+        EXPECT_EQ(*toCbor(group).find("t")->asText(), "OpIdentityGroup");
+    }
     EXPECT_EQ(*toCbor(OpFinished{1, OperationStatus::Ok, ErrorCode::None, "", ""}).find("t")->asText(), "OpFinished");
     EXPECT_EQ(*toCbor(AgentQuiesced{QuiesceReason::SystemSleep}).find("t")->asText(), "AgentQuiesced");
 }
@@ -405,7 +462,12 @@ int dumpFixtures(const std::filesystem::path& dir)
     {
         StateReply state;
         state.readers.push_back(ReaderState{"r1", "Reader One", true, std::string("c1")});
-        state.cards.push_back(CardState{"c1", "r1", 0x3, PreReadAuth::PaceCan});
+        CardState card{"c1", "r1", 0x3, PreReadAuth::Can};
+        // cardType/atr populated -- the first real byte growth of this
+        // wire (both keys were absent before this task).
+        card.cardType = "SRB-eID";
+        card.atr = "3B7F96000080318065B085040132900085";
+        state.cards.push_back(card);
         writeFixture(dir, "State", makeReply(3, state));
     }
     {
@@ -427,8 +489,31 @@ int dumpFixtures(const std::filesystem::path& dir)
     writeFixture(dir, "ErrName", makeErrorReply(10, ErrInfo{SyncError::UnknownCard, std::nullopt, std::nullopt}));
     writeFixture(dir, "ErrNameUnknownCredential",
                  makeErrorReply(11, ErrInfo{SyncError::UnknownCredential, std::nullopt, std::nullopt}));
+    // GetSignResult's dedicated missing-result name -- a real, byte-exact
+    // fixture for the Swift decoder to exercise instead of hand-crafting the
+    // frame bytes locally.
+    writeFixture(dir, "ErrNameNoResult", makeErrorReply(14, ErrInfo{SyncError::NoResult, std::nullopt, std::nullopt}));
+    // The Swift client has no layout API (out of scope) -- these two
+    // fixtures exist so its decoder's UNKNOWN-reply-arm tolerance can be
+    // exercised against a real, byte-exact new arm rather than a hand-rolled
+    // stand-in (see CrossImplementationFixtureTests.swift's
+    // layoutArmDoesNotDisturbAnOlderClient case).
+    writeFixture(dir, "Layout", makeReply(12, LayoutReply{9.5, 11.4, {"Signed by", "John Doe"}, false}));
+    writeFixture(dir, "AppearanceFont", makeReply(13, AppearanceFontReply{0}));
 
     // ---- requests (client -> agent; the Swift client mirrors encode(req: 1)) ----
+    writeFixture(dir, "ReadTokenInfo", toCbor(RequestEnvelope{1, ReadTokenInfo{"reader/0:card/0"}}));
+    // SignBatch: NOT copied into LibreMac's committed fixture set by this task
+    // -- the Swift client has no SignBatch encoder yet (the client-facing
+    // surface is a later task), so there is nothing on that side to byte-
+    // compare against. Dumped here anyway so this generator's own coverage
+    // of "every request shape" stays complete for LibreAgent's own use.
+    writeFixture(dir, "SignBatch",
+                 toCbor(RequestEnvelope{1, SignBatch{"reader/0:card/0",
+                                                     "abc123",
+                                                     {BatchDocument{"invoice-1.pdf", 0}},
+                                                     SignOpts{"pades", "b-b", "enveloped", std::nullopt, std::nullopt,
+                                                              std::nullopt, std::nullopt}}}));
     writeFixture(dir, "ListCredentials", toCbor(RequestEnvelope{1, ListCredentials{"reader/0:card/0"}}));
     writeFixture(dir, "ManagePin",
                  toCbor(RequestEnvelope{1, ManagePin{"reader/0:card/0", "sign:0x92", "change", std::nullopt}}));
@@ -437,7 +522,12 @@ int dumpFixtures(const std::filesystem::path& dir)
     // ---- events ----
     writeFixture(dir, "ReaderAdded", toCbor(ReaderAdded{ReaderState{"r1", "Reader One", false, std::nullopt}}));
     writeFixture(dir, "ReaderRemoved", toCbor(ReaderRemoved{"r1"}));
-    writeFixture(dir, "CardAdded", toCbor(CardAdded{CardState{"c1", "r1", 0x3, PreReadAuth::PaceCan}}));
+    {
+        CardState card{"c1", "r1", 0x3, PreReadAuth::Can};
+        card.cardType = "SRB-eID";
+        card.atr = "3B7F96000080318065B085040132900085";
+        writeFixture(dir, "CardAdded", toCbor(CardAdded{card}));
+    }
     writeFixture(dir, "CardRemoved", toCbor(CardRemoved{"c1"}));
     {
         std::map<std::string, CborValue> props;
@@ -447,6 +537,16 @@ int dumpFixtures(const std::filesystem::path& dir)
     writeFixture(dir, "ConfigChanged", toCbor(ConfigChanged{"DefaultLevel"}));
     // Fractional progress: 0.5 lands as f16 on the wire via QCBOR preferred serialization.
     writeFixture(dir, "OpProgress", toCbor(OpProgress{9, OperationPhase::Signing, 0.5, std::nullopt, std::nullopt}));
+    {
+        // Progressive delivery, same op id as OpResultReadyIdentity below (the
+        // group that streamed before that op's eventual Result) -- one
+        // representative group, mirroring the Result fixture's own field.
+        OpIdentityGroup group;
+        group.op = 20;
+        group.groupKey = "MRZ";
+        group.fields["Name"] = IdentityField{"name.key", "Name", "text", std::string("JOHN DOE")};
+        writeFixture(dir, "OpIdentityGroup", toCbor(group));
+    }
     {
         IdentityResult idResult;
         idResult.fields["MRZ"]["Name"] = IdentityField{"name.key", "Name", "text", std::string("JOHN DOE")};
@@ -465,6 +565,16 @@ int dumpFixtures(const std::filesystem::path& dir)
     // fd index (never inline bytes) for the signed artifact.
     writeFixture(dir, "OpResultReadySign",
                  toCbor(OpResultReady{23, SignResult{5, SignMeta{"pades", "b-lta", true, true}}}));
+    {
+        // A partial batch: one signed row, one row past a halt (the SAME
+        // halt code CredentialWrong) -- exercises the new "SignBatch" op-
+        // result kind's rows array and the pinned per-row errorCode field
+        // in the SAME fixture pass.
+        SignBatchResult batch;
+        batch.rows.push_back(SignBatchRow{"invoice-1.pdf", 6, SignMeta{"pades", "b-b", false, false}, ErrorCode::None});
+        batch.rows.push_back(SignBatchRow{"invoice-2.pdf", 7, SignMeta{}, ErrorCode::CredentialWrong});
+        writeFixture(dir, "OpResultReadySignBatch", toCbor(OpResultReady{27, batch}));
+    }
     {
         // Ok listing: one fully-populated record (exercises all 23 cred-record keys).
         CredentialsResult listing;
