@@ -49,7 +49,10 @@ KEEP=0
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --time) TIME_BUDGET="$2"; shift 2 ;;
-        --clang) CLANGXX="$2"; CLANG="${2%++}"; shift 2 ;;
+        # QCBOR is C: derive the C driver by dropping "++" wherever it sits in
+        # the name, not just at the end — a versioned clang++-21 keeps its -21
+        # suffix, and ${2%++} would have left the C++ driver compiling C.
+        --clang) CLANGXX="$2"; CLANG="${2/++/}"; shift 2 ;;
         --keep) KEEP=1; shift ;;
         -h|--help)
             sed -n '2,/^$/p' "$0" | sed 's/^# \?//'
