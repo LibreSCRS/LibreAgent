@@ -123,9 +123,29 @@ add_executable(ClientQtErrorNameMapTest
 target_include_directories(ClientQtErrorNameMapTest PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src/dbus)
 target_link_libraries(ClientQtErrorNameMapTest PRIVATE
     LibreAgent::ClientQt
+    LibreAgent::Wire
     GTest::gtest
     GTest::gtest_main)
 add_test(NAME ClientQtErrorNameMapTest COMMAND ClientQtErrorNameMapTest)
+
+# The sync-error AXIS of that same table: which failures carry a named wire
+# error onward and which carry none. Its own target rather than more cases in
+# ErrorNameMapTest.cpp, so that file stays the untouched proof that the
+# CallError/ErrorCode mapping did not move. Same internal-TU compilation as
+# above; LibreAgent::Wire is an explicit link because the table now calls the
+# wire library's own name decoder (the shared library happens to re-export
+# Wire's symbols today, but relying on that would make this target break
+# silently the day Wire gains a visibility preset).
+add_executable(ClientQtSyncErrorTest
+    SyncErrorTest.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/dbus/ErrorNameMap.cpp)
+target_include_directories(ClientQtSyncErrorTest PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src/dbus)
+target_link_libraries(ClientQtSyncErrorTest PRIVATE
+    LibreAgent::ClientQt
+    LibreAgent::Wire
+    GTest::gtest
+    GTest::gtest_main)
+add_test(NAME ClientQtSyncErrorTest COMMAND ClientQtSyncErrorTest)
 
 # The token-keyed DER-listener registration bookkeeping (the fix for the
 # cancel + listener-pointer-reuse race that used to silently drop a second
@@ -174,8 +194,13 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
         add_executable(${name} ${source} ${_fake_agent_src} ${_client_dbus_transport_src} ClientTestMain.cpp)
         set_target_properties(${name} PROPERTIES AUTOMOC ON)
         target_include_directories(${name} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+        # LibreAgent::Wire: ErrorNameMap.cpp (in the source list above) calls
+        # the wire library's sync-error name decoder, so every target that
+        # compiles that TU must link it rather than lean on the shared library
+        # happening to re-export Wire's symbols.
         target_link_libraries(${name} PRIVATE
             LibreAgent::ClientQt
+            LibreAgent::Wire
             Qt6::DBus
             Qt6::Test
             GTest::gtest)

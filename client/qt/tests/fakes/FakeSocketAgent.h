@@ -138,6 +138,11 @@ public:
         quint32 batchHaltErrorCode = 0;
         QByteArray certDerBytes;         ///< GetCertDer success bytes
         bool certDerKeyNotFound = false; ///< GetCertDer answers err KeyNotFound instead
+        /// GetCertDer answers a well-formed reply carrying an arm that does not
+        /// answer this request (an Ack). A reply outside the request's
+        /// contract, which the peer named nothing about — the socket-wire twin
+        /// of the D-Bus fake's certDerEmptyReply.
+        bool certDerUnexpectedArm = false;
         QList<FakeSocketCert> certScript;
         LibreSCRS::Agent::Wire::CredentialOutcome credOutcome = LibreSCRS::Agent::Wire::CredentialOutcome::Ok;
         bool credBlocked = false;

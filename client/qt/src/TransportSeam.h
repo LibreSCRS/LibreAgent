@@ -30,6 +30,7 @@
 #include <LibreSCRS/AgentClient/FdHandle.h>
 #include <LibreSCRS/AgentClient/OperationPhase.h>
 #include <LibreSCRS/AgentClient/SignOptions.h>
+#include <LibreSCRS/AgentClient/SyncError.h>
 #include <LibreSCRS/AgentClient/Types.h>
 
 #include <QByteArray>
@@ -54,10 +55,29 @@ namespace LibreSCRS::AgentClient {
 /// wireName/message carry the transport's raw spelling for diagnostics only —
 /// they never reach the public API as a contract (the scrub that replaced the
 /// lifted client's error-name strings).
+///
+/// syncError is a THIRD axis, orthogonal to both of the above rather than
+/// alternative to either: it is engaged whenever the failure was named in the
+/// wire's `sync-error` vocabulary, and it says WHICH name — the distinction the
+/// callError/errorCode classifications deliberately collapse (several names
+/// share one bucket). It is a typed enumerator, not a string, so it can cross
+/// into the public API where `wireName` must not.
+///
+/// @warning Do NOT derive it from `wireName`. That field holds whatever
+///          spelling the transport had: the D-Bus branch stores the FULL
+///          freedesktop name for a bus-daemon error, and the socket branch
+///          stores a synthetic `code:N` for the numeric arm. `syncError` is set
+///          at the one classification site that actually sees a sync-error
+///          token, and stays disengaged everywhere else.
 struct SeamError
 {
     CallError callError = CallError::None;
     ErrorCode errorCode = ErrorCode::None;
+    /// The wire's own name for this failure, when it had one. Disengaged when
+    /// no sync-error token was involved at all — a bus-daemon/transport-level
+    /// failure, a numeric-taxonomy answer, or a local refusal this client
+    /// decided without borrowing the wire vocabulary.
+    std::optional<SyncError> syncError;
     QString wireName;
     QString message;
 

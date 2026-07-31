@@ -29,12 +29,14 @@
 #include <LibreSCRS/Agent/OperationPhase.h>
 #include <LibreSCRS/Agent/wire/CredentialWire.h>
 #include <LibreSCRS/Agent/wire/PreReadAuth.h>
+#include <LibreSCRS/Agent/wire/SyncError.h>
 #include <LibreSCRS/Agent/wire/ClientCodec.h>
 
 using LibreSCRS::Agent::ErrorCode;
 using LibreSCRS::Agent::Operations::OperationStatus;
 using LibreSCRS::Agent::Wire::CredentialOutcome;
 using LibreSCRS::Agent::Wire::PreReadAuth;
+using LibreSCRS::Agent::Wire::SyncError;
 
 static_assert(static_cast<std::uint32_t>(ErrorCode::None) == 0u);
 static_assert(static_cast<std::uint32_t>(ErrorCode::InvalidDocument) == 19u);
@@ -46,5 +48,11 @@ static_assert(static_cast<std::uint8_t>(PreReadAuth::Can) == 2u);
 
 static_assert(static_cast<int>(CredentialOutcome::Unspecified) == 0);
 static_assert(static_cast<int>(CredentialOutcome::CardRemoved) == 9);
+
+// SyncError's integers are NOT a wire contract (the wire carries the name), so
+// there is nothing here to pin the way the enums above are pinned — this only
+// has to name the type, so that the header is reached and audited even if
+// Messages.h ever stops including it.
+static_assert(sizeof(SyncError) == 1);
 
 static_assert(LibreSCRS::Agent::kAgentFeatures.size() == 9);

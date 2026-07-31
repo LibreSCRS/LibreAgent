@@ -843,6 +843,14 @@ void FakeSocketAgent::handleRequest(Connection* connection, Wire::RequestEnvelop
             sendEntryError(connection, req, Wire::SyncError::KeyNotFound);
             return;
         }
+        if (m_config.certDerUnexpectedArm) {
+            // A valid reply frame carrying the WRONG arm for this request. The
+            // transport decodes the frame fine and then finds no CertDerReply
+            // and no ErrInfo in it, which is the socket wire's version of a
+            // reply outside the request's contract.
+            sendCbor(connection, Wire::makeReply(req, Wire::AckReply{}));
+            return;
+        }
         Wire::CertDerReply reply;
         const auto* derData = reinterpret_cast<const std::uint8_t*>(m_config.certDerBytes.constData());
         reply.der.assign(derData, derData + m_config.certDerBytes.size());

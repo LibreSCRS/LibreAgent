@@ -836,6 +836,19 @@ QByteArray Pkcs11Adaptor::CertDer(const QDBusObjectPath& reader, const QString& 
         }
         return {};
     }
+    if (m_agent->config().certDerEmptyReply) {
+        // A REPLY (not an error reply) with an empty argument list: the agent
+        // answered, but with nothing this method's contract allows. Same
+        // delayed-reply mechanism as above, so the normal QByteArray return
+        // never reaches the bus and the client sees a genuinely argument-less
+        // reply message.
+        auto* ctx = qobject_cast<ContextObject*>(parent());
+        if (ctx && ctx->calledFromDBus()) {
+            ctx->setDelayedReply(true);
+            ctx->connection().send(ctx->message().createReply());
+        }
+        return {};
+    }
     return m_agent->config().certDerBytes;
 }
 

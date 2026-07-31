@@ -7,6 +7,7 @@
 #include <LibreSCRS/Agent/wire/CredentialWire.h> // CredentialOpResult, CredentialRecord
 #include <LibreSCRS/Agent/wire/ErrorCode.h>      // ErrorCode
 #include <LibreSCRS/Agent/wire/PreReadAuth.h>    // PreReadAuth
+#include <LibreSCRS/Agent/wire/SyncError.h>      // SyncError, syncErrorName, decodeSyncError
 
 #include <cstdint>
 #include <expected>
@@ -45,40 +46,12 @@ enum class WireError : std::uint8_t {
 // Socket-only lifecycle vocabulary (no core enum — AgentQuiesced is host-specific).
 enum class QuiesceReason : std::uint8_t { SystemSleep = 0, ScreenLocked = 1, SessionInactive = 2, Shutdown = 3 };
 
-// Named synchronous-method errors (D-Bus Error.* names). Distinct from the async
-// numeric ErrorCode. Order is not wire-significant (the wire carries the name).
-enum class SyncError : std::uint8_t {
-    UnknownCard,
-    KeyNotFound,
-    NotAuthorized,
-    UserNotLoggedIn,
-    UnknownConfigKey,
-    ReadOnlyConfig,
-    InvalidConfigValue,
-    UnsupportedProtocol,
-    AuthFailed,
-    CommunicationError,
-    NotSupported,
-    UnsupportedOnThisCard,
-    UnsupportedSignatureParameter,
-    InputTooLarge,
-    RateLimited,
-    UnknownCredential,
-    InvalidRequest,
-    // GetSignResult has nothing to serve for the requested op: the op never
-    // reached a retained Sign result (wrong kind, never completed, or the
-    // recovery grace window already elapsed), OR the requester does not own
-    // it -- the two are deliberately indistinguishable on the wire (an
-    // IDOR-safe agent must answer a not-mine op exactly like an absent one,
-    // never a distinct "not yours" error that would let op ids be enumerated
-    // for ownership). Previously served ad hoc (a borrowed InvalidRequest/
-    // KeyNotFound stand-in, depending on which host); this is the dedicated
-    // name both hosts serve now.
-    NoResult,
-};
-
-// The wire name for a SyncError (== the CDDL literal). Never empty.
-[[nodiscard]] std::string_view syncErrorName(SyncError e) noexcept;
+// SyncError (the named synchronous-method error vocabulary) plus BOTH halves of
+// its name conversion live in their own std-only header, wire/SyncError.h,
+// included above: a Qt client re-exports that vocabulary on its PUBLIC surface,
+// and re-exporting this header instead would drag every message struct below
+// into the client's public include graph. Same reason ErrorCode and
+// OperationPhase are single-purpose headers of their own.
 
 // ---- shared sub-types --------------------------------------------------------
 

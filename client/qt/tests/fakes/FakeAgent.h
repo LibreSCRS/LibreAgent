@@ -536,6 +536,12 @@ public:
         bool photoSuppressResult = false; ///< Photo op finishes Ok WITHOUT emitting any Result (lost-Result race)
         QByteArray certDerBytes;          ///< DER bytes Pkcs11_1.CertDer returns on success
         bool certDerKeyNotFound = false;  ///< CertDer sends …Error.KeyNotFound instead of returning bytes
+        /// CertDer answers a well-formed REPLY carrying no arguments at all —
+        /// a reply outside this method's contract, which the peer named
+        /// nothing about. Models the exchange failing on the client's side of
+        /// the decode rather than the agent refusing; the socket fake's
+        /// certDerUnexpectedArm is the same fault on the other wire.
+        bool certDerEmptyReply = false;
         bool wedgeGetManagedObjects =
             false; ///< ObjectManager.GetManagedObjects never replies (models the discovery-path hang)
         bool announceConsentPhase =

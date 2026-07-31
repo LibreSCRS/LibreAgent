@@ -8,6 +8,7 @@
 #include <LibreSCRS/AgentClient/FdHandle.h>
 #include <LibreSCRS/AgentClient/OperationPhase.h>
 #include <LibreSCRS/AgentClient/SignOptions.h>
+#include <LibreSCRS/AgentClient/SyncError.h>
 #include <LibreSCRS/AgentClient/Types.h>
 
 #include <QByteArray>
@@ -16,6 +17,7 @@
 #include <QVariantMap>
 
 #include <memory>
+#include <optional>
 #include <vector>
 
 /// @file
@@ -97,6 +99,57 @@ public:
     ///        WITHOUT a wire-level answer (agent unreachable, timeout,
     ///        transport break, request rejected at entry); None otherwise.
     [[nodiscard]] CallError callError() const;
+    /// @brief The refusal's own name in the wire's `sync-error` vocabulary,
+    ///        when the failure had one; disengaged otherwise.
+    ///
+    /// Third axis, orthogonal to `errorCode()` and `callError()` — it never
+    /// changes what either of those reports, it says which of the several names
+    /// sharing one of their buckets this actually was. Two engaged values can
+    /// carry the same `callError()`: `UnknownCredential` and `InvalidRequest`
+    /// both report `CallError::InvalidArguments`, and a consumer whose recovery
+    /// differs between them (re-list the stale ids versus surface a persistent
+    /// card condition) can only tell them apart here.
+    ///
+    /// @par When it is engaged
+    /// A method-entry refusal or a public-data fetch that the peer answered
+    /// with a named error, on either transport. Also the small set of refusals
+    /// this client decides locally in that SAME vocabulary so both transports
+    /// converge on one outcome (an operation the agent does not advertise
+    /// support for reports `NotSupported` without any wire exchange) — the
+    /// value names the refusal, not its author.
+    ///
+    /// @par When it is disengaged
+    /// Everything else, and the absence is informative rather than a gap:
+    /// a transport-level failure (no agent, timeout, broken connection), a
+    /// local refusal this client made without borrowing the vocabulary
+    /// (caller-side argument validation), a terminal outcome of an operation
+    /// that DID start — those report the numeric `errorCode()` taxonomy
+    /// instead — and, of course, success. In particular an unreachable agent
+    /// is `callError() == CallError::AgentUnavailable` with NO sync error:
+    /// unavailability is a client-side observation and has never been a wire
+    /// token.
+    ///
+    /// Disengaged too — and this is the case worth stating on its own, because
+    /// the failure LOOKS like the agent answering — when the exchange itself is
+    /// outside the wire contract: a reply that is not a reply, a reply with an
+    /// empty body, a reply arm that does not answer this request. The client
+    /// diagnosed those; the peer named nothing. They still report
+    /// `ErrorCode::CommunicationError` or `CallError::ProtocolError` on the
+    /// other two axes, so nothing about them is silent — but reading an engaged
+    /// name there would attribute a local framing fault to the card, which is a
+    /// different failure with a different recovery.
+    ///
+    /// The discriminator throughout is therefore WHO NAMED IT, not what went
+    /// wrong: engaged means a name from this vocabulary was genuinely in play.
+    ///
+    /// @warning An engaged `SyncError::CommunicationError` does NOT prove the
+    ///          peer named that error. `sync-error` is a text-token vocabulary
+    ///          with no room to carry an unrecognised token forward, so a name
+    ///          from a newer agent degrades to that value at decode time on
+    ///          both transports (see `decodeSyncError()`'s own warning). Treat
+    ///          it as "named, but not usefully" — never as a positive
+    ///          identification.
+    [[nodiscard]] std::optional<SyncError> syncError() const;
     /// @brief Agent-authored i18n message key for the terminal outcome, or
     ///        empty (recovered terminals carry no message — map `errorCode()`).
     [[nodiscard]] QString messageKey() const;
@@ -211,8 +264,14 @@ private:
     ///        silent empty success.
     void finalizeTerminal(OperationStatus terminalStatus, ErrorCode code, const QString& msgKey,
                           const QString& msgFallback);
-    void emitFinishedOnce(OperationStatus terminalStatus, ErrorCode code, CallError call, const QString& msgKey,
-                          const QString& msgFallback);
+    /// @brief The single writer of the terminal state. @p sync is the named
+    ///        wire error `syncError()` will report — disengaged on every route
+    ///        that had no wire name to carry (a terminal on an operation that
+    ///        already started, the agent-loss/card-removal sweeps, a successful
+    ///        public-data fetch), engaged only where a classified `SeamError`
+    ///        brought one in.
+    void emitFinishedOnce(OperationStatus terminalStatus, ErrorCode code, CallError call, std::optional<SyncError> sync,
+                          const QString& msgKey, const QString& msgFallback);
     void recoverIfAlreadyFinished();
 
     struct Private;

@@ -5,9 +5,16 @@
 
 #include "AgentDBus.h"
 
+#include <LibreSCRS/Agent/wire/SyncError.h>
+
+#include <QByteArray>
 #include <QLatin1StringView>
 
+#include <string_view>
+
 namespace LibreSCRS::AgentClient {
+
+namespace Wire = LibreSCRS::Agent::Wire;
 
 namespace {
 
@@ -21,9 +28,34 @@ SeamError make(CallError call, ErrorCode code, QStringView name, const QString& 
     return e;
 }
 
-} // namespace
+/// The short name as its `sync-error` enumerator. Called only from
+/// mapAgentErrorShortName, i.e. only where the name is already known to be in
+/// the AGENT namespace: the same spelling under org.freedesktop.DBus.Error.*
+/// means something entirely different (that namespace's AuthFailed is a bus
+/// authentication failure, not the card's), which is exactly why this is
+/// derived here rather than from SeamError::wireName downstream.
+///
+/// The decoder is the wire library's own — the repo that owns the vocabulary —
+/// rather than a client-side name table, which would be a second hand-kept
+/// mirror of a closed enum this codebase already single-sources. It never
+/// fails: an unrecognised name degrades to CommunicationError, matching what
+/// the socket wire already did to the same token at decode time, so both
+/// transports converge (see decodeSyncError's own warning).
+[[nodiscard]] Wire::SyncError decodeAgentShortName(QStringView shortName)
+{
+    // The vocabulary is ASCII by construction (a D-Bus error-name element and a
+    // CDDL text literal), so Latin-1 is a faithful narrowing here; a name
+    // carrying anything else simply will not match a token and degrades.
+    const QByteArray narrowed = shortName.toLatin1();
+    return Wire::decodeSyncError(std::string_view{narrowed.constData(), static_cast<std::size_t>(narrowed.size())});
+}
 
-SeamError mapAgentErrorShortName(QStringView shortName, const QString& message)
+/// The CallError/ErrorCode half of the agent-namespace classification —
+/// unchanged by the named-error axis, and kept a separate function precisely so
+/// that stays true: mapAgentErrorShortName stamps the name onto whatever this
+/// returns, in ONE place, so no arm of the table below can forget it and no
+/// arm's existing decision can be quietly adjusted while adding it.
+SeamError classifyAgentErrorShortName(QStringView shortName, const QString& message)
 {
     // Wire-taxonomy refusals: the agent answered, and the answer fits the
     // frozen ErrorCode vocabulary the async operation path already uses —
@@ -88,6 +120,32 @@ SeamError mapAgentErrorShortName(QStringView shortName, const QString& message)
     // Degrade to the taxonomy catch-all rather than inventing a transport
     // failure that never happened.
     return make(CallError::None, ErrorCode::CommunicationError, shortName, message);
+}
+
+} // namespace
+
+SeamError mapAgentErrorShortName(QStringView shortName, const QString& message)
+{
+    SeamError e = classifyAgentErrorShortName(shortName, message);
+    // The name itself, as an enumerator, alongside the classification rather
+    // than instead of it. Engaged for EVERY name in this namespace — including
+    // one this build does not recognise, which degrades exactly as the socket
+    // wire's own decode does. What stays disengaged is everything that never
+    // reaches this function: the bus-daemon namespace, a foreign error domain,
+    // and a local refusal that borrowed no wire vocabulary.
+    e.syncError = decodeAgentShortName(shortName);
+    return e;
+}
+
+SeamError localExchangeFailure(const QString& message)
+{
+    // Deliberately NOT mapAgentErrorShortName("CommunicationError", ...), which
+    // is what these sites used to call: that spelling produced the right two
+    // axes but now also stamps the named-error axis, claiming the peer said
+    // something it never said. Reproduce the same two axes — and the same
+    // diagnostic wireName, so logs are byte-identical to before — while leaving
+    // syncError disengaged.
+    return make(CallError::None, ErrorCode::CommunicationError, QStringLiteral("CommunicationError"), message);
 }
 
 SeamError mapDBusErrorName(const QString& fullName, const QString& message)

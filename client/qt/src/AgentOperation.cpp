@@ -96,6 +96,7 @@ struct AgentOperation::Private final : public OperationListener, public Transpor
     OperationStatus status = OperationStatus::Error;
     ErrorCode errorCode = ErrorCode::None;
     CallError callError = CallError::None;
+    std::optional<SyncError> syncError;
     QString messageKey;
     QString messageFallback;
 
@@ -173,13 +174,16 @@ struct AgentOperation::Private final : public OperationListener, public Transpor
         }
         derToken = 0;
         if (outcome.error.isError()) {
-            q->emitFinishedOnce(OperationStatus::Error, outcome.error.errorCode, outcome.error.callError, QString(),
-                                outcome.error.message);
+            // The public-data route: no seam operation object was ever minted,
+            // so this is the ONLY place a named error from a DER fetch can
+            // reach the caller — it never passes through failEntry.
+            q->emitFinishedOnce(OperationStatus::Error, outcome.error.errorCode, outcome.error.callError,
+                                outcome.error.syncError, QString(), outcome.error.message);
             return;
         }
         der = std::move(outcome.der);
         resultSeen = true;
-        q->emitFinishedOnce(OperationStatus::Ok, ErrorCode::None, CallError::None, QString(), QString());
+        q->emitFinishedOnce(OperationStatus::Ok, ErrorCode::None, CallError::None, std::nullopt, QString(), QString());
     }
 
     // ---- payload handling ---------------------------------------------------
@@ -334,6 +338,11 @@ CallError AgentOperation::callError() const
     return d->callError;
 }
 
+std::optional<SyncError> AgentOperation::syncError() const
+{
+    return d->syncError;
+}
+
 QString AgentOperation::messageKey() const
 {
     return d->messageKey;
@@ -394,17 +403,20 @@ void AgentOperation::terminate(OperationStatus terminalStatus, ErrorCode code, C
 {
     // Pure local terminalization — no transport call (the peer is gone).
     // emitFinishedOnce is idempotent, so a racing real terminal that already
-    // fired wins and this is a no-op.
-    emitFinishedOnce(terminalStatus, code, call, msgKey, msgFallback);
+    // fired wins and this is a no-op. No named wire error: the death sweeps are
+    // a client-side observation about the peer, never something the peer said.
+    emitFinishedOnce(terminalStatus, code, call, std::nullopt, msgKey, msgFallback);
 }
 
 void AgentOperation::failEntry(const SeamError& error)
 {
     // The minting call returns this operation to a consumer that has not
     // connected yet: queue the terminal emit exactly like the ctor recovery
-    // window does.
+    // window does. This is the route for every method-entry refusal, so it
+    // carries the classified name straight through.
     d->inCtorRecovery = true;
-    emitFinishedOnce(OperationStatus::Error, error.errorCode, error.callError, QString(), error.message);
+    emitFinishedOnce(OperationStatus::Error, error.errorCode, error.callError, error.syncError, QString(),
+                     error.message);
     d->inCtorRecovery = false;
 }
 
@@ -443,11 +455,11 @@ void AgentOperation::finalizeTerminal(OperationStatus terminalStatus, ErrorCode 
                                  << "finished but its result was not delivered and the recovery pull returned "
                                     "nothing (lost/late signal, grace window elapsed, or an agent without the "
                                     "recovery method); surfacing as a communication error";
-            emitFinishedOnce(OperationStatus::Error, ErrorCode::CommunicationError, CallError::None, msgKey,
-                             msgFallback);
+            emitFinishedOnce(OperationStatus::Error, ErrorCode::CommunicationError, CallError::None, std::nullopt,
+                             msgKey, msgFallback);
             return;
         }
-        emitFinishedOnce(terminalStatus, code, CallError::None, msgKey, msgFallback);
+        emitFinishedOnce(terminalStatus, code, CallError::None, std::nullopt, msgKey, msgFallback);
         return;
     }
     if (terminalStatus == OperationStatus::Ok && !d->resultSeen) {
@@ -468,28 +480,29 @@ void AgentOperation::finalizeTerminal(OperationStatus terminalStatus, ErrorCode 
                                  << "finished Ok but its typed result was not delivered and the recovery pull "
                                     "returned no result (lost/late signal, grace window elapsed, or an agent "
                                     "without it); surfacing as a communication error";
-            emitFinishedOnce(OperationStatus::Error, ErrorCode::CommunicationError, CallError::None, msgKey,
-                             msgFallback);
+            emitFinishedOnce(OperationStatus::Error, ErrorCode::CommunicationError, CallError::None, std::nullopt,
+                             msgKey, msgFallback);
             return;
         }
     }
-    emitFinishedOnce(terminalStatus, code, CallError::None, msgKey, msgFallback);
+    emitFinishedOnce(terminalStatus, code, CallError::None, std::nullopt, msgKey, msgFallback);
 }
 
 void AgentOperation::emitFinishedOnce(OperationStatus terminalStatus, ErrorCode code, CallError call,
-                                      const QString& msgKey, const QString& msgFallback)
+                                      std::optional<SyncError> sync, const QString& msgKey, const QString& msgFallback)
 {
     if (d->finishedEmitted) {
         return;
     }
     // Set the polled terminal state SYNCHRONOUSLY: isFinished()/status()/
-    // errorCode()/callError() (+ the result members, already set by onResult /
-    // the recovery pull) must be true the instant this returns, so the ctor's
-    // synchronous recovery still reports a terminal operation.
+    // errorCode()/callError()/syncError() (+ the result members, already set by
+    // onResult / the recovery pull) must be true the instant this returns, so
+    // the ctor's synchronous recovery still reports a terminal operation.
     d->finishedEmitted = true;
     d->status = terminalStatus;
     d->errorCode = code;
     d->callError = call;
+    d->syncError = sync;
     d->messageKey = msgKey;
     d->messageFallback = msgFallback;
 

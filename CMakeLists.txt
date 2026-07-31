@@ -177,6 +177,12 @@ if(LIBREAGENT_BUILD_WIRE)
         src/wire/FrameReassembler.cpp
         src/wire/Messages.cpp
         src/wire/ClientCodec.cpp
+        # The sync-error vocabulary's two name-conversion halves, paired with
+        # wire/SyncError.h. Its own TU rather than a corner of Messages.cpp:
+        # the reverse half is on the PUBLIC surface (a Qt client classifies a
+        # wire error name at its own seam), so both halves belong next to the
+        # single-purpose header that declares them.
+        src/wire/SyncError.cpp
         # Fold qcbor's compiled objects straight into this archive so an
         # installed libLibreAgentWire.a is self-contained: a consumer linking
         # only this archive + this repo's headers gets qcbor's symbols too,

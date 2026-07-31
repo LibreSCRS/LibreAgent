@@ -257,6 +257,11 @@ struct ParityConfig
     // unrecognised token or an agent predating the surface (empty).
     QStringList features = {QStringLiteral("credentials")};
     bool failMethodEntry = false;
+    // The public-data fetch answers a reply that is OUTSIDE this request's
+    // contract — the same fault expressed in each wire's own terms (D-Bus: a
+    // reply with no arguments; socket: a reply carrying the wrong arm). Not a
+    // refusal: the peer named nothing, the client diagnosed it.
+    bool certDerReplyOutsideContract = false;
     quint32 finalStatus = 0;    // 0 Ok / 1 Cancelled / 2 Error
     quint32 finalErrorCode = 0; // Finished errorCode when finalStatus == Error (may be a future/raw value)
     QByteArray photoBytes;
@@ -407,6 +412,7 @@ private:
         out.cardType = cfg.cardType;
         out.atrHex = cfg.atrHex;
         out.failMethodEntry = cfg.failMethodEntry;
+        out.certDerEmptyReply = cfg.certDerReplyOutsideContract;
         out.finalStatus = cfg.finalStatus;
         out.finalErrorCode = cfg.finalErrorCode;
         out.photoBytes = cfg.photoBytes;
@@ -622,6 +628,7 @@ private:
         out.cardType = cfg.cardType;
         out.atrHex = cfg.atrHex;
         out.failMethodEntry = cfg.failMethodEntry;
+        out.certDerUnexpectedArm = cfg.certDerReplyOutsideContract;
         out.finalStatus = cfg.finalStatus;
         out.finalErrorCode = cfg.finalErrorCode;
         out.photoBytes = cfg.photoBytes;
@@ -1356,6 +1363,46 @@ TYPED_TEST(TransportParity, MethodEntryRefusalProducesFailedOperation)
     ASSERT_TRUE(waitFor([&]() { return op->isFinished(); }));
     EXPECT_EQ(op->status(), OperationStatus::Error);
     EXPECT_EQ(op->errorCode(), ErrorCode::CapabilityMissing);
+    // Both fakes refuse entry by NAMING UnsupportedOnThisCard in the wire's
+    // sync-error vocabulary, so the named-error axis must arrive engaged and
+    // identical on both wires — this is the axis a credential surface branches
+    // on when several names share one CallError bucket.
+    ASSERT_TRUE(op->syncError().has_value()) << "a NAMED entry refusal must carry its name to the consumer";
+    EXPECT_EQ(*op->syncError(), SyncError::UnsupportedOnThisCard);
+}
+
+// ---- public data: a reply outside the request's contract ----------------------
+//
+// The failure that LOOKS like the agent answering but is not: each wire is
+// handed the same fault in its own terms (D-Bus a reply with no arguments,
+// socket a reply carrying the wrong arm), and neither peer named anything. Both
+// transports must therefore leave the named-error axis DISENGAGED — reading a
+// name here would attribute the client's own decoding fault to the card.
+//
+// The two other axes are deliberately NOT asserted equal: the transports have
+// always classified this case differently (D-Bus reports the ErrorCode
+// catch-all, the socket a ProtocolError CallError), and this scenario exists to
+// pin the new axis, not to re-map the old ones.
+TYPED_TEST(TransportParity, ReplyOutsideTheContractCarriesNoNameOnEitherTransport)
+{
+    using Env = typename TypeParam::Env;
+    ParityConfig cfg;
+    cfg.capabilities = Cap::Pki;
+    cfg.certDerReplyOutsideContract = true;
+    Env env(cfg);
+
+    AgentClient* client = env.client();
+    ASSERT_NE(client, nullptr);
+    ASSERT_EQ(client->readers().size(), 1);
+    const QString readerId = client->readers().constFirst()->id();
+
+    AgentOperation* op = client->certificateDer(readerId, QStringLiteral("cert-1"));
+    ASSERT_NE(op, nullptr);
+    ASSERT_TRUE(waitFor([&]() { return op->isFinished(); }));
+    EXPECT_EQ(op->status(), OperationStatus::Error);
+    EXPECT_FALSE(op->syncError().has_value())
+        << "a reply outside the request's contract was diagnosed by the CLIENT — the peer named nothing, so the "
+           "named-error axis must stay disengaged on both wires";
 }
 
 // ---- agent loss mid-operation -------------------------------------------------

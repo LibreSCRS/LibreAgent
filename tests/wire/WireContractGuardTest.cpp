@@ -67,6 +67,7 @@ using LibreSCRS::Agent::CredentialOutcome;
 using LibreSCRS::Agent::ErrorCode;
 using LibreSCRS::Agent::Operations::OperationPhase;
 using LibreSCRS::Agent::Operations::OperationStatus;
+using LibreSCRS::Agent::Wire::decodeSyncError;
 using LibreSCRS::Agent::Wire::SyncError;
 using LibreSCRS::Agent::Wire::syncErrorName;
 using LibreSCRS::Auth::PreReadAuthMethod;
@@ -680,6 +681,18 @@ TEST(WireContractGuard, CddlSyncErrorMatchesWireEnum)
         enumTokens.emplace_back(syncErrorWireName(e));
         EXPECT_EQ(syncErrorName(e), std::string_view(syncErrorWireName(e)))
             << "wire::syncErrorName() disagrees with the guard at SyncError " << i;
+        // The INVERSE half, walked over the same append-protected bound. Both
+        // halves are on the public surface now (a Qt client turns an error name
+        // back into an enumerator at its own classification seam), and the
+        // decoder's candidate list is the one piece of this vocabulary with no
+        // compile-time append protection of its own — syncErrorName()'s switch
+        // is exhaustive, but a member missing from the decoder's list only
+        // shows up as a token that silently degrades to CommunicationError.
+        // This is that check, and it is not a tautology: the expectation comes
+        // from THIS file's independent name table, not from either function.
+        EXPECT_EQ(decodeSyncError(syncErrorWireName(e)), e)
+            << "wire::decodeSyncError() does not round-trip SyncError " << i << " ('" << syncErrorWireName(e)
+            << "') — is it missing from the decoder's candidate list?";
     }
     expectSameTokenSet(cddlTokens, enumTokens, "sync-error");
 }

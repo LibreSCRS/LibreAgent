@@ -703,11 +703,16 @@ quint64 DBusTransport::requestCertificateDer(const QString& readerId, const QStr
         DerOutcome outcome;
         const QDBusMessage reply = w->reply();
         if (reply.type() != QDBusMessage::ReplyMessage) {
-            outcome.error = reply.errorName().isEmpty()
-                                ? mapAgentErrorShortName(QStringLiteral("CommunicationError"), reply.errorMessage())
-                                : mapDBusErrorName(reply.errorName(), reply.errorMessage());
+            // A non-reply with NO error name is not the peer refusing us — it is
+            // the exchange itself failing locally, so it carries no wire name to
+            // report. With one, the name is the peer's and classifies normally.
+            outcome.error = reply.errorName().isEmpty() ? localExchangeFailure(reply.errorMessage())
+                                                        : mapDBusErrorName(reply.errorName(), reply.errorMessage());
         } else if (reply.arguments().isEmpty()) {
-            outcome.error = mapAgentErrorShortName(QStringLiteral("CommunicationError"), QStringLiteral("empty reply"));
+            // A well-formed reply with no body: the agent answered, but not with
+            // anything this request's contract allows. Same reasoning — the
+            // client diagnosed this, the agent named nothing.
+            outcome.error = localExchangeFailure(QStringLiteral("empty reply"));
         } else {
             outcome.der = reply.arguments().constFirst().toByteArray(); // 'ay' -> QByteArray
         }

@@ -634,48 +634,9 @@ CborValue makeReplyBase(std::uint64_t req)
 
 } // namespace
 
-std::string_view syncErrorName(SyncError e) noexcept
-{
-    switch (e) {
-    case SyncError::UnknownCard:
-        return "UnknownCard";
-    case SyncError::KeyNotFound:
-        return "KeyNotFound";
-    case SyncError::NotAuthorized:
-        return "NotAuthorized";
-    case SyncError::UserNotLoggedIn:
-        return "UserNotLoggedIn";
-    case SyncError::UnknownConfigKey:
-        return "UnknownConfigKey";
-    case SyncError::ReadOnlyConfig:
-        return "ReadOnlyConfig";
-    case SyncError::InvalidConfigValue:
-        return "InvalidConfigValue";
-    case SyncError::UnsupportedProtocol:
-        return "UnsupportedProtocol";
-    case SyncError::AuthFailed:
-        return "AuthFailed";
-    case SyncError::CommunicationError:
-        return "CommunicationError";
-    case SyncError::NotSupported:
-        return "NotSupported";
-    case SyncError::UnsupportedOnThisCard:
-        return "UnsupportedOnThisCard";
-    case SyncError::UnsupportedSignatureParameter:
-        return "UnsupportedSignatureParameter";
-    case SyncError::InputTooLarge:
-        return "InputTooLarge";
-    case SyncError::RateLimited:
-        return "RateLimited";
-    case SyncError::UnknownCredential:
-        return "UnknownCredential";
-    case SyncError::InvalidRequest:
-        return "InvalidRequest";
-    case SyncError::NoResult:
-        return "NoResult";
-    }
-    return "UnknownCard"; // unreachable (all enumerators handled)
-}
+// syncErrorName() used to be defined here, next to the enum's old home in
+// Messages.h. Both halves of that conversion now live together in
+// src/wire/SyncError.cpp, paired with wire/SyncError.h.
 
 std::expected<RequestEnvelope, WireError> parseRequest(std::span<const std::uint8_t> body)
 {

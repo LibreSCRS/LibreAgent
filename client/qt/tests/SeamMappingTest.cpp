@@ -821,6 +821,166 @@ TEST(SeamCertificateDer, FailedFetchCarriesTheMappedError)
     EXPECT_EQ(op->errorCode(), ErrorCode::KeyNotFound);
 }
 
+// ---- the named-wire-error axis reaching the public getter -------------------------
+//
+// The classification half of this coverage (which error NAMES map to which
+// enumerator, and which failures carry no name at all) is in SyncErrorTest.cpp.
+// What is proven here is the CARRY: that a name settled at the seam survives
+// every route to AgentOperation::syncError(), and that the routes with no name
+// leave it disengaged rather than inventing one.
+
+TEST(SeamSyncError, EntryRefusalCarriesTheNameToTheOperation)
+{
+    ClientOnFake h;
+    h.fake->nextOperationId.clear();
+    h.fake->entryError.callError = CallError::InvalidArguments;
+    h.fake->entryError.syncError = SyncError::UnknownCredential;
+    h.fake->entryError.wireName = QStringLiteral("UnknownCredential");
+
+    AgentCard* card = h.client->card(QStringLiteral("/card/0"));
+    ASSERT_NE(card, nullptr);
+    AgentOperation* op = card->managePin(QStringLiteral("stale:id"), PinVerb::Change);
+    ASSERT_TRUE(op->isFinished());
+    // The two existing axes are unchanged...
+    EXPECT_EQ(op->callError(), CallError::InvalidArguments);
+    EXPECT_EQ(op->errorCode(), ErrorCode::None);
+    // ...and the name is now reachable alongside them.
+    ASSERT_TRUE(op->syncError().has_value());
+    EXPECT_EQ(*op->syncError(), SyncError::UnknownCredential);
+}
+
+// The refusal that shares UnknownCredential's CallError bucket. Run as its own
+// case rather than folded into the one above so a regression that hardwires ONE
+// value through the carry cannot pass both.
+TEST(SeamSyncError, TheOtherNameInTheSameBucketArrivesAsItself)
+{
+    ClientOnFake h;
+    h.fake->nextOperationId.clear();
+    h.fake->entryError.callError = CallError::InvalidArguments;
+    h.fake->entryError.syncError = SyncError::InvalidRequest;
+
+    AgentCard* card = h.client->card(QStringLiteral("/card/0"));
+    AgentOperation* op = card->managePin(QStringLiteral("amb:id"), PinVerb::Change);
+    ASSERT_TRUE(op->syncError().has_value());
+    EXPECT_EQ(*op->syncError(), SyncError::InvalidRequest);
+    EXPECT_EQ(op->callError(), CallError::InvalidArguments); // still the same bucket
+}
+
+TEST(SeamSyncError, AnEntryRefusalWithNoNameLeavesItDisengaged)
+{
+    ClientOnFake h;
+    h.fake->nextOperationId.clear();
+    // A purely local, caller-side argument refusal: no wire exchange happened
+    // and no wire vocabulary was borrowed.
+    h.fake->entryError.callError = CallError::InvalidArguments;
+
+    AgentCard* card = h.client->card(QStringLiteral("/card/0"));
+    AgentOperation* op = card->managePin(QStringLiteral("id"), PinVerb::Change);
+    ASSERT_TRUE(op->isFinished());
+    EXPECT_EQ(op->callError(), CallError::InvalidArguments);
+    EXPECT_FALSE(op->syncError().has_value());
+}
+
+// The certificateDer route does NOT go through failEntry — the terminal is
+// emitted straight from the asynchronous DER delivery — so it needs its own
+// case or the carry would be untested on exactly the path a public-data
+// consumer uses.
+TEST(SeamSyncError, CertificateDerFailureCarriesTheName)
+{
+    ClientOnFake h;
+    AgentOperation* op = h.client->certificateDer(QStringLiteral("/reader/0"), QStringLiteral("nope"));
+    ASSERT_EQ(h.fake->derRequests.size(), 1u);
+    const auto& request = h.fake->derRequests.front();
+
+    DerOutcome outcome;
+    outcome.error.errorCode = ErrorCode::KeyNotFound;
+    outcome.error.syncError = SyncError::KeyNotFound;
+    request.listener->onCertificateDer(request.token, std::move(outcome));
+
+    ASSERT_TRUE(op->isFinished());
+    EXPECT_EQ(op->errorCode(), ErrorCode::KeyNotFound);
+    ASSERT_TRUE(op->syncError().has_value());
+    EXPECT_EQ(*op->syncError(), SyncError::KeyNotFound);
+}
+
+// The second name on that same route, which a public-data consumer splits from
+// the first: an absent card rather than an absent certificate.
+TEST(SeamSyncError, CertificateDerCarriesTheAbsentCardNameToo)
+{
+    ClientOnFake h;
+    AgentOperation* op = h.client->certificateDer(QStringLiteral("/reader/0"), QStringLiteral("certid"));
+    const auto& request = h.fake->derRequests.front();
+
+    DerOutcome outcome;
+    outcome.error.errorCode = ErrorCode::UnsupportedCard;
+    outcome.error.syncError = SyncError::UnknownCard;
+    request.listener->onCertificateDer(request.token, std::move(outcome));
+
+    ASSERT_TRUE(op->syncError().has_value());
+    EXPECT_EQ(*op->syncError(), SyncError::UnknownCard);
+}
+
+TEST(SeamSyncError, ASuccessfulCertificateDerCarriesNoName)
+{
+    ClientOnFake h;
+    AgentOperation* op = h.client->certificateDer(QStringLiteral("/reader/0"), QStringLiteral("certid"));
+    const auto& request = h.fake->derRequests.front();
+
+    DerOutcome outcome;
+    outcome.der = QByteArray("\x30\x82", 2);
+    request.listener->onCertificateDer(request.token, std::move(outcome));
+
+    ASSERT_EQ(op->status(), OperationStatus::Ok);
+    EXPECT_FALSE(op->syncError().has_value());
+}
+
+// The third arm of a public-data consumer's split, and the one that is NOT a
+// wire name: an unreachable agent, discriminated by the CallError alone.
+TEST(SeamSyncError, AnUnreachableAgentCarriesNoNameOnTheDerRoute)
+{
+    auto owned = std::make_unique<FakeTransportSeam>();
+    owned->available = false;
+    std::unique_ptr<AgentClient> client{ClientTestAccess::create(std::move(owned))};
+
+    AgentOperation* op = client->certificateDer(QStringLiteral("/reader/0"), QStringLiteral("certid"));
+    ASSERT_TRUE(op->isFinished());
+    EXPECT_EQ(op->callError(), CallError::AgentUnavailable);
+    EXPECT_FALSE(op->syncError().has_value());
+}
+
+// An operation that DID start and then failed reports the numeric taxonomy; the
+// named vocabulary belongs to method entry and public-data fetches, so a
+// terminal on a running operation must not manufacture one.
+TEST(SeamSyncError, AnAsynchronousTerminalCarriesNoName)
+{
+    ClientOnFake h;
+    h.fake->nextOperationId = QStringLiteral("/op/1");
+    AgentCard* card = h.client->card(QStringLiteral("/card/0"));
+    AgentOperation* op = card->readIdentity();
+    OperationListener* listener = h.fake->soleOperationListener();
+    ASSERT_NE(listener, nullptr);
+
+    listener->onFinished(OperationStatus::Error, ErrorCode::CardRemoved, QString(), QStringLiteral("card gone"));
+
+    ASSERT_TRUE(op->isFinished());
+    EXPECT_EQ(op->errorCode(), ErrorCode::CardRemoved);
+    EXPECT_FALSE(op->syncError().has_value());
+}
+
+TEST(SeamSyncError, TheAgentVanishSweepCarriesNoName)
+{
+    ClientOnFake h;
+    h.fake->nextOperationId = QStringLiteral("/op/1");
+    AgentCard* card = h.client->card(QStringLiteral("/card/0"));
+    AgentOperation* op = card->readIdentity();
+
+    bool sawDisengaged = false;
+    QObject::connect(op, &AgentOperation::finished, op, [&]() { sawDisengaged = !op->syncError().has_value(); });
+
+    h.fake->registry->onServiceUnregistered();
+    EXPECT_TRUE(sawDisengaged);
+}
+
 // ---- refresh discovery --------------------------------------------------------------
 
 TEST(SeamRefresh, RefreshReconcilesAvailabilityAndRegistry)

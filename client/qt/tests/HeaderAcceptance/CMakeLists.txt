@@ -5,8 +5,9 @@
 # with an include-path set of EXACTLY:
 #   - this component's own public include dir (client/qt/include)
 #   - the build-tree dir holding the generated Export.h
-#   - the repo root's include/ dir (the std-only wire headers ErrorCode.h/
-#     OperationPhase.h re-export)
+#   - the repo root's include/ dir (the std-only upstream headers this
+#     component's public re-exports pull in: ErrorCode.h, OperationPhase.h,
+#     SyncError.h and PreReadAuth.h)
 #   - Qt6::Core's own INTERFACE_INCLUDE_DIRECTORIES
 # AND that nothing in the resulting #include graph resolves to a
 # QtDBus/KF6/LibreMiddleware/QCBOR header.
@@ -55,6 +56,7 @@ set(_agentclient_public_headers
     SealedPayload.h
     SharedAgentClient.h
     SignOptions.h
+    SyncError.h
     Types.h)
 
 # Drift guard: diff the explicit list above against what's actually on disk

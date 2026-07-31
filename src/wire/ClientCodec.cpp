@@ -318,44 +318,13 @@ std::optional<QuiesceReason> decodeQuiesceReason(std::uint64_t v)
 
 // sync-error (CDDL) is a TEXT-token closed enum -- unlike the numeric ones
 // above, there is no matching-width concept to bound an unrecognised token
-// against, so it DEGRADES AT DECODE instead of being carried raw: an
-// unmatched token maps to SyncError::CommunicationError, exactly the bucket
-// mapAgentErrorShortName's own "unknown agent-namespace name" fallback
-// already classifies an unrecognised D-Bus error name into on the other
-// transport (SocketTransport.cpp's mapErrInfo re-derives the wire name from
-// this value and feeds it through that SAME table), so both transports
-// converge on the same generic-protocol-error outcome. This never returns
-// nullopt -- the original wire token is not retained on the degrade path.
-SyncError decodeSyncError(const std::string& s)
-{
-    static constexpr SyncError kAll[] = {
-        SyncError::UnknownCard,
-        SyncError::KeyNotFound,
-        SyncError::NotAuthorized,
-        SyncError::UserNotLoggedIn,
-        SyncError::UnknownConfigKey,
-        SyncError::ReadOnlyConfig,
-        SyncError::InvalidConfigValue,
-        SyncError::UnsupportedProtocol,
-        SyncError::AuthFailed,
-        SyncError::CommunicationError,
-        SyncError::NotSupported,
-        SyncError::UnsupportedOnThisCard,
-        SyncError::UnsupportedSignatureParameter,
-        SyncError::InputTooLarge,
-        SyncError::RateLimited,
-        SyncError::UnknownCredential,
-        SyncError::InvalidRequest,
-        SyncError::NoResult,
-    };
-    for (const auto e : kAll) {
-        if (syncErrorName(e) == s) {
-            return e;
-        }
-    }
-    return SyncError::CommunicationError; // unrecognised token -> generic protocol error
-}
-
+// against, so it DEGRADES AT DECODE instead of being carried raw. Its decoder,
+// decodeSyncError(), is NOT local to this file: it is declared beside
+// syncErrorName() in wire/SyncError.h and defined in src/wire/SyncError.cpp,
+// because a Qt client needs the same name -> enum step at its own
+// classification site and a client-side copy of the table would be a second
+// hand-maintained mirror of a vocabulary this repo owns.
+//
 // cred-outcome (CDDL) is the other TEXT-token closed enum on this wire. Same
 // decode-time degrade rule as sync-error above: an unrecognised token is not
 // malformed, it degrades to Unspecified (the value this wire already uses

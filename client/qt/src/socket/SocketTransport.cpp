@@ -165,12 +165,26 @@ SeamError mapErrInfo(const Wire::ErrInfo& err)
     if (const auto* sync = std::get_if<Wire::SyncError>(&err.code)) {
         // The named sync-error vocabulary IS the D-Bus short-name vocabulary
         // (the spellings after "org.librescrs.Agent.Error."), so the existing
-        // classification table applies verbatim.
+        // classification table applies verbatim — and that table now also hands
+        // back the named-error axis, decoded from the name below.
+        //
+        // That round trip recovers `*sync` exactly, so there is nothing to
+        // overwrite here and no drift hazard to guard against. `*sync` did not
+        // come off the wire raw: err-info's named alternative has exactly ONE
+        // producer, the client-role decoder's own decodeSyncError() call, so any
+        // token this build does not know was ALREADY degraded to
+        // CommunicationError before this function ran. Re-deriving it composes
+        // decodeSyncError with syncErrorName, which is the identity on the enum
+        // (pinned for every enumerator by the wire contract guard), so the
+        // second decode is idempotent on an already-degraded value.
         const std::string_view name = Wire::syncErrorName(*sync);
         return mapAgentErrorShortName(QString::fromLatin1(name.data(), static_cast<qsizetype>(name.size())), message);
     }
     // The numeric async taxonomy on a synchronous reply: the agent ANSWERED
-    // with a wire-taxonomy refusal — same two-axis rule as the named half.
+    // with a wire-taxonomy refusal — same two-axis rule as the named half. No
+    // named error: `wireName`'s synthetic "code:N" is a diagnostic spelling,
+    // not a wire token, and nothing in the sync-error vocabulary corresponds
+    // to it.
     SeamError e;
     e.errorCode = std::get<ErrorCode>(err.code);
     e.wireName = QStringLiteral("code:%1").arg(static_cast<uint>(e.errorCode));
