@@ -52,6 +52,7 @@ set(_agentclient_public_headers
     FdHandle.h
     IdentityRows.h
     OperationPhase.h
+    SealedPayload.h
     SharedAgentClient.h
     SignOptions.h
     Types.h)

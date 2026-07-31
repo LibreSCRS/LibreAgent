@@ -22,6 +22,8 @@ qt_add_library(LibreAgentClientQt SHARED
     src/CredentialTypes.cpp
     src/FdHandle.cpp
     src/IdentityRows.cpp
+    src/SealedPayload.cpp
+    src/SealedPayloadInternal.cpp
     src/SharedAgentClient.cpp
     src/TokenMap.cpp
     include/LibreSCRS/AgentClient/AgentClient.h

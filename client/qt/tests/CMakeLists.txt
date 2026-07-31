@@ -58,6 +58,47 @@ target_link_libraries(ClientQtIdentityRowsTest PRIVATE
     GTest::gtest_main)
 add_test(NAME ClientQtIdentityRowsTest COMMAND ClientQtIdentityRowsTest)
 
+# The bounded fd-payload reader (public, exported -- so this links the shared
+# library rather than recompiling the TU, unlike the internal-TU suites above
+# and below). Covers the three-state descriptor contract, the byte cap and its
+# exact boundary, and the empty-versus-failure distinction. The seal-shape
+# cases are guarded inside the source by __linux__, not here: the cap, the
+# empty case and the ordinary-file case are portable and must run on every
+# platform this component builds on.
+add_executable(ClientQtSealedPayloadTest SealedPayloadTest.cpp)
+target_link_libraries(ClientQtSealedPayloadTest PRIVATE
+    LibreAgent::ClientQt
+    GTest::gtest
+    GTest::gtest_main)
+add_test(NAME ClientQtSealedPayloadTest COMMAND ClientQtSealedPayloadTest)
+
+# The bounded reader's two internal decision helpers. They carry branches the
+# public entry point cannot reach on a sane kernel -- a negative reported size,
+# and a premature end of file mid-read -- so they are driven directly here.
+# Neither is exported (no export macro, hidden visibility), so
+# SealedPayloadInternal.cpp is compiled straight into this executable, the same
+# pattern TokenMapTest and ErrorNameMapTest already use for this library's other
+# non-exported internals; it still links LibreAgent::ClientQt for the public
+# include dirs + Qt6::Core.
+#
+# It compiles SealedPayloadInternal.cpp and NOT SealedPayload.cpp, which is why
+# the sentence above is true rather than approximately true: SealedPayload.cpp
+# is a mixed TU carrying the exported readBoundedPayload(), so pulling it in
+# here would give this executable its own definition of a symbol the linked
+# shared library also exports -- harmless in practice, but a duplicate
+# definition that no reader should have to discover with nm. The two helpers
+# were split into their own pure-internal TU precisely so this target defines
+# zero exported symbols, exactly like the two it claims kinship with.
+add_executable(ClientQtSealedPayloadInternalTest
+    SealedPayloadInternalTest.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/SealedPayloadInternal.cpp)
+target_include_directories(ClientQtSealedPayloadInternalTest PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+target_link_libraries(ClientQtSealedPayloadInternalTest PRIVATE
+    LibreAgent::ClientQt
+    GTest::gtest
+    GTest::gtest_main)
+add_test(NAME ClientQtSealedPayloadInternalTest COMMAND ClientQtSealedPayloadInternalTest)
+
 # The public API driven over a minimal in-process TransportSeam fake (not the
 # FakeAgent): request mapping, entry refusal, terminal recovery, availability
 # sweeps. Needs the INTERNAL seam headers (-I src) and the exported
