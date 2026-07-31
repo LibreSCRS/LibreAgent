@@ -35,6 +35,15 @@ GENERATE_HTML            = YES
 GENERATE_XML             = NO
 GENERATE_LATEX           = NO
 
+# Pinned, NOT left to the default: this setting's default flipped between
+# doxygen releases, and with it on, doxygen shells out to Graphviz's `dot` for
+# inheritance and collaboration diagrams. Where `dot` is absent it then fails
+# on every missing .map file, and because warnings are errors here the whole
+# run exits non-zero — reporting a documentation failure that is really a
+# missing package. This file gates whether public symbols are DOCUMENTED; it
+# renders no diagrams and needs no Graphviz, so say so rather than inherit it.
+HAVE_DOT                 = NO
+
 # Every public-surface symbol must carry Doxygen (project convention); an
 # undocumented member of a documented class/enum/struct is a warning, and
 # warnings fail the run. Re-run `doxygen Doxyfile.publicapi` after any
