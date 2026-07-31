@@ -151,6 +151,52 @@ TEST(CredentialTypes, ContractVerbatimRecordKeySetDemarshalsEveryFieldNonDefault
     EXPECT_TRUE(r.extra.isEmpty()); // the full consumed key set leaves no leftovers
 }
 
+// The result half of the guard above: the uniform mutation-result key set,
+// contract-verbatim, every field non-default. Its own case rather than more
+// keys in the record fixture, because the two maps travel on different wire
+// messages and can drift independently.
+TEST(CredentialTypes, ContractVerbatimResultKeySetDemarshalsEveryFieldNonDefault)
+{
+    const QVariantMap wire{
+        {QStringLiteral("outcome"), QStringLiteral("invalidPin")},
+        {QStringLiteral("retries_left"), 2},
+        {QStringLiteral("blocked"), true},
+        {QStringLiteral("pin_activated"), true},
+        {QStringLiteral("key_activated"), true},
+    };
+    const PinResult r = PinResult::fromVariantMap(wire);
+    EXPECT_EQ(r.outcome, CredentialOutcome::InvalidPin);
+    ASSERT_TRUE(r.retriesLeft.has_value());
+    EXPECT_EQ(*r.retriesLeft, 2);
+    EXPECT_TRUE(r.blocked);
+    ASSERT_TRUE(r.pinActivated.has_value());
+    EXPECT_TRUE(*r.pinActivated);
+    ASSERT_TRUE(r.keyActivated.has_value());
+    EXPECT_TRUE(*r.keyActivated);
+    EXPECT_TRUE(r.extra.isEmpty()); // the full consumed key set leaves no leftovers
+}
+
+// A partial bring-up: the PIN was activated but the signing key behind it was
+// not. The two flags are INDEPENDENT, and the failing one arrives as an
+// explicit false rather than as an absent key — so a demarshaller that only
+// populated an optional bool when the wire says true would report the key
+// activation as "not reported" instead of "reported failed", and this is the
+// case that separates those.
+TEST(CredentialTypes, PinResultBringUpPartial)
+{
+    QVariantMap m;
+    m[QStringLiteral("outcome")] = QStringLiteral("keyActivationFailed");
+    m[QStringLiteral("blocked")] = false;
+    m[QStringLiteral("pin_activated")] = true;
+    m[QStringLiteral("key_activated")] = false;
+    const PinResult r = PinResult::fromVariantMap(m);
+    EXPECT_EQ(r.outcome, CredentialOutcome::KeyActivationFailed);
+    ASSERT_TRUE(r.pinActivated.has_value());
+    EXPECT_TRUE(*r.pinActivated);
+    ASSERT_TRUE(r.keyActivated.has_value());
+    EXPECT_FALSE(*r.keyActivated);
+}
+
 // Append-only wire growth: keys this client build does not know must reach
 // the consumer via the `extra` pass-through, never be dropped.
 TEST(CredentialTypes, UnknownKeysPassThroughExtra)

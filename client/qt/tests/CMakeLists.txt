@@ -236,6 +236,23 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
         GTest::gtest
         GTest::gtest_main)
     add_test(NAME ClientQtAgentResultSignatureTest COMMAND ClientQtAgentResultSignatureTest)
+
+    # The process-wide shared-client accessor. Links ONLY the shared library:
+    # sharedAgentClient() and the AgentClient constructor behind it are both
+    # exported public surface, so unlike the suites above nothing internal has
+    # to be recompiled into this executable, and no fake is involved. Runs
+    # under dbus-run-session because that constructor builds this platform's
+    # default transport, which touches the session bus -- hence its place
+    # inside this Linux-gated block, beside the other bus-touching targets and
+    # after the find_program that resolves the wrapper. ClientTestMain.cpp
+    # supplies the QCoreApplication the transport expects.
+    add_executable(ClientQtSharedAgentClientTest SharedAgentClientTest.cpp ClientTestMain.cpp)
+    target_link_libraries(ClientQtSharedAgentClientTest PRIVATE
+        LibreAgent::ClientQt
+        GTest::gtest)
+    add_test(NAME ClientQtSharedAgentClientTest
+        COMMAND ${DBUS_RUN_SESSION} -- $<TARGET_FILE:ClientQtSharedAgentClientTest>)
+    set_tests_properties(ClientQtSharedAgentClientTest PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 endif() # CMAKE_SYSTEM_NAME STREQUAL "Linux"
 
 # Socket integration tests: the REAL SocketTransport driven against an

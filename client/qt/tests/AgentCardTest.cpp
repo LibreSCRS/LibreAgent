@@ -15,6 +15,7 @@
 #include <LibreSCRS/AgentClient/AgentOperation.h>
 #include <LibreSCRS/AgentClient/AgentReader.h>
 #include <LibreSCRS/AgentClient/ClientTimeouts.h>
+#include <LibreSCRS/AgentClient/SyncError.h>
 
 #include "fakes/ClientOnHarness.h"
 #include "fakes/TestBus.h"
@@ -25,6 +26,7 @@
 #include <QTimer>
 #include <algorithm>
 #include <gtest/gtest.h>
+#include <utility>
 #include <fcntl.h>
 #include <sys/mman.h>
 #include <unistd.h>
@@ -995,19 +997,108 @@ TEST(AgentCard, ManagePinEntryErrorSurfacesMappedCallError)
     EXPECT_EQ(op->callError(), CallError::InvalidArguments);
 }
 
-// CAPABILITY GAP (deliberately not fully reproduced): the KDE original's
-// "ManagePinEnforcesVerbAndOptionsVocabulary" drove the fake with a raw wire
-// verb STRING and an ad hoc options map to prove the agent's request-side
-// vocabulary gate (verb in {change,unblock,activate_pin}; options limited to
-// {activateKey: bool}, legal only with activate_pin) catches a client
-// regression. The scrubbed `AgentCard::managePin(pinId, PinVerb, ManagePinOptions)`
-// takes a CLOSED enum for the verb and a single typed bool for the wire's ONLY
-// structural option — there is still no way to construct an invalid verb, an
-// unrecognized option key, or a mismatched option type through this public
-// API, so that half of the original regression stays prevented at compile
-// time rather than runtime. What IS newly reachable through this API — that
-// `activateKey` is actually forwarded, and only alongside `ActivatePin` — is
-// exercised below instead.
+// The fake enforces the agent's REQUEST-side wire vocabulary, so a client
+// regression in verb spelling fails the suite instead of passing against a
+// permissive double. Adapted from the KDE suite's case of the same purpose,
+// which drove `managePin()` with a raw wire-verb STRING and an ad hoc options
+// map and covered four refusals: an unknown verb, an unknown option key,
+// `activateKey` paired with the wrong verb, and `activateKey` mistyped.
+//
+// Two of those four are unconstructible against this API and so are prevented
+// at compile time instead: `ManagePinOptions` is a struct with a single
+// `bool`, leaving no unknown option key and no mistyped option value to send.
+// A third IS constructible — `ManagePinOptions{true}` paired with a verb it
+// does not apply to — but cannot reach the wire, because
+// `AgentCard::managePin()` forwards `activateKey` only alongside
+// `ActivatePin`; that is asserted from the client end by
+// `ManagePinIgnoresActivateKeyOptionOutsideActivatePin` below.
+//
+// The verb half stays reachable, and this is the case that keeps it covered.
+// `PinVerb` is a `std::uint8_t`-backed enum in a shipped header: its
+// underlying type is fixed, so a value outside its three enumerators is a
+// well-formed value of the type, and `detail::toToken()` answers it with the
+// empty token. That is how an out-of-vocabulary verb actually reaches this
+// wire — from a consumer that rebuilds the enum from an integer — not by
+// anyone writing a bad spelling by hand.
+//
+// The KDE original identified its refusals by raw wire error name, read off a
+// `lastCredentialError()` accessor this API does not have. That discrimination
+// survives the scrub on a different axis rather than being lost with the
+// accessor: `InvalidRequest` and `UnknownCredential` do collapse onto one
+// `CallError` bucket, but `AgentOperation::syncError()` carries the name
+// itself, and the assertion below pins it. So this case distinguishes a
+// vocabulary refusal from the listing-gate refusal its neighbours cover, by
+// assertion and not merely by fixture construction.
+//
+// What is NOT covered here, because nothing upstream can reach it: the fake's
+// option-gate REFUSAL arm. That gate still runs on every ActivatePin call
+// below and accepts, but its refusal branch needs a request this API cannot
+// construct — an unknown option key or a mistyped one. Its only exerciser was
+// the KDE case this one is adapted from, so that branch is unguarded here.
+// Recorded so it reads as a known limit rather than as dead code someone
+// later deletes for looking unreachable.
+TEST(AgentCard, ManagePinEnforcesVerbVocabularyAndKeepsListingOnRefusal)
+{
+    FakeAgent::Config cfg;
+    cfg.capabilities = Cap::PinManagement;
+    cfg.credRecords = {QVariantMap{{QStringLiteral("id"), QStringLiteral("user:0x86")},
+                                   {QStringLiteral("kind"), QStringLiteral("user")},
+                                   {QStringLiteral("state"), QStringLiteral("transport")}}};
+    Harness h(cfg);
+
+    auto client = makeClient(h);
+    AgentCard* card = client->card(h.cardPath());
+    ASSERT_NE(card, nullptr);
+
+    // Every named verb is inside the agent's closed request-side set: the
+    // mutation starts rather than being refused, and the token the fake read
+    // off the wire is the contract spelling. A mutation drops the listing, so
+    // each iteration re-lists first.
+    const std::pair<PinVerb, QString> accepted[] = {
+        {PinVerb::Change, QStringLiteral("change")},
+        {PinVerb::Unblock, QStringLiteral("unblock")},
+        {PinVerb::ActivatePin, QStringLiteral("activate_pin")},
+    };
+    for (const auto& [verb, token] : accepted) {
+        ASSERT_NE(card->listCredentials(), nullptr);
+        AgentOperation* op = card->managePin(QStringLiteral("user:0x86"), verb);
+        ASSERT_NE(op, nullptr);
+        EXPECT_FALSE(op->isFinished()) << "a verb inside the agent's closed set must start, not be refused";
+        EXPECT_EQ(h.lastManagePinVerb(), token);
+    }
+
+    // A verb outside the three named values maps to the empty token and is
+    // refused by the agent's request-side gate.
+    ASSERT_NE(card->listCredentials(), nullptr);
+    AgentOperation* refused = card->managePin(QStringLiteral("user:0x86"), static_cast<PinVerb>(99));
+    ASSERT_NE(refused, nullptr) << "a refused ManagePin mints a FAILED operation, never nullptr";
+    EXPECT_TRUE(refused->isFinished());
+    EXPECT_EQ(refused->callError(), CallError::InvalidArguments);
+    // The axis that says WHICH refusal this was. The bucket above is shared
+    // with UnknownCredential -- the listing gate's refusal, which the two
+    // neighbouring cases cover -- so without this line the assertions above
+    // would pass just as well had the request been refused for the wrong
+    // reason entirely.
+    ASSERT_TRUE(refused->syncError().has_value()) << "a named entry refusal must carry its name to the consumer";
+    EXPECT_EQ(*refused->syncError(), SyncError::InvalidRequest);
+    // Non-vacuous only because the loop above left a NON-empty capture behind:
+    // an empty reading here is the fake overwriting "activate_pin" with this
+    // request's verb, not the absence of any request at all. A build whose
+    // managePin() refused locally without sending would leave the loop's last
+    // verb standing here, and this line would fail.
+    EXPECT_TRUE(h.lastManagePinVerb().isEmpty())
+        << "the request reached the agent's gate carrying a verb outside its closed set";
+
+    // That refusal never reached the card, so the listing it would otherwise
+    // have invalidated is still current: a well-formed request afterwards
+    // mints WITHOUT an intervening re-list.
+    AgentOperation* recovered = card->managePin(QStringLiteral("user:0x86"), PinVerb::Change);
+    ASSERT_NE(recovered, nullptr);
+    EXPECT_FALSE(recovered->isFinished()) << "a vocabulary refusal must not drop the listing cache";
+}
+
+// What IS newly reachable through this API — that `activateKey` is actually
+// forwarded, and only alongside `ActivatePin` — is exercised here and below.
 TEST(AgentCard, ManagePinActivatePinAcceptsActivateKeyOption)
 {
     FakeAgent::Config cfg;

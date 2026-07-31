@@ -17,20 +17,28 @@ namespace LibreSCRS::Agent {
 /// ever appended with the next free value.
 ///
 /// This enum is the single source of truth, but its integers are mirrored by
-/// hand in three out-of-repo consumers plus this repo's own guard test. All
+/// hand in two out-of-repo consumers plus this repo's own guard test. All
 /// of them MUST be updated in lockstep whenever a code is appended here:
 ///
 ///   1. The Linux agent host (LibreLinux) — its CBOR/CDDL wire schema and the
 ///      client-side error taxonomy it exposes.
-///   2. The KDE client — its mirror of the taxonomy.
-///   3. The macOS Swift host — its `AgentTypes` mirror. This one is
+///   2. The macOS Swift host — its `AgentTypes` mirror. This one is
 ///      FAIL-CLOSED with NO automatic guard: an unknown/unmirrored code is
 ///      treated as a hard error rather than silently ignored, so a forgotten
 ///      append surfaces as a macOS failure, not a wrong branch.
-///   4. This repo's guard test (tests/ErrorTaxonomyTest.cpp) pins every
+///   3. This repo's guard test (tests/ErrorTaxonomyTest.cpp) pins every
 ///      integer and the current maximum, so an append here trips CI until
-///      the pin is added — the reminder to also update the three mirrors
+///      the pin is added — the reminder to also update the two mirrors
 ///      above.
+///
+/// The rule for that list: an entry is needed only where the integers are
+/// RE-DECLARED, in another language or another wire schema. A consumer that
+/// reaches the taxonomy through this repo's Qt client library does not
+/// re-declare anything — `LibreSCRS::AgentClient::ErrorCode` is a `using`
+/// alias for THIS enum, the same type rather than a copy of its values, so
+/// there is nothing on that side that can fall out of step. The KDE desktop
+/// client is the worked example: it consumes that alias and holds no mirror
+/// of its own, which is why it is absent above.
 ///
 /// @note The Qt client (`LibreSCRS::AgentClient::ErrorCode`, ErrorCode.h in
 ///       `client/qt/include/LibreSCRS/AgentClient/`) decodes an unrecognised
