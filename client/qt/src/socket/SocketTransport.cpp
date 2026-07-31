@@ -312,9 +312,19 @@ QList<CertificateInfo> toCertificateInfos(const std::vector<Wire::CertInfo>& cer
             break;
         }
         info.securityStatus = toStringList(securityTokens(cert));
-        info.extra.insert(QStringLiteral("keyUsageBits"), static_cast<uint>(cert.keyUsageBits));
-        info.extra.insert(QStringLiteral("extendedKeyUsageOids"), toStringList(cert.ekus));
-        info.extra.insert(QStringLiteral("chainSubjectCns"), toStringList(cert.chainSubjectCns));
+        // Certificate metadata: TYPED members, and deliberately NOT also an
+        // `extra` entry -- one source of truth, so a consumer cannot read a
+        // duplicate that nothing keeps in step. Marshal.cpp's D-Bus-side
+        // toCertificateInfos populates the same three members from its own
+        // wire shape; the shared parity scenario asserts both against one
+        // body, because a change made here alone would leave the D-Bus side
+        // populated and this one silently empty.
+        info.keyUsageBits = cert.keyUsageBits;
+        info.extendedKeyUsageOids = toStringList(cert.ekus);
+        info.chainSubjectCns = toStringList(cert.chainSubjectCns);
+        // trustStatusWire has no typed member to land in: `trust` above
+        // collapses several wire verdicts into one display value, so the raw
+        // number is the only way back to the cause. It stays in `extra`.
         info.extra.insert(QStringLiteral("trustStatusWire"), static_cast<uint>(cert.trustStatus));
         out.append(std::move(info));
     }

@@ -79,6 +79,32 @@ struct CertificateInfo
     ///        strings the agent already resolved. The closed set, if any, is
     ///        agent-defined; this library does not constrain it.
     QStringList securityStatus;
+    /// @brief X.509 KeyUsage bitmask: bit i (`1u << i`) is set for KeyUsage
+    ///        ordinal i in RFC 5280 §4.2.1.3 order (digitalSignature = 0,
+    ///        nonRepudiation = 1, ...). Zero when the certificate carries no
+    ///        KeyUsage extension.
+    ///
+    /// Carried as a TYPED member rather than an `extra` entry on purpose: a
+    /// consumer may derive a STABLE, persisted identifier from these bits
+    /// (a folder/URL name, a cache key), and a string-keyed lookup would let
+    /// a producer-side rename break that consumer silently — no compile
+    /// error, no link error, just an empty value at run time. The name is
+    /// part of the API; renaming it is a source break the compiler reports.
+    /// The bits themselves are forwarded verbatim: this library neither
+    /// localizes nor interprets them.
+    quint32 keyUsageBits = 0;
+    /// @brief ExtendedKeyUsage OIDs in dotted-decimal form, in the order the
+    ///        agent supplied them; empty when the certificate carries no EKU
+    ///        extension. Display-oriented, forwarded verbatim — see
+    ///        `keyUsageBits` for why this is typed rather than an `extra`
+    ///        entry.
+    QStringList extendedKeyUsageOids;
+    /// @brief Certification-path subject common names, ordered leaf..root,
+    ///        display only — never a trust decision (that is `trust` /
+    ///        `securityStatus`). Empty when the agent resolved no path. See
+    ///        `keyUsageBits` for why this is typed rather than an `extra`
+    ///        entry.
+    QStringList chainSubjectCns;
     QVariantMap extra; ///< Forward-compatible pass-through, as on every result struct.
 };
 

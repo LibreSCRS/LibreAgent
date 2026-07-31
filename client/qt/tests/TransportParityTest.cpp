@@ -29,7 +29,13 @@
 //   token info          TokenInfoDeliversTokenGroupAcrossTransports (rides the
 //                         SAME Identity1 result shape as identity)
 //   photo               PhotoFdRoundTripContentHash (fd content-hash compared)
-//   certificates        CertificatesEndToEnd (field-for-field)
+//   certificates        CertificatesEndToEnd (field-for-field, INCLUDING the
+//                         typed certificate-metadata members keyUsageBits /
+//                         extendedKeyUsageOids / chainSubjectCns -- each
+//                         marshaller populates those in its own private .cpp,
+//                         so a one-sided change is exactly the failure this
+//                         one shared body catches and a per-transport
+//                         assertion cannot)
 //   trust verdict       CertificateTrustVerdictAndSecurityTokenMatchAcrossTransports
 //                         (trustStatus + the "security" fields-group
 //                         token surface identically on both wires)
@@ -223,6 +229,15 @@ struct ParityCert
     QString notAfter;
     quint32 trustStatus = 0;    // 0 = Trusted, matching both fakes' CertTrustStatus wire numbering
     QStringList securityStatus; // tokens riding the "security" fields-group, mirroring trustStatus
+    // The certificate-metadata trailing members, scripted identically on both
+    // fakes so the typed CertificateInfo members they land in can be asserted
+    // by ONE scenario body against BOTH wires. chainSubjectCns is scripted
+    // NON-empty on purpose where it matters: an empty script means "no path
+    // resolved", which both fakes substitute [subjectCn] for, and that
+    // substitution would mask a marshaller that dropped the member outright.
+    quint32 keyUsageBits = 0;
+    QStringList extendedKeyUsageOids;
+    QStringList chainSubjectCns;
 };
 
 struct ParityCredRecord
@@ -435,6 +450,9 @@ private:
             fc.notAfter = c.notAfter;
             fc.trustStatus = c.trustStatus;
             fc.securityStatus = c.securityStatus;
+            fc.keyUsageBits = c.keyUsageBits;
+            fc.extendedKeyUsageOids = c.extendedKeyUsageOids;
+            fc.chainSubjectCns = c.chainSubjectCns;
             out.certScript.append(fc);
         }
         for (const ParityCredRecord& r : cfg.credRecords) {
@@ -657,6 +675,9 @@ private:
             fc.notAfter = c.notAfter;
             fc.trustStatus = c.trustStatus;
             fc.securityStatus = c.securityStatus;
+            fc.keyUsageBits = c.keyUsageBits;
+            fc.extendedKeyUsageOids = c.extendedKeyUsageOids;
+            fc.chainSubjectCns = c.chainSubjectCns;
             out.certScript.append(fc);
         }
         for (const ParityCredRecord& r : cfg.credRecords) {
@@ -1014,6 +1035,14 @@ TYPED_TEST(TransportParity, CertificatesEndToEnd)
     pc.notBefore = QStringLiteral("2021-06-01T00:00:00Z");
     pc.notAfter = QStringLiteral("2031-06-01T00:00:00Z");
     pc.trustStatus = 0; // Trusted
+    // Certificate metadata: two KeyUsage bits set (nonRepudiation ordinal 1 +
+    // keyEncipherment ordinal 2 -> 0x06), so a marshaller that shipped a
+    // constant, a truncated value or a single bit is visibly wrong; a
+    // multi-entry EKU list and a multi-entry leaf..root chain, so order and
+    // arity are both under test rather than just presence.
+    pc.keyUsageBits = 0x06u;
+    pc.extendedKeyUsageOids = QStringList{QStringLiteral("1.3.6.1.5.5.7.3.4"), QStringLiteral("1.3.6.1.5.5.7.3.2")};
+    pc.chainSubjectCns = QStringList{QStringLiteral("Parity Signer"), QStringLiteral("Parity CA")};
     cfg.certScript = {pc};
     Env env(cfg);
 
@@ -1034,6 +1063,30 @@ TYPED_TEST(TransportParity, CertificatesEndToEnd)
     EXPECT_EQ(c.notBefore, QDateTime::fromString(QStringLiteral("2021-06-01T00:00:00Z"), Qt::ISODate));
     EXPECT_EQ(c.notAfter, QDateTime::fromString(QStringLiteral("2031-06-01T00:00:00Z"), Qt::ISODate));
     EXPECT_EQ(c.trust, TrustStatus::Trusted);
+
+    // The certificate-metadata members, asserted by this ONE body against
+    // BOTH wires. Each marshaller populates them in its own private .cpp, so
+    // a change made to only one of the two would leave these three green on
+    // that transport and empty/zero on the other -- exactly the asymmetry a
+    // per-transport assertion cannot see and this scenario can.
+    EXPECT_EQ(c.keyUsageBits, 0x06u) << "the KeyUsage bitmask must survive this transport verbatim";
+    EXPECT_EQ(c.extendedKeyUsageOids,
+              (QStringList{QStringLiteral("1.3.6.1.5.5.7.3.4"), QStringLiteral("1.3.6.1.5.5.7.3.2")}))
+        << "EKU OIDs must arrive complete and in the agent-supplied order";
+    EXPECT_EQ(c.chainSubjectCns, (QStringList{QStringLiteral("Parity Signer"), QStringLiteral("Parity CA")}))
+        << "the leaf..root chain must arrive complete and in order";
+
+    // One source of truth: the three members above no longer ALSO ride the
+    // untyped pass-through map. `trustStatusWire` still does -- no typed
+    // member mirrors it.
+    EXPECT_FALSE(c.extra.contains(QStringLiteral("keyUsageBits")));
+    EXPECT_FALSE(c.extra.contains(QStringLiteral("extendedKeyUsageOids")));
+    EXPECT_FALSE(c.extra.contains(QStringLiteral("chainSubjectCns")));
+    // contains() first, deliberately: this scenario scripts trustStatus 0, and
+    // toUInt() on a MISSING key also yields 0 -- so the value check alone
+    // would pass on a transport that stopped carrying the key at all.
+    EXPECT_TRUE(c.extra.contains(QStringLiteral("trustStatusWire")));
+    EXPECT_EQ(c.extra.value(QStringLiteral("trustStatusWire")).toUInt(), 0u);
 }
 
 // The trust-verdict append: the SAME scripted trustStatus/securityStatus

@@ -292,9 +292,17 @@ QList<CertificateInfo> toCertificateInfos(const CertListWire& certs)
             break;
         }
         info.securityStatus = wire.securityStatus;
-        info.extra.insert(QStringLiteral("keyUsageBits"), wire.keyUsageBits);
-        info.extra.insert(QStringLiteral("extendedKeyUsageOids"), wire.extendedKeyUsageOids);
-        info.extra.insert(QStringLiteral("chainSubjectCns"), wire.chainSubjectCns);
+        // Certificate metadata: TYPED members, and deliberately NOT also an
+        // `extra` entry -- one source of truth, so a consumer cannot read a
+        // duplicate that nothing keeps in step. The socket transport's own
+        // toCertificateInfos populates the same three members from its wire
+        // shape; the shared parity scenario asserts both against one body.
+        info.keyUsageBits = wire.keyUsageBits;
+        info.extendedKeyUsageOids = wire.extendedKeyUsageOids;
+        info.chainSubjectCns = wire.chainSubjectCns;
+        // trustStatusWire has no typed member to land in: `trust` above
+        // collapses several wire verdicts into one display value, so the raw
+        // number is the only way back to the cause. It stays in `extra`.
         info.extra.insert(QStringLiteral("trustStatusWire"), wire.trustStatus);
         out.append(std::move(info));
     }

@@ -318,8 +318,9 @@ TEST(AgentCard, PropertiesChangedInvalidatedTakesGetAllFallback)
 // with raw beginStructure/beginMap, NOT the client's own operator<< — carrying
 // issuer + notBefore/notAfter field-groups, a non-empty EKU list, a
 // multi-entry CN chain, and a non-Trusted trust verdict. operator>> must
-// populate subject/issuer/notBefore/notAfter and tolerate/retain the trailing
-// members in `extra`.
+// populate subject/issuer/notBefore/notAfter plus the typed certificate-
+// metadata members (keyUsageBits/extendedKeyUsageOids/chainSubjectCns), and
+// retain the raw trust verdict in `extra`.
 TEST(AgentCard, DemarshalRealShapedCertPayload)
 {
     FakeAgent::Config cfg;
@@ -360,13 +361,22 @@ TEST(AgentCard, DemarshalRealShapedCertPayload)
     EXPECT_EQ(c.notAfter, QDateTime::fromString(QStringLiteral("2030-12-31T23:59:59Z"), Qt::ISODate));
     EXPECT_EQ(c.trust, TrustStatus::Untrusted); // wire BrokenChain collapses into Untrusted
 
-    // The trailing wire members (u keyUsageBits, as EKU, as chain, u
-    // trustStatus) are RETAINED in `extra` for a consumer that renders them.
-    EXPECT_EQ(c.extra.value(QStringLiteral("keyUsageBits")).toUInt(), 0x80u);
-    EXPECT_EQ(c.extra.value(QStringLiteral("extendedKeyUsageOids")).toStringList(),
-              (QStringList{QStringLiteral("1.3.6.1.5.5.7.3.4")}));
-    EXPECT_EQ(c.extra.value(QStringLiteral("chainSubjectCns")).toStringList(),
-              (QStringList{QStringLiteral("Ana Anić"), QStringLiteral("MUP CA Građani")}));
+    // The certificate-metadata wire members (u keyUsageBits, as EKU, as
+    // chain) reach the consumer as TYPED members, not string-keyed `extra`
+    // entries -- so a producer-side rename is a compile error rather than a
+    // silently empty value. Asserted here over the RAW hand-marshalled path,
+    // i.e. a genuine wire decode.
+    EXPECT_EQ(c.keyUsageBits, 0x80u);
+    EXPECT_EQ(c.extendedKeyUsageOids, (QStringList{QStringLiteral("1.3.6.1.5.5.7.3.4")}));
+    EXPECT_EQ(c.chainSubjectCns, (QStringList{QStringLiteral("Ana Anić"), QStringLiteral("MUP CA Građani")}));
+    // Those three keys are GONE from `extra` -- one source of truth, so a
+    // consumer cannot read a stale duplicate that nothing keeps in step.
+    EXPECT_FALSE(c.extra.contains(QStringLiteral("keyUsageBits")));
+    EXPECT_FALSE(c.extra.contains(QStringLiteral("extendedKeyUsageOids")));
+    EXPECT_FALSE(c.extra.contains(QStringLiteral("chainSubjectCns")));
+    // trustStatusWire stays in `extra`: no typed member mirrors it, and the
+    // raw verdict is the only way to recover the cause a non-Trusted value
+    // collapsed away.
     EXPECT_EQ(c.extra.value(QStringLiteral("trustStatusWire")).toUInt(), 2u);
 }
 
