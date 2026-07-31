@@ -24,7 +24,16 @@ set(BUILD_QCBOR_WARN OFF)
 FetchContent_Declare(qcbor
     GIT_REPOSITORY https://github.com/laurencelundblade/QCBOR.git
     # Immutable SHA the (mutable) tag v1.6.1 resolves to.
-    GIT_TAG 930708bb86481e88879eb1d87fd4d664f1d69503)
+    GIT_TAG 930708bb86481e88879eb1d87fd4d664f1d69503
+    # Without this, QCBOR's own install(TARGETS)/install(EXPORT) rules stay
+    # live and a DESTDIR package build claims /usr/lib/libqcbor.a and
+    # /usr/lib/cmake/qcbor/ that no consumer asked for -- this project folds
+    # qcbor's objects straight into libLibreAgentWire.a (see the
+    # $<TARGET_OBJECTS:qcbor> use in the root CMakeLists.txt) and never wants
+    # a standalone qcbor package on disk. Requires CMake >= 3.28 (see this
+    # project's cmake_minimum_required); below that the keyword is silently
+    # forwarded to ExternalProject_Add and does nothing.
+    EXCLUDE_FROM_ALL)
 FetchContent_MakeAvailable(qcbor) # provides qcbor::qcbor
 
 set(BUILD_SHARED_LIBS "${_libredarwin_saved_shared}")

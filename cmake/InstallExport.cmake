@@ -44,14 +44,62 @@ if(LIBREAGENT_BUILD_WIRE)
     # In-tree target LibreAgentWire -> imported LibreAgent::Wire.
     set_target_properties(LibreAgentWire PROPERTIES EXPORT_NAME Wire)
 
-    install(TARGETS LibreAgentWire EXPORT LibreAgentWireTargets
-        ARCHIVE  DESTINATION ${CMAKE_INSTALL_LIBDIR}
-        INCLUDES DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
+    # A packaging build that installs only LibreAgent::ClientQt does not want
+    # libLibreAgentWire.a in the tree: LibreAgentClientQt links
+    # LibreAgent::Wire PRIVATE, so Wire's compiled code already reaches
+    # liblibrescrs-agentclient-qt.so through the static link, making a standalone
+    # copy of the archive redundant when nothing installs alongside it needs
+    # to link Wire directly. Default ON preserves today's behaviour (a
+    # standalone find_package(LibreAgent COMPONENTS Wire) consumer still gets
+    # a real, linkable archive).
+    #
+    # Gating install(TARGETS LibreAgentWire ...) alone and leaving
+    # install(EXPORT LibreAgentWireTargets ...) unconditional fails at
+    # generate time with "INSTALL(EXPORT) given unknown export": the EXPORT
+    # set only comes into existence via the install(TARGETS ... EXPORT ...)
+    # call above, so both must be gated by the same condition.
+    #
+    # This does NOT strand LibreAgentClientQt's own export: ClientQt links
+    # LibreAgent::Wire PRIVATE, but Wire is STATIC and folded straight into
+    # liblibrescrs-agentclient-qt.so at link time (no runtime dependency, unlike
+    # the PRIVATE Qt6::DBus link on the same target, which IS a real shared
+    # library and so surfaces as an advisory
+    # IMPORTED_LINK_DEPENDENT_LIBRARIES_<CONFIG> string -- see
+    # LibreAgentConfig.cmake.in's ClientQt comment). Verified empirically:
+    # LibreAgentClientQtTargets.cmake's generated
+    # IMPORTED_LINK_DEPENDENT_LIBRARIES_<CONFIG> lists only "Qt6::DBus" in
+    # both this ON build and an OFF build with Wire in no export set at all;
+    # "LibreAgentWire" never appears there, and install(EXPORT
+    # LibreAgentClientQtTargets ...) generates cleanly with WIRE_ARCHIVE OFF.
+    #
+    # A downstream find_package(LibreAgent CONFIG) sees this exactly like a
+    # disabled component: LibreAgentConfig.cmake.in's per-component
+    # if(EXISTS ...) probe finds no LibreAgentWireTargets.cmake on disk (same
+    # as it already does for Core in a LIBREAGENT_BUILD_CORE=OFF install) and
+    # reports LibreAgent_Wire_FOUND=FALSE rather than crashing.
+    #
+    # A tempting alternative -- keep the EXPORT registration but drop only the
+    # ARCHIVE clause (with EXCLUDE_FROM_ALL, so the file itself still isn't
+    # installed) -- was tried and rejected: that leaves an installed
+    # LibreAgentWireTargets.cmake whose IMPORTED_LOCATION points at a file
+    # that was never installed, so ANY find_package(LibreAgent CONFIG) call
+    # that probes Wire (componentless, or an explicit COMPONENTS Wire
+    # request) hits a hard configure-time "imported target ... references
+    # the file ... but this file does not exist" error -- reproduced against
+    # this exact build, then dropped in favour of the all-or-nothing gate
+    # below.
+    option(LIBREAGENT_INSTALL_WIRE_ARCHIVE
+        "Install libLibreAgentWire.a (and register its CMake export)" ON)
 
-    install(EXPORT LibreAgentWireTargets
-        FILE LibreAgentWireTargets.cmake
-        NAMESPACE LibreAgent::
-        DESTINATION ${_cfgdir})
+    if(LIBREAGENT_INSTALL_WIRE_ARCHIVE)
+        install(TARGETS LibreAgentWire EXPORT LibreAgentWireTargets
+            ARCHIVE  DESTINATION ${CMAKE_INSTALL_LIBDIR}
+            INCLUDES DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
+        install(EXPORT LibreAgentWireTargets
+            FILE LibreAgentWireTargets.cmake
+            NAMESPACE LibreAgent::
+            DESTINATION ${_cfgdir})
+    endif()
 
     # The wire contract (CBOR/CDDL) is installed alongside the library so
     # clients can pin against it. The canonical semantic source stays the

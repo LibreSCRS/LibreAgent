@@ -1,5 +1,13 @@
 # SPDX-License-Identifier: LGPL-2.1-or-later
-cmake_minimum_required(VERSION 3.24)
+# 3.28 (not 3.24): FetchContent_Declare(... EXCLUDE_FROM_ALL) -- which
+# suppresses a fetched subproject's own install() rules, used by
+# cmake/FetchQCBOR.cmake to keep QCBOR out of the install tree -- only takes
+# effect from CMake 3.28 onward. Below that version the keyword is silently
+# forwarded to ExternalProject_Add and the suppression does not happen; a
+# lower floor would let a packaging build regress without any configure-time
+# signal (both this machine and CI containers run a new-enough CMake to hide
+# the gap either way).
+cmake_minimum_required(VERSION 3.28)
 
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 

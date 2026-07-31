@@ -35,14 +35,28 @@ if(GIT_EXECUTABLE)
     RESULT_VARIABLE GIT_DESCRIBE_ERROR_CODE
     OUTPUT_STRIP_TRAILING_WHITESPACE
     )
-  if(NOT GIT_DESCRIBE_ERROR_CODE)
-    # Strip leading 'v' if present (e.g. v3.0.0-rc1 → 3.0.0-rc1)
-    string(REGEX REPLACE "^v" "" GIT_DESCRIBE_VERSION "${GIT_DESCRIBE_VERSION}")
-    set(PROJECT_VERSION ${GIT_DESCRIBE_VERSION})
-  endif()
 endif()
 
-if(NOT DEFINED PROJECT_VERSION)
+# LIBREAGENT_VERSION_RESOLVED tracks whether THIS include() has already
+# derived this repo's own version, rather than gating on
+# `if(NOT DEFINED PROJECT_VERSION)`. As a subproject (add_subdirectory()'d by
+# a platform backend, e.g. LibreKDE's client/qt wrapper), PROJECT_VERSION is
+# already set — to the ENCLOSING project's version — by the time this file
+# is include()'d, because add_subdirectory() inherits the parent directory's
+# variables. Gating the VERSION-file fallback below on "not yet defined"
+# would therefore never fire in that shape, and this repo would silently
+# adopt the consumer's version instead of its own. This flag is local to this
+# include() and never looks at any ambient/enclosing value.
+set(LIBREAGENT_VERSION_RESOLVED FALSE)
+
+if(GIT_EXECUTABLE AND NOT GIT_DESCRIBE_ERROR_CODE)
+  # Strip leading 'v' if present (e.g. v3.0.0-rc1 → 3.0.0-rc1)
+  string(REGEX REPLACE "^v" "" GIT_DESCRIBE_VERSION "${GIT_DESCRIBE_VERSION}")
+  set(PROJECT_VERSION ${GIT_DESCRIBE_VERSION})
+  set(LIBREAGENT_VERSION_RESOLVED TRUE)
+endif()
+
+if(NOT LIBREAGENT_VERSION_RESOLVED)
   # Release tarballs (makepkg, GitHub source archives) ship WITHOUT a .git tree,
   # so `git describe` above cannot run. The committed top-level VERSION file is
   # the authoritative fallback BEFORE the 0.0.1 last-resort: without it a
@@ -55,13 +69,15 @@ if(NOT DEFINED PROJECT_VERSION)
     file(STRINGS "${SRC_DIR}/VERSION" PROJECT_VERSION LIMIT_COUNT 1)
     string(STRIP "${PROJECT_VERSION}" PROJECT_VERSION)
     string(REGEX REPLACE "^v" "" PROJECT_VERSION "${PROJECT_VERSION}")
+    set(LIBREAGENT_VERSION_RESOLVED TRUE)
   endif()
 endif()
 
-if(NOT PROJECT_VERSION)
+if(NOT LIBREAGENT_VERSION_RESOLVED)
   set(PROJECT_VERSION 0.0.1)
   message(WARNING "Failed to determine PROJECT_VERSION from Git tags or the VERSION file. Using default version \"${PROJECT_VERSION}\".")
 endif()
+unset(LIBREAGENT_VERSION_RESOLVED)
 
 # Extract semantic version components; strip pre-release for CMake project(VERSION ...)
 string(REGEX MATCH "^([0-9]+)\\.([0-9]+)\\.([0-9]+)(-([a-zA-Z0-9.]+))?(-([0-9]+)-([a-z0-9]+))?" GITVERSIONDETECT_VERSION_MATCH ${PROJECT_VERSION})

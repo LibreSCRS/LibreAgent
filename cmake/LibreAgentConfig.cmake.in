@@ -12,6 +12,18 @@
 # in via:
 #   find_package(LibreAgent 4.2 REQUIRED CONFIG COMPONENTS Core)
 # and link against the namespaced LibreAgent::<Component> imported target(s).
+#
+# Resolution is filtered by what the caller actually asked for
+# (LibreAgent_FIND_COMPONENTS, set by CMake whenever find_package(...
+# COMPONENTS ...) is used): a request for just ClientQt runs only ClientQt's
+# find_dependency() call (Qt6) and never touches Core's
+# (LibreMiddleware/OpenSSL), even if a LibreAgentCoreTargets.cmake happens to
+# also be sitting in this same directory (e.g. two components of one
+# distribution unpacked into a shared prefix) — its presence on disk must not
+# matter to a consumer that never asked for it. A componentless
+# find_package(LibreAgent CONFIG) call keeps today's behaviour: every
+# component whose export file is on disk is probed and its dependencies
+# resolved, same as before this filtering existed.
 
 @PACKAGE_INIT@
 
@@ -31,7 +43,19 @@ include(CMakeFindDependencyMacro)
 # here would be silently clobbered by that find_dependency(OpenSSL ...) call
 # below before the include() line runs.
 set(_LibreAgent_known_components Core Wire ClientQt)
-foreach(_LibreAgent_comp IN LISTS _LibreAgent_known_components)
+
+# A componentless caller (LibreAgent_FIND_COMPONENTS unset/empty) probes every
+# known component, exactly as before; a caller that named components gets only
+# those, so an unrequested component's find_dependency() calls never run and
+# its Targets.cmake is never include()'d, regardless of what else happens to
+# be installed alongside it.
+if(LibreAgent_FIND_COMPONENTS)
+    set(_LibreAgent_components_to_resolve ${LibreAgent_FIND_COMPONENTS})
+else()
+    set(_LibreAgent_components_to_resolve ${_LibreAgent_known_components})
+endif()
+
+foreach(_LibreAgent_comp IN LISTS _LibreAgent_components_to_resolve)
     set(_LibreAgent_comp_targets_file "${CMAKE_CURRENT_LIST_DIR}/LibreAgent${_LibreAgent_comp}Targets.cmake")
     if(EXISTS "${_LibreAgent_comp_targets_file}")
         if(_LibreAgent_comp STREQUAL "Core")
@@ -71,5 +95,6 @@ endforeach()
 unset(_LibreAgent_comp)
 unset(_LibreAgent_comp_targets_file)
 unset(_LibreAgent_known_components)
+unset(_LibreAgent_components_to_resolve)
 
 check_required_components(LibreAgent)

@@ -51,7 +51,9 @@ core never links D-Bus, systemd, polkit or Qt:
 
 Requirements:
 
-- CMake ≥ 3.24
+- CMake ≥ 3.28 (needed for `FetchContent_Declare(... EXCLUDE_FROM_ALL)`, which
+  keeps the vendored QCBOR dependency's own install rules out of the
+  installed tree)
 - A C++23 toolchain (GCC 13+ / Clang 16+)
 - `find_package(LibreMiddleware 4.2 CONFIG)` — the sole first-party dependency
 - OpenSSL ≥ 3.0 (`Crypto`)

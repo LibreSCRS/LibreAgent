@@ -1,0 +1,234 @@
+# Maintainer: hirashix0 <hirashix0@proton.me>
+#
+# librescrs-agent-client-qt — the Qt client library that desktop front-ends
+# link against to talk to the LibreSCRS smart-card agent. It ships
+# LibreAgent::ClientQt: the public value types, the
+# AgentClient/AgentReader/AgentCard/AgentOperation API over a transport seam
+# (D-Bus on Linux, AF_UNIX + canonical CBOR elsewhere), the std-only wire
+# headers those types re-export, the CBOR/CDDL wire contract, and the CMake
+# CONFIG package that resolves it all.
+#
+# WHERE THIS SITS IN THE CHAIN
+# ----------------------------
+# The existing chain is
+#
+#     librescrs-middleware  <=  librelinux  <=  librekde
+#
+# where `librescrs-agent` — the running D-Bus daemon — is one of the packages
+# built from pkgbase `librelinux`. THIS package is a different thing entirely:
+# it is the CLIENT-side library, owned by the LibreAgent repository, and a
+# Qt/KDE front-end needs both — `librescrs-agent` for the daemon it talks to at
+# runtime, and `librescrs-agent-client-qt` for the library it links.
+#
+# ONE PACKAGE, NOT A -dev SPLIT
+# -----------------------------
+# Headers and lib/cmake/ ship in the same package as the shared library, which
+# is both the Arch idiom and what `librescrs-middleware` already does.
+#
+# WHAT IS DELIBERATELY NOT BUILT HERE
+# -----------------------------------
+# The LibreAgent repository also builds LibreAgent::Core — the platform-neutral
+# agent brain, which pulls in LibreMiddleware and OpenSSL — and by default
+# installs LibreAgent::Wire as a standalone static archive. Neither belongs in
+# a client package. Core is the daemon's business and would drag the whole
+# middleware stack into every client's dependency set; the Wire archive is
+# redundant here because Wire is a static library linked straight into
+# liblibrescrs-agentclient-qt.so, so nothing in this package needs a separate
+# copy to link against. Hence LIBREAGENT_BUILD_CORE=OFF and
+# LIBREAGENT_INSTALL_WIRE_ARCHIVE=OFF below. The wire HEADERS and the CDDL
+# contract are still installed, so a client can pin against the protocol.
+#
+# VENDORED QCBOR
+# --------------
+# The wire layer's CBOR codec is QCBOR, pinned by immutable commit SHA and
+# fetched by CMake's FetchContent. It is not in the Arch repositories and a
+# clean chroot has no network during build(), so its tarball is a source entry
+# below and FETCHCONTENT_SOURCE_DIR_QCBOR + FETCHCONTENT_FULLY_DISCONNECTED=ON
+# point the build at the extracted tree instead of letting FetchContent reach
+# the network. QCBOR's objects are folded into the shared library, so its
+# BSD-3-Clause licence is declared in license=() and installed alongside the
+# LGPL text.
+
+pkgname=librescrs-agent-client-qt
+pkgver=4.2.0
+pkgrel=1
+pkgdesc="Qt client library for the LibreSCRS smart-card agent (D-Bus and AF_UNIX socket transports)"
+arch=('x86_64' 'aarch64')
+url="https://github.com/LibreSCRS/LibreAgent"
+license=('LGPL-2.1-or-later' 'BSD-3-Clause')   # BSD-3 = vendored QCBOR, folded into the .so
+# Runtime: what liblibrescrs-agentclient-qt.so actually links. LibreMiddleware
+# and OpenSSL are NOT here — they only enter through LibreAgent::Core, which
+# this package does not build.
+depends=(
+    'qt6-base'      # Qt6::Core (PUBLIC) and Qt6::DBus (PRIVATE, Linux transport)
+    'gcc-libs'
+    'glibc'
+)
+# Build host tooling. base-devel ships none of the first three.
+makedepends=(
+    'cmake>=3.28'   # FetchContent_Declare(... EXCLUDE_FROM_ALL) — which keeps
+                    #   QCBOR's own install rules out of this package — is a
+                    #   no-op below 3.28, silently, with no configure warning
+    'ninja'
+    'git'           # cmake/GitVersion.cmake does find_package(Git REQUIRED)
+                    #   unconditionally; without it configure fails outright
+    'qt6-base'      # also a runtime depend above; repeated deliberately because
+                    #   Qt6 Core/DBus/Test is a configure-time find_package()
+    'gtest'         # the client test suite does find_package(GTest REQUIRED)
+    'dbus'          # CONFIGURE-time, not merely check-time: the client test
+                    #   CMakeLists does find_program(dbus-run-session REQUIRED)
+)
+
+_srcname="LibreAgent-$pkgver"
+# The immutable SHA that QCBOR's (mutable) v1.6.1 tag resolves to. Must stay in
+# lockstep with GIT_TAG in cmake/FetchQCBOR.cmake — that file is what the build
+# would otherwise fetch, and FETCHCONTENT_SOURCE_DIR_QCBOR below silently
+# overrides it, so a drift between the two would ship a different codec than
+# the source tree pins. prepare() enforces that lockstep; see its comment.
+_qcbor_commit=930708bb86481e88879eb1d87fd4d664f1d69503
+
+source=(
+    "$pkgname-$pkgver.tar.gz::https://github.com/LibreSCRS/LibreAgent/archive/refs/tags/v$pkgver.tar.gz"
+    "qcbor-$_qcbor_commit.tar.gz::https://github.com/laurencelundblade/QCBOR/archive/$_qcbor_commit.tar.gz"
+)
+# LibreAgent's own tarball is 'SKIP': the v$pkgver tag does not exist yet, so
+# there is nothing upstream to fetch or sum. The real sum is filled in at tag
+# time with `updpkgsums`. Until then the recipe is smoke-built against a tarball
+# of the working tree placed next to this file under exactly the name above —
+# makepkg reuses an already-present source file instead of downloading it, so
+# the recipe itself needs no edit to be built today.
+# QCBOR's sum is real and pinned now; that tarball exists upstream already.
+sha256sums=(
+    'SKIP'
+    '0da68ac55f6e67c67e57f4fe4603b850713ce2b0ac95fb76094f446139db4d57'
+)
+
+# Two values above are hard-coded copies of facts that actually live in the
+# source tree: _qcbor_commit mirrors GIT_TAG in cmake/FetchQCBOR.cmake, and
+# pkgver mirrors the top-level VERSION file. Nothing outside this directory
+# checks either copy, and both drift silently rather than loudly:
+#
+#   * FETCHCONTENT_SOURCE_DIR_QCBOR in build() overrides GIT_TAG with NO
+#     warning, so bumping QCBOR in the source tree without bumping this recipe
+#     would compile the OLD codec into the package while the sources say
+#     otherwise — a wrong-binary bug with no signal anywhere.
+#   * pkgver only labels the package. The installed
+#     lib/cmake/LibreAgent/LibreAgentConfigVersion.cmake is generated from
+#     VERSION, so a release bump that misses this recipe ships a package
+#     called 4.2.0 whose own CMake version file disagrees with it.
+#
+# So the recipe verifies itself against the sources it is building, before it
+# compiles anything. Every failure mode is a FAILURE, never a silent pass: a
+# missing file, an unparseable value, a renamed CMake keyword, and a genuine
+# mismatch all abort here. Each check derives its value from a strict pattern
+# and then requires exactly one match, so a pattern that stops matching (the
+# classic vacuous-check bug) fails the same way a real mismatch does.
+#
+# Both are verified rather than derived. pkgver has to be assignable when
+# makepkg PARSES the recipe — before any source is fetched or extracted — so
+# reading it out of $srcdir/VERSION is not possible, and a pkgver() function
+# (the VCS-package mechanism) would make makepkg rewrite this committed file
+# in place, which a release recipe must not do.
+prepare() {
+    local root="$srcdir/$_srcname"
+
+    # --- QCBOR pin lockstep ---------------------------------------------
+    local fetch_module="$root/cmake/FetchQCBOR.cmake"
+    if [[ ! -f $fetch_module ]]; then
+        printf '%s\n' \
+            "PACKAGING GUARD: cannot verify the QCBOR pin." \
+            "  Expected the FetchContent declaration at ${fetch_module#"$srcdir"/}, which is missing." \
+            "  Refusing to build rather than silently trusting _qcbor_commit=$_qcbor_commit." >&2
+        return 1
+    fi
+    local -a declared_tags
+    mapfile -t declared_tags < <(sed -nE \
+        's/^[[:space:]]*GIT_TAG[[:space:]]+([0-9a-f]{40})[[:space:]]*$/\1/p' "$fetch_module")
+    if (( ${#declared_tags[@]} != 1 )); then
+        printf '%s\n' \
+            "PACKAGING GUARD: cannot verify the QCBOR pin." \
+            "  ${fetch_module#"$srcdir"/} must contain exactly one 'GIT_TAG <40-hex>' line;" \
+            "  found ${#declared_tags[@]}. The declaration was probably renamed or reshaped," \
+            "  which would leave this check matching nothing and passing vacuously." >&2
+        return 1
+    fi
+    if [[ ${declared_tags[0]} != "$_qcbor_commit" ]]; then
+        printf '%s\n' \
+            "PACKAGING GUARD: QCBOR pin drift — this package would ship the wrong codec." \
+            "  ${fetch_module#"$srcdir"/} declares GIT_TAG        ${declared_tags[0]}" \
+            "  this recipe pins                _qcbor_commit=$_qcbor_commit" \
+            "  Update _qcbor_commit, the source= URL and sha256sums together." >&2
+        return 1
+    fi
+
+    # --- pkgver vs the source tree's VERSION -----------------------------
+    local version_file="$root/VERSION"
+    if [[ ! -f $version_file ]]; then
+        printf '%s\n' \
+            "PACKAGING GUARD: cannot verify pkgver." \
+            "  Expected ${version_file#"$srcdir"/}, which is missing — that file is what" \
+            "  cmake/GitVersion.cmake falls back to in a tarball build, so without it the" \
+            "  installed CMake version file and pkgver cannot be shown to agree." >&2
+        return 1
+    fi
+    # Mirror GitVersion.cmake exactly: first line, stripped, optional leading 'v'.
+    local declared_version
+    declared_version=$(sed -n '1p' "$version_file")
+    declared_version=${declared_version//[$'\t\r\n ']/}
+    declared_version=${declared_version#v}
+    if [[ ! $declared_version =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+        printf '%s\n' \
+            "PACKAGING GUARD: cannot verify pkgver." \
+            "  First line of ${version_file#"$srcdir"/} is not a semantic version:" \
+            "  '${declared_version}'" >&2
+        return 1
+    fi
+    if [[ $declared_version != "$pkgver" ]]; then
+        printf '%s\n' \
+            "PACKAGING GUARD: version drift — the package label and the sources disagree." \
+            "  ${version_file#"$srcdir"/} says  $declared_version" \
+            "  this recipe says       pkgver=$pkgver" \
+            "  A package labelled $pkgver would install a ConfigVersion.cmake saying $declared_version." >&2
+        return 1
+    fi
+
+    printf '%s\n' \
+        "  -> packaging guards passed: QCBOR pin $_qcbor_commit, version $declared_version"
+}
+
+build() {
+    cd "$srcdir/$_srcname"
+    cmake -S . -B build -G Ninja \
+        -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+        -DCMAKE_INSTALL_PREFIX=/usr \
+        -DLIBREAGENT_BUILD_CORE=OFF \
+        -DLIBREAGENT_BUILD_WIRE=ON \
+        -DLIBREAGENT_BUILD_CLIENT_QT=ON \
+        -DLIBREAGENT_INSTALL_WIRE_ARCHIVE=OFF \
+        -DFETCHCONTENT_SOURCE_DIR_QCBOR="$srcdir/QCBOR-$_qcbor_commit" \
+        -DFETCHCONTENT_FULLY_DISCONNECTED=ON
+    cmake --build build -j4
+}
+
+check() {
+    cd "$srcdir/$_srcname"
+    # Qt needs a headless platform plugin. No bus is set up here on purpose:
+    # every suite that needs one already wraps its own add_test() command in
+    # dbus-run-session, which gives each suite a private session bus.
+    QT_QPA_PLATFORM=offscreen ctest --test-dir build --output-on-failure -j4
+}
+
+package() {
+    cd "$srcdir/$_srcname"
+    DESTDIR="$pkgdir" cmake --install build
+    # cmake --install already lays down: /usr/lib/liblibrescrs-agentclient-qt.so*,
+    # /usr/include/LibreSCRS/AgentClient/** (incl. the generated Export.h),
+    # /usr/include/LibreSCRS/Agent/** (the std-only wire headers the public
+    # client headers re-export), /usr/lib/cmake/LibreAgent/** (Config,
+    # ConfigVersion, ClientQtTargets) and /usr/share/librescrs/librescrs-agent.cddl.
+    install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+    # QCBOR is compiled into the shared library above, so its licence travels
+    # with this package.
+    install -Dm644 "$srcdir/QCBOR-$_qcbor_commit/LICENSE" \
+        "$pkgdir/usr/share/licenses/$pkgname/LICENSE.qcbor"
+}

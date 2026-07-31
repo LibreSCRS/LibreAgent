@@ -57,6 +57,8 @@ endif()
 
 set_target_properties(LibreAgentClientQt PROPERTIES
     OUTPUT_NAME librescrs-agentclient-qt
+    VERSION ${PROJECT_VERSION}
+    SOVERSION ${PROJECT_VERSION_MAJOR}
     CXX_VISIBILITY_PRESET hidden
     VISIBILITY_INLINES_HIDDEN ON
     AUTOMOC ON

@@ -5,17 +5,21 @@ name: CI
 # platform-neutral agent core (LibreAgent::Core, LM-backed), the socket-wire
 # protocol library (LibreAgent::Wire, dependency-free), and the Qt client
 # library LibreCelik consumes (LibreAgent::ClientQt, Wire + Qt6 only — no LM).
-# This workflow has: a format gate; build-linux, a Core+Wire build+test job
-# that first acquires LibreMiddleware from source (Core's sole external
-# dependency, consumed via find_package(LibreMiddleware CONFIG)) plus a
-# ThreadSanitizer gate over the concurrency core (scheduler + throttler);
+# This workflow has: a format gate; build-linux, a Core+Wire+ClientQt
+# build+test job that first acquires LibreMiddleware from source (Core's sole
+# external dependency, consumed via find_package(LibreMiddleware CONFIG)),
+# checks the ABI snapshot over the Core archive, plus
+# a ThreadSanitizer gate over the concurrency core (scheduler + throttler);
 # client, the same Core+Wire+ClientQt stack with Qt6 + D-Bus added, running
 # the full suite including the D-Bus/socket/transport-parity integration
 # tests (LibreCelik's actual build shape); client-lm-less, the guarantee that
 # Wire+ClientQt build/test/install standalone on a runner where
 # LibreMiddleware is never built or installed at all (a Qt-only consumer
-# never needs to acquire LM); and fuzz-cbor, a libFuzzer+ASan gate over the
-# untrusted-input CBOR decoder both Wire-consuming components share.
+# never needs to acquire LM) — also the one job exercising
+# LIBREAGENT_INSTALL_WIRE_ARCHIVE=OFF, the subdir-version smoke, and the
+# tests/pkgsmoke ClientQt / co-installation-stub case; and fuzz-cbor, a
+# libFuzzer+ASan gate over the untrusted-input CBOR decoder both
+# Wire-consuming components share.
 
 on:
   push:
@@ -52,9 +56,13 @@ jobs:
   build-linux:
     # Arch container: a rolling-release distro whose packages track current
     # LibreMiddleware build/runtime deps (pcsclite, OpenSC). pacman provides
-    # openssl, pcsclite, OpenSC (for LibreMiddleware) and gtest. No sdbus-c++,
-    # systemd, dbus, or Qt/KF6 here — the neutral core links none of them, and
-    # its tests are bus-free, so there is nothing to run under dbus-run-session.
+    # openssl, pcsclite, OpenSC (for LibreMiddleware), gtest, and — unlike
+    # this job's older Core+Wire-only shape — qt6-base (Core/DBus/Test in one
+    # package, same as the client job below) and dbus (dbus-run-session,
+    # which client/qt/tests/CMakeLists.txt requires at configure time once
+    # ClientQt builds here). ClientQt is turned ON in this job so the library
+    # and its own tests are built here too; the fuller D-Bus/socket/
+    # transport-parity Qt suite still lives in the client job below.
     runs-on: ubuntu-latest
     container: archlinux:latest
     env:
@@ -72,7 +80,8 @@ jobs:
           pacman -S --noconfirm --needed \
             base-devel cmake ninja git pkgconf \
             openssl pcsclite opensc \
-            gtest \
+            gtest dbus \
+            qt6-base \
             python-jsonschema  # LibreMiddleware's plugin-manifest validation needs it during the build below
 
       - uses: actions/checkout@v4
@@ -104,13 +113,14 @@ jobs:
           cmake --install build
 
       # --- LibreAgentCore: configure / build --------------------------
-      - name: Configure (RelWithDebInfo)
+      - name: Configure (RelWithDebInfo, ClientQt ON)
         working-directory: LibreAgent
         run: |
           cmake -B build -G Ninja \
             -DCMAKE_BUILD_TYPE=RelWithDebInfo \
             -DCMAKE_PREFIX_PATH="$LM_PREFIX" \
-            -DLIBRESCRS_AGENT_WERROR=ON
+            -DLIBRESCRS_AGENT_WERROR=ON \
+            -DLIBREAGENT_BUILD_CLIENT_QT=ON
 
       - name: Build
         working-directory: LibreAgent
@@ -271,6 +281,27 @@ jobs:
     # just in-tree. Needs a live QCoreApplication (DBusTransport's queued
     # terminal emits deliver through the event loop, same as
     # client/qt/tests/ClientTestMain.cpp) and a session bus to connect to.
+    #
+    # This is also the one job configured with
+    # LIBREAGENT_INSTALL_WIRE_ARCHIVE=OFF: it never carries a real Core
+    # install, so it is the natural place to prove the installed ClientQt
+    # component still resolves downstream with libLibreAgentWire.a left out
+    # of the install tree entirely (Wire is folded into
+    # liblibrescrs-agentclient-qt.so as a static link regardless — see that
+    # option's own comment in cmake/InstallExport.cmake).
+    #
+    # Two more fixtures get their only exercise on this same LM-less,
+    # Core-less prefix: tests/pkgsmoke/subdir-version (add_subdirectory()s
+    # this whole repo beneath its own wrapper project() to prove
+    # GitVersion.cmake resolves LibreAgent's own PROJECT_VERSION rather than
+    # inheriting the enclosing project's — the shape a platform backend like
+    # LibreKDE's client/qt wrapper actually uses), and tests/pkgsmoke itself
+    # run with PKGSMOKE_COMPONENTS=ClientQt against this prefix with
+    # fixtures/LibreAgentCoreTargets.stub.cmake hand-planted into
+    # lib/cmake/LibreAgent/ first, to reproduce a Core package and a
+    # ClientQt-only package sharing one install prefix and prove
+    # LibreAgentConfig.cmake.in's component filtering never include()s the
+    # Core export a ClientQt-only consumer never asked for.
     runs-on: ubuntu-latest
     container: archlinux:latest
     env:
@@ -288,7 +319,7 @@ jobs:
         with:
           path: LibreAgent
 
-      - name: Configure (Core OFF, Wire+ClientQt ON, LibreMiddleware disabled)
+      - name: Configure (Core OFF, Wire+ClientQt ON, LibreMiddleware disabled, Wire archive not installed)
         working-directory: LibreAgent
         run: |
           cmake -B build -G Ninja \
@@ -296,6 +327,7 @@ jobs:
             -DLIBREAGENT_BUILD_CORE=OFF \
             -DLIBREAGENT_BUILD_WIRE=ON \
             -DLIBREAGENT_BUILD_CLIENT_QT=ON \
+            -DLIBREAGENT_INSTALL_WIRE_ARCHIVE=OFF \
             -DCMAKE_DISABLE_FIND_PACKAGE_LibreMiddleware=ON \
             -DLIBRESCRS_AGENT_WERROR=ON
 
@@ -342,6 +374,47 @@ jobs:
             -DCMAKE_PREFIX_PATH="$CLIENTQT_PREFIX"
           cmake --build /tmp/clientqt-consumer-build -j4
           QT_QPA_PLATFORM=offscreen dbus-run-session -- /tmp/clientqt-consumer-build/clientqt_consumer_smoke
+
+      # --- Subdirectory-consumption version smoke ----------------------------
+      # tests/pkgsmoke/subdir-version add_subdirectory()s this whole repo
+      # beneath its own wrapper project(wrapper VERSION 0.1.0), forcing Core
+      # OFF (this LM-less runner has no LibreMiddleware to give it) and
+      # Wire+ClientQt ON, then asserts LibreAgent's own PROJECT_VERSION
+      # resolved to this repo's real VERSION rather than being silently
+      # adopted from the enclosing project — the shape a platform backend
+      # (e.g. LibreKDE's client/qt wrapper) actually embeds this repo in.
+      # Runs in its own build tree, unrelated to build/ or $CLIENTQT_PREFIX
+      # above.
+      - name: Subdirectory-consumption version smoke (tests/pkgsmoke/subdir-version)
+        working-directory: LibreAgent
+        run: |
+          cmake -S tests/pkgsmoke/subdir-version -B build-subdir-version -G Ninja
+          cmake --build build-subdir-version -j4
+
+      # --- tests/pkgsmoke, ClientQt-only + co-installation stub --------------
+      # Reuses this job's own LM-less, Core-less $CLIENTQT_PREFIX install (a
+      # real find_package(LibreAgent COMPONENTS ClientQt) prefix that never
+      # had a real Core package in it) as the one place that can safely carry
+      # fixtures/LibreAgentCoreTargets.stub.cmake — a fixture standing in for
+      # a genuine LibreAgentCoreTargets.cmake, hand-planted into
+      # lib/cmake/LibreAgent/ to reproduce a Core package and a ClientQt-only
+      # package sharing one prefix (e.g. two components of one distribution
+      # unpacked into a common install). The stub's own message(FATAL_ERROR
+      # ...) fires if LibreAgentConfig.cmake.in's component filtering ever
+      # regresses into include()-ing it for a consumer that only asked for
+      # ClientQt; PKGSMOKE_COMPONENTS=ClientQt drives tests/pkgsmoke into
+      # exactly that consumer shape (main_clientqt.cpp, linking only
+      # LibreAgent::ClientQt).
+      - name: Installed CONFIG package smoke (tests/pkgsmoke, ClientQt + co-installation stub)
+        working-directory: LibreAgent
+        run: |
+          mkdir -p "$CLIENTQT_PREFIX/lib/cmake/LibreAgent"
+          cp tests/pkgsmoke/fixtures/LibreAgentCoreTargets.stub.cmake \
+            "$CLIENTQT_PREFIX/lib/cmake/LibreAgent/LibreAgentCoreTargets.cmake"
+          cmake -S tests/pkgsmoke -B build-pkgsmoke-clientqt -G Ninja \
+            -DCMAKE_PREFIX_PATH="$CLIENTQT_PREFIX" \
+            -DPKGSMOKE_COMPONENTS=ClientQt
+          cmake --build build-pkgsmoke-clientqt -j4
 
   fuzz-cbor:
     # Untrusted-decoder fuzz gate (moved from LibreDarwin, whose own
