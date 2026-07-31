@@ -24,6 +24,14 @@
 ///       must not call them. Consumers branch on the enumerator; nothing in
 ///       this library's own API needs the token spelling, and this library
 ///       never renders text for display in any case.
+///
+///       Being unsupported does not make them invisible, and the two facts
+///       are tracked separately on purpose. This header declares them and the
+///       shared library exports their definitions, so a consumer CAN bind to
+///       them by accident — which is exactly why the ABI baseline records
+///       them (`CLIENTQT_WIRE_PUBLIC` in ci/scripts/abi-snapshot.sh). That
+///       recording makes a removal or signature change visible; it is not a
+///       promise of support, and does not soften the warning above.
 #include <LibreSCRS/Agent/wire/SyncError.h>
 
 namespace LibreSCRS::AgentClient {

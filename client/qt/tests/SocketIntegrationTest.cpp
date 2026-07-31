@@ -655,6 +655,56 @@ TEST(SocketIntegration, CertificatesEndToEnd)
     EXPECT_EQ(c.trust, TrustStatus::Trusted);
 }
 
+// The certificate warm is a DELIBERATE no-op on this wire, and this is the
+// test that says so out loud, so a future reader finds a decision rather than
+// an absence. The reasoning lives at SocketTransport::warmCertificates: a warm
+// makes the agent mint a server-side operation whose id arrives only in a
+// reply the warm discards, and this wire -- unlike the D-Bus one, where the
+// agent reaps that operation with the card -- has no verb that lets go of an
+// operation without cancelling the very read the warm exists to perform. So
+// nothing is sent, and nothing is stranded.
+//
+// A warm is best-effort by contract, so the only consequence is that the next
+// real read is cold -- which is asserted here too: the no-op must be a no-op,
+// not a wedge. Calling it must leave the connection, the client and the next
+// readCertificates() completely unaffected.
+TEST(SocketIntegration, WarmCertificatesIsADeliberateNoOpAndDisturbsNothing)
+{
+    FakeSocketAgent::Config cfg;
+    cfg.capabilities = Cap::Pki;
+    cfg.operationDelayMs = 15;
+    FakeSocketCert fc;
+    fc.certId = QStringLiteral("cert-socket-warm");
+    fc.signingCapable = true;
+    cfg.certScript = {fc};
+    SocketHarness h(cfg);
+
+    auto client = makeClient(h);
+    AgentCard* card = client->card(QLatin1String(kCardId));
+    ASSERT_NE(card, nullptr);
+    ASSERT_EQ(h.operationCount(), 0);
+    const int connectionsBefore = h.connectionCount();
+
+    card->warmCertificates();
+    card->warmCertificates();
+    (void)waitFor([]() { return false; }, 250); // give any frame every chance to arrive
+
+    EXPECT_EQ(h.operationCount(), 0) << "a warm must not reach this wire at all";
+    EXPECT_TRUE(card->children().isEmpty());
+    EXPECT_EQ(h.connectionCount(), connectionsBefore) << "a warm must not disturb the connection";
+    EXPECT_TRUE(client->isAvailable());
+
+    // The cold read the skipped warm leaves behind still works, unchanged --
+    // which is exactly why the no-op costs no consumer anything.
+    AgentOperation* op = card->readCertificates();
+    ASSERT_NE(op, nullptr);
+    ASSERT_TRUE(waitFor([&]() { return op->isFinished(); }));
+    EXPECT_EQ(op->status(), OperationStatus::Ok);
+    ASSERT_EQ(op->certificatesResult().size(), 1);
+    EXPECT_EQ(op->certificatesResult().constFirst().id, QStringLiteral("cert-socket-warm"));
+    EXPECT_EQ(h.operationCount(), 1) << "only the real read reached the wire";
+}
+
 // Mirrors the D-Bus transport's own trust-verdict mapping tests
 // (AgentCardTest.cpp) on the socket transport: 5=Revoked maps to the
 // client's Revoked case, 6=OfflineUnverified and any value this build does

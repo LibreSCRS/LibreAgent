@@ -524,6 +524,15 @@ public:
         FakeCertList certScript;            ///< certs ReadCertificates emits on its Certificates1.Result
         bool failMethodEntry =
             false; ///< ReadIdentity/GetPhoto/ReadCertificates/Sign send a D-Bus error at entry (no Operation minted)
+        /// Card1.ReadCertificates accepts the call and then NEVER replies —
+        /// no Operation minted, no error sent, the caller's pending call left
+        /// to time out on its own budget. The wedged-agent model for the
+        /// entry-call path specifically (`wedgeGetManagedObjects` below does
+        /// the same for discovery, and `wedgeCardProperties` for the property
+        /// path). This is what distinguishes a call that WAITS for its entry
+        /// reply from one that does not: the former stalls for the full call
+        /// budget, the latter returns at once.
+        bool wedgeCertificatesEntry = false;
         /// ReadTokenInfo's Identity1 result carries a present-but-EMPTY
         /// "token" group instead of the scripted label/serial_number/
         /// manufacturer fields — the unsupported/best-effort-miss plugin

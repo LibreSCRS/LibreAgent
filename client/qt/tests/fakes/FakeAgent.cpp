@@ -1010,6 +1010,17 @@ QDBusObjectPath CardAdaptor::GetPhoto()
 }
 QDBusObjectPath CardAdaptor::ReadCertificates()
 {
+    if (m_agent->config().wedgeCertificatesEntry) {
+        // Accept the call and never answer it: setDelayedReply with nothing
+        // ever sent. No Operation is minted either, so operationCount() stays
+        // put and a test can tell "the entry call is still outstanding" apart
+        // from "the agent served it".
+        auto* ctx = qobject_cast<ContextObject*>(parent());
+        if (ctx != nullptr && ctx->calledFromDBus()) {
+            ctx->setDelayedReply(true);
+        }
+        return QDBusObjectPath();
+    }
     if (m_agent->config().failMethodEntry) {
         return sendMethodEntryError();
     }

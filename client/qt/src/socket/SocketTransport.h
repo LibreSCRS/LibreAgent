@@ -109,6 +109,9 @@ public:
     [[nodiscard]] std::optional<OperationPayload> fetchOperationResult(const QString& operationId,
                                                                        OperationKind kind) override;
     void cancelOperation(const QString& operationId) override;
+    /// A deliberate, tested no-op on this wire — see the implementation for
+    /// the reasoning and for what would have to exist before it becomes real.
+    void warmCertificates(const QString& cardId) override;
     quint64 requestCertificateDer(const QString& readerId, const QString& certId, DerListener* listener) override;
     void cancelCertificateDer(quint64 token, DerListener* listener) override;
 

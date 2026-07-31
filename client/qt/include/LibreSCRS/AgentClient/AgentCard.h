@@ -71,6 +71,37 @@ public:
     [[nodiscard]] AgentOperation* getPhoto();
     /// @brief Start a certificate read (typed result: `certificatesResult()`).
     [[nodiscard]] AgentOperation* readCertificates();
+    /// @brief Best-effort background pre-read of this card's certificates, so
+    ///        a later `readCertificates()` — possibly issued by a different
+    ///        component of the same desktop session — finds the agent's cache
+    ///        already warm instead of paying a cold card read.
+    ///
+    ///        Returns immediately and NEVER blocks, whatever state the agent
+    ///        is in. That is the difference from `readCertificates()`, which
+    ///        must wait long enough to hand back the operation it minted: a
+    ///        warm has no operation to hand back, so it does not wait at all
+    ///        and a slow or wedged agent cannot stall the calling thread.
+    ///
+    ///        Deliberately returns `void` and mints NOTHING: there is no
+    ///        operation to observe, connect to, poll or cancel, and none is
+    ///        parented to this card. Nothing reports whether it worked, and
+    ///        that is the contract, not a limitation — every failure
+    ///        (unreachable agent, a card without certificates, an entry
+    ///        refusal) is silently dropped, and the only consequence is that
+    ///        the next real read pays the cold cost it would have paid anyway.
+    ///        Never call it expecting a result; call `readCertificates()`.
+    ///
+    ///        A warm issued while one is still in flight for this card is a
+    ///        no-op, so a consumer may call it freely on every plausible
+    ///        trigger without stacking entry calls or holding a handle to
+    ///        debounce with.
+    ///
+    /// @note On a transport whose wire cannot express a fire-and-forget
+    ///       method entry without stranding agent-side state, this is a
+    ///       documented no-op — the next read is simply cold. Consumers need
+    ///       no transport-conditional code: correctness never depends on a
+    ///       warm having happened.
+    void warmCertificates();
     /// @brief Start a lightweight token-info read (typed result: the SAME
     ///        `identityResult()` accessor `readIdentity()` uses — a single
     ///        "token" group with `label`/`serial_number`/`manufacturer`

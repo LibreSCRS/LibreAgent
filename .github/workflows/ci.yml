@@ -8,7 +8,8 @@ name: CI
 # This workflow has: a format gate; build-linux, a Core+Wire+ClientQt
 # build+test job that first acquires LibreMiddleware from source (Core's sole
 # external dependency, consumed via find_package(LibreMiddleware CONFIG)),
-# checks the ABI snapshot over the Core archive, plus
+# checks the ABI snapshot (ClientQt is built here so that check's ClientQt
+# sections actually see the shared library, not just the archives), plus
 # a ThreadSanitizer gate over the concurrency core (scheduler + throttler);
 # client, the same Core+Wire+ClientQt stack with Qt6 + D-Bus added, running
 # the full suite including the D-Bus/socket/transport-parity integration
@@ -53,6 +54,57 @@ jobs:
           find include src tests client -name "*.cpp" -o -name "*.h" \
             | xargs clang-format-21 --dry-run --Werror
 
+  docs-check:
+    # The public-API documentation gate. Self-contained for the same reason
+    # format-check is: doxygen only PARSES the headers, so this needs neither
+    # LibreMiddleware nor Qt nor a build — the export macro is handled by the
+    # Doxyfile's own PREDEFINED, and no include is followed.
+    #
+    # It exists as a job because the gate was previously only ever run by hand.
+    # A documentation rule nothing runs in CI is a rule that holds until the
+    # first person who does not know about it, which for an undocumented public
+    # symbol means it ships.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install doxygen
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y doxygen
+
+      - name: Verify the enum-value warning is actually honoured
+        # WARN_IF_UNDOC_ENUM_VAL is what makes an undocumented ENUMERATOR fail
+        # this gate; WARN_IF_UNDOCUMENTED alone does not reach enum values, and
+        # several public types here are enums whose individual values are the
+        # contract consumers branch on. A doxygen too old to know the tag would
+        # simply ignore it and this job would still pass — enforcing nothing
+        # while looking green. So confirm the tag survived config parsing
+        # before trusting the run below. `-x_noenv` prints only settings that
+        # DIFFER from the default, and the default is NO, so the tag appears
+        # here if and only if it was understood and applied.
+        run: |
+          doxygen --version
+          doxygen -x_noenv Doxyfile.publicapi | grep '^WARN_IF_UNDOC_ENUM_VAL' \
+            || { echo "::error::this doxygen does not honour WARN_IF_UNDOC_ENUM_VAL;" \
+                      "undocumented enumerators would pass unnoticed. Pin a newer doxygen."; \
+                 exit 1; }
+
+      - name: Check public API documentation
+        # Doxyfile.publicapi sets WARN_AS_ERROR = FAIL_ON_WARNINGS, so the EXIT
+        # CODE is the honest check and this step needs nothing more than
+        # running it. Deliberately NOT piped into `grep -i warning`: a pipe
+        # reports the GREP's status, which is 1 when nothing matches — that
+        # spelling fails on success and passes on failure.
+        #
+        # mkdir first: OUTPUT_DIRECTORY is build/doc/publicapi, and doxygen
+        # errors out rather than creating a missing nested path, which on a
+        # fresh checkout (no build/) is exit 1 for a reason unrelated to
+        # documentation.
+        run: |
+          mkdir -p build/doc/publicapi
+          doxygen Doxyfile.publicapi
+
   build-linux:
     # Arch container: a rolling-release distro whose packages track current
     # LibreMiddleware build/runtime deps (pcsclite, OpenSC). pacman provides
@@ -60,9 +112,11 @@ jobs:
     # this job's older Core+Wire-only shape — qt6-base (Core/DBus/Test in one
     # package, same as the client job below) and dbus (dbus-run-session,
     # which client/qt/tests/CMakeLists.txt requires at configure time once
-    # ClientQt builds here). ClientQt is turned ON in this job so the library
-    # and its own tests are built here too; the fuller D-Bus/socket/
-    # transport-parity Qt suite still lives in the client job below.
+    # ClientQt builds here). ClientQt is turned ON in this job for one reason
+    # only: the ABI snapshot check below is otherwise blind to
+    # liblibrescrs-agentclient-qt.so, and this is the job that runs that check —
+    # the fuller D-Bus/socket/transport-parity Qt suite still lives in the
+    # client job below.
     runs-on: ubuntu-latest
     container: archlinux:latest
     env:
@@ -131,6 +185,19 @@ jobs:
         # signature drift forbidden. Additions land via an intentional
         # baseline regeneration (`abi-snapshot.sh --update`) reviewed in
         # the same commit as the new public symbol.
+        #
+        # The snapshot has FOUR sections: the Core archive's symbols, the
+        # Wire archive's symbols, the ClientQt shared library's symbols +
+        # its SONAME, and the ClientQt public value types' LAYOUT. Wire
+        # builds by default, so its section is always present here.
+        # ClientQt ON in the Configure step above is what makes the last
+        # two non-empty here instead of silently absent, and the Build step
+        # above is what produces the layout probe the LAYOUT section reads
+        # (the script fails rather than skipping that section if the probe
+        # is missing). See ci/scripts/abi-snapshot.sh's own header for why
+        # the symbol sections are never merged, which wire symbols the
+        # ClientQt section deliberately does and does not record, and why a
+        # clean symbol diff alone does not mean "no ABI impact".
         working-directory: LibreAgent
         run: ./ci/scripts/abi-snapshot.sh --check build
 

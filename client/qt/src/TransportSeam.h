@@ -317,6 +317,38 @@ public:
     /// Fire-and-forget cancellation request. Never blocks.
     virtual void cancelOperation(const QString& operationId) = 0;
 
+    // ---- best-effort cache warm --------------------------------------------
+    /// Best-effort certificate pre-read for @p cardId: ask the agent to do the
+    /// card I/O NOW, so a later real read finds it warm.
+    ///
+    /// Returns IMMEDIATELY, and that is the whole reason this verb exists
+    /// beside `startOperation`. `startOperation`'s contract is to hand the
+    /// minted operation back synchronously, so it is allowed one bounded
+    /// block; a warm has no consumer for the operation at all, so it must not
+    /// wait for the entry reply — a slow or wedged agent would otherwise stall
+    /// the caller's thread, which for the GUI consumers of this library is the
+    /// thread painting the shell.
+    ///
+    /// Nothing consumer-visible is minted: no operation id is returned, no
+    /// operation object is created, and there is deliberately nothing to
+    /// subscribe to, poll or cancel. Every failure — unreachable agent, entry
+    /// refusal, a card that has no certificates to read — is silently dropped.
+    /// A warm that did not happen simply leaves the next real read to pay its
+    /// own cold cost, so "best effort" is the whole contract.
+    ///
+    /// Debounce: a warm issued while one is still in flight for the SAME
+    /// @p cardId is a no-op. Implementations own that guard, because only the
+    /// transport knows when its own entry call completed — the callers this
+    /// replaces used to hold a pending-call handle for exactly this purpose
+    /// and a void-returning API takes that handle away from them.
+    ///
+    /// A transport MAY implement this as a no-op when its wire cannot express
+    /// a fire-and-forget method entry without stranding agent-side state that
+    /// nothing will ever release. That is a documented, tested choice, not an
+    /// omission: see the socket transport's implementation, which is the one
+    /// such case today and carries the reasoning.
+    virtual void warmCertificates(const QString& cardId) = 0;
+
     // ---- public-data primitive ----------------------------------------------
     /// Asynchronous DER fetch (the agent's no-consent public-data call),
     /// reader-addressed. @p listener receives exactly one

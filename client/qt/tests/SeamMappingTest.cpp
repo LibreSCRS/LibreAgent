@@ -67,6 +67,12 @@ public:
     };
     std::vector<StartRecord> starts;
     std::vector<QString> cancelled;
+    /// Card ids handed to warmCertificates(), in call order. The fake records
+    /// and does nothing else: the debounce is a TRANSPORT obligation (only a
+    /// transport knows when its own entry call finished), so a seam fake that
+    /// swallowed the second call would be asserting a contract that does not
+    /// live at this layer.
+    std::vector<QString> warmed;
     struct DerRecord
     {
         QString readerId;
@@ -168,6 +174,10 @@ public:
     void cancelOperation(const QString& operationId) override
     {
         cancelled.push_back(operationId);
+    }
+    void warmCertificates(const QString& cardId) override
+    {
+        warmed.push_back(cardId);
     }
     quint64 requestCertificateDer(const QString& readerId, const QString& certId, DerListener* listener) override
     {
@@ -707,6 +717,67 @@ TEST(SeamOperation, PhotosAreTakenOnce)
     EXPECT_EQ(photos[0].key, QStringLiteral("personal:photo"));
     EXPECT_TRUE(photos[0].fd.valid());
     EXPECT_TRUE(op->takePhotos().empty()); // move-out semantics: gone after the first take
+}
+
+// ---- best-effort certificate warm ---------------------------------------------------
+//
+// This seam fake sits ABOVE both transports, so what these two cases pin is
+// exactly what the CLIENT emits: which seam verb a warm reaches, with which
+// card id, and -- the part that matters most -- what it does NOT do. Whether a
+// warm then reaches a given WIRE is a transport question, pinned once per wire
+// and jointly by the parity corpus.
+
+TEST(SeamWarm, WarmForwardsTheCardIdToTheSeam)
+{
+    ClientOnFake h;
+    AgentCard* card = h.client->card(QStringLiteral("/card/0"));
+    ASSERT_NE(card, nullptr);
+
+    card->warmCertificates();
+
+    ASSERT_EQ(h.fake->warmed.size(), 1u);
+    EXPECT_EQ(h.fake->warmed.front(), QStringLiteral("/card/0"));
+    // A warm is NOT a method entry: it must not travel the minting path, so
+    // the seam's own operation-entry verb stays untouched.
+    EXPECT_TRUE(h.fake->starts.empty());
+}
+
+// The leak contract, at the layer that can actually see it. Operations are
+// parented to the card and nothing in this library ever deletes one early, so
+// an operation minted for a warm -- which by definition has no consumer to
+// finish, read or cancel it -- would live, subscribed, until the card died.
+// The public API therefore mints none at all, and this asserts the absence
+// directly (child count) rather than by inspecting a return value that does
+// not exist.
+TEST(SeamWarm, WarmMintsNoOperationAndLeavesNoSubscription)
+{
+    ClientOnFake h;
+    // Scripted so that IF a warm ever did route through the minting path, it
+    // would mint a live, subscribed operation rather than an entry failure --
+    // i.e. this scenario is armed to catch the regression, not blind to it.
+    h.fake->nextOperationId = QStringLiteral("/op/warm");
+    AgentCard* card = h.client->card(QStringLiteral("/card/0"));
+    ASSERT_NE(card, nullptr);
+    const qsizetype childrenBefore = card->children().size();
+
+    card->warmCertificates();
+    card->warmCertificates();
+
+    EXPECT_EQ(card->children().size(), childrenBefore);
+    EXPECT_TRUE(h.fake->operationSubscriptions.isEmpty());
+    spinEventLoop();
+    EXPECT_EQ(card->children().size(), childrenBefore);
+    EXPECT_TRUE(h.fake->operationSubscriptions.isEmpty());
+
+    // Both calls reached the seam: the debounce is a transport obligation and
+    // is deliberately NOT applied here (see FakeTransportSeam::warmed).
+    EXPECT_EQ(h.fake->warmed.size(), 2u);
+
+    // The armed script really would have minted something -- proof that the
+    // child-count assertions above are discriminating and not vacuous.
+    AgentOperation* real = card->readCertificates();
+    ASSERT_NE(real, nullptr);
+    EXPECT_GT(card->children().size(), childrenBefore);
 }
 
 // ---- availability sweep -----------------------------------------------------------

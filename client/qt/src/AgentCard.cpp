@@ -326,6 +326,19 @@ AgentOperation* AgentCard::readCertificates()
     return startOperation(std::move(request));
 }
 
+// Straight through to the seam, with no minting path at all -- deliberately
+// NOT routed through startOperation() above. A warm has no operation to hand
+// back, so none of that function's machinery applies: no AgentOperation is
+// created, so a refused entry has nothing to terminalize and nothing to log
+// prose about, and the local feature/capability gates it applies exist to give
+// a caller a typed refusal it can render, which a void warm has no way to
+// deliver. The agent refuses a warm it cannot serve; the reply is dropped
+// either way (see the header's contract).
+void AgentCard::warmCertificates()
+{
+    d->transport->warmCertificates(d->id);
+}
+
 AgentOperation* AgentCard::readTokenInfo()
 {
     OperationRequest request;

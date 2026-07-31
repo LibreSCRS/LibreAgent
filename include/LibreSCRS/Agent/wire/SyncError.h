@@ -20,23 +20,76 @@ namespace LibreSCRS::Agent::Wire {
 /// NAME, so this enum may be reordered without breaking a peer (unlike
 /// `ErrorCode`, whose integers are frozen). What must stay in lockstep is the
 /// SET of names — see `syncErrorName()`.
+/// Each enumerator below notes, after its meaning, which coarse bucket the Qt
+/// client's classification collapses it onto — the whole reason this axis is
+/// carried separately is that several distinct names share one bucket, so the
+/// bucket alone cannot tell a caller which refusal it actually got.
 enum class SyncError : std::uint8_t {
+    /// The card id the request named is not one the agent exports right now —
+    /// it was never known, or the card has left the reader since the id was
+    /// handed out. (Bucket: unsupported card.)
     UnknownCard,
+    /// The card is known, but it carries no key or certificate under the id
+    /// the request named. (Bucket: key not found.)
     KeyNotFound,
+    /// The caller is not permitted to make this request at all. (Bucket:
+    /// access denied — shared with `UserNotLoggedIn`.)
     NotAuthorized,
+    /// The request needs an authenticated session on the token and none is
+    /// open. Distinct from `NotAuthorized`: this one is recoverable by
+    /// authenticating, that one is not. (Bucket: access denied.)
     UserNotLoggedIn,
+    /// The configuration key the request named is not one this agent knows.
+    /// (Bucket: invalid arguments — shared with the two below,
+    /// `InvalidRequest`, `UnknownCredential` and
+    /// `UnsupportedSignatureParameter`.)
     UnknownConfigKey,
+    /// The configuration key exists but cannot be written at run time.
+    /// (Bucket: invalid arguments.)
     ReadOnlyConfig,
+    /// The configuration key exists and is writable, but the supplied value is
+    /// outside what it accepts. (Bucket: invalid arguments.)
     InvalidConfigValue,
+    /// The peer asked to speak a protocol version this agent does not.
+    /// (Bucket: protocol error — the only name in it.)
     UnsupportedProtocol,
+    /// Authentication against the card itself failed — a wrong or refused
+    /// credential, not a malformed request. (Bucket: authentication failed.)
     AuthFailed,
+    /// The exchange broke in a way the peer could only describe generically.
+    ///
+    /// @warning This value is ALSO where an unrecognised name lands, because
+    ///          the vocabulary has no room to carry one forward — see
+    ///          `decodeSyncError()`'s own warning. Reading it as a positive
+    ///          identification of this specific failure is therefore unsound.
+    ///          (Bucket: communication error.)
     CommunicationError,
+    /// The request names something this agent build does not implement at all,
+    /// for any card. (Bucket: capability missing — shared with
+    /// `UnsupportedOnThisCard`.)
     NotSupported,
+    /// The request is implemented, but not for the card it was aimed at. The
+    /// distinction from `NotSupported` is agent-build versus this-card, and it
+    /// is exactly the one the shared bucket loses. (Bucket: capability
+    /// missing.)
     UnsupportedOnThisCard,
+    /// A signature parameter the request carried is not one the agent accepts
+    /// (an unsupported format/level/packaging combination). (Bucket: invalid
+    /// arguments.)
     UnsupportedSignatureParameter,
+    /// The request's payload is larger than the agent accepts. (Bucket:
+    /// invalid document.)
     InputTooLarge,
+    /// Refused because this caller is issuing the request too often; the same
+    /// request may succeed later. (Bucket: rate limited.)
     RateLimited,
+    /// The credential id the request named is not in the most recent listing
+    /// for that card — typically a stale id, so the fix is to re-list and
+    /// retry rather than to change the request's shape. (Bucket: invalid
+    /// arguments.)
     UnknownCredential,
+    /// The request is malformed or self-inconsistent as sent. (Bucket: invalid
+    /// arguments.)
     InvalidRequest,
     /// GetSignResult has nothing to serve for the requested op: the op never
     /// reached a retained Sign result (wrong kind, never completed, or the

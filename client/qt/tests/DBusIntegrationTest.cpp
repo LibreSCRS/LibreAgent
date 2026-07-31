@@ -24,6 +24,7 @@
 #include "fakes/TestBus.h"
 
 #include <QCryptographicHash>
+#include <QElapsedTimer>
 #include <algorithm>
 #include <gtest/gtest.h>
 #include <fcntl.h>
@@ -246,6 +247,108 @@ TEST(DBusIntegration, CertificatesEndToEnd)
     EXPECT_EQ(c.notBefore, QDateTime::fromString(QStringLiteral("2021-06-01T00:00:00Z"), Qt::ISODate));
     EXPECT_EQ(c.notAfter, QDateTime::fromString(QStringLiteral("2031-06-01T00:00:00Z"), Qt::ISODate));
     EXPECT_EQ(c.trust, TrustStatus::Trusted);
+}
+
+// ---- best-effort certificate warm ------------------------------------------
+//
+// This wire is the one that actually issues a warm (the socket transport's is
+// a documented no-op -- SocketIntegrationTest pins that side, and the parity
+// corpus pins the two together). What is asserted here is the pair of
+// properties the whole verb exists for: the card work really does reach the
+// agent, and the caller is never made to wait for it.
+
+TEST(DBusIntegration, WarmCertificatesReachesTheAgentAndMintsNothingForTheCaller)
+{
+    FakeAgent::Config cfg;
+    cfg.capabilities = Cap::Pki;
+    Harness h(cfg);
+
+    auto client = makeClient(h);
+    AgentCard* card = client->card(h.cardPath());
+    ASSERT_NE(card, nullptr);
+    ASSERT_EQ(h.operationCount(), 0);
+    const qsizetype childrenBefore = card->children().size();
+
+    card->warmCertificates();
+
+    // The card read really happened agent-side -- a warm that reached nothing
+    // would be a no-op with a comment, which is the failure mode worth
+    // catching here.
+    EXPECT_TRUE(waitFor([&]() { return h.operationCount() == 1; }));
+    // ... and nothing was minted on the caller's side to hold, finish or leak.
+    EXPECT_EQ(card->children().size(), childrenBefore);
+
+    // Discriminating control: the SAME read through the public operation API
+    // does mint a child, so the assertion above is about warms specifically.
+    AgentOperation* real = card->readCertificates();
+    ASSERT_NE(real, nullptr);
+    EXPECT_GT(card->children().size(), childrenBefore);
+}
+
+// The property that justifies the verb existing separately from
+// readCertificates() at all. The agent accepts the entry call and never
+// answers it; a warm that waited for the entry reply -- as every other
+// operation-entry path in this transport deliberately does -- would block for
+// the full kDefaultCallTimeoutMs budget, which in the GUI consumers of this
+// library is the shell's own thread. The margin below is wide on purpose: the
+// distinction being drawn is "returns at once" versus "blocks for three
+// seconds", not a benchmark.
+TEST(DBusIntegration, WarmCertificatesDoesNotWaitOnAWedgedAgent)
+{
+    FakeAgent::Config cfg;
+    cfg.capabilities = Cap::Pki;
+    cfg.wedgeCertificatesEntry = true;
+    Harness h(cfg);
+
+    auto client = makeClient(h);
+    AgentCard* card = client->card(h.cardPath());
+    ASSERT_NE(card, nullptr);
+
+    QElapsedTimer timer;
+    timer.start();
+    card->warmCertificates();
+    const qint64 elapsedMs = timer.elapsed();
+
+    EXPECT_LT(elapsedMs, kDefaultCallTimeoutMs / 4)
+        << "warmCertificates blocked for " << elapsedMs << " ms against an agent that never replies";
+    // The wedge really is wedged: the agent accepted the entry call and minted
+    // nothing, so the elapsed time above was measured against a call that
+    // genuinely had no reply to find -- not against a fast success.
+    EXPECT_EQ(h.operationCount(), 0);
+    EXPECT_TRUE(card->children().isEmpty());
+}
+
+// The debounce the void-returning API took away from callers: they used to
+// hold the pending-call handle themselves and skip while it was non-null.
+TEST(DBusIntegration, WarmCertificatesIsDebouncedWhileOneIsInFlightAndRearmsAfter)
+{
+    FakeAgent::Config cfg;
+    cfg.capabilities = Cap::Pki;
+    Harness h(cfg);
+
+    auto client = makeClient(h);
+    AgentCard* card = client->card(h.cardPath());
+    ASSERT_NE(card, nullptr);
+
+    // Both calls happen without returning to the event loop, so the first
+    // entry call is provably still in flight when the second is issued -- Qt
+    // cannot have delivered its reply yet. No timing assumption involved.
+    card->warmCertificates();
+    card->warmCertificates();
+
+    EXPECT_TRUE(waitFor([&]() { return h.operationCount() >= 1; }));
+    // Pump the loop a while longer with an unsatisfiable predicate: the point
+    // is to let the first entry reply land (which clears the guard) and to
+    // give a NON-debounced second warm every chance to show up in the count
+    // before it is read. The transport's guard is private state with nothing
+    // observable to wait on, so a plain settle is the honest shape here.
+    (void)waitFor([]() { return false; }, 250);
+    EXPECT_EQ(h.operationCount(), 1) << "the second warm was not debounced";
+
+    // The guard releases with its call: a later warm is issued normally.
+    card->warmCertificates();
+    EXPECT_TRUE(waitFor([&]() { return h.operationCount() == 2; }))
+        << "the debounce never rearmed -- warms are suppressed forever after the first";
 }
 
 // ---- public-data DER fetch (Pkcs11_1.CertDer, no consent, no Operation) ----

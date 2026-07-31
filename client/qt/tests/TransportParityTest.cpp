@@ -722,13 +722,26 @@ private:
 
 // ---- typed-test policies ----------------------------------------------------
 
+// `kWarmOperationsOnTheWire` is the ONE place in this corpus where the two
+// transports are expected to differ rather than match, so it is spelled as a
+// named constant per policy instead of an `if` inside a scenario body: the
+// divergence is reviewable in one place, and a transport that silently changed
+// sides would have to change this line to stay green.
+//
+// D-Bus issues the warm; the socket transport's is a documented no-op (see
+// SocketTransport::warmCertificates for why -- a warm makes the agent mint an
+// operation this wire has no way to release without cancelling the read).
+// Everything else about the verb IS parity, and the scenario below asserts
+// that part against both wires with one body.
 struct DBusPolicy
 {
     using Env = DBusEnv;
+    static constexpr int kWarmOperationsOnTheWire = 1;
 };
 struct SocketPolicy
 {
     using Env = SocketEnv;
+    static constexpr int kWarmOperationsOnTheWire = 0;
 };
 
 class ParityPolicyNames
@@ -1087,6 +1100,54 @@ TYPED_TEST(TransportParity, CertificatesEndToEnd)
     // would pass on a transport that stopped carrying the key at all.
     EXPECT_TRUE(c.extra.contains(QStringLiteral("trustStatusWire")));
     EXPECT_EQ(c.extra.value(QStringLiteral("trustStatusWire")).toUInt(), 0u);
+}
+
+// The best-effort warm, one body against both wires. Most of what this verb
+// promises is TRUE ON BOTH regardless of whether a frame goes out at all --
+// it returns without waiting, it mints nothing the caller can observe or leak,
+// it is safe to call repeatedly, and it never disturbs the real read that
+// follows -- and those are the assertions below. The single genuine
+// divergence, whether the card work reaches the agent, is read from the
+// policy's `kWarmOperationsOnTheWire` rather than branched on inline, so a
+// transport that quietly changed sides fails here instead of passing on a
+// scenario that only ever checked its own wire.
+TYPED_TEST(TransportParity, WarmCertificatesMintsNothingAndLeavesTheRealReadIntact)
+{
+    using Env = typename TypeParam::Env;
+    ParityConfig cfg;
+    cfg.capabilities = Cap::Pki;
+    ParityCert pc;
+    pc.certId = QStringLiteral("cert-parity-warm");
+    pc.signingCapable = true;
+    cfg.certScript = {pc};
+    Env env(cfg);
+
+    AgentCard* card = env.card();
+    ASSERT_NE(card, nullptr);
+    ASSERT_EQ(env.operationCount(), 0);
+
+    // Twice, back to back and without returning to the event loop: whatever
+    // each transport does with a warm, a second one on top of an in-flight one
+    // must never stack card work.
+    card->warmCertificates();
+    card->warmCertificates();
+    (void)waitFor([]() { return false; }, 250); // let anything that was sent arrive
+
+    EXPECT_EQ(env.operationCount(), TypeParam::kWarmOperationsOnTheWire)
+        << "this transport did not do what its policy says a warm does";
+    EXPECT_TRUE(card->children().isEmpty()) << "a warm minted a consumer-visible operation";
+    EXPECT_TRUE(env.client()->isAvailable()) << "a warm disturbed the client's availability";
+
+    // The real read still behaves identically on both wires afterwards -- the
+    // property that makes the socket side's no-op cost a consumer nothing.
+    AgentOperation* op = card->readCertificates();
+    ASSERT_NE(op, nullptr);
+    ASSERT_TRUE(waitFor([&]() { return op->isFinished(); }));
+    EXPECT_EQ(op->status(), OperationStatus::Ok);
+    const QList<CertificateInfo> certs = op->certificatesResult();
+    ASSERT_EQ(certs.size(), 1);
+    EXPECT_EQ(certs.constFirst().id, QStringLiteral("cert-parity-warm"));
+    EXPECT_EQ(env.operationCount(), TypeParam::kWarmOperationsOnTheWire + 1);
 }
 
 // The trust-verdict append: the SAME scripted trustStatus/securityStatus

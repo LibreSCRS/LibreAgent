@@ -936,6 +936,43 @@ void SocketTransport::cancelOperation(const QString& operationId)
     }
 }
 
+void SocketTransport::warmCertificates(const QString& cardId)
+{
+    Q_UNUSED(cardId)
+    // DELIBERATE NO-OP on this wire, not an unfinished implementation. The
+    // seam permits it (see TransportSeam::warmCertificates) and the parity
+    // suite pins it, so a future reader can tell this apart from an oversight.
+    //
+    // Sending the frame would be trivial -- cancelOperation() a few lines
+    // above already fire-and-forgets a request and drops its ack -- and that
+    // is exactly what makes the omission worth spelling out, because the easy
+    // version is the wrong one:
+    //
+    //   * A read-certificates entry makes the agent MINT a server-side
+    //     operation, and its id comes back only in the reply a warm throws
+    //     away. On the D-Bus wire that costs nothing: the agent reaps the
+    //     operation together with the card object that owns it. This wire has
+    //     no such ownership edge and, more to the point, no release verb at
+    //     all: the only request that names an existing operation without
+    //     consuming its result is the cancel, which would ABORT the very read
+    //     the warm exists to perform. So there is no way to issue a warm here
+    //     and then let go of it -- "fire and forget" would strand a live
+    //     operation on the agent for every warm, and a warm is meant to be
+    //     cheap enough to call on every plausible trigger.
+    //
+    //   * Nothing loses a feature by this. The warm is best-effort by
+    //     contract: skipping it costs one cold read on the next real
+    //     readCertificates(), which is precisely the cost a caller would have
+    //     paid without any warm at all. No consumer's correctness depends on
+    //     it, and the public API says so.
+    //
+    // What would have to change before this becomes real: the wire needs a way
+    // to hand an operation back without cancelling it -- either a release/
+    // detach request, or a warm-shaped request the agent answers without
+    // minting an operation at all. Add that first; do not just start sending
+    // the entry frame.
+}
+
 // ---- public-data primitive -----------------------------------------------------------
 
 quint64 SocketTransport::requestCertificateDer(const QString& readerId, const QString& certId, DerListener* listener)

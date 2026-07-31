@@ -145,4 +145,304 @@ set(LIBREAGENT_CLIENTQT_EXPORT_HEADER ${LIBREAGENT_CLIENTQT_EXPORT_HEADER} PAREN
 if(PROJECT_IS_TOP_LEVEL)
     enable_testing()
     add_subdirectory(tests)
+
+    # The public value types' LAYOUT probe, consumed by ci/scripts/abi-snapshot.sh
+    # (see tools/ValueLayoutProbe.cpp for why a symbol diff alone cannot see a
+    # member add/remove/reorder on a by-value type). Not a test and not
+    # installed: it prints one line per type and exits, and the snapshot script
+    # records that output as its own baseline section.
+    #
+    # Gated with the test suite rather than built unconditionally, for the same
+    # reason: a consumer pulling this repo in as a subproject wants the library,
+    # not this repo's CI tooling. The script hard-errors when the shared library
+    # is present but this binary is not, so the gate can never lose the layout
+    # dimension by quietly failing to find it.
+    add_executable(LibreAgentClientQtLayoutProbe tools/ValueLayoutProbe.cpp)
+    set_target_properties(LibreAgentClientQtLayoutProbe PROPERTIES
+        OUTPUT_NAME librescrs-agentclient-qt-layout-probe)
+    target_link_libraries(LibreAgentClientQtLayoutProbe PRIVATE LibreAgent::ClientQt)
+    target_compile_options(LibreAgentClientQtLayoutProbe PRIVATE -Wall -Wextra -Wpedantic)
+    if(LIBRESCRS_AGENT_WERROR)
+        target_compile_options(LibreAgentClientQtLayoutProbe PRIVATE -Werror)
+    endif()
+
+    # ---- drift guard: probe coverage vs the public value types on disk ----
+    #
+    # Same shape as the public-header drift guard in
+    # tests/HeaderAcceptance/CMakeLists.txt, for the same reason: a hand-kept
+    # list that nothing checks is a list that silently stops being complete. A
+    # public value type added WITHOUT being added to the probe would simply
+    # never have its layout recorded, and the ABI gate would keep reporting
+    # success while that type's members moved freely underneath consumers --
+    # the failure this whole dimension exists to prevent, reintroduced one type
+    # at a time.
+    #
+    # "On disk" = every type DEFINITION in the public header tree.
+    #
+    # The pattern deliberately accepts every spelling a definition can take
+    # here -- `struct X`, `class X`, either with the export macro, either with
+    # `final`, either with a base-clause, and any combination -- while still
+    # excluding a forward declaration (`struct SeamError;`), which is what the
+    # no-semicolon anchor does. An earlier, narrower version matched only the
+    # bare `struct X` form, and that is not a theoretical gap: `struct X final`
+    # and `struct X : Base` both slipped past it with configure at exit 0, and
+    # nothing else in the build would have caught them either (the formatter
+    # accepts both spellings happily). A guard whose hole is shaped like the
+    # very declaration a real derived or final aggregate would use is a guard
+    # that passes on the day it matters.
+    #
+    # Classes are matched too, rather than skipped by the pattern, so that
+    # spelling a value type `class` cannot become the next way around this. The
+    # ones that genuinely should not be layout-gated are named in the exemption
+    # list below, where the reason is visible and reviewable -- which is what
+    # that list was for.
+    file(GLOB _clientqt_public_header_paths
+        CONFIGURE_DEPENDS
+        "${CMAKE_CURRENT_SOURCE_DIR}/include/LibreSCRS/AgentClient/*.h")
+
+    # The specifiers that may sit between the introducer and the name: the
+    # export macro, an alignment specifier, and an attribute sequence. Any
+    # number of them, in any order -- which is why the name is found by
+    # STRIPPING them one at a time rather than by one regex trying to spell
+    # every permutation.
+    # The alignas arm allows ONE level of nested parentheses, because the
+    # realistic spelling has some -- `alignas(alignof(double))`. A plain
+    # `[^)]*` stops at the inner paren and lets that form through, which it
+    # did.
+    set(_clientqt_type_specifier
+        "(LIBRESCRS_AGENTCLIENT_EXPORT|alignas\\(([^()]|\\([^()]*\\))*\\)|\\[\\[[^]]*\\]\\])")
+
+    set(_clientqt_value_types_on_disk "")
+    foreach(_hdr IN LISTS _clientqt_public_header_paths)
+        file(STRINGS "${_hdr}" _type_lines
+            REGEX "^(struct|class)( +${_clientqt_type_specifier})* +[A-Za-z_][A-Za-z0-9_]*( final)?( *:[^;]*)?$")
+        foreach(_line IN LISTS _type_lines)
+            string(REGEX REPLACE "^(struct|class) +" "" _rest "${_line}")
+            while(_rest MATCHES "^${_clientqt_type_specifier} +")
+                string(REGEX REPLACE "^${_clientqt_type_specifier} +" "" _rest "${_rest}")
+            endwhile()
+            string(REGEX REPLACE "^([A-Za-z_][A-Za-z0-9_]*).*$" "\\1" _name "${_rest}")
+            list(APPEND _clientqt_value_types_on_disk "${_name}")
+        endforeach()
+    endforeach()
+
+    # Types that are public but deliberately NOT layout-gated.
+    #
+    # Every entry must state the reason it is SAFE, and that reason must be
+    # true when written and checkable by the next reader. This list is a review
+    # surface, and a review surface holding one plausible-but-false reason is
+    # worse than no list -- it teaches the reader that the entries need not be
+    # verified. An earlier version of this list carried exactly that: it
+    # exempted FdHandle "pinned by TypesTest's own contract assertions", and
+    # TypesTest has nine FdHandle tests of which every one is behavioural --
+    # there was no size assertion anywhere in this component. FdHandle is now
+    # covered by the probe (LAYOUT_OPAQUE) instead, which is why it is absent
+    # here.
+    #
+    # "Cover it in the probe" is the preferred resolution when an exemption
+    # turns out to be unjustified. Rewriting the prose to match reality keeps
+    # the type ungated; moving the type into the probe removes the question.
+    set(_clientqt_value_types_exempt
+        # THREE of the four exported QObjects -- deliberately not AgentClient,
+        # which is gated in the probe instead (LAYOUT_OPAQUE).
+        #
+        # The reason these three are safe is that a consumer's compiled code
+        # cannot contain their size: their CONSTRUCTORS ARE PRIVATE (verified:
+        # AgentCard.h:168, AgentOperation.h:239/242, AgentReader.h:53, all
+        # below the `private:` on 165/230/50), so a consumer can never allocate
+        # one and never sees an operator-new argument for it. Copy construction
+        # and copy assignment are deleted on all of them too, so nothing embeds
+        # one by value. Each holds exactly one std::unique_ptr<Private> and no
+        # other member, so there is no member offset to bake in either.
+        #
+        # Private constructibility is the whole test, and AgentClient FAILS it:
+        # AgentClient.h:53 is a public `explicit AgentClient(QObject*)`, the
+        # documented alternative to sharedAgentClient(). Measured: the type is
+        # 24 bytes and a consumer translation unit that says `new AgentClient`
+        # carries `mov $0x18,%edi` in its own object file. So its size does
+        # reach consumer code, and it is gated.
+        #
+        # Two reasons NOT to reach for here, both previously written into this
+        # list and both wrong. "Their layout is fixed by construction" is false
+        # -- each derives QObject, so the size follows Qt's layout, not
+        # anything in this repository. And "gating them would record a
+        # Qt-derived number that churns on a toolkit upgrade" does not hold
+        # either: Qt guarantees QObject's size across 6.x, and the argument
+        # would apply just as much to AgentClient, which must be gated
+        # regardless. The exemption rests on private constructibility alone.
+        AgentCard
+        AgentOperation
+        AgentReader)
+    if(_clientqt_value_types_exempt)
+        list(REMOVE_ITEM _clientqt_value_types_on_disk ${_clientqt_value_types_exempt})
+    endif()
+    list(SORT _clientqt_value_types_on_disk)
+
+    # "Covered" = what the probe actually emits a line for, in EITHER form:
+    # LAYOUT_BEGIN for an aggregate whose members are public, LAYOUT_OPAQUE for
+    # a type whose members are private (size and alignment only). Read from the
+    # probe source itself rather than restated here, so the two cannot
+    # disagree: the four-space indent restricts the match to the call sites in
+    # main() and excludes the macros' own definitions.
+    file(STRINGS "${CMAKE_CURRENT_SOURCE_DIR}/tools/ValueLayoutProbe.cpp" _probe_lines
+        REGEX "^    LAYOUT_(BEGIN|OPAQUE)\\([A-Za-z_][A-Za-z0-9_]*\\)$")
+    set(_clientqt_value_types_covered "")
+    foreach(_line IN LISTS _probe_lines)
+        string(REGEX REPLACE "^    LAYOUT_(BEGIN|OPAQUE)\\((.*)\\)$" "\\2" _name "${_line}")
+        list(APPEND _clientqt_value_types_covered "${_name}")
+    endforeach()
+    list(SORT _clientqt_value_types_covered)
+
+    if(NOT _clientqt_value_types_on_disk STREQUAL _clientqt_value_types_covered)
+        message(FATAL_ERROR
+            "ValueLayoutProbe: the layout-gated type list has drifted from the "
+            "public headers in client/qt/include/LibreSCRS/AgentClient/.\n"
+            "  Value types on disk:   ${_clientqt_value_types_on_disk}\n"
+            "  Covered by the probe:  ${_clientqt_value_types_covered}\n"
+            "Add (or remove) the type in BOTH the public header AND "
+            "client/qt/tools/ValueLayoutProbe.cpp (LAYOUT_BEGIN for an "
+            "aggregate with public members, LAYOUT_OPAQUE when the members are "
+            "private), then regenerate the ABI baseline. A public value type "
+            "cannot dodge the layout dimension of the ABI gate by only doing "
+            "one of the two. If a type genuinely must not be gated, add it to "
+            "_clientqt_value_types_exempt in this file WITH a reason that is "
+            "true and checkable -- covering it in the probe is preferred to "
+            "arguing it away.\n"
+            "KNOWN RESIDUE, precisely: this check reads declarations line by "
+            "line, matching the introducer, any number of the specifiers in "
+            "_clientqt_type_specifier above (export macro, alignas, "
+            "attributes) in any order, and the name -- all on ONE line. Two "
+            "things still escape it. A declaration SPLIT ACROSS LINES is not "
+            "matched. And an alignas carrying MORE THAN ONE level of nested "
+            "parentheses is not matched: the arm above handles one level, "
+            "which covers alignas(alignof(T)), but not a deeper nesting. "
+            "Chasing the remainder turns this into a C++ parser, so it stops "
+            "here -- if you are adding such a declaration, add its type to the "
+            "probe by hand.")
+    endif()
+
+    # ---- drift guard: which shared headers the public surface re-exports ----
+    #
+    # A public client header that starts re-exporting a header from the shared
+    # LibreSCRS/Agent/ tree creates TWO obligations elsewhere, and both fail
+    # SILENTLY when missed -- each has already happened once in this repository:
+    #
+    #   * Doxyfile.publicapi's INPUT must list it, or the re-exported type's
+    #     members never reach the published reference at all (no warning: the
+    #     definition is simply never parsed).
+    #   * ci/scripts/abi-snapshot.sh's CLIENTQT_WIRE_PUBLIC allowlist must name
+    #     any FUNCTIONS it declares, or those symbols stay out of the ABI
+    #     baseline while genuinely widening the shared library's export table.
+    #
+    # Neither is derivable from the other, and neither tool can notice the
+    # omission on its own, so the check has to live where the re-export is
+    # written.
+    set(_clientqt_reexported_shared_headers
+        OperationPhase.h
+        wire/ErrorCode.h
+        wire/PreReadAuth.h
+        wire/SyncError.h)
+
+    set(_clientqt_reexports_on_disk "")
+    foreach(_hdr IN LISTS _clientqt_public_header_paths)
+        file(STRINGS "${_hdr}" _include_lines
+            REGEX "^#include <LibreSCRS/Agent/[A-Za-z0-9_/]+\\.h>$")
+        foreach(_line IN LISTS _include_lines)
+            string(REGEX REPLACE "^#include <LibreSCRS/Agent/(.*)>$" "\\1" _name "${_line}")
+            list(APPEND _clientqt_reexports_on_disk "${_name}")
+        endforeach()
+    endforeach()
+    list(REMOVE_DUPLICATES _clientqt_reexports_on_disk)
+    list(SORT _clientqt_reexports_on_disk)
+
+    set(_clientqt_reexports_expected ${_clientqt_reexported_shared_headers})
+    list(SORT _clientqt_reexports_expected)
+
+    if(NOT _clientqt_reexports_on_disk STREQUAL _clientqt_reexports_expected)
+        message(FATAL_ERROR
+            "ClientQt: the set of shared LibreSCRS/Agent/ headers re-exported by "
+            "the public client headers has changed.\n"
+            "  Re-exported on disk: ${_clientqt_reexports_on_disk}\n"
+            "  Expected (this file): ${_clientqt_reexports_expected}\n"
+            "Before updating this list, do BOTH of the following for each added "
+            "header -- neither tool can detect the omission by itself:\n"
+            "  1. add it to Doxyfile.publicapi's INPUT, or its members will be "
+            "absent from the published API reference with no warning (the check "
+            "below enforces this one, so it will tell you again);\n"
+            "  2. if it declares FUNCTIONS (an enum/constant-only header emits "
+            "no symbols and needs nothing), add them to CLIENTQT_WIRE_PUBLIC in "
+            "ci/scripts/abi-snapshot.sh and regenerate the ABI baseline, or "
+            "those exports stay ungated.")
+    endif()
+
+    # Obligation 1 of the two above, enforced rather than merely described.
+    # Doxygen's INPUT is a plain list of paths in a file we can read, so
+    # "every re-exported shared header is in the reference's scope" is a
+    # decidable question at configure time -- unlike obligation 2, where
+    # nothing can tell us which header declared a given exported symbol.
+    # Checking it here means the message above is a reminder for the half that
+    # still needs a human, not the only thing standing behind either half.
+    #
+    # This is the omission that actually happened: a re-exported error
+    # vocabulary shipped with its type documented and every one of its values
+    # missing from the published reference, because doxygen documents what it
+    # PARSES and a using-declaration does not pull in a definition from an
+    # unlisted header. It produced no warning from any tool.
+    set(_clientqt_doxyfile "${PROJECT_SOURCE_DIR}/Doxyfile.publicapi")
+    if(EXISTS "${_clientqt_doxyfile}")
+        file(STRINGS "${_clientqt_doxyfile}" _doxy_input_lines
+            REGEX "include/LibreSCRS/Agent/")
+        string(REPLACE ";" "\n" _doxy_input_text "${_doxy_input_lines}")
+
+        set(_clientqt_reexports_missing_from_doxygen "")
+        foreach(_reexport IN LISTS _clientqt_reexports_expected)
+            string(FIND "${_doxy_input_text}" "include/LibreSCRS/Agent/${_reexport}" _found)
+            if(_found EQUAL -1)
+                list(APPEND _clientqt_reexports_missing_from_doxygen "${_reexport}")
+            endif()
+        endforeach()
+
+        # Closes the transitive case. This guard reads the public client
+        # headers' OWN include lines, so it sees a shared header re-exported
+        # directly and not one re-exported through another shared header. That
+        # is sound only while the pinned headers pull in nothing themselves --
+        # they are leaf value-vocabulary headers today, with an empty include
+        # closure. Assert that rather than rely on it: if one of them ever
+        # starts including another, the set above stops being the whole
+        # re-exported set and both obligations silently under-cover again.
+        foreach(_reexport IN LISTS _clientqt_reexports_expected)
+            set(_reexport_path "${PROJECT_SOURCE_DIR}/include/LibreSCRS/Agent/${_reexport}")
+            if(EXISTS "${_reexport_path}")
+                file(STRINGS "${_reexport_path}" _nested_includes
+                    REGEX "^#include <LibreSCRS/")
+                if(_nested_includes)
+                    message(FATAL_ERROR
+                        "ClientQt: the re-exported shared header "
+                        "'${_reexport}' now includes other first-party "
+                        "header(s):\n"
+                        "  ${_nested_includes}\n"
+                        "The re-export check above reads only the PUBLIC CLIENT "
+                        "headers' own include lines, so anything reached "
+                        "transitively through this header is outside the set it "
+                        "pins -- and would therefore be missing from both "
+                        "Doxyfile.publicapi's INPUT and, if it declares "
+                        "functions, the ABI allowlist, with nothing reporting "
+                        "it. Either keep these headers leaf, or extend the "
+                        "re-export check to follow the closure.")
+                endif()
+            endif()
+        endforeach()
+
+        if(_clientqt_reexports_missing_from_doxygen)
+            message(FATAL_ERROR
+                "ClientQt: shared header(s) re-exported by the public client "
+                "headers but absent from Doxyfile.publicapi's INPUT:\n"
+                "  ${_clientqt_reexports_missing_from_doxygen}\n"
+                "Doxygen documents what it PARSES: a using-declaration in a "
+                "listed header does NOT pull the definition in from an unlisted "
+                "one, so the re-exported type's members would be missing from "
+                "the published API reference with no warning from anything. Add "
+                "'include/LibreSCRS/Agent/<header>' to that file's INPUT.")
+        endif()
+    endif()
 endif()

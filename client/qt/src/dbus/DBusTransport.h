@@ -19,6 +19,7 @@
 #include <QDBusUnixFileDescriptor>
 #include <QHash>
 #include <QObject>
+#include <QSet>
 #include <QString>
 #include <QStringList>
 #include <QVariantMap>
@@ -106,6 +107,7 @@ public:
     [[nodiscard]] std::optional<OperationPayload> fetchOperationResult(const QString& operationId,
                                                                        OperationKind kind) override;
     void cancelOperation(const QString& operationId) override;
+    void warmCertificates(const QString& cardId) override;
     quint64 requestCertificateDer(const QString& readerId, const QString& certId, DerListener* listener) override;
     void cancelCertificateDer(quint64 token, DerListener* listener) override;
 
@@ -132,6 +134,11 @@ private:
     QDBusConnection m_connection;
     QString m_service;
     QDBusServiceWatcher* m_watcher = nullptr;
+    // Cards with a warm-certificates entry call still on the wire — the seam's
+    // debounce contract (see TransportSeam::warmCertificates). Keyed by card
+    // id and cleared by the entry call's own reply, so the guard can never
+    // outlive the call it guards.
+    QSet<QString> m_warmingCards;
     RegistryListener* m_registry = nullptr;
     QHash<PropertyListener*, DBusPropertyWatch*> m_propertyWatches;
     QHash<OperationListener*, DBusOperationWatch*> m_operationWatches;

@@ -6,16 +6,24 @@ PROJECT_NAME            = "LibreAgent Qt Client"
 PROJECT_NUMBER          = 4.2
 OUTPUT_DIRECTORY        = build/doc/publicapi
 
-# Scope: the Qt client's public headers, plus the two shared wire-stable
-# value types they re-export under LibreSCRS::AgentClient (ErrorCode.h,
-# OperationPhase.h — see those headers' own "why a re-export" doc comments)
-# and the wire/ subtree those re-exports pull in transitively (currently
-# just PreReadAuth.h; the rest of wire/ is CBOR/framing plumbing the Qt
-# client never includes, so it is not part of this reference).
+# Scope: the Qt client's public headers, plus the shared wire-stable value
+# types they re-export under LibreSCRS::AgentClient (ErrorCode.h,
+# OperationPhase.h, SyncError.h — see those headers' own "why a re-export"
+# doc comments) and the wire/ subtree those re-exports pull in transitively
+# (currently just PreReadAuth.h; the rest of wire/ is CBOR/framing plumbing
+# the Qt client never includes, so it is not part of this reference).
+#
+# A re-exported type must be listed here or its members never reach this
+# reference at all: doxygen documents what it PARSES, and a using-declaration
+# in a listed header does not pull in the definition from an unlisted one. The
+# omission is silent — no warning, just a type whose enumerators are missing
+# from the published API — so any header this library re-exports belongs on
+# this list the moment it is re-exported.
 INPUT                   = client/qt/include/LibreSCRS/AgentClient \
                            include/LibreSCRS/Agent/OperationPhase.h \
                            include/LibreSCRS/Agent/wire/ErrorCode.h \
-                           include/LibreSCRS/Agent/wire/PreReadAuth.h
+                           include/LibreSCRS/Agent/wire/PreReadAuth.h \
+                           include/LibreSCRS/Agent/wire/SyncError.h
 RECURSIVE                = YES
 
 EXTRACT_ALL              = NO
@@ -32,6 +40,14 @@ GENERATE_LATEX           = NO
 # warnings fail the run. Re-run `doxygen Doxyfile.publicapi` after any
 # public-header change.
 WARN_IF_UNDOCUMENTED     = YES
+# WARN_IF_UNDOCUMENTED does NOT reach enum VALUES — it defaults to off for
+# them, so an undocumented enumerator passes the gate silently. That matters
+# here more than for most projects: several of this library's public types ARE
+# enums whose individual values are the contract a consumer branches on, so
+# "the enum is documented" is not the property worth gating. Measured before
+# turning this on: deleting one enumerator's doc comment left the run at exit
+# 0; with it on, the same deletion is exit 1.
+WARN_IF_UNDOC_ENUM_VAL   = YES
 WARN_NO_PARAMDOC         = NO
 WARN_AS_ERROR            = FAIL_ON_WARNINGS
 

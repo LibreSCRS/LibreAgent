@@ -674,6 +674,37 @@ void DBusTransport::cancelOperation(const QString& operationId)
     m_connection.asyncCall(call);
 }
 
+void DBusTransport::warmCertificates(const QString& cardId)
+{
+    if (m_warmingCards.contains(cardId)) {
+        // The seam's debounce: an entry call for this card is still on the
+        // wire, and a warm is idempotent card work — stacking a second one
+        // would ask the agent to redo the read it is already doing.
+        return;
+    }
+
+    // Unlike startOperation's deliberate bounded block — whose contract is to
+    // return the minted operation synchronously — a warm has no consumer for
+    // the operation, so the entry call goes out asynchronously and the reply
+    // is never read. The reply carries the operation path; nobody wants it,
+    // and an entry error (a card with no certificates, a missing capability)
+    // is dropped on purpose. The agent reaps the operation it minted along
+    // with the card, so dropping the path strands nothing on this wire.
+    QDBusMessage call = QDBusMessage::createMethodCall(m_service, cardId, QLatin1String(kCardIface),
+                                                       QStringLiteral("ReadCertificates"));
+    auto* watcher = new QDBusPendingCallWatcher(m_connection.asyncCall(call, kDefaultCallTimeoutMs), this);
+    m_warmingCards.insert(cardId);
+    // Bound to `this` as the context object, so a transport torn down with a
+    // warm still in flight cannot have this run against a dead m_warmingCards.
+    // The watcher is parented to `this` for the same reason. Qt delivers
+    // `finished` through the event loop even for a call that completed before
+    // the watcher existed, so the guard is always cleared exactly once.
+    QObject::connect(watcher, &QDBusPendingCallWatcher::finished, this, [this, cardId](QDBusPendingCallWatcher* self) {
+        m_warmingCards.remove(cardId);
+        self->deleteLater();
+    });
+}
+
 quint64 DBusTransport::requestCertificateDer(const QString& readerId, const QString& certId, DerListener* listener)
 {
     const quint64 token = m_derListeners.add(listener);
