@@ -110,7 +110,13 @@ public:
     [[nodiscard]] AgentOperation* listCredentials();
     /// @brief Start a PIN mutation on the credential @p pinId (from the most
     ///        recent listing of this card); typed result: `pinResult()`.
-    [[nodiscard]] AgentOperation* managePin(const QString& pinId, PinVerb verb);
+    ///
+    ///        @p options carries the wire's only structural mutation option,
+    ///        `activateKey` (see `ManagePinOptions`'s doc comment for the
+    ///        closed vocabulary and why it has no `extra` pass-through). It
+    ///        is sent ONLY alongside `PinVerb::ActivatePin`; every other verb
+    ///        sends no options at all, regardless of @p options' value.
+    [[nodiscard]] AgentOperation* managePin(const QString& pinId, PinVerb verb, const ManagePinOptions& options = {});
     /// @brief Start activating the pending signing key (typed result:
     ///        `pinResult()`).
     [[nodiscard]] AgentOperation* activateSigningKey();

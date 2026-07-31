@@ -504,6 +504,20 @@ QString FakeSocketAgent::lastCertDerCertId() const
     return m_lastCertDerCertId;
 }
 
+std::optional<bool> FakeSocketAgent::lastManagePinActivateKey() const
+{
+    return m_lastManagePinActivateKey;
+}
+
+QVariantMap FakeSocketAgent::lastManagePinOptions() const
+{
+    QVariantMap out;
+    if (m_lastManagePinActivateKey.has_value()) {
+        out.insert(QStringLiteral("activateKey"), *m_lastManagePinActivateKey);
+    }
+    return out;
+}
+
 void FakeSocketAgent::mintOperation(Connection* connection, quint64 req, OpKind kind, bool withRecords,
                                     QStringList batchDisplayNames)
 {
@@ -898,6 +912,11 @@ void FakeSocketAgent::handleRequest(Connection* connection, Wire::RequestEnvelop
         return;
     }
     if (const auto* manage = std::get_if<Wire::ManagePin>(&body)) {
+        // Captured unconditionally, before any of the refusal branches below,
+        // so this reflects exactly what crossed the wire in THIS request --
+        // including nullopt when the client sent no activateKey field at all
+        // (Change/Unblock) -- not just what a legal, accepted request carried.
+        m_lastManagePinActivateKey = manage->activateKey;
         if (lacksPinManagement) {
             sendEntryError(connection, req, Wire::SyncError::UnsupportedOnThisCard);
             return;

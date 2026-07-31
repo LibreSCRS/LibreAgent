@@ -703,6 +703,23 @@ public:
     [[nodiscard]] QString lastCertDerReader() const;
     [[nodiscard]] QString lastCertDerCertId() const;
 
+    /// @brief Capture the verbatim Credentials1.ManagePin in-args, exactly as
+    ///        `CredentialsAdaptor::ManagePin` received them off the wire —
+    ///        BEFORE any refusal branch, so a refused request is captured too
+    ///        (mirrors `captureSign()`'s own "capture what actually crossed
+    ///        the wire" discipline, and `FakeSocketAgent`'s identical
+    ///        capture-first placement for the same request).
+    void captureManagePin(const QString& pinId, const QString& verb, const QVariantMap& options);
+
+    /// @brief Last ManagePin() pinId / verb / options, as the fake actually
+    ///        received them on the wire. `lastManagePinOptions()` is the D-Bus
+    ///        analogue of `FakeSocketAgent::lastManagePinOptions()` — the two
+    ///        exist so a transport-parity scenario can assert the SAME
+    ///        request-content check against both fakes without branching.
+    [[nodiscard]] QString lastManagePinId() const;
+    [[nodiscard]] QString lastManagePinVerb() const;
+    [[nodiscard]] QVariantMap lastManagePinOptions() const;
+
     /// @brief Insert/remove the card live (emits InterfacesAdded/Removed plus
     ///        a Reader1 HasCard PropertiesChanged, mirroring the real agent).
     void setCardPresent(bool present);
@@ -851,6 +868,10 @@ private:
 
     QString m_lastCertDerReader;
     QString m_lastCertDerCertId;
+
+    QString m_lastManagePinId;
+    QString m_lastManagePinVerb;
+    QVariantMap m_lastManagePinOptions;
 };
 
 } // namespace LibreSCRS::AgentClient::Fakes

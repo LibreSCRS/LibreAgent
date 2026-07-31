@@ -40,7 +40,12 @@
 //                         scenario used to pin is retired)
 //   credentials         CredentialsListManagePinThenRequiresReList
 //                         (list -> manage -> refused-until-relist -> relist ->
-//                         manage again)
+//                         manage again),
+//                         ManagePinActivatePinForwardsActivateKeyIdenticallyAcrossTransports
+//                         (the wire's one structural ManagePin option reaches
+//                         BOTH wires identically, and only for ActivatePin —
+//                         the parity companion to Sign's own tsaUrl/
+//                         visualSignature scenario above)
 //   cancel              CancelStopsAnInFlightOperation
 //   refusal             MethodEntryRefusalProducesFailedOperation
 //   agent-loss mid-op   AgentLossMidOperationTerminalizesLoudly
@@ -376,6 +381,10 @@ public:
     {
         return m_harness.lastSignOptions();
     }
+    [[nodiscard]] QVariantMap lastManagePinOptions()
+    {
+        return m_harness.lastManagePinOptions();
+    }
     [[nodiscard]] QByteArray lastSignInputBytes()
     {
         return m_harness.lastSignInputBytes();
@@ -580,6 +589,12 @@ public:
     {
         QVariantMap out;
         runOnThread(m_context, [this, &out]() { out = m_agent->lastSignOptions(); });
+        return out;
+    }
+    [[nodiscard]] QVariantMap lastManagePinOptions()
+    {
+        QVariantMap out;
+        runOnThread(m_context, [this, &out]() { out = m_agent->lastManagePinOptions(); });
         return out;
     }
     [[nodiscard]] QByteArray lastSignInputBytes()
@@ -1320,6 +1335,59 @@ TYPED_TEST(TransportParity, CredentialsListManagePinThenRequiresReList)
     ASSERT_NE(manageAgain, nullptr);
     ASSERT_TRUE(waitFor([&]() { return manageAgain->isFinished(); }));
     EXPECT_EQ(manageAgain->status(), OperationStatus::Ok) << "the re-list must restore mutability";
+}
+
+// The wire's one structural ManagePin option, activateKey, actually reaches
+// BOTH wires identically -- and only for ActivatePin. lastManagePinOptions()
+// is deliberately the SAME accessor name/shape on both Env wrappers
+// (FakeAgent's natural a{sv} capture on D-Bus; a synthesized map over
+// FakeSocketAgent's typed wire capture on the socket side), so this ONE
+// scenario body -- unlike SocketIntegrationTest.cpp's single-transport
+// version -- proves the two transports AGREE, not just that each one
+// individually forwards the option.
+TYPED_TEST(TransportParity, ManagePinActivatePinForwardsActivateKeyIdenticallyAcrossTransports)
+{
+    using Env = typename TypeParam::Env;
+    ParityConfig cfg;
+    cfg.capabilities = Cap::PinManagement;
+    ParityCredRecord record;
+    record.id = QStringLiteral("sign:0x87");
+    record.label = QStringLiteral("Signing PIN");
+    cfg.credRecords = {record};
+    Env env(cfg);
+
+    AgentCard* card = env.card();
+    ASSERT_NE(card, nullptr);
+
+    // 1) list, then activate with activateKey=true.
+    AgentOperation* listOp = card->listCredentials();
+    ASSERT_NE(listOp, nullptr);
+    ASSERT_TRUE(waitFor([&]() { return listOp->isFinished(); }));
+    EXPECT_EQ(listOp->status(), OperationStatus::Ok);
+
+    AgentOperation* activateOp =
+        card->managePin(QStringLiteral("sign:0x87"), PinVerb::ActivatePin, ManagePinOptions{true});
+    ASSERT_NE(activateOp, nullptr);
+    ASSERT_TRUE(waitFor([&]() { return activateOp->isFinished(); }));
+    EXPECT_EQ(activateOp->status(), OperationStatus::Ok);
+    const QVariantMap afterActivate = env.lastManagePinOptions();
+    ASSERT_TRUE(afterActivate.contains(QStringLiteral("activateKey")))
+        << "activateKey=true must reach the wire identically on both transports";
+    EXPECT_TRUE(afterActivate.value(QStringLiteral("activateKey")).toBool());
+
+    // 2) re-list (the mutation above dropped the listing cache), then Change
+    // on the SAME id: activateKey must NOT be present on either wire at all --
+    // absence, not a present false, is what a Change mutation carries.
+    AgentOperation* relistOp = card->listCredentials();
+    ASSERT_NE(relistOp, nullptr);
+    ASSERT_TRUE(waitFor([&]() { return relistOp->isFinished(); }));
+
+    AgentOperation* changeOp = card->managePin(QStringLiteral("sign:0x87"), PinVerb::Change);
+    ASSERT_NE(changeOp, nullptr);
+    ASSERT_TRUE(waitFor([&]() { return changeOp->isFinished(); }));
+    EXPECT_EQ(changeOp->status(), OperationStatus::Ok);
+    EXPECT_FALSE(env.lastManagePinOptions().contains(QStringLiteral("activateKey")))
+        << "Change must not carry activateKey on either transport";
 }
 
 // ---- cancel -------------------------------------------------------------------

@@ -227,6 +227,18 @@ public:
         runOnThread(m_context, [this, &out]() { out = m_agent->lastCertDerCertId(); });
         return out;
     }
+    [[nodiscard]] std::optional<bool> lastManagePinActivateKey()
+    {
+        std::optional<bool> out;
+        runOnThread(m_context, [this, &out]() { out = m_agent->lastManagePinActivateKey(); });
+        return out;
+    }
+    [[nodiscard]] QVariantMap lastManagePinOptions()
+    {
+        QVariantMap out;
+        runOnThread(m_context, [this, &out]() { out = m_agent->lastManagePinOptions(); });
+        return out;
+    }
 
 private:
     QTemporaryDir m_dir;
@@ -1030,6 +1042,58 @@ TEST(SocketIntegration, CredentialsListManagePinVerbThenRequiresReList)
     ASSERT_NE(manageAgain, nullptr);
     ASSERT_TRUE(waitFor([&]() { return manageAgain->isFinished(); }));
     EXPECT_EQ(manageAgain->status(), OperationStatus::Ok) << "the re-list must restore mutability";
+}
+
+// The wire's one structural ManagePin option, activateKey, actually reaches
+// the SOCKET wire -- and only for ActivatePin. FakeSocketAgent decodes the
+// REAL wire (Wire::parseRequest over CBOR), so this proves the extraction at
+// SocketTransport.cpp (request.options.constFind("activateKey")) round-trips
+// through actual wire encoding -- something neither SeamMappingTest.cpp (one
+// layer up: proves only what the CLIENT emits, before any transport touches
+// it) nor AgentCardTest.cpp/the D-Bus FakeAgent (a different transport
+// entirely) can prove.
+TEST(SocketIntegration, ManagePinActivatePinForwardsActivateKeyOverTheSocketWire)
+{
+    FakeSocketAgent::Config cfg;
+    cfg.capabilities = Cap::PinManagement;
+    FakeSocketCredRecord record;
+    record.id = QStringLiteral("sign:0x87");
+    record.kind = QStringLiteral("sign");
+    cfg.credRecords = {record};
+    SocketHarness h(cfg);
+
+    auto client = makeClient(h);
+    AgentCard* card = client->card(QLatin1String(kCardId));
+    ASSERT_NE(card, nullptr);
+
+    // 1) list, then activate with activateKey=true.
+    AgentOperation* listOp = card->listCredentials();
+    ASSERT_NE(listOp, nullptr);
+    ASSERT_TRUE(waitFor([&]() { return listOp->isFinished(); }));
+
+    AgentOperation* activateOp =
+        card->managePin(QStringLiteral("sign:0x87"), PinVerb::ActivatePin, ManagePinOptions{true});
+    ASSERT_NE(activateOp, nullptr);
+    ASSERT_TRUE(waitFor([&]() { return activateOp->isFinished(); }));
+    EXPECT_EQ(activateOp->status(), OperationStatus::Ok);
+    const std::optional<bool> afterActivate = h.lastManagePinActivateKey();
+    ASSERT_TRUE(afterActivate.has_value()) << "activateKey must reach the socket wire for ActivatePin";
+    EXPECT_TRUE(*afterActivate);
+
+    // 2) re-list (the mutation above dropped the listing cache), then Change
+    // on the SAME id: activateKey must NOT be present on the wire at all for
+    // this verb -- absence, not a present false, is what a Change mutation
+    // carries, even though the client's ManagePinOptions default is false.
+    AgentOperation* relistOp = card->listCredentials();
+    ASSERT_NE(relistOp, nullptr);
+    ASSERT_TRUE(waitFor([&]() { return relistOp->isFinished(); }));
+
+    AgentOperation* changeOp = card->managePin(QStringLiteral("sign:0x87"), PinVerb::Change);
+    ASSERT_NE(changeOp, nullptr);
+    ASSERT_TRUE(waitFor([&]() { return changeOp->isFinished(); }));
+    EXPECT_EQ(changeOp->status(), OperationStatus::Ok);
+    EXPECT_FALSE(h.lastManagePinActivateKey().has_value())
+        << "Change must not carry activateKey on the socket wire at all";
 }
 
 // ---- HelloAck feature-token gate --------------------------------------------------------

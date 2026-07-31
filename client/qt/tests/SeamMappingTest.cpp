@@ -372,16 +372,31 @@ TEST(SeamMapping, PinVerbsMapToWireTokens)
 
     (void)card->managePin(QStringLiteral("user:0x86"), PinVerb::Change);
     (void)card->managePin(QStringLiteral("user:0x86"), PinVerb::Unblock);
-    (void)card->managePin(QStringLiteral("sign:0x87"), PinVerb::ActivatePin);
+    (void)card->managePin(QStringLiteral("sign:0x87"), PinVerb::ActivatePin, ManagePinOptions{true});
+    (void)card->managePin(QStringLiteral("sign:0x88"), PinVerb::ActivatePin, ManagePinOptions{false});
 
-    ASSERT_EQ(h.fake->starts.size(), 3u);
+    ASSERT_EQ(h.fake->starts.size(), 4u);
     EXPECT_EQ(h.fake->starts[0].method, OperationRequest::Method::ManagePin);
     EXPECT_EQ(h.fake->starts[0].pinId, QStringLiteral("user:0x86"));
     EXPECT_EQ(h.fake->starts[0].verb, QStringLiteral("change"));
-    EXPECT_TRUE(h.fake->starts[0].options.isEmpty()); // no secrets, no options on this wire
+    EXPECT_TRUE(h.fake->starts[0].options.isEmpty()); // no secrets; activateKey is ActivatePin-only (below)
     EXPECT_EQ(h.fake->starts[1].verb, QStringLiteral("unblock"));
+    EXPECT_TRUE(h.fake->starts[1].options.isEmpty()); // same as Change: activateKey never applies to Unblock
     EXPECT_EQ(h.fake->starts[2].verb, QStringLiteral("activate_pin"));
     EXPECT_EQ(h.fake->starts[2].pinId, QStringLiteral("sign:0x87"));
+    // The wire's one structural ManagePin option actually reaches the request
+    // — and only for ActivatePin (see ManagePinOptions's doc comment). This
+    // pair (explicit true, then explicit false, on two separate ActivatePin
+    // calls) is two-sided ON PURPOSE: a build that stopped forwarding the
+    // option entirely fails at the true case; a build that hardcoded the
+    // forwarded value to true regardless of the caller's argument fails at
+    // the false case below (a single always-true call cannot catch that).
+    ASSERT_TRUE(h.fake->starts[2].options.contains(QStringLiteral("activateKey")));
+    EXPECT_TRUE(h.fake->starts[2].options.value(QStringLiteral("activateKey")).toBool());
+    EXPECT_EQ(h.fake->starts[3].verb, QStringLiteral("activate_pin"));
+    EXPECT_EQ(h.fake->starts[3].pinId, QStringLiteral("sign:0x88"));
+    ASSERT_TRUE(h.fake->starts[3].options.contains(QStringLiteral("activateKey")));
+    EXPECT_FALSE(h.fake->starts[3].options.value(QStringLiteral("activateKey")).toBool());
 }
 
 TEST(SeamMapping, ReadMethodsMapToTheirRequests)

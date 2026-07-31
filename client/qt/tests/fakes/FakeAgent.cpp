@@ -1127,6 +1127,12 @@ bool CredentialsAdaptor::lacksPinManagement() const
 
 QDBusObjectPath CredentialsAdaptor::ManagePin(const QString& pinId, const QString& verb, const QVariantMap& options)
 {
+    // Captured unconditionally, before any refusal branch below, so this
+    // reflects exactly what crossed the D-Bus wire for THIS request --
+    // including a request this method goes on to refuse -- mirroring
+    // FakeSocketAgent's identical capture-first placement for the same
+    // request on the socket transport.
+    m_agent->captureManagePin(pinId, verb, options);
     if (lacksPinManagement()) {
         return sendEntryError(QStringLiteral("org.librescrs.Agent.Error.UnsupportedOnThisCard"));
     }
@@ -1451,6 +1457,25 @@ QString FakeAgent::lastCertDerReader() const
 QString FakeAgent::lastCertDerCertId() const
 {
     return m_lastCertDerCertId;
+}
+
+void FakeAgent::captureManagePin(const QString& pinId, const QString& verb, const QVariantMap& options)
+{
+    m_lastManagePinId = pinId;
+    m_lastManagePinVerb = verb;
+    m_lastManagePinOptions = options;
+}
+QString FakeAgent::lastManagePinId() const
+{
+    return m_lastManagePinId;
+}
+QString FakeAgent::lastManagePinVerb() const
+{
+    return m_lastManagePinVerb;
+}
+QVariantMap FakeAgent::lastManagePinOptions() const
+{
+    return m_lastManagePinOptions;
 }
 
 QDBusObjectPath FakeAgent::mintOperation(FakeOperation::Kind kind, bool withCredRecords, QStringList batchDisplayNames)

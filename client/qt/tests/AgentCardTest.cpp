@@ -985,13 +985,93 @@ TEST(AgentCard, ManagePinEntryErrorSurfacesMappedCallError)
     EXPECT_EQ(op->callError(), CallError::InvalidArguments);
 }
 
-// CAPABILITY GAP (deliberately not adapted): the KDE original's
+// CAPABILITY GAP (deliberately not fully reproduced): the KDE original's
 // "ManagePinEnforcesVerbAndOptionsVocabulary" drove the fake with a raw wire
 // verb STRING and an ad hoc options map to prove the agent's request-side
 // vocabulary gate (verb in {change,unblock,activate_pin}; options limited to
 // {activateKey: bool}, legal only with activate_pin) catches a client
-// regression. The scrubbed `AgentCard::managePin(pinId, PinVerb)` takes a
-// CLOSED enum and no options parameter at all — there is no way to construct
-// an invalid verb or an option through this public API anymore, so the
-// regression the test guarded against is now prevented at compile time
-// instead of runtime. Intentionally not reproduced here.
+// regression. The scrubbed `AgentCard::managePin(pinId, PinVerb, ManagePinOptions)`
+// takes a CLOSED enum for the verb and a single typed bool for the wire's ONLY
+// structural option — there is still no way to construct an invalid verb, an
+// unrecognized option key, or a mismatched option type through this public
+// API, so that half of the original regression stays prevented at compile
+// time rather than runtime. What IS newly reachable through this API — that
+// `activateKey` is actually forwarded, and only alongside `ActivatePin` — is
+// exercised below instead.
+TEST(AgentCard, ManagePinActivatePinAcceptsActivateKeyOption)
+{
+    FakeAgent::Config cfg;
+    cfg.capabilities = Cap::PinManagement;
+    cfg.credRecords = {QVariantMap{{QStringLiteral("id"), QStringLiteral("sign:0x87")},
+                                   {QStringLiteral("kind"), QStringLiteral("sign")},
+                                   {QStringLiteral("state"), QStringLiteral("operational")}}};
+    Harness h(cfg);
+
+    auto client = makeClient(h);
+    AgentCard* card = client->card(h.cardPath());
+    ASSERT_NE(card, nullptr);
+    ASSERT_NE(card->listCredentials(), nullptr);
+
+    // The fake enforces the SAME closed request-side vocabulary the real
+    // agent does (CredentialsAdaptor::ManagePin): activateKey is a known,
+    // well-typed key, legal here because the verb is ActivatePin. A client
+    // that failed to forward it, or forwarded it under the wrong key/type,
+    // would still pass this assertion by accident (an empty options map is
+    // ALSO legal here) — the negative test below is what actually pins the
+    // forwarding behavior down.
+    AgentOperation* activated =
+        card->managePin(QStringLiteral("sign:0x87"), PinVerb::ActivatePin, ManagePinOptions{true});
+    ASSERT_NE(activated, nullptr);
+    EXPECT_FALSE(activated->isFinished()) << "activateKey=true is a legal option paired with ActivatePin";
+}
+
+// The defaulted third argument keeps every pre-existing 2-argument call site
+// (this file and every sibling suite) source-compatible, and the DEFAULT
+// value itself (activateKey=false) must still be a legal ActivatePin call —
+// not just the explicit-true form above.
+TEST(AgentCard, ManagePinActivatePinDefaultOptionIsStillLegal)
+{
+    FakeAgent::Config cfg;
+    cfg.capabilities = Cap::PinManagement;
+    cfg.credRecords = {QVariantMap{{QStringLiteral("id"), QStringLiteral("sign:0x87")},
+                                   {QStringLiteral("kind"), QStringLiteral("sign")},
+                                   {QStringLiteral("state"), QStringLiteral("operational")}}};
+    Harness h(cfg);
+
+    auto client = makeClient(h);
+    AgentCard* card = client->card(h.cardPath());
+    ASSERT_NE(card, nullptr);
+    ASSERT_NE(card->listCredentials(), nullptr);
+
+    AgentOperation* activated = card->managePin(QStringLiteral("sign:0x87"), PinVerb::ActivatePin);
+    ASSERT_NE(activated, nullptr);
+    EXPECT_FALSE(activated->isFinished()) << "the default ManagePinOptions must still be a legal ActivatePin call";
+}
+
+// Regression guard for the one-sentence implementation contract
+// `ManagePinOptions`'s doc comment makes explicit: activateKey is sent ONLY
+// alongside ActivatePin. `activateKey` paired with `Change` is a combination
+// the fake's request-side gate refuses outright (InvalidRequest, mapped to
+// CallError::InvalidArguments) — the SAME gate the positive test above
+// exercises. If a future change started forwarding this option
+// unconditionally, THIS call would start failing with exactly that refusal
+// instead of minting a live operation.
+TEST(AgentCard, ManagePinIgnoresActivateKeyOptionOutsideActivatePin)
+{
+    FakeAgent::Config cfg;
+    cfg.capabilities = Cap::PinManagement;
+    cfg.credRecords = {QVariantMap{{QStringLiteral("id"), QStringLiteral("user:0x86")},
+                                   {QStringLiteral("kind"), QStringLiteral("user")},
+                                   {QStringLiteral("state"), QStringLiteral("operational")}}};
+    Harness h(cfg);
+
+    auto client = makeClient(h);
+    AgentCard* card = client->card(h.cardPath());
+    ASSERT_NE(card, nullptr);
+    ASSERT_NE(card->listCredentials(), nullptr);
+
+    AgentOperation* op = card->managePin(QStringLiteral("user:0x86"), PinVerb::Change, ManagePinOptions{true});
+    ASSERT_NE(op, nullptr);
+    EXPECT_FALSE(op->isFinished())
+        << "activateKey is not applicable to Change; it must not be sent, so this mutation still starts normally";
+}

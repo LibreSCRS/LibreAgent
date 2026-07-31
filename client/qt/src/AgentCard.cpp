@@ -360,12 +360,25 @@ AgentOperation* AgentCard::listCredentials()
     return startOperation(std::move(request));
 }
 
-AgentOperation* AgentCard::managePin(const QString& pinId, PinVerb verb)
+AgentOperation* AgentCard::managePin(const QString& pinId, PinVerb verb, const ManagePinOptions& options)
 {
     OperationRequest request;
     request.method = OperationRequest::Method::ManagePin;
     request.pinId = pinId;
     request.verb = tokenString(detail::toToken(verb));
+    // activateKey is legal on the wire only paired with ActivatePin (see
+    // ManagePinOptions's doc comment) -- every other verb sends no options at
+    // all, regardless of what the caller passed in. A caller that set
+    // activateKey=true for a verb it does not apply to gets no options sent
+    // (the mutation still proceeds) rather than a local CallError -- but it is
+    // a caller-argument-shape mistake, the same class startOperation() refuses
+    // loudly for signBatch's document count above, so it is at least traced.
+    if (verb == PinVerb::ActivatePin) {
+        request.options.insert(QStringLiteral("activateKey"), options.activateKey);
+    } else if (options.activateKey) {
+        qCWarning(lcAgentCard) << "managePin: activateKey is only meaningful with PinVerb::ActivatePin for" << d->id
+                               << "-- ignored, not sent, for this verb";
+    }
     return startOperation(std::move(request));
 }
 

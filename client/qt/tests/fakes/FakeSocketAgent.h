@@ -222,6 +222,23 @@ public:
     [[nodiscard]] QList<QByteArray> lastSignBatchDocumentBytes() const;
     [[nodiscard]] QString lastCertDerReader() const;
     [[nodiscard]] QString lastCertDerCertId() const;
+    /// The `activateKey` field of the last ManagePin request this fake
+    /// decoded off the wire (`Wire::ManagePin::activateKey`, itself
+    /// `std::optional<bool>` — CDDL's `? activateKey: bool`): `nullopt` when
+    /// the request carried no such field at all, engaged otherwise. Proves
+    /// what actually crossed the SOCKET wire, as distinct from what the
+    /// client emitted (the seam fake's job) or what a D-Bus a{sv} carried
+    /// (the D-Bus FakeAgent's job) — the socket transport extracts this field
+    /// from the client's option map before building the wire message, so
+    /// this is the one place a regression in THAT extraction is observable.
+    [[nodiscard]] std::optional<bool> lastManagePinActivateKey() const;
+    /// The SAME capture as `lastManagePinActivateKey()`, presented as a
+    /// `QVariantMap` shaped exactly like `FakeAgent::lastManagePinOptions()`
+    /// (D-Bus's natural request shape: the whole a{sv} options argument) —
+    /// `{"activateKey": <value>}` when engaged, empty otherwise. Exists so a
+    /// transport-parity scenario can assert the SAME request-content check
+    /// against both fakes without branching on which transport it is driving.
+    [[nodiscard]] QVariantMap lastManagePinOptions() const;
 
 private:
     struct Connection
@@ -297,6 +314,7 @@ private:
     QList<QByteArray> m_lastSignBatchDocumentBytes;
     QString m_lastCertDerReader;
     QString m_lastCertDerCertId;
+    std::optional<bool> m_lastManagePinActivateKey;
 };
 
 } // namespace LibreSCRS::AgentClient::Fakes

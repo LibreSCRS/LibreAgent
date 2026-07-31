@@ -283,6 +283,16 @@ public:
         return out;
     }
 
+    /// @brief Read the verbatim Credentials1.ManagePin() in-args the fake
+    ///        captured (marshaled off the server thread, where the FakeAgent
+    ///        lives) — the D-Bus analogue of `SocketHarness::lastManagePinOptions()`.
+    [[nodiscard]] QVariantMap lastManagePinOptions()
+    {
+        QVariantMap out;
+        runOnThread(m_context, [this, &out]() { out = m_agent->lastManagePinOptions(); });
+        return out;
+    }
+
     /// @brief Read the verbatim SignBatch() in-args the fake captured
     ///        (marshaled off the server thread, where the FakeAgent lives).
     [[nodiscard]] QString lastSignBatchCertId()

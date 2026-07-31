@@ -65,6 +65,36 @@ enum class PinVerb : std::uint8_t {
     ActivatePin, ///< Move a transport PIN to operational (first-use activation).
 };
 
+/// @brief `Credentials1.ManagePin` mutation option for `AgentCard::managePin()`.
+///
+/// The wire's option set here is CLOSED and structural (wire/librescrs-agent.cddl's
+/// `manage-pin`: `? activateKey: bool`, no open options container) — unlike
+/// `SignOptions`, there is no `extra` pass-through field. What "closed" means
+/// differs by transport, but a general option bag would be wrong on BOTH: on
+/// D-Bus any key beyond `activateKey` is REFUSED outright by the agent
+/// (`Error.InvalidRequest`); on the socket transport an extra key never even
+/// gets that far — the transport extracts only `activateKey` from the
+/// request's option map, so anything else silently never reaches the wire at
+/// all. Either way, a general map would let a caller construct a request that
+/// cannot do anything useful. `activateKey` itself is legal only paired with
+/// `PinVerb::ActivatePin`; `AgentCard::managePin()` sends it ONLY for that
+/// verb — every other verb sends no options at all, so this field is silently
+/// not transmitted when paired with `Change`/`Unblock`.
+///
+/// Transport note: the D-Bus transport always appends the option-map argument
+/// (empty or not) — that is a fixed method arity, not a signal of whether
+/// this key was set. The socket transport extracts and forwards ONLY this one
+/// key from the request's option map; neither transport forwards an arbitrary
+/// map verbatim.
+struct ManagePinOptions
+{
+    /// Also bring the pending on-card signing key up in the SAME mutation, so
+    /// a caller does not have to prompt for the just-spent transport PIN a
+    /// second time in a separate `activateSigningKey()` call. Meaningful only
+    /// alongside `PinVerb::ActivatePin`.
+    bool activateKey = false;
+};
+
 /// @brief `Card1.Sign` options for `AgentCard::sign()`.
 ///
 /// Defaults match the agent's own invisible-signature, baseline-level,
