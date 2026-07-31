@@ -292,6 +292,16 @@ private:
     // so it supports stop_token wait) wakes the timer thread early when
     // finish() runs to completion.
     std::atomic<bool> m_watchdogArmed{false};
+    // Latched by finishWatchdogTimeout() BEFORE it trips cancel, and read by
+    // finish() to force the terminal outcome. Without it the timeout is a race
+    // it can lose: tripping cancel wakes a cooperating doWork, which reaches
+    // finish() with its own Cancelled/None first and takes the once_flag, so a
+    // hung operation the watchdog killed reports as an ordinary cancellation
+    // with no error code — indistinguishable from the user cancelling it, which
+    // is exactly what this error code exists to say. Once the watchdog has
+    // decided to time out, that decision is the outcome regardless of which
+    // thread reaches finish() first.
+    std::atomic<bool> m_watchdogFired{false};
     // Test-only: counts phase transitions that passed the arm-phase filter, before
     // the one-shot CAS (see watchdogArmAttempts()). Not on any wire/ABI surface.
     std::atomic<unsigned> m_watchdogArmAttempts{0};

@@ -68,9 +68,11 @@ protected:
         setPhase(static_cast<std::uint32_t>(OperationPhase::Reading));
         for (int i = 0; i < 500; ++i) {
             if (isCancelled() || token().isCancelled()) {
-                // The watchdog's finish() has already run; the once_flag
-                // gate makes this a no-op, so the WatchdogTimeout
-                // errorCode survives.
+                // Seeing cancel does NOT mean the watchdog's finish() has run:
+                // cancel is tripped first and is what wakes this loop, so this
+                // call can reach the once_flag first. The timeout survives
+                // because the watchdog latches its verdict before cancelling,
+                // not because of any ordering between the two finishes.
                 finish(OperationStatus::Cancelled, ErrorCode::None, "op.cancelled", "cancelled");
                 return;
             }
@@ -80,7 +82,56 @@ protected:
     }
 };
 
+// Op that reacts to the cancel the watchdog trips as fast as it can and then
+// finishes with its OWN Cancelled outcome, deliberately racing the watchdog to
+// the once_flag and trying to win. Where SlowReadingOp polls every 10 ms and so
+// usually loses that race, this one spins, so it usually wins it -- which is the
+// interleaving that used to publish a watchdog timeout as a plain cancellation.
+class RacingCancelOp final : public OperationBase
+{
+public:
+    RacingCancelOp(std::unique_ptr<OperationChannel> a, std::shared_ptr<OperationState> s)
+        : OperationBase(std::move(a), std::move(s))
+    {}
+
+protected:
+    void doWork() override
+    {
+        setPhase(static_cast<std::uint32_t>(OperationPhase::Reading));
+        const auto deadline = std::chrono::steady_clock::now() + 5s;
+        while (!isCancelled() && !token().isCancelled() && std::chrono::steady_clock::now() < deadline) {
+            std::this_thread::yield();
+        }
+        finish(OperationStatus::Cancelled, ErrorCode::None, "op.cancelled", "cancelled");
+    }
+};
+
 } // namespace
+
+// The regression this file exists to hold: a hung operation the watchdog killed
+// must reach the caller as a TIMEOUT, not as an ordinary cancellation. Reported
+// as Cancelled/None it is indistinguishable from the user cancelling, and the
+// error code that exists to tell those apart is gone.
+TEST(Watchdog, TimeoutOutranksACancelledFinishThatWinsTheRace)
+{
+    CapturedFinish slot;
+    auto state = std::make_shared<OperationState>();
+    state->watchdogTimeoutSec.store(1u, std::memory_order_release);
+
+    RacingCancelOp op(std::make_unique<CapturingChannel>(slot), state);
+    std::jthread runner([&op] { op.runOnWorker(); });
+
+    const auto deadline = std::chrono::steady_clock::now() + 3s;
+    while (slot.count.load(std::memory_order_acquire) == 0 && std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::sleep_for(20ms);
+    }
+
+    EXPECT_EQ(slot.count.load(std::memory_order_acquire), 1) << "exactly one Finished emission expected";
+    EXPECT_EQ(slot.status.load(std::memory_order_acquire), static_cast<std::uint32_t>(OperationStatus::Error))
+        << "a watchdog timeout must not be downgraded to Cancelled by the doWork it woke";
+    EXPECT_EQ(slot.errorCode.load(std::memory_order_acquire), static_cast<std::uint32_t>(ErrorCode::WatchdogTimeout))
+        << "the timeout's error code must survive whichever finish() won the once_flag";
+}
 
 TEST(Watchdog, ReadingPhaseFiresTimeoutAndCancelsOp)
 {

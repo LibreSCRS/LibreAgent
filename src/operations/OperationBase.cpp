@@ -259,6 +259,18 @@ void OperationBase::setIndeterminate(bool indeterminate) noexcept
 void OperationBase::finish(OperationStatus status, ErrorCode code, std::string msgKey, std::string msgFallback) noexcept
 {
     std::call_once(m_finishOnce, [&] {
+        // The watchdog's verdict outranks whatever the caller brought. It is
+        // latched before cancel is tripped, so by the time a doWork woken by
+        // that cancel gets here the latch is already visible, and the timeout
+        // is reported as a timeout no matter which thread won the race to this
+        // once_flag. Applied inside the lambda so it governs exactly the one
+        // call that publishes the terminal state.
+        if (m_watchdogFired.load(std::memory_order_acquire)) {
+            status = OperationStatus::Error;
+            code = ErrorCode::WatchdogTimeout;
+            msgKey = "op.watchdog_timeout";
+            msgFallback = "Operation exceeded the watchdog timeout";
+        }
         try {
             if (status == OperationStatus::Ok && m_state) {
                 m_state->progress.store(1.0, std::memory_order_release);
@@ -303,9 +315,14 @@ void OperationBase::finish(OperationStatus status, ErrorCode code, std::string m
 
 void OperationBase::finishWatchdogTimeout() noexcept
 {
-    // Trip cancel first so any in-progress doWork that polls the token
-    // sees the abort signal before the finish() it would issue runs into
-    // the once_flag guard.
+    // Latch the verdict BEFORE tripping cancel. Cancelling is what wakes a
+    // cooperating doWork, and that doWork then races this function to finish():
+    // whoever arrives first takes the once_flag, so without the latch the
+    // timeout could be published as the woken doWork's Cancelled/None. The
+    // latch makes the outcome independent of who wins that race — see finish().
+    m_watchdogFired.store(true, std::memory_order_release);
+    // Trip cancel so any in-progress doWork that polls the token sees the
+    // abort signal and stops.
     requestCancel();
     finish(OperationStatus::Error, ErrorCode::WatchdogTimeout, "op.watchdog_timeout",
            "Operation exceeded the watchdog timeout");
