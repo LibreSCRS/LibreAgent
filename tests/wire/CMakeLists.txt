@@ -35,10 +35,17 @@ add_test(NAME WireHeadersTest COMMAND WireHeadersTest)
 #    Core-less (LIBREAGENT_BUILD_CORE=OFF, LIBREAGENT_BUILD_WIRE=ON) build too.
 add_executable(FeatureTokensGuardTest FeatureTokensGuardTest.cpp)
 target_include_directories(FeatureTokensGuardTest PRIVATE ${CMAKE_SOURCE_DIR}/include)
-target_link_libraries(FeatureTokensGuardTest PRIVATE GTest::gtest GTest::gtest_main)
+target_link_libraries(FeatureTokensGuardTest PRIVATE LibreAgentCddlVocabulary GTest::gtest GTest::gtest_main)
 target_compile_definitions(FeatureTokensGuardTest PRIVATE
     LIBRESCRS_AGENT_WIRE_CDDL="${CMAKE_SOURCE_DIR}/wire/librescrs-agent.cddl")
 add_test(NAME FeatureTokensGuardTest COMMAND FeatureTokensGuardTest)
+
+# Unit tests for the contract-grammar text helpers themselves. Link-light on
+# purpose: the helpers must stay std-only so the generator can use them.
+add_executable(CddlVocabularyTest CddlVocabularyTest.cpp)
+target_link_libraries(CddlVocabularyTest PRIVATE
+    LibreAgentCddlVocabulary GTest::gtest GTest::gtest_main)
+add_test(NAME CddlVocabularyTest COMMAND CddlVocabularyTest)
 
 # 8. PropertyChangedVocabGuardTest: ties the CDDL comment documenting the
 #    `property-changed` event's served `iface` vocabulary back to the set
@@ -46,7 +53,7 @@ add_test(NAME FeatureTokensGuardTest COMMAND FeatureTokensGuardTest)
 #    this event). CDDL-text-only like FeatureTokensGuardTest above -- no
 #    LibreAgent library link needed.
 add_executable(PropertyChangedVocabGuardTest PropertyChangedVocabGuardTest.cpp)
-target_link_libraries(PropertyChangedVocabGuardTest PRIVATE GTest::gtest GTest::gtest_main)
+target_link_libraries(PropertyChangedVocabGuardTest PRIVATE LibreAgentCddlVocabulary GTest::gtest GTest::gtest_main)
 target_compile_definitions(PropertyChangedVocabGuardTest PRIVATE
     LIBRESCRS_AGENT_WIRE_CDDL="${CMAKE_SOURCE_DIR}/wire/librescrs-agent.cddl")
 add_test(NAME PropertyChangedVocabGuardTest COMMAND PropertyChangedVocabGuardTest)
@@ -120,6 +127,7 @@ if(LIBREAGENT_BUILD_CORE AND LIBREAGENT_BUILD_WIRE)
         PRIVATE
             LibreAgent::Core
             LibreAgent::Wire
+            LibreAgentCddlVocabulary
             GTest::gtest
             GTest::gtest_main)
     target_compile_options(WireContractGuardTest PRIVATE -Werror=switch)

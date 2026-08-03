@@ -50,15 +50,14 @@
 
 #include <gtest/gtest.h>
 
+#include <CddlVocabulary.h>
+
 #include <algorithm>
 #include <array>
 #include <cstdint>
-#include <fstream>
-#include <regex>
-#include <sstream>
+#include <set>
 #include <string>
 #include <string_view>
-#include <utility>
 #include <vector>
 
 namespace {
@@ -68,6 +67,7 @@ using LibreSCRS::Agent::ErrorCode;
 using LibreSCRS::Agent::Operations::OperationPhase;
 using LibreSCRS::Agent::Operations::OperationStatus;
 using LibreSCRS::Agent::Wire::decodeSyncError;
+using LibreSCRS::Agent::Wire::QuiesceReason;
 using LibreSCRS::Agent::Wire::SyncError;
 using LibreSCRS::Agent::Wire::syncErrorName;
 using LibreSCRS::Auth::PreReadAuthMethod;
@@ -76,6 +76,14 @@ using LibreSCRS::Plugin::PinKind;
 using LibreSCRS::Plugin::PinRecovery;
 using LibreSCRS::Plugin::PinState;
 using LibreSCRS::Plugin::UnblockStyle;
+
+using LibreSCRS::Wire::Tools::cddlMapKeys;
+using LibreSCRS::Wire::Tools::cddlQuotedTokens;
+using LibreSCRS::Wire::Tools::cddlRuleRhs;
+using LibreSCRS::Wire::Tools::discoverClosedGroups;
+using LibreSCRS::Wire::Tools::parseCddlErrorCode;
+using LibreSCRS::Wire::Tools::parseCddlNumericGroup;
+using LibreSCRS::Wire::Tools::slurp;
 
 constexpr std::uint32_t u(CardCapabilities c)
 {
@@ -131,6 +139,197 @@ static_assert(u(OperationPhase::Done) == 7u,
 static_assert(u(OperationStatus::Ok) == 0u, "wire contract: op-status Ok drifted from 0");
 static_assert(u(OperationStatus::Cancelled) == 1u, "wire contract: op-status Cancelled drifted from 1");
 static_assert(u(OperationStatus::Error) == 2u, "wire contract: op-status Error drifted from 2");
+
+// The static_asserts above pin the raw C++ VALUES (catches a renumber) but
+// never read the CDDL, so they cannot catch the grammar drifting away from
+// the enum on its own. The switches below are the CDDL-reading half: each
+// mirrors wireNameFor(ErrorCode)'s shape (no default case, so -Werror=switch
+// turns an appended enumerator into a compile error here first) and backs a
+// dedicated cross-check TEST further down that parses the matching CDDL
+// group with parseCddlNumericGroup() and compares it entry by entry.
+
+// --- LibreAgent OperationPhase <-> CDDL `op-phase` ---------------------------
+constexpr const char* opPhaseWireName(OperationPhase p) noexcept
+{
+    switch (p) {
+    case OperationPhase::Created:
+        return "Created";
+    case OperationPhase::Connecting:
+        return "Connecting";
+    case OperationPhase::AwaitingConsent:
+        return "AwaitingConsent";
+    case OperationPhase::Authenticating:
+        return "Authenticating";
+    case OperationPhase::Reading:
+        return "Reading";
+    case OperationPhase::Signing:
+        return "Signing";
+    case OperationPhase::Timestamping:
+        return "Timestamping";
+    case OperationPhase::Done:
+        return "Done";
+    }
+    return nullptr; // not a phase value (used to probe past the end for the count)
+}
+constexpr std::uint32_t opPhaseCount() noexcept
+{
+    std::uint32_t count = 0;
+    while (opPhaseWireName(static_cast<OperationPhase>(count)) != nullptr) {
+        ++count;
+    }
+    return count;
+}
+static_assert(opPhaseCount() == 8u, "wire contract: op-phase has 8 values; update the CDDL + this switch together");
+
+// --- LibreAgent OperationStatus <-> CDDL `op-status` -------------------------
+constexpr const char* opStatusWireName(OperationStatus s) noexcept
+{
+    switch (s) {
+    case OperationStatus::Ok:
+        return "Ok";
+    case OperationStatus::Cancelled:
+        return "Cancelled";
+    case OperationStatus::Error:
+        return "Error";
+    }
+    return nullptr;
+}
+constexpr std::uint32_t opStatusCount() noexcept
+{
+    std::uint32_t count = 0;
+    while (opStatusWireName(static_cast<OperationStatus>(count)) != nullptr) {
+        ++count;
+    }
+    return count;
+}
+static_assert(opStatusCount() == 3u, "wire contract: op-status has 3 values; update the CDDL + this switch together");
+
+// --- LM PreReadAuthMethod <-> CDDL `pre-read-auth` ---------------------------
+constexpr const char* preReadAuthWireName(PreReadAuthMethod m) noexcept
+{
+    switch (m) {
+    case PreReadAuthMethod::None:
+        return "None";
+    case PreReadAuthMethod::Mrz:
+        return "Mrz";
+    case PreReadAuthMethod::Can:
+        return "Can";
+    }
+    return nullptr;
+}
+constexpr std::uint32_t preReadAuthCount() noexcept
+{
+    std::uint32_t count = 0;
+    while (preReadAuthWireName(static_cast<PreReadAuthMethod>(count)) != nullptr) {
+        ++count;
+    }
+    return count;
+}
+static_assert(preReadAuthCount() == 3u,
+              "wire contract: pre-read-auth has 3 values; update the CDDL + this switch together");
+
+// --- LibreAgent Wire::QuiesceReason <-> CDDL `quiesce-reason` ----------------
+// Socket-only lifecycle vocabulary (declared in wire/Messages.h, no core enum
+// to anchor to besides itself), mirrored here the same way as the four above.
+constexpr const char* quiesceReasonWireName(QuiesceReason r) noexcept
+{
+    switch (r) {
+    case QuiesceReason::SystemSleep:
+        return "SystemSleep";
+    case QuiesceReason::ScreenLocked:
+        return "ScreenLocked";
+    case QuiesceReason::SessionInactive:
+        return "SessionInactive";
+    case QuiesceReason::Shutdown:
+        return "Shutdown";
+    }
+    return nullptr;
+}
+constexpr std::uint32_t quiesceReasonCount() noexcept
+{
+    std::uint32_t count = 0;
+    while (quiesceReasonWireName(static_cast<QuiesceReason>(count)) != nullptr) {
+        ++count;
+    }
+    return count;
+}
+static_assert(quiesceReasonCount() == 4u,
+              "wire contract: quiesce-reason has 4 values; update the CDDL + this switch together");
+
+// --- LM CardCapabilities (masks) <-> CDDL `capability-bit` (bit indices) -----
+// CardCapabilities is a BITMASK enum (None=0, PKI=1, IdentityData=2,
+// EmrtdCrypto=4, PinManagement=8) — a plugin ORs these together into one
+// `caps` field. The CDDL `capability-bit` group instead names the BIT INDEX
+// each capability occupies inside the `capabilities = uint .bits
+// capability-bit` socket (Pki: 0, IdentityData: 1, ...): CDDL `.bits` sockets
+// are indexed by bit position, not by the mask value itself. The two are
+// related by index = log2(mask); this switch makes that conversion explicit,
+// one enumerator at a time, rather than comparing a mask to an index as if
+// they were the same number. (CardCapabilities::None occupies no bit and has
+// no CDDL entry; capabilityBitCount() below therefore counts from bit 0 and
+// never visits it.)
+constexpr std::uint32_t capabilityBitIndex(CardCapabilities c) noexcept
+{
+    switch (c) {
+    case CardCapabilities::None:
+        return 0xffffffffu; // sentinel: None is not a bit, never looked up
+    case CardCapabilities::PKI:
+        return 0u; // mask 1u << 0
+    case CardCapabilities::IdentityData:
+        return 1u; // mask 1u << 1
+    case CardCapabilities::EmrtdCrypto:
+        return 2u; // mask 1u << 2
+    case CardCapabilities::PinManagement:
+        return 3u; // mask 1u << 3
+    }
+    return 0xffffffffu;
+}
+// The CDDL wire name of each bit. Note the grammar spells the PKI bit "Pki"
+// (CamelCase, like its neighbours), not the C++ enumerator's "PKI" acronym
+// spelling — the wire name is its own vocabulary, not required to letter-
+// match the C++ identifier it mirrors.
+constexpr const char* capabilityWireName(CardCapabilities c) noexcept
+{
+    switch (c) {
+    case CardCapabilities::None:
+        return nullptr; // no CDDL entry
+    case CardCapabilities::PKI:
+        return "Pki";
+    case CardCapabilities::IdentityData:
+        return "IdentityData";
+    case CardCapabilities::EmrtdCrypto:
+        return "EmrtdCrypto";
+    case CardCapabilities::PinManagement:
+        return "PinManagement";
+    }
+    return nullptr;
+}
+// How many bits the enum actually declares, DERIVED from the switch above by
+// walking bit positions — the bitmask counterpart of opPhaseCount() and
+// friends. CardCapabilities is a bitmask rather than a contiguous 0..N
+// enumeration, so the walk probes `1u << i` instead of `i`.
+//
+// Deriving this matters; a hand-written list of the four bits would leave
+// capability-bit as the ONE vocabulary here with no cardinality anchor. Add
+// `CardCapabilities::Biometric = 16` and -Werror=switch forces it into both
+// switches above — but a hand-written list would still say four, the CDDL
+// would still say four, and this guard would compare four against four and
+// pass, while the agent reports a capability the contract never declares.
+// Derived, the count becomes five and the static_assert below stops the build
+// until the CDDL is updated too — the same way an appended op-phase is caught.
+//
+// The `i < 32` bound keeps the walk total: without it, a (hypothetical) enum
+// occupying every bit would evaluate `1u << 32` and make this ill-formed.
+constexpr std::uint32_t capabilityBitCount() noexcept
+{
+    std::uint32_t count = 0;
+    while (count < 32u && capabilityWireName(static_cast<CardCapabilities>(1u << count)) != nullptr) {
+        ++count;
+    }
+    return count;
+}
+static_assert(capabilityBitCount() == 4u,
+              "wire contract: capability-bit has 4 bits; update the CDDL + these switches together");
 
 // --- agent ErrorCode <-> CDDL `error-code` (THE anchor) ----------------------
 // Canonical wire name per enumerator. NO default case: with -Werror=switch on
@@ -460,106 +659,6 @@ constexpr std::size_t kMessageTagCount = 35; // 24 requests + 11 events
 static_assert(kMessageTags.size() == kMessageTagCount,
               "wire contract: socket message vocabulary changed; update the CDDL + wire/Messages + this guard");
 
-std::string slurp(const char* path)
-{
-    std::ifstream in(path);
-    std::stringstream buffer;
-    buffer << in.rdbuf();
-    return buffer.str();
-}
-
-// Extracts the `Name: <value>` pairs of the CDDL `error-code = &( ... )` group.
-// CDDL comments run from ';' to end of line and are stripped first so a commented
-// value can never be mistaken for a live one.
-std::vector<std::pair<std::uint32_t, std::string>> parseCddlErrorCode(const std::string& cddl)
-{
-    std::vector<std::pair<std::uint32_t, std::string>> entries;
-    const std::size_t start = cddl.find("error-code");
-    if (start == std::string::npos) {
-        return entries;
-    }
-    const std::size_t open = cddl.find('(', start);
-    const std::size_t close = cddl.find(')', open);
-    if (open == std::string::npos || close == std::string::npos) {
-        return entries;
-    }
-
-    std::string block = cddl.substr(open + 1, close - open - 1);
-    std::istringstream lines(block);
-    std::string line;
-    std::string stripped;
-    while (std::getline(lines, line)) {
-        stripped += line.substr(0, line.find(';'));
-        stripped += '\n';
-    }
-
-    const std::regex entryRe(R"(([A-Za-z][A-Za-z0-9]*)\s*:\s*(\d+))");
-    for (auto it = std::sregex_iterator(stripped.begin(), stripped.end(), entryRe); it != std::sregex_iterator();
-         ++it) {
-        entries.emplace_back(static_cast<std::uint32_t>(std::stoul((*it)[2].str())), (*it)[1].str());
-    }
-    return entries;
-}
-
-// Right-hand side of a top-level CDDL rule `<ruleName> = ...`, comment-stripped
-// and joined across continuation lines up to (but excluding) the next top-level
-// `name = ...` definition. Empty if the rule is not found. Slurps the credential
-// vocabulary groups the way parseCddlErrorCode slurps error-code.
-std::string cddlRuleRhs(const std::string& cddl, const std::string& ruleName)
-{
-    std::istringstream lines(cddl);
-    std::string line;
-    std::string rhs;
-    bool capturing = false;
-    const std::regex defRe(R"(^\s*([A-Za-z][A-Za-z0-9-]*)\s*=)");
-    while (std::getline(lines, line)) {
-        const std::string stripped = line.substr(0, line.find(';'));
-        std::smatch match;
-        const bool isDef = std::regex_search(stripped, match, defRe);
-        if (capturing) {
-            if (isDef) {
-                break; // the next rule begins; the captured rule is complete
-            }
-            rhs += ' ';
-            rhs += stripped;
-            continue;
-        }
-        if (isDef && match[1].str() == ruleName) {
-            capturing = true;
-            rhs += stripped.substr(stripped.find('=') + 1);
-        }
-    }
-    return rhs;
-}
-
-// The quoted string literals of a CDDL string-alternation RHS ("a" / "b" / ...),
-// in source order.
-std::vector<std::string> cddlQuotedTokens(const std::string& rhs)
-{
-    std::vector<std::string> tokens;
-    // Custom `rx` delimiter: the pattern itself contains the `)"` sequence, which
-    // would prematurely close a default-delimiter raw string.
-    const std::regex quoted(R"rx("([^"]*)")rx");
-    for (auto it = std::sregex_iterator(rhs.begin(), rhs.end(), quoted); it != std::sregex_iterator(); ++it) {
-        tokens.push_back((*it)[1].str());
-    }
-    return tokens;
-}
-
-// The map key names of a CDDL map-group RHS `{ key: type, ? key: type, ... }`,
-// in declaration order. The `?` optional markers and the value types are
-// ignored — only identifiers immediately followed by ':' are keys (the camelCase
-// keys never contain '-', so the hyphenated type refs are not matched).
-std::vector<std::string> cddlMapKeys(const std::string& rhs)
-{
-    std::vector<std::string> keys;
-    const std::regex keyRe(R"(([A-Za-z][A-Za-z0-9]*)\s*:)");
-    for (auto it = std::sregex_iterator(rhs.begin(), rhs.end(), keyRe); it != std::sregex_iterator(); ++it) {
-        keys.push_back((*it)[1].str());
-    }
-    return keys;
-}
-
 // Sorted-set equality of two token lists, with a labeled failure. Order-
 // insensitive: for the record vocab groups (and sync-error) the wire carries the
 // NAME, so only the SET of tokens is contractually pinned.
@@ -633,8 +732,14 @@ TEST(WireContractGuard, MacOsAnchorsHold)
 // The CDDL is the wire contract of record and the Swift client mirrors it by
 // hand; neither links LM, so this is the only place they can be tied back to the
 // upstream taxonomy. wireNameFor()'s switch makes an APPEND a compile error, and
-// this test makes a stale CDDL a test failure: a code the CDDL omits still
-// reaches the wire, where a hand mirror that lacks it fails the decode closed.
+// this test makes a stale CDDL a test failure.
+//
+// What a missing code actually costs, precisely: it still reaches the wire, and
+// the client decodes it into its tolerant `.unknown(UInt32)` arm rather than
+// refusing the message. So nothing breaks loudly — the value is carried through
+// unnamed, the client cannot map it to its own localized text, and the user is
+// shown the agent's fallback string instead. Quiet degradation, which is why it
+// needs a test rather than a runtime failure to surface it.
 TEST(WireContractGuard, CddlErrorCodeMatchesAgentEnumValueForValue)
 {
     const std::string cddl = slurp(LIBRESCRS_AGENT_WIRE_CDDL);
@@ -647,7 +752,8 @@ TEST(WireContractGuard, CddlErrorCodeMatchesAgentEnumValueForValue)
     EXPECT_EQ(entries.size(), kTaxonomyCount)
         << "the CDDL enumerates " << entries.size() << " error codes but the agent ErrorCode enum has "
         << kTaxonomyCount << " — the CDDL is the macOS wire contract of record, keep the two identical (append-only). "
-        << "A code the CDDL omits still reaches the wire and fails the Swift client's decode closed";
+        << "A code the CDDL omits still reaches the wire; the client decodes it as unknown and shows the agent's "
+           "fallback text instead of its own";
 
     const std::size_t common = std::min<std::size_t>(entries.size(), kTaxonomyCount);
     for (std::size_t i = 0; i < common; ++i) {
@@ -657,6 +763,128 @@ TEST(WireContractGuard, CddlErrorCodeMatchesAgentEnumValueForValue)
         EXPECT_EQ(entries[i].second, wireNameFor(static_cast<ErrorCode>(i)))
             << "the CDDL names error-code " << i << " '" << entries[i].second << "' but the agent enum calls it '"
             << wireNameFor(static_cast<ErrorCode>(i)) << "'";
+    }
+}
+
+// The CDDL `capability-bit` group mirrors CardCapabilities bit for bit. The
+// CDDL entry is a BIT INDEX (0, 1, 2, 3); CardCapabilities carries a MASK (1,
+// 2, 4, 8) — capabilityBitIndex() above does the explicit index<->mask
+// conversion, so this test never compares a mask to an index directly.
+TEST(WireContractGuard, CddlCapabilityBitMatchesAgentEnumBitForBit)
+{
+    const std::string cddl = slurp(LIBRESCRS_AGENT_WIRE_CDDL);
+    ASSERT_FALSE(cddl.empty()) << "wire CDDL source path not wired";
+
+    const auto entries = parseCddlNumericGroup(cddl, "capability-bit");
+    ASSERT_FALSE(entries.empty()) << "could not locate the `capability-bit = ( ... )` group in librescrs-agent.cddl";
+    EXPECT_EQ(entries.size(), capabilityBitCount())
+        << "the CDDL `capability-bit` group has " << entries.size() << " entries but CardCapabilities has "
+        << capabilityBitCount() << " non-None bits";
+
+    const std::size_t common = std::min<std::size_t>(entries.size(), capabilityBitCount());
+    for (std::size_t i = 0; i < common; ++i) {
+        // Bit i's mask, so the walk visits the enumerators in CDDL bit order.
+        const CardCapabilities cap = static_cast<CardCapabilities>(1u << i);
+        EXPECT_EQ(entries[i].value, capabilityBitIndex(cap))
+            << "the CDDL capability-bit group is not contiguous at entry " << i;
+        EXPECT_EQ(entries[i].name, capabilityWireName(cap))
+            << "the CDDL names capability-bit " << i << " '" << entries[i].name << "' but the agent enum calls it '"
+            << capabilityWireName(cap) << "'";
+        EXPECT_EQ(u(cap), (1u << capabilityBitIndex(cap)))
+            << "CardCapabilities " << capabilityWireName(cap)
+            << " mask no longer matches 1u << its CDDL capability-bit index";
+    }
+}
+
+// The CDDL `pre-read-auth` socket mirrors PreReadAuthMethod value for value
+// (both authored in enum order, append-only, wire-frozen per the CDDL's own
+// tolerance comment).
+TEST(WireContractGuard, CddlPreReadAuthMatchesAgentEnumValueForValue)
+{
+    const std::string cddl = slurp(LIBRESCRS_AGENT_WIRE_CDDL);
+    ASSERT_FALSE(cddl.empty()) << "wire CDDL source path not wired";
+
+    const auto entries = parseCddlNumericGroup(cddl, "pre-read-auth");
+    ASSERT_FALSE(entries.empty()) << "could not locate the `pre-read-auth = &( ... )` group in librescrs-agent.cddl";
+    EXPECT_EQ(entries.size(), preReadAuthCount()) << "the CDDL `pre-read-auth` group has " << entries.size()
+                                                  << " entries but PreReadAuthMethod has " << preReadAuthCount();
+
+    const std::size_t common = std::min<std::size_t>(entries.size(), preReadAuthCount());
+    for (std::size_t i = 0; i < common; ++i) {
+        EXPECT_EQ(entries[i].value, static_cast<std::uint32_t>(i))
+            << "the CDDL pre-read-auth group is not contiguous at entry " << i;
+        EXPECT_EQ(entries[i].name, preReadAuthWireName(static_cast<PreReadAuthMethod>(i)))
+            << "the CDDL names pre-read-auth " << i << " '" << entries[i].name << "' but the agent enum calls it '"
+            << preReadAuthWireName(static_cast<PreReadAuthMethod>(i)) << "'";
+    }
+}
+
+// The CDDL `op-phase` socket mirrors OperationPhase value for value (both
+// authored in enum order, append-only, wire-frozen per the CDDL's own
+// tolerance comment).
+TEST(WireContractGuard, CddlOpPhaseMatchesAgentEnumValueForValue)
+{
+    const std::string cddl = slurp(LIBRESCRS_AGENT_WIRE_CDDL);
+    ASSERT_FALSE(cddl.empty()) << "wire CDDL source path not wired";
+
+    const auto entries = parseCddlNumericGroup(cddl, "op-phase");
+    ASSERT_FALSE(entries.empty()) << "could not locate the `op-phase = &( ... )` group in librescrs-agent.cddl";
+    EXPECT_EQ(entries.size(), opPhaseCount())
+        << "the CDDL `op-phase` group has " << entries.size() << " entries but OperationPhase has " << opPhaseCount();
+
+    const std::size_t common = std::min<std::size_t>(entries.size(), opPhaseCount());
+    for (std::size_t i = 0; i < common; ++i) {
+        EXPECT_EQ(entries[i].value, static_cast<std::uint32_t>(i))
+            << "the CDDL op-phase group is not contiguous at entry " << i;
+        EXPECT_EQ(entries[i].name, opPhaseWireName(static_cast<OperationPhase>(i)))
+            << "the CDDL names op-phase " << i << " '" << entries[i].name << "' but the agent enum calls it '"
+            << opPhaseWireName(static_cast<OperationPhase>(i)) << "'";
+    }
+}
+
+// The CDDL `op-status` socket mirrors OperationStatus value for value, same
+// shape as op-phase above.
+TEST(WireContractGuard, CddlOpStatusMatchesAgentEnumValueForValue)
+{
+    const std::string cddl = slurp(LIBRESCRS_AGENT_WIRE_CDDL);
+    ASSERT_FALSE(cddl.empty()) << "wire CDDL source path not wired";
+
+    const auto entries = parseCddlNumericGroup(cddl, "op-status");
+    ASSERT_FALSE(entries.empty()) << "could not locate the `op-status = &( ... )` group in librescrs-agent.cddl";
+    EXPECT_EQ(entries.size(), opStatusCount()) << "the CDDL `op-status` group has " << entries.size()
+                                               << " entries but OperationStatus has " << opStatusCount();
+
+    const std::size_t common = std::min<std::size_t>(entries.size(), opStatusCount());
+    for (std::size_t i = 0; i < common; ++i) {
+        EXPECT_EQ(entries[i].value, static_cast<std::uint32_t>(i))
+            << "the CDDL op-status group is not contiguous at entry " << i;
+        EXPECT_EQ(entries[i].name, opStatusWireName(static_cast<OperationStatus>(i)))
+            << "the CDDL names op-status " << i << " '" << entries[i].name << "' but the agent enum calls it '"
+            << opStatusWireName(static_cast<OperationStatus>(i)) << "'";
+    }
+}
+
+// The CDDL `quiesce-reason` socket mirrors wire::QuiesceReason value for
+// value. No LM/core enum backs this one (it is socket-only lifecycle state),
+// but the same drift risk applies: the grammar could rename or renumber a
+// reason with nothing to notice besides this guard.
+TEST(WireContractGuard, CddlQuiesceReasonMatchesWireEnumValueForValue)
+{
+    const std::string cddl = slurp(LIBRESCRS_AGENT_WIRE_CDDL);
+    ASSERT_FALSE(cddl.empty()) << "wire CDDL source path not wired";
+
+    const auto entries = parseCddlNumericGroup(cddl, "quiesce-reason");
+    ASSERT_FALSE(entries.empty()) << "could not locate the `quiesce-reason = &( ... )` group in librescrs-agent.cddl";
+    EXPECT_EQ(entries.size(), quiesceReasonCount()) << "the CDDL `quiesce-reason` group has " << entries.size()
+                                                    << " entries but QuiesceReason has " << quiesceReasonCount();
+
+    const std::size_t common = std::min<std::size_t>(entries.size(), quiesceReasonCount());
+    for (std::size_t i = 0; i < common; ++i) {
+        EXPECT_EQ(entries[i].value, static_cast<std::uint32_t>(i))
+            << "the CDDL quiesce-reason group is not contiguous at entry " << i;
+        EXPECT_EQ(entries[i].name, quiesceReasonWireName(static_cast<QuiesceReason>(i)))
+            << "the CDDL names quiesce-reason " << i << " '" << entries[i].name << "' but the agent enum calls it '"
+            << quiesceReasonWireName(static_cast<QuiesceReason>(i)) << "'";
     }
 }
 
@@ -786,4 +1014,32 @@ TEST(WireContractGuard, CddlCredentialRecordKeysMatchContract)
     for (std::size_t i = 0; i < kCredRecordKeys.size(); ++i) {
         EXPECT_EQ(keys[i], kCredRecordKeys[i]) << "cred-record key " << i << " drifted";
     }
+}
+
+// A vocabulary added to the grammar and NOT mirrored downstream is the failure
+// this whole gate exists to prevent, and the clients mirror it by hand in a
+// repository this test cannot see. Asserting the SET is what makes the addition
+// impossible to miss: a new closed group turns this red and forces a decision --
+// mirror it in the clients, or record it here as knowingly unmirrored. Without
+// this, a new vocabulary simply would not be checked anywhere, which is the
+// quietest way for a gate to stop covering what people believe it covers.
+TEST(WireContractGuard, ClosedVocabulariesAreTheExpectedSet)
+{
+    const std::string cddl = slurp(LIBRESCRS_AGENT_WIRE_CDDL);
+    ASSERT_FALSE(cddl.empty()) << "wire CDDL source path not wired";
+
+    const std::set<std::string> expected = {
+        "capability-bit", "cred-kind",           "cred-outcome", "cred-recovery", "cred-state",
+        "cred-verb",      "error-code",          "op-phase",     "op-status",     "pre-read-auth",
+        "quiesce-reason", "settable-config-key", "sync-error",   "unblock-style",
+    };
+
+    std::set<std::string> found;
+    for (const auto& g : discoverClosedGroups(cddl)) {
+        found.insert(g.rule);
+    }
+
+    EXPECT_EQ(found, expected) << "the closed vocabularies in the grammar are not the ones this guard expects. "
+                                  "If one was added, mirror it in the clients and list it here in the same change; "
+                                  "silence here is what lets a client fall behind unnoticed.";
 }

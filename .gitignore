@@ -9,3 +9,8 @@
 /packaging/arch/pkg/
 /packaging/arch/*.tar.gz
 /packaging/arch/*.pkg.tar.*
+
+# wire-vocabulary-regen's atomic-write staging file. Left behind only when a
+# regeneration run is interrupted before the rename step; never itself the
+# committed manifest.
+/wire/wire-vocabulary.json.tmp

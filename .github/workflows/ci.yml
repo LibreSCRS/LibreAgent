@@ -180,6 +180,31 @@ jobs:
         working-directory: LibreAgent
         run: cmake --build build -j4
 
+      - name: Check the wire vocabulary manifest is current
+        # The manifest is generated but committed, like the ABI baseline
+        # below: CI proves the checked-in copy still matches what the
+        # contract grammar produces, the same way that check proves the
+        # checked-in symbol list still matches what the build produces.
+        # Compared by hash -- `diff`'s exit code has been seen returning 0
+        # for genuinely different files, so it is not trustworthy here.
+        #
+        # wire-vocabulary-regen (wire/tools/regen-manifest.cmake) writes the
+        # generator's output to a .tmp file and renames it over the
+        # committed manifest only on a successful run, so a generator
+        # refusal already fails this step on its own, via the non-zero exit
+        # from `cmake --build` -- the hash check below is only reached once
+        # regeneration itself succeeded, and it exists to catch the case
+        # where it succeeded with DIFFERENT content than what is committed.
+        working-directory: LibreAgent
+        run: |
+          sha256sum wire/wire-vocabulary.json > /tmp/wire-vocabulary.sha256
+          cmake --build build -j4 --target wire-vocabulary-regen
+          sha256sum -c /tmp/wire-vocabulary.sha256 || {
+            echo "::error::The committed wire vocabulary manifest is stale. Run the wire-vocabulary-regen target and commit the result."
+            git --no-pager diff -- wire/wire-vocabulary.json
+            exit 1
+          }
+
       - name: Check ABI snapshot vs 4.x baseline
         # 4.x baseline — minor-version additions tracked; removals or
         # signature drift forbidden. Additions land via an intentional

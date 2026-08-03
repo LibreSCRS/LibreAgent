@@ -264,6 +264,11 @@ if(PROJECT_IS_TOP_LEVEL)
     # resolves the imported target(s) for whichever components it asked for.
     include(cmake/InstallExport.cmake)
 
+    # Build-time tooling for the wire contract's text helpers, shared between
+    # the guard tests and the manifest generator. INTERFACE-only and link-free,
+    # so it costs nothing outside of a Core/Wire build.
+    add_subdirectory(wire/tools)
+
     if(LIBREAGENT_BUILD_CORE OR LIBREAGENT_BUILD_WIRE)
         # Platform-neutral unit tests + the five shared backend fakes (Core
         # only) plus the dependency-light Wire/spike GTest targets, which stay
