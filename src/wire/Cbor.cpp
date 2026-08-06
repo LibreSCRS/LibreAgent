@@ -43,16 +43,27 @@ void encodeValue(QCBOREncodeContext* ctx, const CborValue& v)
     case CborType::Double:
         QCBOREncode_AddDouble(ctx, *v.asDouble());
         break;
+    // The four POINTER-returning accessors below are bound, never dereferenced.
+    // type() is m_v.index(), so the alternative is guaranteed — but that stops
+    // being visible to the optimizer once std::get_if inlines, and GCC 16 then
+    // reports the unreachable null path as -Wnull-dereference. The
+    // optional-returning accessors above cannot produce it.
     case CborType::Text:
-        QCBOREncode_AddText(ctx, bufOf(*v.asText()));
+        if (const auto* text = v.asText()) {
+            QCBOREncode_AddText(ctx, bufOf(*text));
+        }
         break;
     case CborType::Bytes:
-        QCBOREncode_AddBytes(ctx, bufOf(*v.asBytes()));
+        if (const auto* bytes = v.asBytes()) {
+            QCBOREncode_AddBytes(ctx, bufOf(*bytes));
+        }
         break;
     case CborType::Array:
         QCBOREncode_OpenArray(ctx);
-        for (const auto& e : *v.asArray()) {
-            encodeValue(ctx, e);
+        if (const auto* array = v.asArray()) {
+            for (const auto& e : *array) {
+                encodeValue(ctx, e);
+            }
         }
         QCBOREncode_CloseArray(ctx);
         break;
@@ -61,9 +72,11 @@ void encodeValue(QCBOREncodeContext* ctx, const CborValue& v)
         // std::map<..., CanonicalKeyLess> iterates in canonical §4.2 order. Each
         // entry is a label (AddText) immediately followed by its value — exactly
         // how QCBOR's *ToMap helpers pair a key with a value under the hood.
-        for (const auto& [key, val] : *v.asMap()) {
-            QCBOREncode_AddText(ctx, bufOf(key));
-            encodeValue(ctx, val);
+        if (const auto* map = v.asMap()) {
+            for (const auto& [key, val] : *map) {
+                QCBOREncode_AddText(ctx, bufOf(key));
+                encodeValue(ctx, val);
+            }
         }
         QCBOREncode_CloseMap(ctx);
         break;

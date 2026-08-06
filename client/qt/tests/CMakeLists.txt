@@ -332,10 +332,21 @@ add_subdirectory(HeaderAcceptance)
 # check reads the real built library's dynamic symbol table, so it is a
 # statement about the artifact rather than about the source that produced it.
 #
-# ELF-only by nature: Mach-O records the defining library in each reference
-# (two-level namespace), so the hazard does not exist there.
+# ...and nothing from the wire library it folds in either, beyond the two
+# functions a public client header re-exports. Same mechanism, different
+# hazard: mangled C++ names cannot cross-bind, they are ABI surface a consumer
+# can bind to and no gate would watch. That one asserts BOTH directions -- the
+# two present, the rest of the namespace absent -- because a hidden-visibility
+# preset would otherwise pass it by hiding the API along with everything else.
+#
+# The vendored check is ELF-only by nature: Mach-O records the defining library
+# in each reference (two-level namespace), so that hazard does not exist there.
+# The wire one is gated only because it reads ELF `nm` output.
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     add_test(NAME ClientQtVendoredExportsTest
              COMMAND ${PROJECT_SOURCE_DIR}/ci/scripts/check-vendored-exports.sh
+                     $<TARGET_FILE:LibreAgentClientQt>)
+    add_test(NAME ClientQtWireExportsTest
+             COMMAND ${PROJECT_SOURCE_DIR}/ci/scripts/check-wire-exports.sh
                      $<TARGET_FILE:LibreAgentClientQt>)
 endif()

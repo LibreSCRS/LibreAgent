@@ -324,19 +324,28 @@ if(PROJECT_IS_TOP_LEVEL)
     # ---- drift guard: which shared headers the public surface re-exports ----
     #
     # A public client header that starts re-exporting a header from the shared
-    # LibreSCRS/Agent/ tree creates TWO obligations elsewhere, and both fail
-    # SILENTLY when missed -- each has already happened once in this repository:
+    # LibreSCRS/Agent/ tree creates obligations elsewhere, each of which has
+    # already been missed once in this repository. They are NAMED rather than
+    # numbered, because a count in prose goes stale the moment one is added:
     #
-    #   * Doxyfile.publicapi's INPUT must list it, or the re-exported type's
-    #     members never reach the published reference at all (no warning: the
-    #     definition is simply never parsed).
-    #   * ci/scripts/abi-snapshot.sh's CLIENTQT_WIRE_PUBLIC allowlist must name
-    #     any FUNCTIONS it declares, or those symbols stay out of the ABI
-    #     baseline while genuinely widening the shared library's export table.
+    #   * DOXYGEN INPUT -- Doxyfile.publicapi's INPUT must list the header, or
+    #     the re-exported type's members never reach the published reference at
+    #     all: the definition is simply never parsed, with no warning.
+    #   * EXPORT ANNOTATION -- any FUNCTION it declares must carry
+    #     LIBRESCRS_AGENTWIRE_EXPORT. The wire library compiles hidden, so an
+    #     un-annotated function is absent from the shared library a consumer
+    #     links against, while its public header still declares it.
+    #   * ABI ALLOWLIST -- ci/scripts/abi-snapshot.sh's CLIENTQT_WIRE_PUBLIC
+    #     must name those same functions, or they widen the export table
+    #     without entering the baseline that would report a change to them.
+    #   * DOXYGEN PREDEFINED -- an export MACRO defined in the header must be
+    #     predefined away in Doxyfile.publicapi, or the published reference
+    #     carries a build detail as public API.
     #
-    # Neither is derivable from the other, and neither tool can notice the
-    # omission on its own, so the check has to live where the re-export is
-    # written.
+    # None is derivable from another, and no tool notices its own omission, so
+    # the checks live here, where the re-export is written. The two Doxygen ones
+    # are enforced below; the other two announce themselves loudly enough (a
+    # failed link, a failed ABI check) to need no configure-time twin.
     set(_clientqt_reexported_shared_headers
         OperationPhase.h
         wire/ErrorCode.h
@@ -364,24 +373,27 @@ if(PROJECT_IS_TOP_LEVEL)
             "the public client headers has changed.\n"
             "  Re-exported on disk: ${_clientqt_reexports_on_disk}\n"
             "  Expected (this file): ${_clientqt_reexports_expected}\n"
-            "Before updating this list, do BOTH of the following for each added "
-            "header -- neither tool can detect the omission by itself:\n"
-            "  1. add it to Doxyfile.publicapi's INPUT, or its members will be "
-            "absent from the published API reference with no warning (the check "
-            "below enforces this one, so it will tell you again);\n"
-            "  2. if it declares FUNCTIONS (an enum/constant-only header emits "
-            "no symbols and needs nothing), add them to CLIENTQT_WIRE_PUBLIC in "
-            "ci/scripts/abi-snapshot.sh and regenerate the ABI baseline, or "
-            "those exports stay ungated.")
+            "Work through the obligations listed at the top of this guard for "
+            "each added header:\n"
+            "  DOXYGEN INPUT -- add it to Doxyfile.publicapi's INPUT, or its "
+            "members are absent from the published API reference with no "
+            "warning (enforced below, so it will tell you again);\n"
+            "  EXPORT ANNOTATION + ABI ALLOWLIST -- if it declares FUNCTIONS "
+            "(an enum/constant-only header emits no symbols and needs "
+            "nothing), give each one LIBRESCRS_AGENTWIRE_EXPORT and add it to "
+            "CLIENTQT_WIRE_PUBLIC in ci/scripts/abi-snapshot.sh, then "
+            "regenerate the ABI baseline;\n"
+            "  DOXYGEN PREDEFINED -- if it defines an export MACRO, predefine "
+            "it away in Doxyfile.publicapi (enforced below too).")
     endif()
 
-    # Obligation 1 of the two above, enforced rather than merely described.
+    # The DOXYGEN INPUT obligation, enforced rather than merely described.
     # Doxygen's INPUT is a plain list of paths in a file we can read, so
     # "every re-exported shared header is in the reference's scope" is a
-    # decidable question at configure time -- unlike obligation 2, where
+    # decidable question at configure time -- unlike the ABI allowlist, where
     # nothing can tell us which header declared a given exported symbol.
-    # Checking it here means the message above is a reminder for the half that
-    # still needs a human, not the only thing standing behind either half.
+    # Checking it here means the message above is a reminder for the parts that
+    # still need a human, not the only thing standing behind any of them.
     #
     # This is the omission that actually happened: a re-exported error
     # vocabulary shipped with its type documented and every one of its values
@@ -444,5 +456,36 @@ if(PROJECT_IS_TOP_LEVEL)
                 "the published API reference with no warning from anything. Add "
                 "'include/LibreSCRS/Agent/<header>' to that file's INPUT.")
         endif()
+
+        # The DOXYGEN PREDEFINED obligation, likewise enforced. Measured: with
+        # no entry the macro reached globals.html, the search index and every
+        # signature that used it, and the docs run still exited 0. Its
+        # EXCLUDE_SYMBOLS twin needs no check -- without that one the macro is
+        # an undocumented member and the run fails on its own.
+        #
+        # Comment lines are dropped before searching, so prose that merely
+        # MENTIONS a macro cannot stand in for the setting.
+        file(STRINGS "${_clientqt_doxyfile}" _doxy_setting_lines REGEX "^[^#]")
+        string(REPLACE ";" "\n" _doxy_settings "${_doxy_setting_lines}")
+        foreach(_reexport IN LISTS _clientqt_reexports_expected)
+            set(_reexport_path "${PROJECT_SOURCE_DIR}/include/LibreSCRS/Agent/${_reexport}")
+            if(NOT EXISTS "${_reexport_path}")
+                continue()
+            endif()
+            file(STRINGS "${_reexport_path}" _export_defines
+                REGEX "^#define +LIBRESCRS_[A-Z0-9_]+_EXPORT ")
+            foreach(_line IN LISTS _export_defines)
+                string(REGEX REPLACE "^#define +(LIBRESCRS_[A-Z0-9_]+_EXPORT) .*$" "\\1" _macro "${_line}")
+                string(FIND "${_doxy_settings}" "${_macro}=" _predefined_at)
+                if(_predefined_at EQUAL -1)
+                    message(FATAL_ERROR
+                        "ClientQt: '${_reexport}' defines ${_macro}, which is "
+                        "absent from Doxyfile.publicapi's PREDEFINED. Add "
+                        "'${_macro}=' there, and ${_macro} to EXCLUDE_SYMBOLS, "
+                        "or the published API reference renders the macro in "
+                        "every signature carrying it and lists it as public.")
+                endif()
+            endforeach()
+        endforeach()
     endif()
 endif()

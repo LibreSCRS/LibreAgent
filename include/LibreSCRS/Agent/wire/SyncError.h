@@ -8,6 +8,19 @@
 /// @brief The named synchronous-method error vocabulary shared by both agent
 ///        wires, plus BOTH halves of its name conversion.
 
+// Keeps a function exported from a shared library this archive is folded into.
+// The library compiles hidden; the two below are the exception, because a
+// public client header re-exports their declarations and the definitions must
+// stay reachable. ci/scripts/check-wire-exports.sh proves both halves.
+//
+// Defined here, not in an export header: this is one of the leaf headers the
+// client's public surface re-exports, and client/qt/CMakeLists.txt fails the
+// configure if one of them includes another first-party header.
+//
+// Plain `//`, not `///`: a DOCUMENTED #define is published as public API even
+// when Doxyfile.publicapi predefines it away.
+#define LIBRESCRS_AGENTWIRE_EXPORT __attribute__((visibility("default")))
+
 namespace LibreSCRS::Agent::Wire {
 
 /// @brief Named synchronous-method errors — the spellings the socket wire
@@ -110,7 +123,7 @@ enum class SyncError : std::uint8_t {
 /// `-Wswitch` build failure here until it is named — and a stale CDDL is a
 /// separate test failure (tests/wire/WireContractGuardTest.cpp compares the
 /// two as sets).
-[[nodiscard]] std::string_view syncErrorName(SyncError e) noexcept;
+[[nodiscard]] LIBRESCRS_AGENTWIRE_EXPORT std::string_view syncErrorName(SyncError e) noexcept;
 
 /// @brief The inverse of `syncErrorName()`: a wire name back to its enumerator.
 ///
@@ -130,6 +143,6 @@ enum class SyncError : std::uint8_t {
 /// Round-trip: `decodeSyncError(syncErrorName(e)) == e` for every enumerator
 /// (pinned by tests/wire/WireContractGuardTest.cpp). The reverse does not hold
 /// for an unrecognised token, per the degrade above.
-[[nodiscard]] SyncError decodeSyncError(std::string_view name) noexcept;
+[[nodiscard]] LIBRESCRS_AGENTWIRE_EXPORT SyncError decodeSyncError(std::string_view name) noexcept;
 
 } // namespace LibreSCRS::Agent::Wire

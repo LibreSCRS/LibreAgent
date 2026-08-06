@@ -65,4 +65,15 @@ QUIET                    = YES
 ENABLE_PREPROCESSING     = YES
 MACRO_EXPANSION          = YES
 EXPAND_ONLY_PREDEF       = YES
-PREDEFINED               = LIBRESCRS_AGENTCLIENT_EXPORT=
+# Export macros expand to nothing: they are build details, not things a
+# consumer writes. Leaving one out publishes it — measured, the wire macro
+# reached globals.html, the search index and every signature carrying it.
+# client/qt/CMakeLists.txt fails the configure when an entry here is missing.
+PREDEFINED               = LIBRESCRS_AGENTCLIENT_EXPORT= \
+                           LIBRESCRS_AGENTWIRE_EXPORT=
+
+# ...and the #define itself is still collected as a member of the header it
+# sits in, where neither answer works: documented it is published, undocumented
+# it fails WARN_IF_UNDOCUMENTED. Excluding it by name is the way out. The
+# client-side macro needs no entry — its generated header is outside INPUT.
+EXCLUDE_SYMBOLS          = LIBRESCRS_AGENTWIRE_EXPORT

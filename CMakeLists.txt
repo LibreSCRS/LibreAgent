@@ -193,7 +193,18 @@ if(LIBREAGENT_BUILD_WIRE)
         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
         $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>)
     target_compile_features(LibreAgentWire PUBLIC cxx_std_23)
-    set_target_properties(LibreAgentWire PROPERTIES POSITION_INDEPENDENT_CODE ON)
+    # Hidden, because this archive is folded WHOLE into the shared Qt client
+    # library and visibility is decided when an object is COMPILED — that
+    # target's own preset cannot reach objects arriving from a dependency.
+    # Without this line the client library exported 75 wire names, two of them
+    # API. Linking the archive still resolves everything; what changes is that
+    # a shared library folding it in stops re-exporting them, which is the
+    # point. The two API functions carry LIBRESCRS_AGENTWIRE_EXPORT, and
+    # ci/scripts/check-wire-exports.sh holds both halves on the built artifact.
+    set_target_properties(LibreAgentWire PROPERTIES
+        POSITION_INDEPENDENT_CODE ON
+        CXX_VISIBILITY_PRESET hidden
+        VISIBILITY_INLINES_HIDDEN ON)
     # $<BUILD_INTERFACE:...>, not a plain PRIVATE: qcbor's headers are consumed
     # only by Cbor.cpp (no public header of this target includes <qcbor/...>),
     # and its objects are already folded into the archive above via

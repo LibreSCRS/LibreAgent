@@ -39,46 +39,32 @@
 # namespace is the public, frozen API; anything outside it is an
 # implementation detail free to churn between releases.
 #
-# The ClientQt section IS a shared object with CXX_VISIBILITY_PRESET hidden,
-# but is filtered by namespace anyway, for a different reason: hidden
-# visibility on LibreAgentClientQt does not reach LibreAgentWire's objects —
-# Wire is a STATIC archive linked PRIVATE and folded straight into the .so,
-# and CMake's hidden-visibility default only governs symbols this target's
-# OWN translation units define — so the shared library's dynamic symbol table
-# also exports the entire LibreSCRS::Agent:: wire surface. That is a real,
-# pre-existing leak; fixing it (re-exporting Wire hidden, or a version
-# script) is a follow-up, not this snapshot's job. Recording the whole leak
-# here would make it permanent, spurious drift — every unrelated churn inside
-# Wire would land in this baseline as reviewable API movement, which it is
-# not.
+# The ClientQt section IS a shared object with hidden visibility, and is
+# filtered by namespace anyway. Both archives folded into it — the wire library
+# and the vendored QCBOR — now compile hidden themselves, so neither reaches
+# its dynamic table. Measured on the artifact: 470 exported symbols before the
+# wire preset and 285 after; the vendored preset had removed 111 before that.
+# The filter stays because it is the right rule either way: a regression in
+# either preset would otherwise flood this baseline with churn that is not API
+# movement, recorded as if it were.
 #
-# MEASURED SIZE OF THAT LEAK, so nobody has to guess at it: of the 279
-# T-binding symbols the .so exports (demangled, deduplicated), only 113 are
-# this library's own LibreSCRS::AgentClient:: API. The other 166 break down as
-# 49 LibreSCRS::Agent::Wire:: symbols and 117 vendored QCBOR C symbols
-# (QCBOR*, UsefulBuf_*, UsefulInputBuf_*, UsefulOutBuf_*, IEEE754_*). Two of
-# the 49 are deliberately reachable (below), so the ACCIDENTAL leak is 164
-# symbols — not the wire namespace alone.
-#
-# The vendored-C half is the part with teeth, and it is a real hazard rather
-# than untidiness: those are unversioned, unmangled C symbols in a shared
-# library's dynamic table. ELF resolves by name across the whole process, so a
-# consumer that also links QCBOR — directly, or through any other library that
-# vendored it — can have ITS calls bound to this .so's copy, or vice versa,
-# whichever the loader sees first. If the two copies are different QCBOR
-# versions, the mismatch is silent and structural. Fixing it means giving
-# these symbols hidden visibility or a version script; that is a larger change
-# than this snapshot, and deliberately not attempted here. Recorded so that it
-# is a known, sized hazard instead of a surprise.
+# Neither leak was ever visible HERE, which is the counter-intuitive part and
+# is repeated in the filter-gaps list below: closing them moved this baseline
+# by zero lines, because every section is filtered to this project's own
+# supported namespaces. What watches them reads the built library's dynamic
+# symbol table directly — check-vendored-exports.sh for the vendored C names,
+# check-wire-exports.sh for this project's wire ones.
 #
 # For what this script RECORDS, though, "exclude the whole LibreSCRS::Agent::
 # namespace" is too blunt, because it lumps together two things that differ:
 #
-#   - ACCIDENTAL leak: exported only because an archive is statically folded
-#     in. No public header of this library mentions it, nothing points a
-#     consumer at it, and it is free to churn. Excluded, deliberately —
-#     recording it would turn every unrelated churn inside Wire or QCBOR into
-#     reviewable API movement, which it is not.
+#   - ACCIDENTAL: exported only because an archive is statically folded in. No
+#     public header of this library mentions it, nothing points a consumer at
+#     it, and it is free to churn. Excluded, deliberately — recording it would
+#     turn every unrelated churn inside Wire or QCBOR into reviewable API
+#     movement, which it is not. Empty on the .so now that both archives
+#     compile hidden; the rule still does real work on the STATIC archive
+#     sections, where visibility does not apply and `nm -U` sees everything.
 #   - REACHABLE THROUGH A PUBLIC HEADER: declared in a shared header that this
 #     library's OWN public headers re-export (the same headers listed in
 #     Doxyfile.publicapi's INPUT, for the same reason). A consumer that
@@ -133,6 +119,11 @@
 #     that, by reading the built library's dynamic symbol table directly.
 #     Corollary worth stating because it is counter-intuitive: hiding 111 such
 #     symbols moved this baseline by ZERO lines.
+#   - The same holds for this project's OWN symbols outside the two supported
+#     namespaces: the ClientQt section records LibreSCRS::AgentClient:: plus
+#     the CLIENTQT_WIRE_PUBLIC pair, so the other 73 exported wire symbols were
+#     invisible here too, and hiding them also moved this baseline by ZERO
+#     lines. ClientQtWireExportsTest is what watches that one.
 #   - A function-template instantiation demangles with a return-type prefix
 #     (e.g. "std::shared_ptr<T> LibreSCRS::Agent::f<..>(..)") and would escape
 #     the leading-prefix match — fail-open. No surface contains such symbols
