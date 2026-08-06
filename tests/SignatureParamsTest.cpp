@@ -223,3 +223,14 @@ TEST(SignatureParams, ImplementedSignLevelsDisplayMatchesThePredicate)
     const auto commas = static_cast<std::size_t>(std::count(display.begin(), display.end(), ','));
     EXPECT_EQ(commas + 1, count);
 }
+
+TEST(SignatureParams, RequestedLevelFromTreatsEmptyAndAutoAsAgentDecides)
+{
+    EXPECT_FALSE(sp::requestedLevelFrom("").has_value());
+    EXPECT_FALSE(sp::requestedLevelFrom("auto").has_value());
+    EXPECT_EQ(sp::requestedLevelFrom("b-t").value(), "b-t");
+    // An out-of-vocabulary token is NOT swallowed: it passes through so the
+    // caller's isKnownLevel check still rejects it with its own message,
+    // rather than being silently treated as "use the default".
+    EXPECT_EQ(sp::requestedLevelFrom("nonsense").value(), "nonsense");
+}

@@ -57,19 +57,47 @@ namespace LibreSCRS::Agent::Operations::SignatureParams {
     return "detached";
 }
 
-[[nodiscard]] inline bool isKnownFormat(const std::string& f) noexcept
+// The three CLOSED sign-option vocabularies, as ENUMERABLE lists rather than
+// as chained comparisons. Each is the resolved form: `sign-format`,
+// `sign-level` and `packaging-mode` in wire/librescrs-agent.cddl, whose
+// requested-* counterparts add the "auto" sentinel a client may ask for and a
+// result can never report.
+//
+// Enumerable is the point. These were four separate hand-written comparison
+// chains -- here, in the grammar, in ConfigStore's own level check and in the
+// client's token map -- and nothing compared them, so a member added to one
+// was added to the others only by whoever remembered. WireContractGuardTest
+// now reads the grammar's groups and compares them to these arrays entry by
+// entry, which no chain of `||` could have been compared against.
+inline constexpr std::array<std::string_view, 5> kSignFormats{"pades", "cades", "xades", "jades", "asice"};
+inline constexpr std::array<std::string_view, 4> kSignLevels{"b-b", "b-t", "b-lt", "b-lta"};
+inline constexpr std::array<std::string_view, 2> kPackagingModes{"enveloped", "detached"};
+
+template <std::size_t N>
+[[nodiscard]] constexpr bool isMemberOf(const std::array<std::string_view, N>& vocabulary,
+                                        std::string_view token) noexcept
 {
-    return f == "pades" || f == "cades" || f == "xades" || f == "jades" || f == "asice";
+    for (const auto entry : vocabulary) {
+        if (entry == token) {
+            return true;
+        }
+    }
+    return false;
 }
 
-[[nodiscard]] inline bool isKnownLevel(const std::string& l) noexcept
+[[nodiscard]] inline bool isKnownFormat(std::string_view f) noexcept
 {
-    return l == "b-b" || l == "b-t" || l == "b-lt" || l == "b-lta";
+    return isMemberOf(kSignFormats, f);
 }
 
-[[nodiscard]] inline bool isKnownPackaging(const std::string& p) noexcept
+[[nodiscard]] inline bool isKnownLevel(std::string_view l) noexcept
 {
-    return p == "enveloped" || p == "detached";
+    return isMemberOf(kSignLevels, l);
+}
+
+[[nodiscard]] inline bool isKnownPackaging(std::string_view p) noexcept
+{
+    return isMemberOf(kPackagingModes, p);
 }
 
 // True for the timestamped / long-term family (b-t/b-lt/b-lta), false for the
@@ -103,9 +131,15 @@ namespace LibreSCRS::Agent::Operations::SignatureParams {
 // rejection message implementedSignLevelsDisplay both derive from this list, so
 // they can never drift (the historical bug: the predicate widened to b-lt/b-lta
 // but the message still said "only b-b and b-t").
-inline constexpr std::array<std::string_view, 4> kImplementedSignLevels{"b-b", "b-t", "b-lt", "b-lta"};
+//
+// It IS the vocabulary, not a copy of it: this release implements every level
+// the wire admits. Kept as a distinct name because the two ideas are distinct
+// -- "in the vocabulary" and "this release produces it" -- so if a level is
+// ever added to the grammar ahead of its implementation, this becomes its own
+// array again and only the one place that must change does.
+inline constexpr const auto& kImplementedSignLevels = kSignLevels;
 
-[[nodiscard]] inline bool isImplementedSignLevel(const std::string& level) noexcept
+[[nodiscard]] inline bool isImplementedSignLevel(std::string_view level) noexcept
 {
     for (const auto l : kImplementedSignLevels) {
         if (level == l) {
@@ -127,6 +161,22 @@ inline constexpr std::array<std::string_view, 4> kImplementedSignLevels{"b-b", "
         out += l;
     }
     return out;
+}
+
+// The "let the agent decide" sentinel for a requested level, in ONE place so
+// the D-Bus and socket frontends cannot drift apart -- they used to open-code
+// this differently, and had: one accepted "auto", the other only an absent
+// key. Empty or "auto" => nullopt, which resolveSignLevel below reads as
+// "apply the configured default". "" is tolerated for robustness but is NOT
+// contractual: the CDDL's requested-level group does not admit it and no
+// client in this stack emits it. Anything else passes through verbatim for
+// isKnownLevel / isImplementedSignLevel to judge.
+[[nodiscard]] inline std::optional<std::string> requestedLevelFrom(std::string_view level)
+{
+    if (level.empty() || level == "auto") {
+        return std::nullopt;
+    }
+    return std::string{level};
 }
 
 // Resolve the effective per-request signing level. An explicit @p requested

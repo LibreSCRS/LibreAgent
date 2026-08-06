@@ -2,6 +2,9 @@
 // SPDX-FileCopyrightText: 2026 hirashix0
 #include <LibreSCRS/Agent/config/ConfigStore.h>
 #include <LibreSCRS/Agent/backend/Logging.h>
+// The level vocabulary lives with the wire's other signing-parameter
+// validators; this store used to keep a private copy of it.
+#include <LibreSCRS/Agent/operations/SignatureParams.h>
 #include <array>
 #include <charconv>
 #include <fstream>
@@ -87,11 +90,6 @@ bool isHttpUrl(std::string_view url)
     return !authority.empty() && authority.front() != '/';
 }
 
-bool isKnownLevel(std::string_view level)
-{
-    return level == "b-b" || level == "b-t" || level == "b-lt" || level == "b-lta";
-}
-
 } // namespace
 
 ConfigStore::ConfigStore(std::filesystem::path configFile, std::filesystem::path cacheRoot)
@@ -146,7 +144,7 @@ void ConfigStore::loadFromFile()
         const std::string key = trim(trimmed.substr(0, eq));
         const std::string value = trim(trimmed.substr(eq + 1));
         if (key == kDefaultLevel) {
-            if (isKnownLevel(value)) {
+            if (Operations::SignatureParams::isKnownLevel(value)) {
                 m_defaultLevel = value;
             } else {
                 log::warnf("config: ignoring invalid DefaultLevel '{}'", value);
@@ -348,8 +346,11 @@ std::uint32_t ConfigStore::pkcs11MaxLifetimeSecs() const
 
 ConfigStore::SetResult ConfigStore::setDefaultLevel(std::string level)
 {
-    if (!isKnownLevel(level)) {
-        return SetResult{false, kErrInvalidValue, "DefaultLevel must be one of b-b|b-t|b-lt|b-lta"};
+    if (!Operations::SignatureParams::isKnownLevel(level)) {
+        // Rendered from the vocabulary, not restated beside it: the levels this
+        // rejection lists and the levels it rejects against are now the same list.
+        return SetResult{false, kErrInvalidValue,
+                         "DefaultLevel must be one of: " + Operations::SignatureParams::implementedSignLevelsDisplay()};
     }
     {
         std::lock_guard lk(m_mutex);

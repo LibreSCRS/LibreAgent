@@ -33,12 +33,19 @@ enum class SignatureFormat : std::uint8_t {
 };
 
 /// @brief eIDAS AdES conformance level (wire/librescrs-agent.cddl's
-///        `sign-opts.level`; `SignatureParams::isKnownLevel`'s closed set).
+///        `sign-opts.level`; the resolved `sign-level` group plus the
+///        request-only sentinel its `requested-level` form adds).
 enum class SignatureLevel : std::uint8_t {
     BB,   ///< B-B: baseline, no timestamp.
     BT,   ///< B-T: baseline + signing-time timestamp.
     BLT,  ///< B-LT: baseline + long-term validation material embedded.
     BLTA, ///< B-LTA: baseline + long-term validation + archive timestamp.
+    /// Let the agent apply its configured `DefaultLevel`, including that
+    /// value's upgrade to B-T when a timestamp authority is configured.
+    /// REQUEST-ONLY: the agent always reports a resolved level in
+    /// `AgentOperation::signMeta()` and never reports this, so a decode never
+    /// yields it. Appended, not inserted — this enum is append-only.
+    Auto,
 };
 
 /// @brief Signature packaging relative to the signed document
@@ -97,14 +104,24 @@ struct ManagePinOptions
 
 /// @brief `Card1.Sign` options for `AgentCard::sign()`.
 ///
-/// Defaults match the agent's own invisible-signature, baseline-level,
-/// enveloped-container default (see `sign-opts` in the CDDL and
-/// `SignatureParams::defaultPackagingFor`).
+/// Defaults match the agent's own invisible-signature, enveloped-container
+/// default (see `sign-opts` in the CDDL and
+/// `SignatureParams::defaultPackagingFor`); the level defers to the agent.
 struct SignOptions
 {
     SignatureFormat format = SignatureFormat::PAdES; ///< Signature container format.
-    SignatureLevel level = SignatureLevel::BB;       ///< eIDAS AdES conformance level.
-    Packaging packaging = Packaging::Enveloped;      ///< Packaging relative to the document.
+    /// eIDAS AdES conformance level. Defaults to `Auto`: unless a caller has a
+    /// specific reason to pin a level, the agent's configuration is the policy,
+    /// and overriding it silently produces a weaker signature than the
+    /// deployment is set up to produce.
+    ///
+    /// One interaction to know about: an `"allowExpired"` consent passed
+    /// through `extra` applies only at the baseline level, so pair that with an
+    /// explicit `SignatureLevel::BB`, not `Auto` — an agent that resolves
+    /// `Auto` to a timestamped level blocks an expired certificate regardless
+    /// of the consent.
+    SignatureLevel level = SignatureLevel::Auto;
+    Packaging packaging = Packaging::Enveloped; ///< Packaging relative to the document.
     /// Visible-signature placement/appearance; empty means invisible. PAdES
     /// only — the agent rejects a populated map paired with any other
     /// `format` (`Error.UnsupportedSignatureParameter`). Gated on the
@@ -129,6 +146,12 @@ struct SignOptions
     /// with `SignatureLevel::BB` (meaningful only for the timestamped/
     /// long-term family). Gated on the `"tsa-url"` feature token, the same
     /// posture as `visualSignature` above.
+    ///
+    /// Pair this with an explicit qualified level against an agent that
+    /// predates the frontend fix: such an agent derives "a timestamp authority
+    /// is available" from its own configuration alone, so a per-request URL
+    /// alongside `Auto` could resolve to b-b and then be rejected for carrying
+    /// a tsaUrl at that level.
     QString tsaUrl;
     QVariantMap extra; ///< Forward-compatible pass-through, as on every result/options struct.
 };

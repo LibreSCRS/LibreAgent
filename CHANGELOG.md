@@ -65,6 +65,17 @@ Three targets ship, each independently usable:
   drift apart on what a message or a refusal means. It links nothing
   first-party, so a consumer that only needs to speak the protocol takes
   on neither LibreMiddleware nor Qt.
+- **A sign request may defer the conformance level to the agent**, and
+  that is what `SignOptions` does by default (`SignatureLevel::Auto`).
+  The agent then applies the level it is configured with, including that
+  value's upgrade to a timestamped one when a timestamp authority is
+  set. Naming a level overrides the deployment's own policy, which is
+  occasionally right and easy to do by accident: a client that always
+  asked for the baseline produced baseline signatures everywhere,
+  successfully and silently, no matter how the site was configured. To
+  ask for a specific level anyway, set it: `options.level =
+  SignatureLevel::BB`. `Auto` is request-only — a result always reports
+  the level actually produced and never reports `Auto`.
 - **Qt client library** (`LibreAgent::ClientQt`): a transport-neutral,
   typed client for Qt/KDE desktop frontends. It exposes the agent as
   live `AgentClient` / `AgentReader` / `AgentCard` / `AgentOperation`

@@ -800,6 +800,29 @@ TEST(SocketIntegration, SignTypedOptionsToWireAndArtifactBack)
     EXPECT_TRUE(op->signMeta().value(QStringLiteral("tsaUsed")).toBool());
 }
 
+TEST(SocketIntegration, AutoLevelIsSentAsTheAutoSentinel)
+{
+    FakeSocketAgent::Config cfg;
+    cfg.capabilities = Cap::Pki;
+    cfg.operationDelayMs = 15;
+    SocketHarness h(cfg);
+
+    auto client = makeClient(h);
+    AgentCard* card = client->card(QLatin1String(kCardId));
+    ASSERT_NE(card, nullptr);
+
+    AgentOperation* op = card->sign(QStringLiteral("cert-for-sign"),
+                                    makeMemfdDocument(QByteArrayLiteral("deferred-level")), SignOptions{});
+    ASSERT_NE(op, nullptr);
+    ASSERT_TRUE(waitFor([&]() { return op->isFinished(); }));
+    EXPECT_EQ(op->status(), OperationStatus::Ok);
+
+    // Asserted on the EMITTED value, not on the sign outcome: an empty string
+    // would also be accepted by today's frontend, so only the bytes
+    // distinguish the contractual sentinel from the tolerated accident.
+    EXPECT_EQ(h.lastSignOptions().value(QStringLiteral("level")).toString(), QStringLiteral("auto"));
+}
+
 // ---- batch signing: happy path, mid-batch halt, in-order delivery, gates --------------
 
 TEST(SocketIntegration, SignBatchHappyPathSignsEveryDocumentUnderOneConsent)

@@ -154,7 +154,33 @@ get-appearance-font = ( t: "GetAppearanceFont" )
 ; visualSignature attaches a PAdES visible-signature appearance; rejected at
 ; method entry on any other format. Gated behind the "visual-sign" feature
 ; token, same posture as tsaUrl above.
-sign-opts     = { format: tstr, level: tstr, packaging: tstr,
+; The three sign-option vocabularies, as CLOSED groups rather than bare tstr.
+; Each has a resolved form (what a signature can actually be) and a requested
+; form (what a client may ask for), because "auto" is REQUEST-ONLY: sign-meta
+; always reports a concrete resolution and can never carry it.
+; The agent enforces exactly these sets at method entry
+; (SignatureParams::isKnownFormat / isKnownLevel / isKnownPackaging); the
+; groups state what has always been enforced, they narrow nothing.
+; "" is NOT a member: the socket frontend tolerates it for robustness, but no
+; client in this stack emits it and it is not contractual.
+;
+; Only the three RESOLVED forms are closed groups the manifest carries. Each
+; requested-* form names its resolved form plus the sentinel, which makes it a
+; rule reference rather than a bare alternation, and the vocabulary reader
+; deliberately reports only rules whose right-hand side is nothing but quoted
+; literals. Spelling the four levels out a second time here to make the
+; requested form "closed" too would reintroduce exactly the hand-copied
+; vocabulary this manifest exists to eliminate.
+sign-level          = "b-b" / "b-t" / "b-lt" / "b-lta"
+requested-level     = sign-level / "auto"        ; "auto": the agent's configured DefaultLevel (+ its TSA-derived upgrade)
+sign-format         = "pades" / "cades" / "xades" / "jades" / "asice"
+requested-format    = sign-format / "auto"       ; "auto": sniffed from the document's leading bytes
+; "enveloping" is deliberately absent -- it exists nowhere below the C++ agent
+; client: not in isKnownPackaging, not in LibreMiddleware's PackagingMode, not
+; in the signing engine.
+packaging-mode      = "enveloped" / "detached"
+requested-packaging = packaging-mode / "auto"    ; "auto": enveloped for PAdES/ASiC-E, detached otherwise
+sign-opts     = { format: requested-format, level: requested-level, packaging: requested-packaging,
                   ? allowExpired: bool, ? displayName: tstr, ? reason: tstr, ? location: tstr,
                   ? tsaUrl: tstr, ? visualSignature: visual-sig-opts }
 ; page is 0-based; x/y/width/height are PDF user units (float64). All six
@@ -401,7 +427,9 @@ id-field         = [ labelKey: tstr, labelFallback: tstr, type: tstr, value: tst
 photo-result     = { kind: "Photo",        photos: [* { key: tstr, fd: fd-index }] }  ; key = "group:field"
 cert-list-result = { kind: "Certificates", certs: [* cert-info] }
 sign-result      = { kind: "Sign",         artifact: fd-index, meta: sign-meta }
-sign-meta = { format: tstr, level: tstr, tsaUsed: bool, chainComplete: bool }
+; The RESOLVED forms, never the requested ones: a result reports what was
+; actually produced, so "auto" can never appear here.
+sign-meta = { format: sign-format, level: sign-level, tsaUsed: bool, chainComplete: bool }
 ; SignBatch's result: one row per input document, in the SAME order. A
 ; successful row's `artifact` is the signed AdES bytes; a failed row's
 ; `artifact` is the wire's pinned zero-length-sealed-memfd convention (a

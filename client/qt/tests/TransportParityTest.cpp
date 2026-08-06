@@ -733,15 +733,26 @@ private:
 // operation this wire has no way to release without cancelling the read).
 // Everything else about the verb IS parity, and the scenario below asserts
 // that part against both wires with one body.
+// kAutoLevelOnTheWire: how a request that DEFERS the level is spelled on this
+// transport. nullptr means "the key is absent". This is the ONE place these
+// two wires deliberately differ, and it is dated, not idiomatic: a PUBLISHED
+// D-Bus agent rejects the "auto" token, while the socket's sign-opts REQUIRES
+// the field, so the deferral is spelled as an absent key on one and as the
+// token on the other. Both resolve to the agent's configured DefaultLevel.
+//
+// Retire this constant and emit "auto" on both wires once the patched D-Bus
+// agent is deployed everywhere.
 struct DBusPolicy
 {
     using Env = DBusEnv;
     static constexpr int kWarmOperationsOnTheWire = 1;
+    static constexpr const char* kAutoLevelOnTheWire = nullptr;
 };
 struct SocketPolicy
 {
     using Env = SocketEnv;
     static constexpr int kWarmOperationsOnTheWire = 0;
+    static constexpr const char* kAutoLevelOnTheWire = "auto";
 };
 
 class ParityPolicyNames
@@ -1243,6 +1254,40 @@ TYPED_TEST(TransportParity, SignWithTsaUrlAndVisualSignatureForwardsIdenticallyA
     EXPECT_EQ(QCryptographicHash::hash(receivedArtifact, QCryptographicHash::Sha256),
               QCryptographicHash::hash(cfg.signArtifactBytes, QCryptographicHash::Sha256));
     EXPECT_EQ(op->signMeta(), cfg.signMeta);
+}
+
+// A parity suite exists to assert SAMENESS, so a case asserting a difference
+// has to say why it exists and when it stops being needed — otherwise the next
+// reader takes the asymmetry as sanctioned and permanent. See
+// DBusPolicy/SocketPolicy's kAutoLevelOnTheWire for both.
+TYPED_TEST(TransportParity, AutoLevelSpellingDivergesUntilTheDBusAgentAcceptsTheSentinel)
+{
+    using Env = typename TypeParam::Env;
+    ParityConfig cfg;
+    cfg.capabilities = Cap::Pki;
+    Env env(cfg);
+
+    AgentCard* card = env.card();
+    ASSERT_NE(card, nullptr);
+    SignOptions options; // level defaults to Auto
+    AgentOperation* op =
+        card->sign(QStringLiteral("cert-for-sign"), makeMemfdDocument(QByteArrayLiteral("deferred")), options);
+    ASSERT_NE(op, nullptr);
+    ASSERT_TRUE(waitFor([&]() { return op->isFinished(); }));
+    EXPECT_EQ(op->status(), OperationStatus::Ok);
+
+    const QVariantMap wireOptions = env.lastSignOptions();
+    if (TypeParam::kAutoLevelOnTheWire == nullptr) {
+        EXPECT_FALSE(wireOptions.contains(QStringLiteral("level")))
+            << "an absent key is how this transport spells the deferral";
+    } else {
+        EXPECT_EQ(wireOptions.value(QStringLiteral("level")).toString(),
+                  QString::fromLatin1(TypeParam::kAutoLevelOnTheWire))
+            << "this transport's sign-opts requires the field, so the sentinel must be spelled";
+    }
+    // Everything else about the request is identical, as always.
+    EXPECT_EQ(wireOptions.value(QStringLiteral("format")).toString(), QStringLiteral("pades"));
+    EXPECT_EQ(wireOptions.value(QStringLiteral("packaging")).toString(), QStringLiteral("enveloped"));
 }
 
 // ---- feature-gated sign: tsaUrl/visualSignature without their tokens

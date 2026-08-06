@@ -32,6 +32,11 @@ std::string_view toToken(SignatureLevel level) noexcept
         return "b-lt";
     case SignatureLevel::BLTA:
         return "b-lta";
+    case SignatureLevel::Auto:
+        // No wire token: AgentCard omits the "level" key for Auto and the
+        // socket transport materialises the "auto" sentinel in its place.
+        // Reaching this arm means a caller bypassed that path.
+        return {};
     }
     return {};
 }

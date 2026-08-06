@@ -62,7 +62,9 @@ TEST(TokenMap, SignatureLevelTokensMatchTheWireVocabulary)
     EXPECT_EQ(toToken(SignatureLevel::BLTA), "b-lta");
 }
 
-TEST(TokenMap, SignatureLevelRoundTripsEveryValue)
+// Every RESOLVED level. `Auto` is deliberately absent: it is request-only and
+// has no token at all, which the two cases below pin.
+TEST(TokenMap, SignatureLevelRoundTripsEveryResolvedValue)
 {
     for (const auto value : {SignatureLevel::BB, SignatureLevel::BT, SignatureLevel::BLT, SignatureLevel::BLTA}) {
         const std::string_view token = toToken(value);
@@ -71,6 +73,21 @@ TEST(TokenMap, SignatureLevelRoundTripsEveryValue)
         ASSERT_TRUE(back.has_value());
         EXPECT_EQ(*back, value);
     }
+}
+
+TEST(TokenMap, AutoIsRequestOnlyAndHasNoOutboundToken)
+{
+    // Auto never travels as a token: AgentCard omits the key for it.
+    EXPECT_TRUE(detail::toToken(SignatureLevel::Auto).empty());
+    // And a decode never produces it: the agent reports a RESOLVED level in
+    // sign-meta and can never report "auto".
+    EXPECT_FALSE(detail::signatureLevelFromToken("auto").has_value());
+}
+
+TEST(TokenMap, SignOptionsDefaultsToLettingTheAgentDecide)
+{
+    const LibreSCRS::AgentClient::SignOptions options;
+    EXPECT_EQ(options.level, LibreSCRS::AgentClient::SignatureLevel::Auto);
 }
 
 TEST(TokenMap, SignatureLevelUnknownTokenIsNullopt)

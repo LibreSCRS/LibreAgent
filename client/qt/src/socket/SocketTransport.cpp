@@ -521,6 +521,13 @@ Wire::SignOpts toSignOpts(const QVariantMap& options)
             qCWarning(lcSocket) << "sign option" << key << "has no sign-opts field on the socket wire; dropped";
         }
     }
+    // This wire's sign-opts REQUIRES the field, so absence has to be spelled.
+    // Spell it with the contract's sentinel rather than the empty string
+    // default-construction would leave: the frontend accepts both, but only
+    // "auto" is in the CDDL's requested-level group.
+    if (!options.contains(QStringLiteral("level"))) {
+        opts.level = "auto";
+    }
     return opts;
 }
 

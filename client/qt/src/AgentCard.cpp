@@ -28,7 +28,20 @@ QVariantMap signOptionsMap(const SignOptions& options)
 {
     QVariantMap map = options.extra;
     map.insert(QStringLiteral("format"), tokenString(detail::toToken(options.format)));
-    map.insert(QStringLiteral("level"), tokenString(detail::toToken(options.level)));
+    // Auto is expressed by ABSENCE, not by a token: the D-Bus agent reads a
+    // missing key as "apply the configured default", and the socket transport
+    // materialises the wire's "auto" sentinel for its required field.
+    //
+    // REMOVE rather than merely skip: this function's contract, three lines
+    // above, is that the typed members override any same-named key in `extra`.
+    // Skipping the insert would silently invert that for `level` alone --
+    // a caller-supplied extra["level"] would start winning. The typed field can
+    // already express every level the wire accepts, so nothing is lost.
+    if (options.level == SignatureLevel::Auto) {
+        map.remove(QStringLiteral("level"));
+    } else {
+        map.insert(QStringLiteral("level"), tokenString(detail::toToken(options.level)));
+    }
     map.insert(QStringLiteral("packaging"), tokenString(detail::toToken(options.packaging)));
     if (!options.tsaUrl.isEmpty()) {
         map.insert(QStringLiteral("tsaUrl"), options.tsaUrl);

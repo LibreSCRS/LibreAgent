@@ -161,11 +161,14 @@ TEST(FdHandle, ReleaseOnAnInvalidHandleReturnsMinusOne)
 
 // ---- plain value-type aggregates --------------------------------------
 
-TEST(SignOptionsValueType, DefaultsMatchTheAgentsInvisibleBaselineEnvelopedDefault)
+TEST(SignOptionsValueType, DefaultsMatchTheAgentsInvisibleEnvelopedDefaultAndDeferTheLevel)
 {
     SignOptions opts;
     EXPECT_EQ(opts.format, SignatureFormat::PAdES);
-    EXPECT_EQ(opts.level, SignatureLevel::BB);
+    // The level is the ONE default that is not a value of its own: it defers to
+    // whatever the agent is configured for. A client that wants the baseline
+    // has to say so.
+    EXPECT_EQ(opts.level, SignatureLevel::Auto);
     EXPECT_EQ(opts.packaging, Packaging::Enveloped);
     EXPECT_TRUE(opts.visualSignature.isEmpty());
     EXPECT_TRUE(opts.tsaUrl.isEmpty());

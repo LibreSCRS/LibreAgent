@@ -37,10 +37,16 @@
 //                      `cred-recovery`
 //   cred record keys : CredentialRecord.h field names <-> CDDL `cred-record` keys
 //   cred verbs       : CDDL `cred-verb` string literals (no upstream enum)
+//   sign options     : LibreSCRS/Agent/operations/SignatureParams.h kSignFormats/
+//                      kSignLevels/kPackagingModes <-> CDDL `sign-format`/
+//                      `sign-level`/`packaging-mode` (the RESOLVED forms; the
+//                      requested-* forms add the "auto" sentinel and are checked
+//                      separately, since a manifest cannot carry a rule reference)
 
 #include <LibreSCRS/Agent/value/ErrorTaxonomy.h>
 #include <LibreSCRS/Agent/value/CredentialRecord.h>
 #include <LibreSCRS/Agent/OperationPhase.h>
+#include <LibreSCRS/Agent/operations/SignatureParams.h>
 
 #include <LibreSCRS/Plugin/PluginTypes.h>
 #include <LibreSCRS/Plugin/PinStatusEntry.h>
@@ -58,6 +64,7 @@
 #include <set>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 namespace {
@@ -1023,15 +1030,80 @@ TEST(WireContractGuard, CddlCredentialRecordKeysMatchContract)
 // mirror it in the clients, or record it here as knowingly unmirrored. Without
 // this, a new vocabulary simply would not be checked anywhere, which is the
 // quietest way for a gate to stop covering what people believe it covers.
+// The three sign-option vocabularies match the closed sets the agent actually
+// enforces at method entry. Compared in ORDER, not as sets: these arrays are
+// written in the grammar's own order, so an entry-for-entry comparison also
+// catches a reorder that a set comparison would wave through.
+TEST(WireContractGuard, CddlSignOptionVocabulariesMatchAgentValidators)
+{
+    namespace sp = LibreSCRS::Agent::Operations::SignatureParams;
+    const std::string cddl = slurp(LIBRESCRS_AGENT_WIRE_CDDL);
+    ASSERT_FALSE(cddl.empty()) << "wire CDDL source path not wired";
+
+    const auto expectVocabulary = [&cddl](const std::string& rule, const auto& vocabulary) {
+        const auto tokens = cddlQuotedTokens(cddlRuleRhs(cddl, rule));
+        ASSERT_EQ(tokens.size(), vocabulary.size()) << "the CDDL `" << rule << "` group changed size";
+        for (std::size_t i = 0; i < vocabulary.size(); ++i) {
+            EXPECT_EQ(tokens[i], vocabulary[i]) << rule << " token " << i << " drifted";
+        }
+    };
+
+    expectVocabulary("sign-format", sp::kSignFormats);
+    expectVocabulary("sign-level", sp::kSignLevels);
+    expectVocabulary("packaging-mode", sp::kPackagingModes);
+
+    // Every member of each resolved group is accepted by the validator that
+    // guards it, and the sentinel is accepted by NONE of them: "auto" is
+    // resolved before validation, never validated.
+    for (const auto format : sp::kSignFormats) {
+        EXPECT_TRUE(sp::isKnownFormat(format)) << "grammar admits a format the agent rejects: " << format;
+    }
+    for (const auto level : sp::kSignLevels) {
+        EXPECT_TRUE(sp::isKnownLevel(level)) << "grammar admits a level the agent rejects: " << level;
+    }
+    for (const auto packaging : sp::kPackagingModes) {
+        EXPECT_TRUE(sp::isKnownPackaging(packaging)) << "grammar admits a packaging the agent rejects: " << packaging;
+    }
+    EXPECT_FALSE(sp::isKnownFormat("auto"));
+    EXPECT_FALSE(sp::isKnownLevel("auto"));
+    EXPECT_FALSE(sp::isKnownPackaging("auto"));
+}
+
+// Each requested-* form is its resolved form PLUS the sentinel, and nothing
+// else. The manifest cannot carry these — a right-hand side naming another rule
+// is not a bare literal alternation, so the vocabulary reader does not report
+// it — which is exactly why they are asserted here instead. Without this, the
+// sentinel could be dropped from one requested form, or a fourth member could
+// be smuggled into one, and no gate in the stack would notice.
+TEST(WireContractGuard, CddlRequestedFormsAreTheResolvedFormPlusTheSentinel)
+{
+    const std::string cddl = slurp(LIBRESCRS_AGENT_WIRE_CDDL);
+    ASSERT_FALSE(cddl.empty()) << "wire CDDL source path not wired";
+
+    for (const auto& [requested, resolved] :
+         std::vector<std::pair<std::string, std::string>>{{"requested-format", "sign-format"},
+                                                          {"requested-level", "sign-level"},
+                                                          {"requested-packaging", "packaging-mode"}}) {
+        const std::string rhs = cddlRuleRhs(cddl, requested);
+        EXPECT_NE(rhs.find(resolved), std::string::npos)
+            << requested << " no longer names " << resolved << ", so the two can drift apart";
+        // The ONLY quoted literal on the requested side is the sentinel: the
+        // resolved members arrive by reference, never re-spelled here.
+        const auto literals = cddlQuotedTokens(rhs);
+        ASSERT_EQ(literals.size(), 1U) << requested << " should add exactly one literal, the sentinel";
+        EXPECT_EQ(literals[0], "auto") << requested << "'s added literal is not the sentinel";
+    }
+}
+
 TEST(WireContractGuard, ClosedVocabulariesAreTheExpectedSet)
 {
     const std::string cddl = slurp(LIBRESCRS_AGENT_WIRE_CDDL);
     ASSERT_FALSE(cddl.empty()) << "wire CDDL source path not wired";
 
     const std::set<std::string> expected = {
-        "capability-bit", "cred-kind",           "cred-outcome", "cred-recovery", "cred-state",
-        "cred-verb",      "error-code",          "op-phase",     "op-status",     "pre-read-auth",
-        "quiesce-reason", "settable-config-key", "sync-error",   "unblock-style",
+        "capability-bit", "cred-kind",      "cred-outcome",        "cred-recovery",  "cred-state",    "cred-verb",
+        "error-code",     "op-phase",       "op-status",           "packaging-mode", "pre-read-auth", "sign-format",
+        "sign-level",     "quiesce-reason", "settable-config-key", "sync-error",     "unblock-style",
     };
 
     std::set<std::string> found;

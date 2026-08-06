@@ -352,10 +352,73 @@ TEST(SeamMapping, DefaultSignOptionsOmitOptionalKeys)
     ASSERT_EQ(h.fake->starts.size(), 1u);
     const auto& record = h.fake->starts.front();
     EXPECT_EQ(record.options.value(QStringLiteral("format")).toString(), QStringLiteral("pades"));
-    EXPECT_EQ(record.options.value(QStringLiteral("level")).toString(), QStringLiteral("b-b"));
+    // The defaulted level is absent, not empty: on this wire an absent key
+    // already means "apply the configured default", and an empty token is not
+    // in the contract's requested-level group.
+    EXPECT_FALSE(record.options.contains(QStringLiteral("level")));
     EXPECT_EQ(record.options.value(QStringLiteral("packaging")).toString(), QStringLiteral("enveloped"));
     EXPECT_FALSE(record.options.contains(QStringLiteral("tsaUrl")));
     EXPECT_FALSE(record.options.contains(QStringLiteral("visualSignature")));
+}
+
+TEST(SeamMapping, AutoLevelOmitsTheKeyEntirely)
+{
+    ClientOnFake h;
+    h.fake->nextOperationId = QStringLiteral("/op/1");
+    AgentCard* card = h.client->card(QStringLiteral("/card/0"));
+    ASSERT_NE(card, nullptr);
+
+    SignOptions options; // level defaults to Auto
+    options.format = SignatureFormat::CAdES;
+    FdHandle document{::open("/dev/null", O_RDONLY | O_CLOEXEC)};
+    (void)card->sign(QStringLiteral("c"), std::move(document), options);
+
+    ASSERT_EQ(h.fake->starts.size(), 1u);
+    const auto& record = h.fake->starts.front();
+    EXPECT_FALSE(record.options.contains(QStringLiteral("level")));
+    EXPECT_EQ(record.options.value(QStringLiteral("format")).toString(), QStringLiteral("cades"));
+}
+
+// Both sign entry points share signOptionsMap, and a batch carries ONE level
+// for every document in it: a deployment configured for an archive-timestamped
+// level turns a twelve-document batch into twelve archive timestamps and twelve
+// timestamp round-trips. Correct — the deployment asked for that — but the
+// batch path is where it costs the most, so it is pinned separately.
+TEST(SeamMapping, AutoLevelOmitsTheKeyOnABatchRequestToo)
+{
+    ClientOnFake h;
+    h.fake->nextOperationId = QStringLiteral("/op/1");
+    AgentCard* card = h.client->card(QStringLiteral("/card/0"));
+    ASSERT_NE(card, nullptr);
+
+    h.fake->featureTokens = QStringList{QStringLiteral("batch-sign")}; // else refused locally, before the seam
+    std::vector<BatchDocument> docs;
+    docs.push_back({QStringLiteral("a.pdf"), FdHandle{::open("/dev/null", O_RDONLY | O_CLOEXEC)}});
+    docs.push_back({QStringLiteral("b.pdf"), FdHandle{::open("/dev/null", O_RDONLY | O_CLOEXEC)}});
+    (void)card->signBatch(QStringLiteral("c"), std::move(docs), SignOptions{});
+
+    ASSERT_EQ(h.fake->starts.size(), 1u);
+    EXPECT_FALSE(h.fake->starts.front().options.contains(QStringLiteral("level")));
+}
+
+// Deferring must REMOVE a colliding extra["level"], not merely skip the insert.
+// signOptionsMap's contract is that the typed members override any same-named
+// key in `extra`; skipping would silently invert that for `level` alone and let
+// a caller-supplied token win over the typed decision to defer.
+TEST(SeamMapping, AutoLevelRemovesACollidingExtraKey)
+{
+    ClientOnFake h;
+    h.fake->nextOperationId = QStringLiteral("/op/1");
+    AgentCard* card = h.client->card(QStringLiteral("/card/0"));
+    ASSERT_NE(card, nullptr);
+
+    SignOptions options; // Auto
+    options.extra.insert(QStringLiteral("level"), QStringLiteral("b-b"));
+    FdHandle document{::open("/dev/null", O_RDONLY | O_CLOEXEC)};
+    (void)card->sign(QStringLiteral("c"), std::move(document), options);
+
+    ASSERT_EQ(h.fake->starts.size(), 1u);
+    EXPECT_FALSE(h.fake->starts.front().options.contains(QStringLiteral("level")));
 }
 
 TEST(SeamMapping, TypedSignOptionsOverrideCollidingExtraKeys)
