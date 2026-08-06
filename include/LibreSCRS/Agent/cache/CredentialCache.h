@@ -153,55 +153,45 @@ CredentialCache::requestCredential(const std::string& cardKey, const LibreSCRS::
     // cacheable pre-read secrets; PIN/PUK (or an absent kind) are routed to an
     // error because PIN is never cached and the agent's pre-read flow does not
     // collect PIN-as-PACE-password here.
+    // One shared cache-hit / prompt / cancel / error / store sequence for both
+    // cacheable kinds, parameterized on the cache accessors, the prompter
+    // member and the wire kind constant. The CAN and MRZ case labels below
+    // differ only in what they bind here, so a future change to the sequence
+    // (e.g. richer retry context) cannot drift between the two branches.
+    auto cacheOrPrompt = [&](const char* wireKind, auto getter, auto putter, auto promptFn) -> CredentialResult {
+        if (auto cached = (this->*getter)(cardKey)) {
+            return buildOk(wireKind, *cached);
+        }
+        PromptOptions promptOpts = options;
+        applyRetryContext(cardKey, promptOpts);
+        const auto prompt = (prompter.*promptFn)(promptOpts);
+        if (prompt.status == PromptStatus::Cancelled) {
+            if (userCancelled != nullptr) {
+                userCancelled->store(true, std::memory_order_relaxed);
+            }
+            return CredentialResult::cancelled();
+        }
+        if (prompt.status != PromptStatus::Ok || !prompt.secret.has_value()) {
+            if (prompterFailed != nullptr && prompt.status == PromptStatus::Error) {
+                prompterFailed->store(true, std::memory_order_relaxed);
+            }
+            return buildError();
+        }
+        (this->*putter)(cardKey, *prompt.secret);
+        return buildOk(wireKind, *prompt.secret);
+    };
+
     const auto kind = req.paceKind();
     if (!kind.has_value()) {
         return buildError();
     }
     switch (*kind) {
-    case PaceSecretKind::Can: {
-        if (auto cached = getCan(cardKey)) {
-            return buildOk(PrompterWire::kKindCan, *cached);
-        }
-        PromptOptions promptOpts = options;
-        applyRetryContext(cardKey, promptOpts);
-        const auto prompt = prompter.requestCan(promptOpts);
-        if (prompt.status == PromptStatus::Cancelled) {
-            if (userCancelled != nullptr) {
-                userCancelled->store(true, std::memory_order_relaxed);
-            }
-            return CredentialResult::cancelled();
-        }
-        if (prompt.status != PromptStatus::Ok || !prompt.secret.has_value()) {
-            if (prompterFailed != nullptr && prompt.status == PromptStatus::Error) {
-                prompterFailed->store(true, std::memory_order_relaxed);
-            }
-            return buildError();
-        }
-        putCan(cardKey, *prompt.secret);
-        return buildOk(PrompterWire::kKindCan, *prompt.secret);
-    }
-    case PaceSecretKind::Mrz: {
-        if (auto cached = getMrz(cardKey)) {
-            return buildOk(PrompterWire::kKindMrz, *cached);
-        }
-        PromptOptions promptOpts = options;
-        applyRetryContext(cardKey, promptOpts);
-        const auto prompt = prompter.requestMrz(promptOpts);
-        if (prompt.status == PromptStatus::Cancelled) {
-            if (userCancelled != nullptr) {
-                userCancelled->store(true, std::memory_order_relaxed);
-            }
-            return CredentialResult::cancelled();
-        }
-        if (prompt.status != PromptStatus::Ok || !prompt.secret.has_value()) {
-            if (prompterFailed != nullptr && prompt.status == PromptStatus::Error) {
-                prompterFailed->store(true, std::memory_order_relaxed);
-            }
-            return buildError();
-        }
-        putMrz(cardKey, *prompt.secret);
-        return buildOk(PrompterWire::kKindMrz, *prompt.secret);
-    }
+    case PaceSecretKind::Can:
+        return cacheOrPrompt(PrompterWire::kKindCan, &CredentialCache::getCan, &CredentialCache::putCan,
+                             &PrompterT::requestCan);
+    case PaceSecretKind::Mrz:
+        return cacheOrPrompt(PrompterWire::kKindMrz, &CredentialCache::getMrz, &CredentialCache::putMrz,
+                             &PrompterT::requestMrz);
     case PaceSecretKind::Pin:
     case PaceSecretKind::Puk:
         return buildError();

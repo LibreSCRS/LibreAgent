@@ -91,12 +91,8 @@ CredentialOpResult runKeyActivation(KeyActivationFlowDeps deps)
         }
         if (opened.status != FlowPrelude::OpenStatus::Ok) {
             // No ErrorCode rides a CredentialOpResult; classify the open failure onto
-            // the outcome vocabulary. A lost/absent card is CardRemoved; anything else
-            // is the unclassified-failure outcome (mapped to CommunicationError on the
-            // wire by the outcome->code overload).
-            const auto outcome = (opened.code == ErrorCode::CardRemoved) ? CredentialOutcome::CardRemoved
-                                                                         : CredentialOutcome::Unspecified;
-            return nonSeamResult(outcome, deps.pinActivated);
+            // the outcome vocabulary via the helper shared with PinChangeFlow.
+            return nonSeamResult(FlowPrelude::openFailureOutcome(opened.code), deps.pinActivated);
         }
         auto session = std::move(opened.session);
         // Activation drives the signing key, so route across the signing-capable

@@ -5,6 +5,7 @@
 #include <LibreSCRS/Agent/operations/CardSessionHolder.h>
 #include <LibreSCRS/Agent/OperationPhase.h> // OperationPhase enum
 #include <LibreSCRS/Agent/operations/SerializingPrompter.h>
+#include <LibreSCRS/Agent/value/CredentialRecord.h> // CredentialOutcome
 #include <LibreSCRS/Auth/AuthRequirement.h>
 #include <LibreSCRS/Auth/CredentialResult.h>
 #include <cstdint>
@@ -67,6 +68,11 @@ OpenOutcome openSession(CardSessionHolder& holder, const LibreSCRS::CancelToken&
                        .candidates = std::move(candidates),
                        .code = ErrorCode::None,
                        .msgFallback = {}};
+}
+
+CredentialOutcome openFailureOutcome(ErrorCode code) noexcept
+{
+    return code == ErrorCode::CardRemoved ? CredentialOutcome::CardRemoved : CredentialOutcome::Unspecified;
 }
 
 LibreSCRS::Auth::CredentialProvider makeReadCredentialProvider(

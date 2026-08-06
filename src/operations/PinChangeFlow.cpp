@@ -64,17 +64,6 @@ constexpr std::string_view kVerbActivatePin = "activate_pin";
     return r;
 }
 
-// Session-open failures reach the credential vocabulary as: a card that is gone
-// (NoCardPresent -> ErrorCode::CardRemoved) -> the agent-assigned CardRemoved
-// outcome; any other open failure -> the non-card Unspecified. A pre-seam open
-// failure never reached the card, so nothing on it moved (and the caches stay
-// intact — reachedCard is still false here). This mirrors KeyActivationFlow's
-// identical classification. Cancellation is handled before this is called.
-[[nodiscard]] CredentialOutcome openFailureOutcome(ErrorCode code) noexcept
-{
-    return code == ErrorCode::CardRemoved ? CredentialOutcome::CardRemoved : CredentialOutcome::Unspecified;
-}
-
 } // namespace
 
 std::expected<void, EntryError> validatePinManageRequest(const PinManageRequest& r, const CredentialSnapshot* snapshot)
@@ -158,7 +147,7 @@ CredentialOpResult runPinManage(PinManageFlowDeps& deps, const PinManageRequest&
             return resultWith(CredentialOutcome::UserCancelled);
         }
         if (opened.status != FlowPrelude::OpenStatus::Ok) {
-            return resultWith(openFailureOutcome(opened.code));
+            return resultWith(FlowPrelude::openFailureOutcome(opened.code));
         }
         auto session = std::move(opened.session);
         // Route the change across the PIN-management-capable candidate subset (the

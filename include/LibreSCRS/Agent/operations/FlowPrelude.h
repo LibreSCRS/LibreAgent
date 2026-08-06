@@ -52,6 +52,15 @@ struct OpenOutcome
 // maps these onto its own Result type (each flow owns its msgKey).
 [[nodiscard]] OpenOutcome openSession(CardSessionHolder& holder, const LibreSCRS::CancelToken& token);
 
+// Classify a failed openSession() code onto the credential-outcome vocabulary,
+// shared by the mutation flows (PinChangeFlow, KeyActivationFlow): a card that
+// is gone (ErrorCode::CardRemoved) becomes the agent-assigned CardRemoved
+// outcome; any other open failure is the non-card Unspecified (mapped to
+// CommunicationError on the wire by the outcome->code overload). A pre-seam
+// open failure never reached the card, so nothing on it moved and the caches
+// stay intact. Cancellation is handled by the caller before this is consulted.
+[[nodiscard]] CredentialOutcome openFailureOutcome(ErrorCode code) noexcept;
+
 // The READ credential provider, shared by IdentityReadFlow + CertReadFlow:
 // routes the cacheable CAN/MRZ through the cache (PIN is never reached here) and
 // surfaces AwaitingConsent on a real prompt. SignFlow builds its own provider
