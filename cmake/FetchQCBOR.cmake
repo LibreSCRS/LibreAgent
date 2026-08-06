@@ -41,3 +41,33 @@ unset(_libredarwin_saved_shared)
 
 # QCBOR is a C library with no ABI-affecting C++ concerns; keep it out of the
 # project's -fexperimental-library / C++23 flags (it compiles as C).
+
+# Compile qcbor's objects with hidden visibility, so that nothing carrying them
+# re-exports its C names.
+#
+# These objects are folded straight into libLibreAgentWire.a, which in turn is
+# folded into the shared Qt client library -- and ELF resolves an unmangled C
+# name process-wide by first definition. A desktop session loads many plugins,
+# several of which may carry their own copy of this same C library; exporting
+# ours lets the two cross-bind, in whichever direction load order decides, on
+# the path that decodes data arriving from a smart card. Hiding the names
+# closes it in both directions at once: nothing outside can bind to ours, and
+# ours can no longer be preempted from outside.
+#
+# Set on the qcbor target rather than on a consumer, because visibility is
+# decided when the object is COMPILED. The consumers' own
+# `CXX_VISIBILITY_PRESET hidden` cannot reach these: it applies to this
+# project's C++ sources, not to pre-compiled objects arriving from a
+# dependency, and not to C at all.
+#
+# This does not affect linking against the static archive. Hidden visibility
+# constrains what a SHARED object re-exports; a symbol stays fully linkable
+# within whatever shared object or executable folds the archive in, which is
+# exactly how every consumer here uses it.
+#
+# Held by ClientQtVendoredExportsTest, which reads the built library's dynamic
+# symbol table rather than trusting this setting to have had its intended
+# effect.
+if(TARGET qcbor)
+    set_target_properties(qcbor PROPERTIES C_VISIBILITY_PRESET hidden)
+endif()

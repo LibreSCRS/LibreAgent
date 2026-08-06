@@ -324,3 +324,18 @@ endif()
 # The header-self-sufficiency / no-Qt-DBus-KF6-LM-QCBOR-leak acceptance
 # harness -- its own subdirectory, see that CMakeLists.txt.
 add_subdirectory(HeaderAcceptance)
+
+# The shipped library must export NOTHING from the vendored CBOR library it
+# folds in. ELF resolves an unmangled C name process-wide by first definition,
+# so exporting those names lets a process that also carries its own copy
+# cross-bind the two -- on the path that decodes data coming off a card. The
+# check reads the real built library's dynamic symbol table, so it is a
+# statement about the artifact rather than about the source that produced it.
+#
+# ELF-only by nature: Mach-O records the defining library in each reference
+# (two-level namespace), so the hazard does not exist there.
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    add_test(NAME ClientQtVendoredExportsTest
+             COMMAND ${PROJECT_SOURCE_DIR}/ci/scripts/check-vendored-exports.sh
+                     $<TARGET_FILE:LibreAgentClientQt>)
+endif()

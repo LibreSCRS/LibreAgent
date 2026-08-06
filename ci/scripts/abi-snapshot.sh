@@ -124,6 +124,15 @@
 #
 # Known filter gaps (they apply to every symbol section):
 #
+#   - Every section is filtered to this project's own namespace, so a symbol
+#     exported from a VENDORED dependency folded into one of these artifacts is
+#     invisible here and always was. That is deliberate — this baseline tracks
+#     the project's ABI, not its link closure — but it means this gate is not
+#     the one watching for a vendored C library leaking its unmangled names
+#     into a shared object's dynamic table. ClientQtVendoredExportsTest watches
+#     that, by reading the built library's dynamic symbol table directly.
+#     Corollary worth stating because it is counter-intuitive: hiding 111 such
+#     symbols moved this baseline by ZERO lines.
 #   - A function-template instantiation demangles with a return-type prefix
 #     (e.g. "std::shared_ptr<T> LibreSCRS::Agent::f<..>(..)") and would escape
 #     the leading-prefix match — fail-open. No surface contains such symbols
