@@ -82,10 +82,25 @@ struct OpenOutcome
 // activation throw — without this signal a user-dismissed CAN prompt would be
 // indistinguishable from a live card advertising no PIN credentials (and would
 // be cached as a valid empty snapshot).
+//
+// @p providerMarkedWrong (A2, sec I3, optional/may be null) is the re-key
+// signal channel, provider-scoped so parallel readers never cross-talk. When
+// the incoming AuthRequirement's reasonForUser carries preReadAuthFailed().key
+// (LM sets it ONLY on a re-prompt after a wrong-secret rejection in the SAME
+// activation — M5′), the provider FIRST calls
+// cache.markCredentialWrong(cardKey, preReadAuthFailed().key) — evicting the
+// rejected value AND arming applyRetryContext, so the re-prompt carries
+// attempt/last_error instead of replaying the rejected secret. The flag is set
+// true iff, after that invocation, the value now live for LM is the one THIS
+// provider marked wrong AND did not replace with a freshly collected value; the
+// flow's AuthFailed branch consults it to skip its own markCredentialWrong so a
+// rejected value is marked EXACTLY once (truthful attempt numbering). A
+// same-kind re-invocation WITHOUT the signal serves the cache normally.
 [[nodiscard]] LibreSCRS::Auth::CredentialProvider makeReadCredentialProvider(
     CredentialCache& cache, PrompterClientBase& prompter, PromptSerializer& serializer, OperationPhaseSink& phaseSink,
     std::string cardKey, std::string requester, std::string artifact, LibreSCRS::CancelToken token,
-    std::shared_ptr<std::atomic<bool>> prompterFailed, std::shared_ptr<std::atomic<bool>> userCancelled = {});
+    std::shared_ptr<std::atomic<bool>> prompterFailed, std::shared_ptr<std::atomic<bool>> userCancelled = {},
+    std::shared_ptr<std::atomic<bool>> providerMarkedWrong = {});
 
 // Install @p provider on @p session and return a scope guard that, on
 // destruction, replaces it with a stateless no-op provider. Use in EVERY flow

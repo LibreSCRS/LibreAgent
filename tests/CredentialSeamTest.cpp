@@ -18,9 +18,11 @@
 #include <LibreSCRS/Agent/operations/LmSeams.h>
 
 #include <LibreSCRS/Auth/ErrorKeys.h>
+#include <LibreSCRS/CancelToken.h>
 #include <LibreSCRS/Plugin/CardPlugin.h>
 #include <LibreSCRS/Plugin/PinStatusEntry.h>
 #include <LibreSCRS/Plugin/PluginTypes.h>
+#include <LibreSCRS/Plugin/ReadResult.h>
 #include <LibreSCRS/Secure/String.h>
 #include <LibreSCRS/SmartCard/CardSession.h>
 
@@ -72,6 +74,36 @@ std::shared_ptr<LibreSCRS::SmartCard::CardSession> detachedSession()
 {
     return LibreSCRS::SmartCard::detail::makeDetachedCardSession("FakeReader");
 }
+
+// Stub whose readCard NVI reaches doReadCard directly (the base default
+// activationProfile is plain -- no secure-messaging activation), returning a
+// caller-configured ReadResult. Lets the LmCardReader::read structural-key
+// mapping be exercised without a real card or channel.
+class StructuralReadStubPlugin final : public LibreSCRS::Plugin::CardPlugin
+{
+public:
+    explicit StructuralReadStubPlugin(LibreSCRS::Plugin::ReadResult result) : m_result(std::move(result))
+    {
+        setIdentity("structural-read-stub", "stub", 0);
+    }
+    LibreSCRS::Plugin::CardCapabilities capabilities() const override
+    {
+        return LibreSCRS::Plugin::CardCapabilities::IdentityData;
+    }
+    std::span<const LibreSCRS::Plugin::Atr> supportedAtrs() const noexcept override
+    {
+        return {};
+    }
+
+protected:
+    LibreSCRS::Plugin::ReadResult doReadCard(LibreSCRS::SmartCard::CardSession&, GroupCallback) const override
+    {
+        return m_result;
+    }
+
+private:
+    LibreSCRS::Plugin::ReadResult m_result;
+};
 
 } // namespace
 
@@ -413,4 +445,44 @@ TEST(FakeCredentialManagerLock, UnseededMutationsAnswerUnsupported)
 TEST(PrompterWireKinds, ChangePinKindStringIsStable)
 {
     EXPECT_STREQ(LibreSCRS::PrompterWire::kKindChangePin, "change_pin");
+}
+
+// --- LmCardReader::read structural-key mapping (M4 agent half) --------------
+//
+// A structural pre-read failure carries a distinct ErrorKey. LmCardReader::read
+// must discriminate on the KEY -- not the status LM tags it with -- so a
+// structural failure never lands on AuthFailed and gets the credential wrongly
+// punished by the read flow's AuthFailed-only markCredentialWrong branch. Both
+// keys map onto EXISTING ReadOutcome statuses; zero ErrorCode growth.
+
+TEST(LmCardReaderStructuralMapping, PaceUnsupportedKeyMapsToUnsupportedCard)
+{
+    // LM tags "document does not support PACE" as authenticationFailed carrying
+    // the paceUnsupported key. The agent must remap it to UnsupportedCard so the
+    // flow treats it as a structural, not a wrong-credential, condition.
+    auto stub = std::make_shared<StructuralReadStubPlugin>(LibreSCRS::Plugin::ReadResult::authenticationFailed(
+        LibreSCRS::Auth::ErrorKeys::paceUnsupported(), std::string{"document does not support PACE"}));
+    CandidateList candidates{stub};
+    auto session = detachedSession();
+    LibreSCRS::CancelSource source;
+
+    const auto outcome = LmCardReader{}.read(*session, candidates, source.token());
+    EXPECT_EQ(outcome.status, ReadOutcome::Status::UnsupportedCard)
+        << "the paceUnsupported structural key must not surface as AuthFailed";
+}
+
+TEST(LmCardReaderStructuralMapping, PaceDowngradeDetectedKeyMapsToCommunicationError)
+{
+    // A detected secure-channel downgrade is an attack signal LM carries on the
+    // (non-auth) communicationError shape. The agent keeps it CommunicationError
+    // -- never AuthFailed -- so nothing evicts or punishes the credential for a
+    // structural/security abort.
+    auto stub = std::make_shared<StructuralReadStubPlugin>(LibreSCRS::Plugin::ReadResult::communicationError(
+        LibreSCRS::Auth::ErrorKeys::paceDowngradeDetected(), std::string{"secure-channel downgrade detected"}));
+    CandidateList candidates{stub};
+    auto session = detachedSession();
+    LibreSCRS::CancelSource source;
+
+    const auto outcome = LmCardReader{}.read(*session, candidates, source.token());
+    EXPECT_EQ(outcome.status, ReadOutcome::Status::CommunicationError) << "a downgrade abort is never AuthFailed";
 }

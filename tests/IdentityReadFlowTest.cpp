@@ -18,6 +18,7 @@
 
 #include <LibreSCRS/Auth/AuthRequirement.h>
 #include <LibreSCRS/Auth/CredentialResult.h>
+#include <LibreSCRS/Auth/ErrorKeys.h> // ErrorKeys::preReadAuthFailed (M5' rejection signal)
 #include <LibreSCRS/Auth/PaceSecretKind.h>
 #include <LibreSCRS/CancelToken.h>
 #include <LibreSCRS/LocalizedText.h>
@@ -44,6 +45,16 @@ LibreSCRS::Auth::AuthRequirement paceReq(PaceSecretKind kind)
 {
     return LibreSCRS::Auth::AuthRequirement::forPaceSecret(LibreSCRS::SmartCard::AppletAid{}, kind, std::nullopt,
                                                            LibreSCRS::LocalizedText{});
+}
+
+// A PACE requirement carrying the rejected-retry reason LM sets ONLY on a
+// re-prompt after a wrong-secret rejection in the same activation (M5'). The
+// A2 provider evicts and re-prompts on THIS shape, never on a bare same-kind
+// re-invocation.
+LibreSCRS::Auth::AuthRequirement rejectedPaceReq(PaceSecretKind kind)
+{
+    return LibreSCRS::Auth::AuthRequirement::forPaceSecret(LibreSCRS::SmartCard::AppletAid{}, kind, std::nullopt,
+                                                           LibreSCRS::Auth::ErrorKeys::preReadAuthFailed());
 }
 
 class FakeReader final : public CardReader
@@ -92,6 +103,10 @@ public:
     // returned secret lets the provider lambda complete a cache-miss prompt.
     PromptOptions lastCanOptions;
     PromptOptions lastMrzOptions;
+    // Count actual prompts so a test can distinguish a real re-prompt from a
+    // silent cache replay (the A2 eviction contract).
+    int canPrompts = 0;
+    int mrzPrompts = 0;
 
     PromptResult requestPin(const PromptOptions&) override
     {
@@ -99,6 +114,7 @@ public:
     }
     PromptResult requestCan(const PromptOptions& opts) override
     {
+        ++canPrompts;
         lastCanOptions = opts;
         PromptResult r;
         r.status = PromptStatus::Ok;
@@ -107,6 +123,7 @@ public:
     }
     PromptResult requestMrz(const PromptOptions& opts) override
     {
+        ++mrzPrompts;
         lastMrzOptions = opts;
         PromptResult r;
         r.status = PromptStatus::Ok;
@@ -466,4 +483,150 @@ TEST(IdentityReadFlow, StreamedGroupsAreIgnoredOnAFailedRead)
     EXPECT_EQ(result.code, ErrorCode::ParseError);
     ASSERT_EQ(h.groupSink.groups.size(), 1u);
     EXPECT_EQ(h.groupSink.groups[0].groupKey, "personal");
+}
+
+// --- A2: never replay a rejected pre-read secret (sec I3 re-key) ------------
+
+TEST(IdentityReadFlow, RejectedRetryPromptEvictsAndRepromptsWithContext)
+{
+    // When the incoming AuthRequirement carries the rejected-retry reason LM
+    // sets ONLY on a re-prompt after a wrong-secret rejection in the same
+    // activation (M5'), the provider must EVICT the just-rejected cached value
+    // and re-prompt WITH retry context -- never silently replay the rejected
+    // secret from cache (CredentialCache.h cache-hit branch bypassed BY
+    // EVICTION).
+    Harness h;
+    auto prompterFailed = std::make_shared<std::atomic<bool>>(false);
+    auto provider = FlowPrelude::makeReadCredentialProvider(h.cache, h.prompter, h.serializer, h.phaseSink, "card-A",
+                                                            h.requester, h.artifact, h.source.token(), prompterFailed);
+
+    // First prompt (empty reason) collects and caches a CAN.
+    auto first = provider(paceReq(PaceSecretKind::Can));
+    ASSERT_EQ(first.status, LibreSCRS::Auth::CredentialResult::Status::Ok);
+    EXPECT_EQ(h.prompter.canPrompts, 1);
+    ASSERT_TRUE(h.cache.hasCan("card-A"));
+
+    // Second invocation carries the M5' rejection signal: evict the cached CAN
+    // and PROMPT AGAIN (not replay); the re-prompt must carry attempt==2 and
+    // lastError==preReadAuthFailed().key.
+    auto second = provider(rejectedPaceReq(PaceSecretKind::Can));
+    ASSERT_EQ(second.status, LibreSCRS::Auth::CredentialResult::Status::Ok);
+    EXPECT_EQ(h.prompter.canPrompts, 2) << "the rejected value must be re-prompted, not replayed from cache";
+    EXPECT_EQ(h.prompter.lastCanOptions.attempt, 2u) << "the re-prompt numbers this the second attempt";
+    EXPECT_EQ(h.prompter.lastCanOptions.lastError, LibreSCRS::Auth::ErrorKeys::preReadAuthFailed().key)
+        << "the re-prompt carries the rejecting failure's msgKey";
+}
+
+TEST(IdentityReadFlow, PaceUnsupportedFallbackDoesNotMarkCredentialWrong)
+{
+    // sec I3 pin: a same-kind re-invocation WITHOUT the rejection signal (the
+    // PACE->BAC fallback / multi-candidate walk -- same kind, EMPTY reason) is
+    // NOT a rejection. The provider must serve the NEVER-REJECTED value from
+    // cache with no prompt and no eviction (replaying a rejected secret is what
+    // A2 prevents; replaying a correct one is required -- rev1's bare
+    // second-invocation rule would have evicted a correct MRZ). Passes
+    // vacuously today; reddens only if A2 regresses to invocation-counting.
+    Harness h;
+    auto prompterFailed = std::make_shared<std::atomic<bool>>(false);
+    auto provider = FlowPrelude::makeReadCredentialProvider(h.cache, h.prompter, h.serializer, h.phaseSink, "card-A",
+                                                            h.requester, h.artifact, h.source.token(), prompterFailed);
+
+    auto first = provider(paceReq(PaceSecretKind::Mrz));
+    ASSERT_EQ(first.status, LibreSCRS::Auth::CredentialResult::Status::Ok);
+    EXPECT_EQ(h.prompter.mrzPrompts, 1);
+    ASSERT_TRUE(h.cache.hasMrz("card-A"));
+
+    auto second = provider(paceReq(PaceSecretKind::Mrz)); // same kind, EMPTY reason -- no rejection
+    EXPECT_EQ(second.status, LibreSCRS::Auth::CredentialResult::Status::Ok);
+    EXPECT_EQ(h.prompter.mrzPrompts, 1) << "a same-kind re-invocation with no rejection serves the cache, no re-prompt";
+    EXPECT_TRUE(h.cache.hasMrz("card-A"))
+        << "no eviction: the never-rejected MRZ stays cached (no markCredentialWrong)";
+}
+
+TEST(IdentityReadFlow, FirstInvocationStillUsesWarmCache)
+{
+    // A2 keys on the REJECTION SIGNAL, not on cache age or invocation count: a
+    // cache warmed BEFORE the run (fresh provider) serves the hit with zero
+    // prompts.
+    Harness h;
+    h.cache.putCan("card-A", LibreSCRS::Secure::String{"123456"});
+    auto prompterFailed = std::make_shared<std::atomic<bool>>(false);
+    auto provider = FlowPrelude::makeReadCredentialProvider(h.cache, h.prompter, h.serializer, h.phaseSink, "card-A",
+                                                            h.requester, h.artifact, h.source.token(), prompterFailed);
+
+    auto cred = provider(paceReq(PaceSecretKind::Can));
+    EXPECT_EQ(cred.status, LibreSCRS::Auth::CredentialResult::Status::Ok);
+    EXPECT_EQ(h.prompter.canPrompts, 0) << "a warm cache serves with zero prompts";
+    EXPECT_TRUE(h.cache.hasCan("card-A"));
+}
+
+TEST(IdentityReadFlow, RejectedSecretIsMarkedWrongExactlyOnce)
+{
+    // Double-mark guard (sec I3): each rejected value is marked EXACTLY once, so
+    // the retry-context attempt number stays truthful. Two successive rejection
+    // signals must bump the attempt by exactly ONE each (2, then 3) -- never
+    // double-count a single rejected value.
+    Harness h;
+    auto prompterFailed = std::make_shared<std::atomic<bool>>(false);
+    auto provider = FlowPrelude::makeReadCredentialProvider(h.cache, h.prompter, h.serializer, h.phaseSink, "card-A",
+                                                            h.requester, h.artifact, h.source.token(), prompterFailed);
+
+    ASSERT_EQ(provider(paceReq(PaceSecretKind::Can)).status, LibreSCRS::Auth::CredentialResult::Status::Ok);
+    EXPECT_EQ(h.prompter.canPrompts, 1);
+
+    provider(rejectedPaceReq(PaceSecretKind::Can)); // marks the first rejected value exactly once
+    EXPECT_EQ(h.prompter.canPrompts, 2);
+    EXPECT_EQ(h.prompter.lastCanOptions.attempt, 2u) << "one rejection -> second attempt";
+
+    provider(rejectedPaceReq(PaceSecretKind::Can)); // marks the second (distinct) rejected value exactly once
+    EXPECT_EQ(h.prompter.canPrompts, 3);
+    EXPECT_EQ(h.prompter.lastCanOptions.attempt, 3u)
+        << "two distinct rejections -> third attempt, not inflated (each value marked exactly once)";
+}
+
+// --- M4: structural failures stop punishing the credential -----------------
+
+TEST(IdentityReadFlow, StructuralPaceFailureDoesNotMarkCredentialWrong)
+{
+    // A STRUCTURAL pre-read failure (the document does not support PACE)
+    // surfaces as UnsupportedCard, NOT AuthFailed -- so the flow's
+    // AuthFailed-only markCredentialWrong branch skips credential punishment for
+    // free. The pre-seeded CAN stays cached (a structural failure is not the
+    // CAN's fault); since markCredentialWrong is the only thing that evicts AND
+    // records retry context, an intact cache proves no retry context was
+    // recorded either.
+    Harness h;
+    h.cache.putCan("card-A", LibreSCRS::Secure::String{"123456"});
+    h.reader.outcome =
+        ReadOutcome{ReadOutcome::Status::UnsupportedCard, std::nullopt, "document does not support PACE"};
+
+    auto result = h.make().run();
+
+    EXPECT_EQ(result.outcome, IdentityReadFlow::Outcome::Error);
+    EXPECT_EQ(result.code, ErrorCode::UnsupportedCard);
+    EXPECT_TRUE(h.cache.hasCan("card-A")) << "a structural failure must never evict/punish the credential";
+}
+
+TEST(IdentityReadFlow, WrongSecretStillMarksCredentialWrong)
+{
+    // Regression pin: a genuine wrong pre-read secret (AuthFailed) still evicts
+    // the cached CAN AND records retry context -- A2/M4 must not weaken the real
+    // wrong-credential path.
+    Harness h;
+    h.cache.putCan("card-A", LibreSCRS::Secure::String{"000000"});
+    h.reader.outcome = ReadOutcome{ReadOutcome::Status::AuthFailed, std::nullopt, "auth rejected"};
+
+    auto result = h.make().run();
+
+    EXPECT_EQ(result.outcome, IdentityReadFlow::Outcome::Error);
+    EXPECT_EQ(result.code, ErrorCode::AuthFailed);
+    EXPECT_FALSE(h.cache.hasCan("card-A")) << "a wrong secret is evicted so a retry re-prompts";
+
+    // The retry context was recorded: the next prompt for this card is numbered 2.
+    auto prompterFailed = std::make_shared<std::atomic<bool>>(false);
+    auto provider = FlowPrelude::makeReadCredentialProvider(h.cache, h.prompter, h.serializer, h.phaseSink, "card-A",
+                                                            h.requester, h.artifact, h.source.token(), prompterFailed);
+    provider(paceReq(PaceSecretKind::Can));
+    EXPECT_EQ(h.prompter.canPrompts, 1);
+    EXPECT_EQ(h.prompter.lastCanOptions.attempt, 2u) << "markCredentialWrong recorded retry context";
 }

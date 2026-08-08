@@ -8,6 +8,8 @@
 #include <LibreSCRS/Agent/value/CredentialRecord.h> // CredentialOutcome
 #include <LibreSCRS/Auth/AuthRequirement.h>
 #include <LibreSCRS/Auth/CredentialResult.h>
+#include <LibreSCRS/Auth/ErrorKeys.h> // ErrorKeys::preReadAuthFailed (A2 re-key signal)
+#include <atomic>
 #include <cstdint>
 #include <utility>
 
@@ -78,15 +80,32 @@ CredentialOutcome openFailureOutcome(ErrorCode code) noexcept
 LibreSCRS::Auth::CredentialProvider makeReadCredentialProvider(
     CredentialCache& cache, PrompterClientBase& prompter, PromptSerializer& serializer, OperationPhaseSink& phaseSink,
     std::string cardKey, std::string requester, std::string artifact, LibreSCRS::CancelToken token,
-    std::shared_ptr<std::atomic<bool>> prompterFailed, std::shared_ptr<std::atomic<bool>> userCancelled)
+    std::shared_ptr<std::atomic<bool>> prompterFailed, std::shared_ptr<std::atomic<bool>> userCancelled,
+    std::shared_ptr<std::atomic<bool>> providerMarkedWrong)
 {
     return [&cache, &prompter, &serializer, &phaseSink, cardKey = std::move(cardKey), requester = std::move(requester),
             artifact = std::move(artifact), token = std::move(token), prompterFailed = std::move(prompterFailed),
-            userCancelled = std::move(userCancelled)](const LibreSCRS::Auth::AuthRequirement& req) {
+            userCancelled = std::move(userCancelled),
+            providerMarkedWrong = std::move(providerMarkedWrong)](const LibreSCRS::Auth::AuthRequirement& req) {
         try {
             // About to (potentially) block on the prompter for user input —
             // surface the modal-dialog progress phase.
             phaseSink.setPhase(static_cast<std::uint32_t>(OperationPhase::AwaitingConsent));
+            // A2 (sec I3 re-key): evict on the card's REJECTION SIGNAL, never on
+            // invocation counting. LM sets reasonForUser == preReadAuthFailed()
+            // ONLY on a re-prompt after a wrong-secret rejection in the SAME
+            // activation (M5′). On that signal, mark the cached value wrong FIRST
+            // — evicting the rejected secret so the cache-hit branch is bypassed
+            // BY EVICTION (not a parallel path) AND arming applyRetryContext so
+            // the re-prompt carries attempt/last_error. A same-kind re-invocation
+            // with an EMPTY reason (PACE→BAC fallback, multi-candidate walk) is
+            // NOT a rejection and serves the never-rejected value from cache.
+            bool markedNow = false;
+            if (const auto& reason = req.message();
+                reason.has_value() && reason->key == LibreSCRS::Auth::ErrorKeys::preReadAuthFailed().key) {
+                cache.markCredentialWrong(cardKey, LibreSCRS::Auth::ErrorKeys::preReadAuthFailed().key);
+                markedNow = true;
+            }
             PromptOptions opts;
             opts.requester = requester;
             opts.artifact = artifact;
@@ -96,7 +115,19 @@ LibreSCRS::Auth::CredentialProvider makeReadCredentialProvider(
             // real prompt. The routing keys off the AuthRequirement LM hands the
             // callback (its paceKind selects CAN vs MRZ), not a pre-read guess.
             SerializingPrompter gated{serializer, prompter, token};
-            return cache.requestCredential(cardKey, req, gated, opts, prompterFailed.get(), userCancelled.get());
+            auto result = cache.requestCredential(cardKey, req, gated, opts, prompterFailed.get(), userCancelled.get());
+            if (providerMarkedWrong) {
+                // Double-mark guard: the value now live for LM is the one THIS
+                // provider marked wrong IFF we marked and did NOT collect a fresh
+                // replacement (a non-Ok result: prompt failed/cancelled/malformed
+                // after the eviction). A fresh Ok collection — or any invocation
+                // that did not mark — leaves an UNMARKED value live, so the flow
+                // must still mark it on a later AuthFailed. Per-invocation store,
+                // last invocation wins (it owns the live value the flow will see).
+                providerMarkedWrong->store(markedNow && result.status != LibreSCRS::Auth::CredentialResult::Status::Ok,
+                                           std::memory_order_relaxed);
+            }
+            return result;
         } catch (...) {
             return LibreSCRS::Auth::CredentialResult::error(LibreSCRS::LocalizedText{});
         }

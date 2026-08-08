@@ -88,13 +88,20 @@ IdentityReadFlow::Result IdentityReadFlow::run()
     // wrong-but-collected secret). Used below to remap the final ErrorCode to
     // PrompterError so a broken prompter is distinguishable from generic comms.
     auto prompterFailed = std::make_shared<std::atomic<bool>>(false);
+    // Set true by the credential provider iff, on the M5′ rejection signal, it
+    // already marked the now-live rejected secret wrong (A2, sec I3). The
+    // AuthFailed branch below consults it to SKIP its own markCredentialWrong so
+    // a rejected value is marked EXACTLY once. Run-scoped (fresh per run) so
+    // parallel readers never cross-talk.
+    auto providerMarkedWrong = std::make_shared<std::atomic<bool>>(false);
     // Install with a UAF scope guard: the provider captures the per-op phaseSink
     // by reference, but `session` is owned by the CardSessionHolder and outlives
     // this flow (see FlowPrelude::installScopedReadProvider).
     const auto providerGuard = FlowPrelude::installScopedReadProvider(
         session, FlowPrelude::makeReadCredentialProvider(m_deps.cache, m_deps.prompter, m_deps.serializer,
                                                          m_deps.phaseSink, m_deps.cardKey, m_deps.requester,
-                                                         m_deps.artifact, m_deps.token, prompterFailed));
+                                                         m_deps.artifact, m_deps.token, prompterFailed,
+                                                         /*userCancelled=*/{}, providerMarkedWrong));
 
     // -- Step 4: read card data ------------------------------------------
     if (m_deps.token.isCancelled()) {
@@ -136,7 +143,14 @@ IdentityReadFlow::Result IdentityReadFlow::run()
         // suspenders today and stays correct for a future that holds the
         // session open across retries.)
         if (readOutcome.status == ReadOutcome::Status::AuthFailed) {
-            m_deps.cache.markCredentialWrong(m_deps.cardKey, LibreSCRS::Auth::ErrorKeys::preReadAuthFailed().key);
+            // Double-mark guard (A2, sec I3): if the provider already marked the
+            // now-live rejected secret wrong on the card's re-prompt signal, skip
+            // the flow's own mark so the rejected value is counted EXACTLY once
+            // (truthful attempt numbering). The provider only sets this when the
+            // marked value was NOT replaced by a fresh collection.
+            if (!providerMarkedWrong->load(std::memory_order_relaxed)) {
+                m_deps.cache.markCredentialWrong(m_deps.cardKey, LibreSCRS::Auth::ErrorKeys::preReadAuthFailed().key);
+            }
             session->clearCachedPaceCredentials();
         }
         // A broken/absent prompter (not the card) caused the secret to be
