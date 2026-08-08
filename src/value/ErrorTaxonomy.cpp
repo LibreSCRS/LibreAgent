@@ -36,6 +36,16 @@ ErrorCode errorCodeFor(LibreSCRS::SecureChannel::ChannelActivationError err) noe
         return ErrorCode::CommunicationError;
     case ChannelActivationError::ReentrantAccess:
         return ErrorCode::CommunicationError;
+    case ChannelActivationError::PaceDowngradeDetected:
+        // A forged/mangled "PACE absent" verdict selected BAC, but the
+        // SM-authenticated EF.CardAccess re-read showed PACE and the channel was
+        // torn down. This is a non-auth failure, NOT a wrong credential: it maps
+        // to the generic non-auth bucket (alongside Internal/ReentrantAccess/
+        // ReaderError), never a credential code, so the flow never punishes the
+        // (correct) secret. The security-meaningful DISTINCT message is a msgKey
+        // carried alongside this code (M4), not a new numeric ErrorCode (the
+        // wire enum stays frozen).
+        return ErrorCode::CommunicationError;
     }
     return ErrorCode::CommunicationError;
 }

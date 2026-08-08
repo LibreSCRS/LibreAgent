@@ -3,6 +3,7 @@
 #pragma once
 #include <LibreSCRS/Agent/backend/PromptTypes.h>  // PromptOptions, PromptResult, PromptStatus
 #include <LibreSCRS/Agent/backend/PrompterWire.h> // shared pin/can/mrz kind vocabulary
+#include <LibreSCRS/Agent/cache/MrzPayload.h>     // parseMrzPayload, MrzParts (A1)
 #include <LibreSCRS/Auth/AuthRequirement.h>       // AuthRequirement
 #include <LibreSCRS/Auth/CredentialResult.h>      // CredentialResult, CredentialEntry
 #include <LibreSCRS/Auth/ErrorKeys.h>             // ErrorKeys::genericComm
@@ -13,6 +14,7 @@
 #include <mutex>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 namespace LibreSCRS::Agent {
@@ -148,19 +150,62 @@ CredentialCache::requestCredential(const std::string& cardKey, const LibreSCRS::
     // the LM Auth surface.
     auto buildError = []() { return CredentialResult::error(LibreSCRS::Auth::ErrorKeys::genericComm()); };
 
+    // Per-kind RESULT BUILDER: adapt a stored/collected RAW secret into the
+    // credential entries LM's activation branches consume, or std::nullopt when
+    // the payload is MALFORMED for that kind. A nullopt drives buildError plus
+    // no-cache-write (prompt path) / cache eviction (hit path): a malformed value
+    // must never reach LM and must never survive to poison the next attempt.
+    //
+    // Can keeps exactly one "can" entry, PLUS a shape guard: a CAN payload that
+    // contains '\n' is a 3-line MRZ mis-delivered into the CAN slot and must
+    // never reach LM as a "CAN".
+    auto buildCanResult = [&](const Secret& secret) -> std::optional<CredentialResult> {
+        if (secret.view().find('\n') != std::string_view::npos) {
+            return std::nullopt;
+        }
+        return buildOk(PrompterWire::kKindCan, secret);
+    };
+    // Mrz yields the UNION both activation branches consume — {"mrz"} (the PACE
+    // MRZ_information, CardSession.cpp:876-886) plus the BAC trio
+    // {"documentNumber","dateOfBirth","dateOfExpiry"} (CardSession.cpp:779-781),
+    // check digit stripped. parseMrzPayload (A1) verifies the widget grammar AND
+    // all three ICAO 7-3-1 check digits; anything else is std::nullopt so the
+    // single-source-of-truth invariant (mrzInfo == buildMrzInformation(trio))
+    // holds for every entry LM ever sees.
+    auto buildMrzResult = [](const Secret& secret) -> std::optional<CredentialResult> {
+        auto parts = parseMrzPayload(secret);
+        if (!parts.has_value()) {
+            return std::nullopt;
+        }
+        std::vector<CredentialEntry> entries;
+        entries.emplace_back(PrompterWire::kKindMrz, std::move(parts->mrzInfo));  // PACE slot
+        entries.emplace_back("documentNumber", std::move(parts->documentNumber)); // BAC branch
+        entries.emplace_back("dateOfBirth", std::move(parts->dateOfBirth));
+        entries.emplace_back("dateOfExpiry", std::move(parts->dateOfExpiry));
+        return CredentialResult::ok(std::move(entries));
+    };
+
     // The plugin's activation path establishes a PACE/BAC channel, so the
     // requirement carries the secret kind it needs. CAN and MRZ are the only
     // cacheable pre-read secrets; PIN/PUK (or an absent kind) are routed to an
     // error because PIN is never cached and the agent's pre-read flow does not
     // collect PIN-as-PACE-password here.
     // One shared cache-hit / prompt / cancel / error / store sequence for both
-    // cacheable kinds, parameterized on the cache accessors, the prompter
-    // member and the wire kind constant. The CAN and MRZ case labels below
-    // differ only in what they bind here, so a future change to the sequence
-    // (e.g. richer retry context) cannot drift between the two branches.
-    auto cacheOrPrompt = [&](const char* wireKind, auto getter, auto putter, auto promptFn) -> CredentialResult {
+    // cacheable kinds, parameterized on the cache accessors, the prompter member
+    // and the per-kind result builder. The CAN and MRZ case labels below differ
+    // only in what they bind here, so a future change to the sequence cannot
+    // drift between the two branches. Adaptation happens at RESULT-BUILD time on
+    // BOTH paths, so the cache stays a raw-payload cache (Task 12's renegotiation
+    // deposit shares one stored shape).
+    auto cacheOrPrompt = [&](auto getter, auto putter, auto promptFn, auto resultBuilder) -> CredentialResult {
         if (auto cached = (this->*getter)(cardKey)) {
-            return buildOk(wireKind, *cached);
+            if (auto result = resultBuilder(*cached)) {
+                return std::move(*result);
+            }
+            // Malformed cached value: EVICT it so it cannot poison the next
+            // attempt, then surface the error.
+            invalidate(cardKey);
+            return buildError();
         }
         PromptOptions promptOpts = options;
         applyRetryContext(cardKey, promptOpts);
@@ -177,8 +222,13 @@ CredentialCache::requestCredential(const std::string& cardKey, const LibreSCRS::
             }
             return buildError();
         }
+        auto result = resultBuilder(*prompt.secret);
+        if (!result.has_value()) {
+            // Malformed collected payload: error, and DO NOT cache it.
+            return buildError();
+        }
         (this->*putter)(cardKey, *prompt.secret);
-        return buildOk(wireKind, *prompt.secret);
+        return std::move(*result);
     };
 
     const auto kind = req.paceKind();
@@ -187,11 +237,11 @@ CredentialCache::requestCredential(const std::string& cardKey, const LibreSCRS::
     }
     switch (*kind) {
     case PaceSecretKind::Can:
-        return cacheOrPrompt(PrompterWire::kKindCan, &CredentialCache::getCan, &CredentialCache::putCan,
-                             &PrompterT::requestCan);
+        return cacheOrPrompt(&CredentialCache::getCan, &CredentialCache::putCan, &PrompterT::requestCan,
+                             buildCanResult);
     case PaceSecretKind::Mrz:
-        return cacheOrPrompt(PrompterWire::kKindMrz, &CredentialCache::getMrz, &CredentialCache::putMrz,
-                             &PrompterT::requestMrz);
+        return cacheOrPrompt(&CredentialCache::getMrz, &CredentialCache::putMrz, &PrompterT::requestMrz,
+                             buildMrzResult);
     case PaceSecretKind::Pin:
     case PaceSecretKind::Puk:
         return buildError();

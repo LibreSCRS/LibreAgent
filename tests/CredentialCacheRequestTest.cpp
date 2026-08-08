@@ -20,6 +20,7 @@
 #include <gtest/gtest.h>
 #include <atomic>
 #include <optional>
+#include <string_view>
 #include <utility>
 
 using LibreSCRS::Agent::CredentialCache;
@@ -107,7 +108,11 @@ TEST(CredentialCacheRequest, MrzCacheMissPromptsAndStores)
 {
     CredentialCache cache;
     FakePrompter prompter;
-    prompter.mrzResult = PromptResult{PromptStatus::Ok, String{"P<UTOERIKSSON<<ANNA<MARIA"}, ""};
+    // A conforming 3-line MRZ payload (the TD3 specimen): the adapter now
+    // VERIFIES the payload, so this must be well-formed to store. The union
+    // shape is asserted in MrzPromptYieldsUnionEntries; here we pin the
+    // miss->prompt->store routing.
+    prompter.mrzResult = PromptResult{PromptStatus::Ok, String{"L898902C36\n7408122\n1204159"}, ""};
     PromptOptions opts;
     auto result = cache.requestCredential("card-A", paceReq(PaceSecretKind::Mrz), prompter, opts);
     EXPECT_EQ(result.status, CredentialResult::Status::Ok);
@@ -311,4 +316,121 @@ TEST(CredentialCacheRequest, CacheHitAfterMarkCredentialWrongNeverReachesTheProm
     auto result = cache.requestCredential("card-A", paceReq(PaceSecretKind::Can), prompter, opts);
     EXPECT_EQ(result.status, CredentialResult::Status::Ok);
     EXPECT_EQ(prompter.canCalls, 0) << "cache hit must not prompt regardless of recorded retry context";
+}
+
+// -- MRZ payload adaptation into the union credential entries (A1) -----------
+//
+// The prompter returns the canonical 3-line MRZ payload; requestCredential must
+// deliver the UNION both LM activation branches consume: "mrz" (PACE) plus
+// "documentNumber"/"dateOfBirth"/"dateOfExpiry" (BAC). The find() keys below
+// are LITERALLY the LM consumption API (CardSession.cpp:876-886 / :779-781).
+
+// The ICAO 9303 TD3 canonical specimen (UTO / ERIKSSON / L898902C3), the same
+// MRZ the LM emrtd rig's DG1 fixture carries.
+constexpr const char* kTd3MrzPayload = "L898902C36\n7408122\n1204159";
+
+TEST(CredentialCacheRequest, MrzPromptYieldsUnionEntries)
+{
+    CredentialCache cache;
+    FakePrompter prompter;
+    prompter.mrzResult = PromptResult{PromptStatus::Ok, String{kTd3MrzPayload}, ""};
+    PromptOptions opts;
+    auto result = cache.requestCredential("card-A", paceReq(PaceSecretKind::Mrz), prompter, opts);
+
+    EXPECT_EQ(result.status, CredentialResult::Status::Ok);
+    const auto* mrz = result.find("mrz");
+    const auto* docNo = result.find("documentNumber");
+    const auto* dob = result.find("dateOfBirth");
+    const auto* doe = result.find("dateOfExpiry");
+    ASSERT_NE(mrz, nullptr);
+    ASSERT_NE(docNo, nullptr);
+    ASSERT_NE(dob, nullptr);
+    ASSERT_NE(doe, nullptr);
+    EXPECT_EQ(mrz->view(), std::string_view{"L898902C3674081221204159"}); // MRZ_information (cds kept)
+    EXPECT_EQ(docNo->view(), std::string_view{"L898902C3"});              // cd stripped
+    EXPECT_EQ(dob->view(), std::string_view{"740812"});
+    EXPECT_EQ(doe->view(), std::string_view{"120415"});
+    EXPECT_TRUE(cache.hasMrz("card-A")) << "an accepted MRZ payload must populate the cache";
+}
+
+TEST(CredentialCacheRequest, MrzCacheHitYieldsSameUnionEntries)
+{
+    CredentialCache cache;
+    FakePrompter prompter;
+    prompter.mrzResult = PromptResult{PromptStatus::Ok, String{kTd3MrzPayload}, ""};
+    PromptOptions opts;
+    (void)cache.requestCredential("card-A", paceReq(PaceSecretKind::Mrz), prompter, opts);
+    ASSERT_EQ(prompter.mrzCalls, 1);
+
+    // Second call is a cache hit (no prompt) and must yield the identical union.
+    auto again = cache.requestCredential("card-A", paceReq(PaceSecretKind::Mrz), prompter, opts);
+    EXPECT_EQ(prompter.mrzCalls, 1) << "cache hit must not re-prompt";
+    EXPECT_EQ(again.status, CredentialResult::Status::Ok);
+    ASSERT_NE(again.find("mrz"), nullptr);
+    ASSERT_NE(again.find("documentNumber"), nullptr);
+    ASSERT_NE(again.find("dateOfBirth"), nullptr);
+    ASSERT_NE(again.find("dateOfExpiry"), nullptr);
+    EXPECT_EQ(again.find("mrz")->view(), std::string_view{"L898902C3674081221204159"});
+    EXPECT_EQ(again.find("documentNumber")->view(), std::string_view{"L898902C3"});
+    EXPECT_EQ(again.find("dateOfBirth")->view(), std::string_view{"740812"});
+    EXPECT_EQ(again.find("dateOfExpiry")->view(), std::string_view{"120415"});
+}
+
+TEST(CredentialCacheRequest, MalformedMrzPromptPayloadIsErrorAndNotCached)
+{
+    CredentialCache cache;
+    FakePrompter prompter;
+    prompter.mrzResult = PromptResult{PromptStatus::Ok, String{"garbage"}, ""};
+    PromptOptions opts;
+    auto result = cache.requestCredential("card-A", paceReq(PaceSecretKind::Mrz), prompter, opts);
+
+    EXPECT_EQ(result.status, CredentialResult::Status::Error) << "a malformed MRZ payload is an error, not an Ok union";
+    EXPECT_FALSE(cache.hasMrz("card-A")) << "a malformed payload must not be cached";
+
+    // A following call prompts again (nothing was cached to hit).
+    auto second = cache.requestCredential("card-A", paceReq(PaceSecretKind::Mrz), prompter, opts);
+    EXPECT_EQ(result.status, CredentialResult::Status::Error);
+    (void)second;
+    EXPECT_EQ(prompter.mrzCalls, 2) << "a malformed prompt result must re-prompt on the next request";
+}
+
+TEST(CredentialCacheRequest, MalformedCachedMrzIsEvictedAndErrors)
+{
+    CredentialCache cache;
+    cache.putMrz("card-A", String{"garbage"}); // a poisoned cache value (e.g. a stale deposit)
+    FakePrompter prompter;
+    PromptOptions opts;
+    auto result = cache.requestCredential("card-A", paceReq(PaceSecretKind::Mrz), prompter, opts);
+
+    EXPECT_EQ(result.status, CredentialResult::Status::Error);
+    EXPECT_FALSE(cache.hasMrz("card-A")) << "a malformed cached value must be EVICTED so it cannot poison the next try";
+    EXPECT_EQ(prompter.mrzCalls, 0) << "the hit path returns the error without prompting";
+}
+
+TEST(CredentialCacheRequest, CanPathUnchangedBySplitBuilders)
+{
+    // Regression pin: the split per-kind result builders must leave the Can
+    // path returning exactly one "can" entry (never the MRZ union).
+    CredentialCache cache;
+    FakePrompter prompter;
+    prompter.canResult = PromptResult{PromptStatus::Ok, String{"123456"}, ""};
+    PromptOptions opts;
+    auto result = cache.requestCredential("card-A", paceReq(PaceSecretKind::Can), prompter, opts);
+    EXPECT_EQ(result.status, CredentialResult::Status::Ok);
+    ASSERT_NE(result.find("can"), nullptr);
+    EXPECT_EQ(result.values.size(), 1u) << "the Can builder must emit exactly one entry";
+}
+
+TEST(CredentialCacheRequest, CanPayloadWithNewlineRejectedNotCached)
+{
+    // Kind-confusion shape guard: a 3-line MRZ payload mis-delivered into the
+    // CAN slot must never reach LM as a "CAN". A '\n' in a CAN payload is
+    // malformed -> error, no cache write.
+    CredentialCache cache;
+    FakePrompter prompter;
+    prompter.canResult = PromptResult{PromptStatus::Ok, String{kTd3MrzPayload}, ""};
+    PromptOptions opts;
+    auto result = cache.requestCredential("card-A", paceReq(PaceSecretKind::Can), prompter, opts);
+    EXPECT_EQ(result.status, CredentialResult::Status::Error);
+    EXPECT_FALSE(cache.hasCan("card-A")) << "a newline-bearing CAN payload must not be cached";
 }

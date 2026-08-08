@@ -82,6 +82,10 @@ TEST(ErrorTaxonomy, MapsChannelActivationErrors)
     EXPECT_EQ(errorCodeFor(ChannelActivationError::CredentialsRequired), ErrorCode::AuthFailed);
     EXPECT_EQ(errorCodeFor(ChannelActivationError::Internal), ErrorCode::CommunicationError);
     EXPECT_EQ(errorCodeFor(ChannelActivationError::ReentrantAccess), ErrorCode::CommunicationError);
+    // A detected post-BAC PACE downgrade is a non-auth failure, never a
+    // credential punishment (ChannelErrors.h enum doc) — the generic non-auth
+    // bucket, NOT a new wire ErrorCode (W3=none).
+    EXPECT_EQ(errorCodeFor(ChannelActivationError::PaceDowngradeDetected), ErrorCode::CommunicationError);
 }
 
 TEST(ErrorTaxonomy, MapsReadResultStatuses)

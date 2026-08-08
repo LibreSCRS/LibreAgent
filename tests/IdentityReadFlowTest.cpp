@@ -110,7 +110,10 @@ public:
         lastMrzOptions = opts;
         PromptResult r;
         r.status = PromptStatus::Ok;
-        r.secret = LibreSCRS::Secure::String{"MRZSECRET"};
+        // A conforming 3-line MRZ payload (TD3 specimen): the credential adapter
+        // now VERIFIES the payload (grammar + ICAO 7-3-1 check digits), so a
+        // placeholder string would be rejected as malformed.
+        r.secret = LibreSCRS::Secure::String{"L898902C36\n7408122\n1204159"};
         return r;
     }
 };
