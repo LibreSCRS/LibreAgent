@@ -10,6 +10,10 @@
 #include <string_view>
 #include <vector>
 
+namespace LibreSCRS::Plugin {
+class CardPluginService;
+}
+
 namespace LibreSCRS::Agent::Operations {
 
 // Stateless identity router: holds no plugin. read() iterates the passed
@@ -63,6 +67,38 @@ public:
     LibreSCRS::Plugin::PINResult activateSigningKey(LibreSCRS::SmartCard::CardSession& session,
                                                     const CandidateList& candidates,
                                                     const LibreSCRS::Secure::String& signPin) override;
+};
+
+// Resolve the MUTABLE plugin handles a deposit needs for @p candidates, matched
+// by pluginId against the registry's PURE, no-card-I/O snapshot. Exposed for
+// unit testing; also the compile-level restriction that keeps the deposit path
+// honest — this function takes NO CardSession, so the registry's OTHER,
+// session-taking candidate lookup is simply unreachable from it.
+//
+// Why that matters (the rule this seam exists to obey): inside an OPEN flow the
+// session-taking lookup AID-probes every non-ATR-matching plugin. On a travel
+// document that probe wipes the plugin's per-session credential store —
+// destroying the very deposit being made — and emits plain APDUs that desync an
+// established secure-messaging tunnel. The read path's candidate list carries
+// const handles by discipline; the mutable ones come from the registry, so no
+// const_cast is involved anywhere.
+[[nodiscard]] std::vector<std::shared_ptr<LibreSCRS::Plugin::CardPlugin>>
+resolveDepositTargets(LibreSCRS::Plugin::CardPluginService& service, const CandidateList& candidates);
+
+// Production CredentialDepositor: holds the SAME plugin registry the production
+// candidate resolver wraps, and deposits the chosen MRZ trio into every
+// candidate that can consume it (through the plugin's own session-credential
+// keys, keyed per session by the plugin itself). Stateless beyond the registry
+// reference; a candidate that throws is skipped, exactly like the other routers.
+class LmCredentialDepositor final : public CredentialDepositor
+{
+public:
+    explicit LmCredentialDepositor(LibreSCRS::Plugin::CardPluginService& service) : m_service(service) {}
+    bool depositMrz(LibreSCRS::SmartCard::CardSession& session, const CandidateList& candidates,
+                    const MrzParts& parts) override;
+
+private:
+    LibreSCRS::Plugin::CardPluginService& m_service;
 };
 
 class SigningEngineProvider;

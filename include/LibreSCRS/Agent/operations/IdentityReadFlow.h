@@ -8,8 +8,10 @@
 #include <LibreSCRS/Agent/operations/CardPluginRouting.h>
 #include <LibreSCRS/Agent/operations/PromptSerializer.h>
 #include <LibreSCRS/Agent/operations/Seams.h>
+#include <LibreSCRS/Auth/CredentialProvider.h>
 #include <LibreSCRS/CancelToken.h>
 #include <functional>
+#include <memory>
 #include <optional>
 #include <string>
 
@@ -69,6 +71,12 @@ struct IdentityReadFlowDeps
     // report) or the flow returns Cancelled/Error. Default (unset): a no-op,
     // for callers/tests with no property-update path to drive.
     std::function<void(const std::string&)> onCardType;
+    // Deposits a user-chosen MRZ into the candidate plugins when the holder
+    // renegotiated a CAN prompt into an MRZ read, so the ONE re-run below
+    // resolves an MRZ-keyed activation profile. The production seam is
+    // LmCredentialDepositor (plugin-registry-backed); a wiring site with no
+    // registry to resolve deposit targets from passes NullCredentialDepositor.
+    CredentialDepositor& depositor;
 };
 
 // Pure orchestration — no LM types in the public Result surface, no bus, no
@@ -96,8 +104,35 @@ public:
     explicit IdentityReadFlow(IdentityReadFlowDeps deps);
     [[nodiscard]] Result run();
 
+    // --- Observation seam (no production consumer) -------------------------
+    //
+    // The credential provider this flow installs on the held session, and the
+    // flow-owned MRZ choice sink. Production drives BOTH through LM: readCard
+    // invokes the provider on a channel cache miss, and run() consults the sink
+    // itself — nothing outside this class reaches for either.
+    //
+    // They are exposed because LM's CardSession offers no accessor for an
+    // installed credential provider, so a hermetic CardReader double cannot
+    // model that on-cache-miss callback at all. Without this seam the
+    // capability-derived alternative-kind offer and the renegotiation leg could
+    // only be asserted against a provider the TEST built — which is exactly the
+    // dead-wiring those assertions exist to rule out. Both are valid from
+    // construction; the provider is (re)bound at the top of run().
+    [[nodiscard]] const LibreSCRS::Auth::CredentialProvider& credentialProvider() const noexcept
+    {
+        return m_provider;
+    }
+    [[nodiscard]] const std::shared_ptr<MrzChoiceSink>& choiceSink() const noexcept
+    {
+        return m_mrzChoice;
+    }
+
 private:
     IdentityReadFlowDeps m_deps;
+    // Flow-owned, never shared across runs: one sink per flow object, scrubbed
+    // at run() exit whether or not it was consumed.
+    std::shared_ptr<MrzChoiceSink> m_mrzChoice{std::make_shared<MrzChoiceSink>()};
+    LibreSCRS::Auth::CredentialProvider m_provider;
 };
 
 } // namespace LibreSCRS::Agent::Operations

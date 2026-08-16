@@ -4,6 +4,7 @@
 #include <LibreSCRS/Agent/value/CardReadSnapshot.h>
 #include <LibreSCRS/Agent/value/CertSnapshot.h>
 #include <LibreSCRS/Agent/value/ErrorTaxonomy.h>
+#include <LibreSCRS/Agent/cache/MrzPayload.h>             // MrzParts
 #include <LibreSCRS/Agent/operations/CardPluginRouting.h> // CandidateList
 #include <LibreSCRS/Agent/backend/PrompterClientBase.h>
 #include <LibreSCRS/Auth/AuthRequirement.h>
@@ -284,6 +285,39 @@ public:
     [[nodiscard]] virtual LibreSCRS::Plugin::PINResult activateSigningKey(LibreSCRS::SmartCard::CardSession& session,
                                                                           const CandidateList& candidates,
                                                                           const LibreSCRS::Secure::String& signPin) = 0;
+};
+
+// 3e. CredentialDepositor — deposits a user-chosen MRZ into every candidate
+//     plugin that can consume it, through the plugin's own session-credential
+//     keys, so the NEXT read on the SAME session resolves an MRZ-keyed
+//     activation profile with zero changes to the LM activation walk.
+//     Production: LmCredentialDepositor; Fake* / NullCredentialDepositor for
+//     tests and wiring sites with no plugin registry.
+class CredentialDepositor
+{
+public:
+    virtual ~CredentialDepositor() = default;
+    // @p parts is the parsed canonical MRZ payload; the plugin-facing keys take
+    // the check-digit-STRIPPED trio (documentNumber / dateOfBirth /
+    // dateOfExpiry), which the plugin re-pads and re-derives the MRZ
+    // information from. @p candidates is the flow's identity-filtered list.
+    // @return true iff at least one candidate accepted a deposit attempt.
+    virtual bool depositMrz(LibreSCRS::SmartCard::CardSession& session, const CandidateList& candidates,
+                            const MrzParts& parts) = 0;
+};
+
+// Ready-made no-op depositor: accepts nothing. Wired by callers that have no
+// plugin registry to resolve deposit targets from (bus-level tests, harnesses
+// that never renegotiate), exactly as NullGroupSink is wired by callers with no
+// Group signal to emit — the flow's reference stays well-formed and the
+// renegotiation simply deposits nothing.
+class NullCredentialDepositor final : public CredentialDepositor
+{
+public:
+    bool depositMrz(LibreSCRS::SmartCard::CardSession&, const CandidateList&, const MrzParts&) override
+    {
+        return false;
+    }
 };
 
 // 4. PrompterClientBase lives in its own header, so the split keeps the include

@@ -10,9 +10,13 @@
 // the captured provider directly to assert the AwaitingConsent transition
 // (production LM invokes it inside readCard on a channel cache miss).
 
+#include "fakes/FakeCredentialDepositor.h"
+
+#include <LibreSCRS/Agent/cache/MrzPayload.h>
 #include <LibreSCRS/Agent/operations/CardSessionHolder.h>
 #include <LibreSCRS/Agent/operations/FlowPrelude.h>
 #include <LibreSCRS/Agent/operations/IdentityReadFlow.h>
+#include <LibreSCRS/Agent/operations/LmSeams.h>       // LmCredentialDepositor, resolveDepositTargets
 #include <LibreSCRS/Agent/operations/OperationBase.h> // Phase enum, OperationPhaseSink
 #include <LibreSCRS/Agent/operations/PromptSerializer.h>
 
@@ -22,15 +26,25 @@
 #include <LibreSCRS/Auth/PaceSecretKind.h>
 #include <LibreSCRS/CancelToken.h>
 #include <LibreSCRS/LocalizedText.h>
+#include <LibreSCRS/Plugin/CardPlugin.h>
+#include <LibreSCRS/Plugin/CardPluginService.h>
+#include <LibreSCRS/Plugin/PluginTypes.h>
 #include <LibreSCRS/SmartCard/AppletAid.h>
 #include <LibreSCRS/SmartCard/CardMap.h>
 #include <gtest/gtest.h>
 #include <algorithm>
 #include <atomic>
+#include <cstddef>
 #include <expected>
+#include <filesystem>
+#include <fstream>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <span>
+#include <sstream>
+#include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -57,24 +71,55 @@ LibreSCRS::Auth::AuthRequirement rejectedPaceReq(PaceSecretKind kind)
                                                            LibreSCRS::Auth::ErrorKeys::preReadAuthFailed());
 }
 
+// ICAO Doc 9303 TD3 canonical specimen (UTO / ERIKSSON / L898902C3) in the
+// prompter's canonical three-line payload shape — a published specimen, never a
+// real document's secret.
+constexpr std::string_view kTd3MrzPayload{"L898902C36\n7408122\n1204159"};
+
 class FakeReader final : public CardReader
 {
 public:
-    ReadOutcome read(LibreSCRS::SmartCard::CardSession&, const CandidateList&, LibreSCRS::CancelToken,
-                     GroupReadCallback onGroup = {}) override
+    ReadOutcome read(LibreSCRS::SmartCard::CardSession& session, const CandidateList& candidates,
+                     LibreSCRS::CancelToken, GroupReadCallback onGroup = {}) override
     {
-        if (onGroup) {
+        ++reads;
+        lastCandidateCount = candidates.size();
+        // Production LM invokes the flow-installed credential provider from
+        // INSIDE readCard on a channel cache miss. CardSession exposes no
+        // accessor for the installed provider, so a hermetic reader fake can
+        // only model that callback through a hook the test wires to the flow's
+        // own provider — see IdentityReadFlow::credentialProvider().
+        if (onRead) {
+            onRead(reads, session);
+        }
+        if (onGroup && (streamOnCall == 0 || streamOnCall == reads)) {
             for (const GroupSnapshot& g : groupsToStream) {
                 onGroup(g);
             }
         }
+        if (!scripted.empty()) {
+            const std::size_t idx = std::min(static_cast<std::size_t>(reads - 1), scripted.size() - 1);
+            return scripted[idx];
+        }
         return outcome;
     }
     ReadOutcome outcome;
+    // Per-call outcomes for the renegotiation leg (index 0 = first read); the
+    // LAST entry repeats for any further call, so a test that scripts two
+    // passes still answers a (contract-violating) third one deterministically.
+    // Empty (default) answers `outcome` on every call.
+    std::vector<ReadOutcome> scripted;
     // Scripted groups streamed (in order) via onGroup, BEFORE this returns
     // outcome — models the plugin's own progressive delivery. Empty
     // (default) streams nothing, exactly like production's onGroup==empty.
     std::vector<GroupSnapshot> groupsToStream;
+    // 0 (default) streams on every pass; N streams only on the Nth pass, so a
+    // renegotiation test can assert WHICH pass the groups came from.
+    int streamOnCall = 0;
+    // Called at the top of every read with the 1-based pass index.
+    std::function<void(int, LibreSCRS::SmartCard::CardSession&)> onRead;
+    int reads = 0;
+    std::size_t lastCandidateCount = 0;
 
     // Not exercised by this flow's suite (TokenInfoReadFlowTest.cpp owns the
     // dedicated fake); a well-formed default keeps this class non-abstract.
@@ -116,10 +161,26 @@ public:
     {
         ++canPrompts;
         lastCanOptions = opts;
+        if (canOverride.has_value()) {
+            return *canOverride;
+        }
         PromptResult r;
         r.status = PromptStatus::Ok;
         r.secret = LibreSCRS::Secure::String{"654321"};
         return r;
+    }
+    // Scripted reply for the CAN prompt, overriding the plain Ok above.
+    std::optional<PromptResult> canOverride;
+    // The prompter honoured the in-dialog switch: an Ok carrying an MRZ
+    // payload plus the kind actually collected.
+    void answerCanWithMrz(std::string_view payload)
+    {
+        canOverride = PromptResult{PromptStatus::Ok, LibreSCRS::Secure::String{payload}, "",
+                                   LibreSCRS::Auth::PaceSecretKind::Mrz};
+    }
+    void cancelCan()
+    {
+        canOverride = PromptResult{PromptStatus::Cancelled, std::nullopt, ""};
     }
     PromptResult requestMrz(const PromptOptions& opts) override
     {
@@ -145,11 +206,78 @@ public:
     std::vector<std::uint32_t> phases;
 };
 
+// Non-secret observations shared out of the const plugin entry points
+// (candidates are shared_ptr<const CardPlugin>, so a candidate cannot record
+// into itself).
+struct ProbeRecorder
+{
+    int canHandleConnectionCalls{0};
+};
+
+// Candidate double advertising an arbitrary manifest capability set and
+// recording the AID-probe entry point. The deposit seam must NEVER reach that
+// entry point: on the eMRTD plugin it wipes the per-session credential store
+// and emits plain APDUs that desync an open secure-messaging tunnel.
+class RecordingCandidate final : public LibreSCRS::Plugin::CardPlugin
+{
+public:
+    RecordingCandidate(std::string id, LibreSCRS::Plugin::CardCapabilities caps,
+                       std::shared_ptr<ProbeRecorder> rec = nullptr)
+        : m_caps(caps), m_rec(std::move(rec))
+    {
+        setIdentity(std::move(id), "stub", 0);
+    }
+    LibreSCRS::Plugin::CardCapabilities capabilities() const override
+    {
+        return m_caps;
+    }
+    std::span<const LibreSCRS::Plugin::Atr> supportedAtrs() const noexcept override
+    {
+        return {};
+    }
+    bool canHandleConnection(std::span<const std::uint8_t>, LibreSCRS::SmartCard::CardSession&) const override
+    {
+        if (m_rec) {
+            ++m_rec->canHandleConnectionCalls;
+        }
+        return true;
+    }
+
+protected:
+    LibreSCRS::Plugin::ReadResult doReadCard(LibreSCRS::SmartCard::CardSession&, GroupCallback) const override
+    {
+        return LibreSCRS::Plugin::ReadResult::communicationError(LibreSCRS::Auth::ErrorKeys::genericComm());
+    }
+
+private:
+    LibreSCRS::Plugin::CardCapabilities m_caps;
+    std::shared_ptr<ProbeRecorder> m_rec;
+};
+
+// A travel-document candidate: the only family with a CAN/MRZ duality, so the
+// only one the flow may offer the alternative kind for.
+inline CandidateList emrtdCandidates(std::shared_ptr<ProbeRecorder> rec = nullptr)
+{
+    using LibreSCRS::Plugin::CardCapabilities;
+    return {std::make_shared<RecordingCandidate>(
+        "emrtd-stub",
+        static_cast<CardCapabilities>(static_cast<std::uint32_t>(CardCapabilities::IdentityData) |
+                                      static_cast<std::uint32_t>(CardCapabilities::EmrtdCrypto)),
+        std::move(rec))};
+}
+
+// An identity candidate with no eMRTD crypto: no CAN/MRZ duality, so no offer.
+inline CandidateList plainIdentityCandidates()
+{
+    return {std::make_shared<RecordingCandidate>("plain-stub", LibreSCRS::Plugin::CardCapabilities::IdentityData)};
+}
+
 // Build a holder whose factory either fails with @p failWith or returns a
-// detached session, and whose resolver yields an empty candidate list. The flow
+// detached session, and whose resolver yields @p candidates. The flow
 // only stores the shared_ptr and passes a CardSession& downstream; tests
 // construct a detached session via the LM-provided test factory.
-inline std::unique_ptr<CardSessionHolder> makeHolder(std::optional<LibreSCRS::SmartCard::OpenError> failWith)
+inline std::unique_ptr<CardSessionHolder> makeHolder(std::optional<LibreSCRS::SmartCard::OpenError> failWith,
+                                                     CandidateList candidates = {})
 {
     auto factory = [failWith = std::move(failWith)](const std::string& r)
         -> std::expected<std::shared_ptr<LibreSCRS::SmartCard::CardSession>, LibreSCRS::SmartCard::OpenError> {
@@ -158,7 +286,8 @@ inline std::unique_ptr<CardSessionHolder> makeHolder(std::optional<LibreSCRS::Sm
         }
         return LibreSCRS::SmartCard::detail::makeDetachedCardSession(r);
     };
-    auto resolver = [](std::span<const std::uint8_t>, LibreSCRS::SmartCard::CardSession&) { return CandidateList{}; };
+    auto resolver = [candidates = std::move(candidates)](std::span<const std::uint8_t>,
+                                                         LibreSCRS::SmartCard::CardSession&) { return candidates; };
     return std::make_unique<CardSessionHolder>("FakeReader", std::move(factory), std::move(resolver),
                                                std::make_shared<LibreSCRS::SmartCard::CardMap>());
 }
@@ -169,6 +298,9 @@ struct Harness
     // FakeOpener.failWith). The holder is built lazily in make() so this is
     // honoured.
     std::optional<LibreSCRS::SmartCard::OpenError> failWith;
+    // Candidate list the holder's resolver answers with (empty by default, so
+    // every pre-existing scenario keeps its no-candidate holder).
+    CandidateList candidates;
     std::unique_ptr<CardSessionHolder> holder;
     FakeReader reader;
     FakePrompter prompter;
@@ -176,6 +308,7 @@ struct Harness
     CredentialCache cache;
     RecordingPhaseSink phaseSink;
     RecordingGroupSink groupSink;
+    FakeCredentialDepositor depositor;
     LibreSCRS::CancelSource source;
 
     // Default-Ok outcome so the success scenarios don't have to set it.
@@ -195,7 +328,7 @@ struct Harness
 
     IdentityReadFlow make()
     {
-        holder = makeHolder(failWith);
+        holder = makeHolder(failWith, candidates);
         return IdentityReadFlow{IdentityReadFlowDeps{
             .holder = *holder,
             .reader = reader,
@@ -208,6 +341,7 @@ struct Harness
             .requester = requester,
             .artifact = artifact,
             .token = source.token(),
+            .depositor = depositor,
         }};
     }
 };
@@ -629,4 +763,284 @@ TEST(IdentityReadFlow, WrongSecretStillMarksCredentialWrong)
     provider(paceReq(PaceSecretKind::Can));
     EXPECT_EQ(h.prompter.canPrompts, 1);
     EXPECT_EQ(h.prompter.lastCanOptions.attempt, 2u) << "markCredentialWrong recorded retry context";
+}
+
+// --- A3: renegotiate a CAN prompt into an MRZ read -------------------------
+//
+// The prompter honoured the in-dialog switch, so the CAN prompt came back with
+// an MRZ payload. The credential cache parks it in the flow's choice sink and
+// unwinds the walk as a cancellation; the flow then deposits the parsed trio
+// into the candidate plugins and re-runs the read ONCE.
+
+TEST(IdentityReadFlow, RenegotiationDepositsAndRerunsOnce)
+{
+    Harness h;
+    h.candidates = emrtdCandidates();
+    h.prompter.answerCanWithMrz(kTd3MrzPayload);
+
+    CardReadSnapshot snap;
+    snap.cardType = "fake-passport";
+    h.reader.scripted = {
+        ReadOutcome{ReadOutcome::Status::Cancelled, std::nullopt, "cancelled"},
+        ReadOutcome{ReadOutcome::Status::Ok, std::move(snap), ""},
+    };
+    GroupSnapshot personal;
+    personal.groupKey = "personal";
+    h.reader.groupsToStream = {personal};
+    h.reader.streamOnCall = 2; // groups belong to the SECOND (post-deposit) pass
+
+    auto flow = h.make();
+    h.reader.onRead = [&flow](int pass, LibreSCRS::SmartCard::CardSession&) {
+        if (pass == 1) {
+            // Models LM's on-cache-miss provider callback inside readCard.
+            static_cast<void>(flow.credentialProvider()(paceReq(PaceSecretKind::Can)));
+        }
+    };
+    const auto result = flow.run();
+
+    EXPECT_EQ(h.reader.reads, 2) << "exactly one re-run after the deposit";
+    ASSERT_EQ(h.depositor.deposits.size(), 1u);
+    EXPECT_EQ(h.depositor.deposits[0].documentNumber, "L898902C3") << "check digit stripped for the plugin keys";
+    EXPECT_EQ(h.depositor.deposits[0].dateOfBirth, "740812");
+    EXPECT_EQ(h.depositor.deposits[0].dateOfExpiry, "120415");
+    EXPECT_EQ(h.depositor.deposits[0].candidateCount, 1u) << "the identity candidates are offered the deposit";
+    EXPECT_EQ(result.outcome, IdentityReadFlow::Outcome::Ok);
+    ASSERT_TRUE(result.snapshot.has_value());
+    EXPECT_EQ(result.snapshot->cardType, "fake-passport");
+    ASSERT_EQ(h.groupSink.groups.size(), 1u) << "the groups streamed are the re-run's";
+    EXPECT_EQ(h.groupSink.groups[0].groupKey, "personal");
+    EXPECT_TRUE(h.cache.hasMrz("card-A")) << "the chosen MRZ is cached for the rest of this insertion";
+}
+
+TEST(IdentityReadFlow, RenegotiationRunsReadExactlyTwice)
+{
+    // Hostile loop: the second pass ALSO ends cancelled with the sink refilled
+    // (the cached MRZ short-circuit re-arms it). The one-shot rule must hold —
+    // no third card walk, and a non-Ok final result.
+    Harness h;
+    h.candidates = emrtdCandidates();
+    h.prompter.answerCanWithMrz(kTd3MrzPayload);
+    h.reader.outcome = ReadOutcome{ReadOutcome::Status::Cancelled, std::nullopt, "cancelled"};
+
+    auto flow = h.make();
+    h.reader.onRead = [&flow](int, LibreSCRS::SmartCard::CardSession&) {
+        static_cast<void>(flow.credentialProvider()(paceReq(PaceSecretKind::Can)));
+    };
+    const auto result = flow.run();
+
+    EXPECT_EQ(h.reader.reads, 2) << "the re-run happens at most once, ever";
+    EXPECT_NE(result.outcome, IdentityReadFlow::Outcome::Ok);
+    EXPECT_EQ(h.depositor.deposits.size(), 1u) << "one renegotiation, one deposit";
+}
+
+TEST(IdentityReadFlow, MalformedChosenPayloadFailsWithoutCachePoison)
+{
+    Harness h;
+    h.candidates = emrtdCandidates();
+    h.prompter.answerCanWithMrz("garbage");
+    h.reader.outcome = ReadOutcome{ReadOutcome::Status::Cancelled, std::nullopt, "cancelled"};
+
+    auto flow = h.make();
+    h.reader.onRead = [&flow](int, LibreSCRS::SmartCard::CardSession&) {
+        static_cast<void>(flow.credentialProvider()(paceReq(PaceSecretKind::Can)));
+    };
+    const auto result = flow.run();
+
+    EXPECT_EQ(result.outcome, IdentityReadFlow::Outcome::Error);
+    EXPECT_FALSE(h.cache.hasMrz("card-A")) << "a payload that does not parse must never be cached";
+    EXPECT_TRUE(h.depositor.deposits.empty()) << "nothing may be deposited from an unparsed payload";
+    EXPECT_EQ(h.reader.reads, 1) << "no re-run without a usable secret";
+}
+
+TEST(IdentityReadFlow, CachedMrzShortCircuitsWithoutPrompting)
+{
+    // A repeat read WITHIN the same insertion renegotiates silently: the
+    // provider fills the sink straight from the cache and never prompts. (A
+    // re-insert mints a new cardKey and prompts once -- widening the key is
+    // forbidden, it would serve one document's MRZ to another.)
+    Harness h;
+    auto sink = std::make_shared<LibreSCRS::Agent::MrzChoiceSink>();
+    auto prompterFailed = std::make_shared<std::atomic<bool>>(false);
+    h.cache.putMrz("card-A", LibreSCRS::Secure::String{kTd3MrzPayload});
+
+    auto provider = FlowPrelude::makeReadCredentialProvider(
+        h.cache, h.prompter, h.serializer, h.phaseSink, "card-A", h.requester, h.artifact, h.source.token(),
+        prompterFailed, /*userCancelled=*/{}, /*providerMarkedWrong=*/{}, /*offerMrzAlternative=*/true, sink);
+
+    const auto cred = provider(paceReq(PaceSecretKind::Can));
+
+    EXPECT_EQ(cred.status, LibreSCRS::Auth::CredentialResult::Status::UserCancelled);
+    EXPECT_EQ(h.prompter.canPrompts, 0) << "a cached MRZ renegotiates with zero dialogs";
+    ASSERT_TRUE(sink->taken());
+    const auto payload = sink->take();
+    ASSERT_TRUE(payload.has_value());
+    EXPECT_EQ(payload->view(), kTd3MrzPayload);
+}
+
+TEST(IdentityReadFlow, GenuineUserCancelStillCancels)
+{
+    // No chosen kind, no sink content: a dismissed dialog is still a cancel.
+    Harness h;
+    h.candidates = emrtdCandidates();
+    h.prompter.cancelCan();
+    h.reader.outcome = ReadOutcome{ReadOutcome::Status::Cancelled, std::nullopt, "cancelled"};
+
+    auto flow = h.make();
+    h.reader.onRead = [&flow](int, LibreSCRS::SmartCard::CardSession&) {
+        static_cast<void>(flow.credentialProvider()(paceReq(PaceSecretKind::Can)));
+    };
+    const auto result = flow.run();
+
+    EXPECT_EQ(result.outcome, IdentityReadFlow::Outcome::Cancelled);
+    EXPECT_EQ(result.code, ErrorCode::None);
+    EXPECT_EQ(h.reader.reads, 1) << "no re-run on a genuine cancel";
+    EXPECT_TRUE(h.depositor.deposits.empty());
+}
+
+TEST(IdentityReadFlow, RenegotiationAbortsOnCancelledToken)
+{
+    // The abandoned-worker guard wins over the renegotiation: a flow whose
+    // token tripped must not put a SECOND card read past it.
+    Harness h;
+    h.candidates = emrtdCandidates();
+    h.prompter.answerCanWithMrz(kTd3MrzPayload);
+    h.reader.outcome = ReadOutcome{ReadOutcome::Status::Cancelled, std::nullopt, "cancelled"};
+
+    auto flow = h.make();
+    h.reader.onRead = [&flow, &h](int, LibreSCRS::SmartCard::CardSession&) {
+        static_cast<void>(flow.credentialProvider()(paceReq(PaceSecretKind::Can)));
+        h.source.requestCancel();
+    };
+    const auto result = flow.run();
+
+    EXPECT_EQ(result.outcome, IdentityReadFlow::Outcome::Cancelled);
+    EXPECT_EQ(h.reader.reads, 1) << "the cancelled token stops the second read";
+    EXPECT_TRUE(h.depositor.deposits.empty()) << "nothing is deposited past the guard";
+    EXPECT_FALSE(h.cache.hasMrz("card-A")) << "no cache write past the guard";
+}
+
+TEST(IdentityReadFlow, UnconsumedSinkIsScrubbedAtFlowExit)
+{
+    // Same shape as the guarded abort above: the sink is filled and never
+    // consumed. run()'s teardown must scrub it so no payload outlives the run.
+    Harness h;
+    h.candidates = emrtdCandidates();
+    h.prompter.answerCanWithMrz(kTd3MrzPayload);
+    h.reader.outcome = ReadOutcome{ReadOutcome::Status::Cancelled, std::nullopt, "cancelled"};
+
+    auto flow = h.make();
+    h.reader.onRead = [&flow, &h](int, LibreSCRS::SmartCard::CardSession&) {
+        static_cast<void>(flow.credentialProvider()(paceReq(PaceSecretKind::Can)));
+        EXPECT_TRUE(flow.choiceSink()->taken()) << "the payload is parked while the run is live";
+        h.source.requestCancel();
+    };
+    static_cast<void>(flow.run());
+
+    EXPECT_FALSE(flow.choiceSink()->taken()) << "an unconsumed sink is disarmed at run() exit";
+    EXPECT_FALSE(flow.choiceSink()->take().has_value()) << "and holds no payload";
+}
+
+TEST(IdentityReadFlow, OfferFlagComputedFromCandidates)
+{
+    // The offer is derived FROM THE CANDIDATE LIST in production code -- never
+    // injected by the caller. Without this the whole choice feature can be
+    // dead-wired with every other gate green.
+    {
+        Harness h;
+        h.candidates = emrtdCandidates();
+        auto flow = h.make();
+        h.reader.onRead = [&flow](int, LibreSCRS::SmartCard::CardSession&) {
+            static_cast<void>(flow.credentialProvider()(paceReq(PaceSecretKind::Can)));
+        };
+        static_cast<void>(flow.run());
+        EXPECT_EQ(h.prompter.canPrompts, 1);
+        EXPECT_EQ(h.prompter.lastCanOptions.altKinds, (std::vector<std::string>{"mrz"}))
+            << "a travel-document candidate makes the CAN prompt offer the MRZ alternative";
+    }
+    {
+        Harness h;
+        h.candidates = plainIdentityCandidates();
+        auto flow = h.make();
+        h.reader.onRead = [&flow](int, LibreSCRS::SmartCard::CardSession&) {
+            static_cast<void>(flow.credentialProvider()(paceReq(PaceSecretKind::Can)));
+        };
+        static_cast<void>(flow.run());
+        EXPECT_EQ(h.prompter.canPrompts, 1);
+        EXPECT_TRUE(h.prompter.lastCanOptions.altKinds.empty())
+            << "a card with no CAN/MRZ duality must never advertise the alternative";
+    }
+}
+
+TEST(IdentityReadFlow, DepositorUsesPureCandidateLookup)
+{
+    // Inside an open flow the deposit seam must resolve its non-const plugin
+    // handles through the PURE, no-card-I/O registry lookup only. The
+    // session-probing lookup wipes the eMRTD plugin's per-session credential
+    // store (destroying the very deposit being made) and emits plain APDUs
+    // that desync an open secure-messaging tunnel.
+    //
+    // The registry (LibreSCRS::Plugin::CardPluginService) is a concrete class
+    // that loads shared objects off disk, so it admits no test double; the
+    // contract is pinned from BOTH sides instead -- behaviourally (the seam
+    // never probes the candidates it was handed) and structurally (the
+    // resolution helper takes NO session, so the probing lookup is unreachable
+    // from it, and the shipped source names neither probing entry point).
+    auto session = LibreSCRS::SmartCard::detail::makeDetachedCardSession("FakeReader");
+    ASSERT_NE(session, nullptr);
+
+    auto recorder = std::make_shared<ProbeRecorder>();
+    const CandidateList candidates = emrtdCandidates(recorder);
+
+    const auto dir = std::filesystem::temp_directory_path() / "librescrs-agent-empty-plugin-dir";
+    std::filesystem::create_directories(dir);
+    LibreSCRS::Plugin::CardPluginService registry{dir};
+
+    MrzParts parts;
+    parts.mrzInfo = LibreSCRS::Secure::String{"L898902C3674081221204159"};
+    parts.documentNumber = LibreSCRS::Secure::String{"L898902C3"};
+    parts.dateOfBirth = LibreSCRS::Secure::String{"740812"};
+    parts.dateOfExpiry = LibreSCRS::Secure::String{"120415"};
+
+    LmCredentialDepositor depositor{registry};
+    CredentialDepositor& iface = depositor;
+    EXPECT_FALSE(iface.depositMrz(*session, candidates, parts))
+        << "an empty registry resolves no handle, so nothing is deposited";
+    EXPECT_EQ(recorder->canHandleConnectionCalls, 0)
+        << "the deposit seam must never AID-probe the candidates it was handed";
+    EXPECT_TRUE(resolveDepositTargets(registry, candidates).empty());
+
+    // Compile-level restriction: the resolution helper's signature carries no
+    // CardSession at all, so the session-probing registry lookup cannot be
+    // reached from it.
+    static_assert(!std::is_invocable_v<decltype(&resolveDepositTargets), LibreSCRS::Plugin::CardPluginService&,
+                                       const CandidateList&, LibreSCRS::SmartCard::CardSession&>,
+                  "resolveDepositTargets must not accept a CardSession");
+
+    // Structural pin over the shipped seam source (line comments stripped, so
+    // the guard is about CODE, not prose).
+    std::string source;
+    {
+        std::ifstream in{LIBREAGENT_LMSEAMS_CPP};
+        ASSERT_TRUE(in.good()) << "seam source not wired: " << LIBREAGENT_LMSEAMS_CPP;
+        std::stringstream buffer;
+        buffer << in.rdbuf();
+        source = buffer.str();
+    }
+    std::string code;
+    code.reserve(source.size());
+    for (std::size_t i = 0; i < source.size(); ++i) {
+        if (source[i] == '/' && i + 1 < source.size() && source[i + 1] == '/') {
+            while (i < source.size() && source[i] != '\n') {
+                ++i;
+            }
+        }
+        if (i < source.size()) {
+            code.push_back(source[i]);
+        }
+    }
+    EXPECT_NE(code.find("plugins()"), std::string::npos) << "the deposit seam resolves through the pure lookup";
+    EXPECT_EQ(code.find("canHandleConnection"), std::string::npos)
+        << "the deposit seam must never call the AID-probe entry point";
+    EXPECT_EQ(code.find("findAllCandidates"), std::string::npos)
+        << "the deposit seam must never call the session-probing candidate lookup";
 }

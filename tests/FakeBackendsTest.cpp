@@ -1,22 +1,26 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 // SPDX-FileCopyrightText: 2026 hirashix0
 //
-// Compile-and-behaviour lock for the five shared backend doubles under
+// Compile-and-behaviour lock for the shared backend doubles under
 // tests/fakes/. Each fake is a concrete recording implementation of a frozen
 // backend interface (OperationChannel, Prompter, Authorizer, AgentTransport,
-// LogSink); this suite instantiates each through its interface and asserts the
-// recording contract so the doubles cannot silently drift from the interfaces.
+// LogSink, CredentialDepositor); this suite instantiates each through its
+// interface and asserts the recording contract so the doubles cannot silently
+// drift from the interfaces.
 
 #include "fakes/FakeAgentTransport.h"
 #include "fakes/FakeAuthorizer.h"
+#include "fakes/FakeCredentialDepositor.h"
 #include "fakes/FakeLogSink.h"
 #include "fakes/FakeOperationChannel.h"
 #include "fakes/FakePrompter.h"
 
 #include <LibreSCRS/Agent/backend/Logging.h>
+#include <LibreSCRS/Agent/cache/MrzPayload.h>
 
 #include <LibreSCRS/Auth/PaceSecretKind.h>
 #include <LibreSCRS/Secure/String.h>
+#include <LibreSCRS/SmartCard/CardSession.h>
 #include <gtest/gtest.h>
 
 #include <string>
@@ -94,6 +98,47 @@ TEST(FakePrompter, RecordsAltKinds)
     (void)iface.requestCan(options);
 
     EXPECT_EQ(p.lastCanPromptOptions.altKinds, (std::vector<std::string>{"mrz"}));
+}
+
+// The depositor double records the plugin-facing trio (check digits stripped)
+// and the candidate count of every deposit, and answers the scripted verdict —
+// the contract the renegotiation leg asserts against.
+TEST(FakeCredentialDepositor, RecordsThePartsHandedThroughTheSeam)
+{
+    auto session = LibreSCRS::SmartCard::detail::makeDetachedCardSession("FakeReader");
+    ASSERT_NE(session, nullptr);
+
+    // ICAO Doc 9303 TD3 specimen values -- not a real document's secret.
+    MrzParts parts;
+    parts.mrzInfo = LibreSCRS::Secure::String{"L898902C3674081221204159"};
+    parts.documentNumber = LibreSCRS::Secure::String{"L898902C3"};
+    parts.dateOfBirth = LibreSCRS::Secure::String{"740812"};
+    parts.dateOfExpiry = LibreSCRS::Secure::String{"120415"};
+
+    FakeCredentialDepositor depositor;
+    CredentialDepositor& iface = depositor;
+
+    EXPECT_TRUE(iface.depositMrz(*session, CandidateList{}, parts));
+    ASSERT_EQ(depositor.deposits.size(), 1u);
+    EXPECT_EQ(depositor.deposits[0].documentNumber, "L898902C3");
+    EXPECT_EQ(depositor.deposits[0].dateOfBirth, "740812");
+    EXPECT_EQ(depositor.deposits[0].dateOfExpiry, "120415");
+    EXPECT_EQ(depositor.deposits[0].candidateCount, 0u);
+
+    depositor.accepted = false;
+    EXPECT_FALSE(iface.depositMrz(*session, CandidateList{}, parts));
+    EXPECT_EQ(depositor.deposits.size(), 2u) << "a refused deposit is still recorded";
+}
+
+// The ready-made no-op depositor accepts nothing: it is the seam a wiring site
+// with no plugin registry hands the flow so the reference stays well-formed.
+TEST(NullCredentialDepositor, AcceptsNothing)
+{
+    auto session = LibreSCRS::SmartCard::detail::makeDetachedCardSession("FakeReader");
+    ASSERT_NE(session, nullptr);
+    NullCredentialDepositor depositor;
+    CredentialDepositor& iface = depositor;
+    EXPECT_FALSE(iface.depositMrz(*session, CandidateList{}, MrzParts{}));
 }
 
 TEST(FakeAuthorizer, AllowAllThenScopedAllowList)

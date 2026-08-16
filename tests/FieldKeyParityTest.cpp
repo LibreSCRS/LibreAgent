@@ -164,6 +164,10 @@ struct Harness
     CredentialCache cache;
     RecordingPhaseSink phaseSink;
     RecordingGroupSink groupSink;
+    // This suite never renegotiates a CAN prompt into an MRZ read (its
+    // scripted plugins prompt for nothing), so the no-op seam keeps the flow's
+    // reference well-formed without pulling in a plugin registry.
+    NullCredentialDepositor depositor;
     LibreSCRS::CancelSource source;
     CandidateList candidates; // set before make()
     std::unique_ptr<CardSessionHolder> holder;
@@ -191,6 +195,7 @@ struct Harness
             .requester = "test",
             .artifact = "identity",
             .token = source.token(),
+            .depositor = depositor,
         }};
     }
 };

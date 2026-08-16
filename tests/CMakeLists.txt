@@ -109,6 +109,7 @@ endforeach()
 foreach(_internal IN ITEMS
         OperationManagerTest
         CardSessionHolderTest
+        FakeBackendsTest
         FieldKeyParityTest
         IdentityReadFlowTest
         LmSeamsRoutingTest
@@ -130,6 +131,13 @@ target_compile_definitions(OperationManagerTest PRIVATE LIBRESCRS_AGENT_TESTING)
 target_compile_definitions(RawCryptoCaptureGuardTest PRIVATE
     LIBREAGENT_AGENTCORE_CPP="${CMAKE_CURRENT_SOURCE_DIR}/../src/AgentCore.cpp"
     LIBREAGENT_PKCS11BROKER_CPP="${CMAKE_CURRENT_SOURCE_DIR}/../src/pkcs11/Pkcs11Broker.cpp")
+
+# Source-grep guard (same idiom as above): reads the shipped LmSeams.cpp so the
+# credential depositor's PURE, no-card-I/O registry lookup survives refactors.
+# The plugin registry is a concrete class that loads shared objects off disk, so
+# it admits no test double -- the structural half of that pin reads the source.
+target_compile_definitions(IdentityReadFlowTest PRIVATE
+    LIBREAGENT_LMSEAMS_CPP="${CMAKE_CURRENT_SOURCE_DIR}/../src/operations/LmSeams.cpp")
 
 # Credential lifecycle wire types: record/outcome mapping tables, id rule,
 # narrowing + placeholders guards.

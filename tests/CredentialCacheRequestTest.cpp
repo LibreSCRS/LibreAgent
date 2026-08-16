@@ -24,6 +24,7 @@
 #include <utility>
 
 using LibreSCRS::Agent::CredentialCache;
+using LibreSCRS::Agent::MrzChoiceSink;
 using LibreSCRS::Agent::PromptOptions;
 using LibreSCRS::Agent::PromptResult;
 using LibreSCRS::Agent::PromptStatus;
@@ -433,4 +434,94 @@ TEST(CredentialCacheRequest, CanPayloadWithNewlineRejectedNotCached)
     auto result = cache.requestCredential("card-A", paceReq(PaceSecretKind::Can), prompter, opts);
     EXPECT_EQ(result.status, CredentialResult::Status::Error);
     EXPECT_FALSE(cache.hasCan("card-A")) << "a newline-bearing CAN payload must not be cached";
+}
+
+// -- The in-dialog CAN -> MRZ switch (the renegotiation hand-off) ------------
+//
+// A prompter that honoured the alternative-kind offer answers a CAN request
+// with an MRZ payload and the kind it actually collected. requestCredential
+// must NOT treat that as a CAN: it hands the payload to the caller's choice
+// sink and unwinds the activation walk as a cancellation, so the flow one
+// level up can renegotiate instead of feeding LM a "CAN" that is really an MRZ.
+
+TEST(CredentialCacheRequest, ChosenMrzOnCanPromptFillsSinkAndCancelsWalk)
+{
+    CredentialCache cache;
+    FakePrompter prompter;
+    prompter.canResult =
+        PromptResult{PromptStatus::Ok, String{kTd3MrzPayload}, "", LibreSCRS::Auth::PaceSecretKind::Mrz};
+    PromptOptions opts;
+    opts.altKinds = {"mrz"};
+    std::atomic<bool> prompterFailed{false};
+    std::atomic<bool> userCancelled{false};
+    MrzChoiceSink sink;
+
+    auto result = cache.requestCredential("card-A", paceReq(PaceSecretKind::Can), prompter, opts, &prompterFailed,
+                                          &userCancelled, &sink);
+
+    EXPECT_EQ(result.status, CredentialResult::Status::UserCancelled)
+        << "the walk unwinds as a cancellation so the flow can renegotiate";
+    EXPECT_TRUE(sink.taken()) << "the user took the in-dialog switch";
+    auto payload = sink.take();
+    ASSERT_TRUE(payload.has_value());
+    EXPECT_EQ(payload->view(), std::string_view{kTd3MrzPayload});
+    EXPECT_FALSE(sink.taken()) << "one-shot: consuming disarms the sink";
+    EXPECT_FALSE(sink.take().has_value()) << "a second take yields nothing";
+    EXPECT_FALSE(userCancelled.load()) << "an in-dialog switch is NOT a user cancel";
+    EXPECT_FALSE(prompterFailed.load()) << "an in-dialog switch is NOT a prompter failure";
+    EXPECT_FALSE(cache.hasCan("card-A")) << "an MRZ payload must never land in the CAN slot";
+    EXPECT_FALSE(cache.hasMrz("card-A")) << "the sink owns the payload; the cache write is the flow's call";
+}
+
+TEST(CredentialCacheRequest, ChosenMrzWithoutSinkIsPrompterError)
+{
+    // A caller that never advertised alt_kinds cannot receive a chosen-kind
+    // reply: getting one means the prompter broke its side of the contract.
+    CredentialCache cache;
+    FakePrompter prompter;
+    prompter.canResult =
+        PromptResult{PromptStatus::Ok, String{kTd3MrzPayload}, "", LibreSCRS::Auth::PaceSecretKind::Mrz};
+    PromptOptions opts;
+    std::atomic<bool> prompterFailed{false};
+    std::atomic<bool> userCancelled{false};
+
+    auto result = cache.requestCredential("card-A", paceReq(PaceSecretKind::Can), prompter, opts, &prompterFailed,
+                                          &userCancelled);
+
+    EXPECT_EQ(result.status, CredentialResult::Status::Error);
+    EXPECT_TRUE(prompterFailed.load()) << "a chosen-kind reply to a non-opting caller is a broken prompter";
+    EXPECT_FALSE(userCancelled.load());
+    EXPECT_FALSE(cache.hasCan("card-A"));
+    EXPECT_FALSE(cache.hasMrz("card-A"));
+}
+
+TEST(CredentialCacheRequest, ChosenKindEchoingTheRequestedKindIsAnOrdinaryReply)
+{
+    // A prompter MAY echo the kind it collected even when no switch happened;
+    // that is an ordinary CAN reply, not a renegotiation.
+    CredentialCache cache;
+    FakePrompter prompter;
+    prompter.canResult = PromptResult{PromptStatus::Ok, String{"654321"}, "", LibreSCRS::Auth::PaceSecretKind::Can};
+    PromptOptions opts;
+    MrzChoiceSink sink;
+
+    auto result =
+        cache.requestCredential("card-A", paceReq(PaceSecretKind::Can), prompter, opts, nullptr, nullptr, &sink);
+
+    EXPECT_EQ(result.status, CredentialResult::Status::Ok);
+    ASSERT_NE(result.find("can"), nullptr);
+    EXPECT_FALSE(sink.taken());
+    EXPECT_TRUE(cache.hasCan("card-A"));
+}
+
+TEST(CredentialCacheRequest, MrzChoiceSinkResetScrubsAnUnconsumedPayload)
+{
+    // The flow's teardown calls reset() so a payload nobody consumed never
+    // outlives the run holding secret bytes.
+    MrzChoiceSink sink;
+    sink.offer(String{kTd3MrzPayload});
+    ASSERT_TRUE(sink.taken());
+    sink.reset();
+    EXPECT_FALSE(sink.taken());
+    EXPECT_FALSE(sink.take().has_value());
 }

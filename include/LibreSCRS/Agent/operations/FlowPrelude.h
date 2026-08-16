@@ -13,7 +13,8 @@
 
 namespace LibreSCRS::Agent {
 class CredentialCache;
-}
+class MrzChoiceSink;
+} // namespace LibreSCRS::Agent
 
 namespace LibreSCRS::Agent::Operations {
 
@@ -96,11 +97,28 @@ struct OpenOutcome
 // flow's AuthFailed branch consults it to skip its own markCredentialWrong so a
 // rejected value is marked EXACTLY once (truthful attempt numbering). A
 // same-kind re-invocation WITHOUT the signal serves the cache normally.
+//
+// @p offerMrzAlternative and @p mrzChoice are the CAN⇄MRZ choice half. The flag
+// is computed BY THE FLOW from its candidate list (the travel-document family is
+// the only one with a CAN/MRZ duality); it is never a caller's guess. When it is
+// set and the requirement asks for a CAN:
+//   - if this card already has an MRZ cached for THIS insertion, the sink is
+//     filled straight from the cache and the result is a cancellation with NO
+//     prompt at all — a repeat read within one insertion renegotiates silently.
+//     The key stays the per-insertion card identity: a re-insert mints a new one
+//     and prompts once, which is correct (all same-model documents share an ATR,
+//     so a wider key would serve one document's MRZ to another);
+//   - otherwise the prompt advertises the alternative kind, and a prompter that
+//     honours the in-dialog switch answers with an MRZ payload, which
+//     requestCredential parks in @p mrzChoice (see its own contract).
+// Both default to "no offer", so every caller that does not opt in emits a
+// byte-identical prompt.
 [[nodiscard]] LibreSCRS::Auth::CredentialProvider makeReadCredentialProvider(
     CredentialCache& cache, PrompterClientBase& prompter, PromptSerializer& serializer, OperationPhaseSink& phaseSink,
     std::string cardKey, std::string requester, std::string artifact, LibreSCRS::CancelToken token,
     std::shared_ptr<std::atomic<bool>> prompterFailed, std::shared_ptr<std::atomic<bool>> userCancelled = {},
-    std::shared_ptr<std::atomic<bool>> providerMarkedWrong = {});
+    std::shared_ptr<std::atomic<bool>> providerMarkedWrong = {}, bool offerMrzAlternative = false,
+    std::shared_ptr<MrzChoiceSink> mrzChoice = {});
 
 // Install @p provider on @p session and return a scope guard that, on
 // destruction, replaces it with a stateless no-op provider. Use in EVERY flow

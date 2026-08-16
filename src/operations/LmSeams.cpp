@@ -11,6 +11,7 @@
 #include <LibreSCRS/Agent/operations/SigningEngineProvider.h>
 #include <LibreSCRS/Auth/ErrorKeys.h> // keyAmbiguous() — bind KeyAmbiguous to the LM key constant
 #include <LibreSCRS/Certificate/ParsedCertificate.h>
+#include <LibreSCRS/Plugin/CardPluginService.h>
 #include <LibreSCRS/Plugin/ReadResult.h>
 #include <LibreSCRS/Signing/Enums.h>
 #include <LibreSCRS/Signing/SigningRequest.h>
@@ -1113,6 +1114,63 @@ SignOutcome LmSigner::sign(const std::shared_ptr<LibreSCRS::SmartCard::CardSessi
         }
     }
     return out;
+}
+
+// --- LmCredentialDepositor -----------------------------------------------
+//
+// See the seam's declaration for the rule this implementation obeys and why:
+// the resolution below is registry-only, takes no session, and performs no card
+// I/O of any kind.
+
+std::vector<std::shared_ptr<LibreSCRS::Plugin::CardPlugin>>
+resolveDepositTargets(LibreSCRS::Plugin::CardPluginService& service, const CandidateList& candidates)
+{
+    std::vector<std::shared_ptr<LibreSCRS::Plugin::CardPlugin>> targets;
+    if (candidates.empty()) {
+        return targets;
+    }
+    std::vector<std::shared_ptr<LibreSCRS::Plugin::CardPlugin>> loaded;
+    try {
+        loaded = service.plugins();
+    } catch (...) {
+        return targets;
+    }
+    targets.reserve(candidates.size());
+    for (const auto& candidate : candidates) {
+        if (!candidate) {
+            continue;
+        }
+        for (const auto& plugin : loaded) {
+            if (plugin && plugin->pluginId() == candidate->pluginId()) {
+                targets.push_back(plugin);
+                break;
+            }
+        }
+    }
+    return targets;
+}
+
+bool LmCredentialDepositor::depositMrz(LibreSCRS::SmartCard::CardSession& session, const CandidateList& candidates,
+                                       const MrzParts& parts)
+{
+    bool accepted = false;
+    for (const auto& plugin : resolveDepositTargets(m_service, candidates)) {
+        try {
+            // The three plugin-facing keys, check digits stripped: the plugin
+            // re-pads the document number and derives the MRZ information
+            // itself, so PACE and BAC can never key differently.
+            plugin->setCredentials(session, "mrz_doc_number", parts.documentNumber);
+            plugin->setCredentials(session, "mrz_dob", parts.dateOfBirth);
+            plugin->setCredentials(session, "mrz_expiry", parts.dateOfExpiry);
+            accepted = true;
+        } catch (...) {
+            // A plugin that refuses the deposit is skipped; another candidate
+            // may still consume it, and the re-run's own auth failure is the
+            // truthful outcome if none does.
+            log::warn("credential deposit refused by plugin");
+        }
+    }
+    return accepted;
 }
 
 CertReadOutcome LmCertificateReader::read(LibreSCRS::SmartCard::CardSession& session, const CandidateList& candidates,

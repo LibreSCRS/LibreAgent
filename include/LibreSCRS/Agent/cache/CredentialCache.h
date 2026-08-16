@@ -18,6 +18,75 @@
 #include <utility>
 #include <vector>
 namespace LibreSCRS::Agent {
+
+// One-shot hand-off channel for a secret the user chose INSTEAD of the one the
+// card asked for.
+//
+// A prompter that honoured the alternative-kind offer answers a CAN request
+// with an MRZ payload. That payload is useless to the activation attempt in
+// flight (the card asked for a CAN), so requestCredential parks it here and
+// unwinds the walk as a cancellation; the flow one level up consults the sink
+// BEFORE honouring that cancellation and renegotiates the read instead.
+//
+// Consumption is ONE-SHOT consume-and-scrub: take() moves the payload out under
+// the mutex and disarms the sink, so a second take() yields nothing -- that is
+// the rule the flow's "re-run the read exactly once" contract rests on. reset()
+// scrubs a payload nobody consumed; the flow calls it at run() exit so a sink
+// filled on an error/cancelled path never outlives the run holding secret bytes
+// (the stored Secure::String cleanses itself on destruction either way).
+//
+// The sink is flow-owned and never shared across runs. Thread-safe: the
+// credential provider may be invoked from LM's activation path on the reader's
+// worker thread while the flow inspects it.
+class MrzChoiceSink
+{
+public:
+    using Secret = LibreSCRS::Secure::String;
+
+    // Park @p payload and arm the sink, scrubbing anything still held.
+    void offer(Secret payload)
+    {
+        const std::lock_guard lock(m_mutex);
+        m_payload = std::move(payload);
+        m_taken.store(true, std::memory_order_release);
+    }
+
+    // True iff the user TOOK the in-dialog switch and a payload is waiting.
+    [[nodiscard]] bool taken() const noexcept
+    {
+        return m_taken.load(std::memory_order_acquire);
+    }
+
+    // One-shot consume-and-scrub: move the payload out and disarm.
+    [[nodiscard]] std::optional<Secret> take()
+    {
+        const std::lock_guard lock(m_mutex);
+        auto payload = std::move(m_payload);
+        m_payload.reset();
+        m_taken.store(false, std::memory_order_release);
+        return payload;
+    }
+
+    // Scrub any unconsumed payload and disarm.
+    void reset() noexcept
+    {
+        try {
+            const std::lock_guard lock(m_mutex);
+            m_payload.reset();
+        } catch (...) {
+            // Lock acquisition failure (allocator pressure): the payload is
+            // still cleansed by the Secure::String destructor when this sink
+            // dies with the flow.
+        }
+        m_taken.store(false, std::memory_order_release);
+    }
+
+private:
+    mutable std::mutex m_mutex;
+    std::atomic<bool> m_taken{false};
+    std::optional<Secret> m_payload;
+};
+
 // Per-card in-memory cache for low-secrecy pre-read credentials (CAN / MRZ).
 //
 // PIN IS NEVER CACHED. The contract is enforced by the API: there is no
@@ -99,11 +168,21 @@ public:
     // swallows a candidate's channel-activation throw: without this signal a
     // cancelled CAN prompt would be indistinguishable from a live card that
     // advertises no PIN credentials. Left null by callers that do not care.
+    //
+    // @p mrzChoice, when non-null, opts the caller into the in-dialog CAN⇄MRZ
+    // switch: a prompt that answers with a kind OTHER than the one requested
+    // (an MRZ payload on a CAN request) parks its payload in the sink and
+    // returns UserCancelled WITHOUT raising @p userCancelled and WITHOUT
+    // caching anything — the walk unwinds so the caller can renegotiate. A
+    // caller that leaves this null never advertised the alternative kinds, so
+    // a chosen-kind reply to it is a broken-prompter condition: Error, with
+    // @p prompterFailed raised. A reply whose chosen kind merely ECHOES the
+    // requested one is an ordinary reply, not a switch.
     template <typename PrompterT>
     [[nodiscard]] LibreSCRS::Auth::CredentialResult
     requestCredential(const std::string& cardKey, const LibreSCRS::Auth::AuthRequirement& req, PrompterT& prompter,
                       const PromptOptions& options, std::atomic<bool>* prompterFailed = nullptr,
-                      std::atomic<bool>* userCancelled = nullptr);
+                      std::atomic<bool>* userCancelled = nullptr, MrzChoiceSink* mrzChoice = nullptr);
 
 private:
     struct Entry
@@ -132,7 +211,7 @@ template <typename PrompterT>
 LibreSCRS::Auth::CredentialResult
 CredentialCache::requestCredential(const std::string& cardKey, const LibreSCRS::Auth::AuthRequirement& req,
                                    PrompterT& prompter, const PromptOptions& options, std::atomic<bool>* prompterFailed,
-                                   std::atomic<bool>* userCancelled)
+                                   std::atomic<bool>* userCancelled, MrzChoiceSink* mrzChoice)
 {
     using LibreSCRS::Auth::CredentialEntry;
     using LibreSCRS::Auth::CredentialResult;
@@ -197,7 +276,8 @@ CredentialCache::requestCredential(const std::string& cardKey, const LibreSCRS::
     // drift between the two branches. Adaptation happens at RESULT-BUILD time on
     // BOTH paths, so the cache stays a raw-payload cache (Task 12's renegotiation
     // deposit shares one stored shape).
-    auto cacheOrPrompt = [&](auto getter, auto putter, auto promptFn, auto resultBuilder) -> CredentialResult {
+    auto cacheOrPrompt = [&](PaceSecretKind requestedKind, auto getter, auto putter, auto promptFn,
+                             auto resultBuilder) -> CredentialResult {
         if (auto cached = (this->*getter)(cardKey)) {
             if (auto result = resultBuilder(*cached)) {
                 return std::move(*result);
@@ -222,6 +302,24 @@ CredentialCache::requestCredential(const std::string& cardKey, const LibreSCRS::
             }
             return buildError();
         }
+        // The prompter honoured an in-dialog switch: the secret it collected is
+        // NOT of the kind this activation asked for, so it must never be adapted
+        // into this kind's entries nor stored in this kind's cache slot. Park it
+        // for the caller and unwind the walk (a cancellation the caller
+        // disambiguates by the sink, NOT by userCancelled -- nobody cancelled).
+        if (prompt.chosenKind.has_value() && *prompt.chosenKind != requestedKind) {
+            if (mrzChoice != nullptr && requestedKind == PaceSecretKind::Can &&
+                *prompt.chosenKind == PaceSecretKind::Mrz) {
+                mrzChoice->offer(*prompt.secret);
+                return CredentialResult::cancelled();
+            }
+            // Either the caller never opted in, or the prompter answered a kind
+            // no switch was ever offered for: a broken prompter, fail closed.
+            if (prompterFailed != nullptr) {
+                prompterFailed->store(true, std::memory_order_relaxed);
+            }
+            return buildError();
+        }
         auto result = resultBuilder(*prompt.secret);
         if (!result.has_value()) {
             // Malformed collected payload: error, and DO NOT cache it.
@@ -237,11 +335,11 @@ CredentialCache::requestCredential(const std::string& cardKey, const LibreSCRS::
     }
     switch (*kind) {
     case PaceSecretKind::Can:
-        return cacheOrPrompt(&CredentialCache::getCan, &CredentialCache::putCan, &PrompterT::requestCan,
-                             buildCanResult);
+        return cacheOrPrompt(PaceSecretKind::Can, &CredentialCache::getCan, &CredentialCache::putCan,
+                             &PrompterT::requestCan, buildCanResult);
     case PaceSecretKind::Mrz:
-        return cacheOrPrompt(&CredentialCache::getMrz, &CredentialCache::putMrz, &PrompterT::requestMrz,
-                             buildMrzResult);
+        return cacheOrPrompt(PaceSecretKind::Mrz, &CredentialCache::getMrz, &CredentialCache::putMrz,
+                             &PrompterT::requestMrz, buildMrzResult);
     case PaceSecretKind::Pin:
     case PaceSecretKind::Puk:
         return buildError();

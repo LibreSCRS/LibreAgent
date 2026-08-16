@@ -1,13 +1,17 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 // SPDX-FileCopyrightText: 2026 hirashix0
 #include <LibreSCRS/Agent/operations/IdentityReadFlow.h>
+#include <LibreSCRS/Agent/cache/MrzPayload.h>             // parseMrzPayload (the canonical payload contract)
 #include <LibreSCRS/Agent/operations/CardPluginRouting.h> // identityCandidates
 #include <LibreSCRS/Agent/operations/FlowPrelude.h>
 #include <LibreSCRS/Agent/operations/OperationBase.h> // Phase enum
 #include <LibreSCRS/Auth/ErrorKeys.h>                 // ErrorKeys::preReadAuthFailed
+#include <LibreSCRS/Plugin/PluginTypes.h>             // CardCapabilities, hasCapability
+#include <algorithm>
 #include <atomic>
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <utility>
 
 namespace LibreSCRS::Agent::Operations {
@@ -37,6 +41,42 @@ IdentityReadFlow::Result makeCancelled(std::string msgKey, std::string msgFallba
         .msgFallback = std::move(msgFallback),
     };
 }
+
+// The alternative-kind offer is a property of the CARD, read off the candidate
+// list the holder resolved: travel documents are the one family whose pre-read
+// secret has a CAN/MRZ duality, and they declare it in their manifest. Nothing
+// injects this — a caller cannot ask for the offer on a card that has no
+// alternative to offer.
+bool offersMrzAlternative(const CandidateList& candidates)
+{
+    return std::ranges::any_of(candidates, [](const auto& c) {
+        return c &&
+               LibreSCRS::Plugin::hasCapability(c->capabilities(), LibreSCRS::Plugin::CardCapabilities::EmrtdCrypto);
+    });
+}
+
+// Scrubs a choice sink that was filled but never consumed (an error path, a
+// cancelled run) before run() returns, so no payload outlives the run holding
+// secret bytes. A consumed sink is already disarmed and empty; reset() is a
+// no-op on it.
+class ChoiceSinkScrubGuard
+{
+public:
+    explicit ChoiceSinkScrubGuard(std::shared_ptr<LibreSCRS::Agent::MrzChoiceSink> sink) : m_sink(std::move(sink)) {}
+    ~ChoiceSinkScrubGuard()
+    {
+        if (m_sink) {
+            m_sink->reset();
+        }
+    }
+    ChoiceSinkScrubGuard(const ChoiceSinkScrubGuard&) = delete;
+    ChoiceSinkScrubGuard& operator=(const ChoiceSinkScrubGuard&) = delete;
+    ChoiceSinkScrubGuard(ChoiceSinkScrubGuard&&) = delete;
+    ChoiceSinkScrubGuard& operator=(ChoiceSinkScrubGuard&&) = delete;
+
+private:
+    std::shared_ptr<LibreSCRS::Agent::MrzChoiceSink> m_sink;
+};
 
 ErrorCode mapReadStatus(ReadOutcome::Status s) noexcept
 {
@@ -94,14 +134,20 @@ IdentityReadFlow::Result IdentityReadFlow::run()
     // a rejected value is marked EXACTLY once. Run-scoped (fresh per run) so
     // parallel readers never cross-talk.
     auto providerMarkedWrong = std::make_shared<std::atomic<bool>>(false);
+    // A CAN prompt may be renegotiated into an MRZ read: the offer is derived
+    // from THIS card's candidates, and the payload the user chose comes back
+    // through the flow-owned sink below (scrubbed at run() exit, consumed at
+    // most once).
+    const bool offerMrzAlternative = offersMrzAlternative(idCands);
+    const ChoiceSinkScrubGuard choiceGuard{m_mrzChoice};
     // Install with a UAF scope guard: the provider captures the per-op phaseSink
     // by reference, but `session` is owned by the CardSessionHolder and outlives
     // this flow (see FlowPrelude::installScopedReadProvider).
-    const auto providerGuard = FlowPrelude::installScopedReadProvider(
-        session, FlowPrelude::makeReadCredentialProvider(m_deps.cache, m_deps.prompter, m_deps.serializer,
-                                                         m_deps.phaseSink, m_deps.cardKey, m_deps.requester,
-                                                         m_deps.artifact, m_deps.token, prompterFailed,
-                                                         /*userCancelled=*/{}, providerMarkedWrong));
+    m_provider = FlowPrelude::makeReadCredentialProvider(
+        m_deps.cache, m_deps.prompter, m_deps.serializer, m_deps.phaseSink, m_deps.cardKey, m_deps.requester,
+        m_deps.artifact, m_deps.token, prompterFailed,
+        /*userCancelled=*/{}, providerMarkedWrong, offerMrzAlternative, m_mrzChoice);
+    const auto providerGuard = FlowPrelude::installScopedReadProvider(session, m_provider);
 
     // -- Step 4: read card data ------------------------------------------
     if (m_deps.token.isCancelled()) {
@@ -121,12 +167,53 @@ IdentityReadFlow::Result IdentityReadFlow::run()
     // is behind us by the time the Result assembled further down is
     // returned, let alone emitted by the caller (ReadIdentityOperation emits
     // Result only AFTER flow.run() returns).
-    auto readOutcome = m_deps.reader.read(*session, idCands, m_deps.token,
-                                          [this](const GroupSnapshot& g) { m_deps.groupSink.groupReady(g); });
-    // A cancelled token wins over the read status: on shutdown the token is the
-    // agent-wide shutdown-cancel token, so bailing here returns Cancelled BEFORE
-    // the AuthFailed branch below touches the credential cache — which an
-    // abandoned worker must not reach once the aggregate that owns it is gone.
+    const auto onGroup = [this](const GroupSnapshot& g) { m_deps.groupSink.groupReady(g); };
+    auto readOutcome = m_deps.reader.read(*session, idCands, m_deps.token, onGroup);
+
+    // -- Step 5: the shutdown token wins over EVERYTHING ------------------
+    // Checked on its OWN, ahead of the renegotiation below: on shutdown this is
+    // the agent-wide cancel token, and an abandoned worker must put neither a
+    // credential-cache write nor a SECOND card read past this guard.
+    if (m_deps.token.isCancelled()) {
+        return makeCancelled("op.cancelled", "Operation cancelled");
+    }
+
+    // -- Step 6: renegotiate a CAN prompt into an MRZ read (at most once) --
+    // The walk unwound as a cancellation because the user swapped the secret
+    // kind mid-dialog, not because anyone cancelled: deposit what they chose and
+    // read again. Reached only with an un-cancelled token, and the sink is
+    // one-shot, so this can never loop.
+    if (m_mrzChoice->taken()) {
+        if (auto payload = m_mrzChoice->take()) {
+            const auto parts = parseMrzPayload(*payload);
+            if (!parts.has_value()) {
+                // Nothing usable was collected: no deposit, no cache write, and
+                // certainly no second walk. The read's own mapped code is the
+                // honest one; a walk that unwound as this renegotiation's
+                // cancellation carries none, and a payload the agent cannot
+                // parse is the prompter's contract broken, so say so.
+                const ErrorCode mapped = mapReadStatus(readOutcome.status);
+                return makeError(mapped != ErrorCode::None ? mapped : ErrorCode::PrompterError, "op.read_failed",
+                                 std::move(readOutcome.msgFallback));
+            }
+            // Cache the RAW payload so any further read within this insertion
+            // renegotiates silently (keyed on the per-insertion card identity).
+            m_deps.cache.putMrz(m_deps.cardKey, std::move(*payload));
+            static_cast<void>(m_deps.depositor.depositMrz(*session, idCands, *parts));
+            // Re-check: the deposit is not instantaneous and the token may have
+            // tripped while it ran.
+            if (m_deps.token.isCancelled()) {
+                return makeCancelled("op.cancelled", "Operation cancelled");
+            }
+            m_deps.phaseSink.setPhase(static_cast<std::uint32_t>(OperationPhase::Authenticating));
+            m_deps.phaseSink.setPhase(static_cast<std::uint32_t>(OperationPhase::Reading));
+            readOutcome = m_deps.reader.read(*session, idCands, m_deps.token, onGroup);
+        }
+    }
+
+    // A cancelled read wins over the read status below: bail BEFORE the
+    // AuthFailed branch touches the credential cache. A genuine user cancel —
+    // one with nothing waiting in the choice sink — lands here and cancels.
     if (readOutcome.status == ReadOutcome::Status::Cancelled || m_deps.token.isCancelled()) {
         return makeCancelled("op.cancelled", "Operation cancelled");
     }

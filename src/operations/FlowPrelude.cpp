@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 // SPDX-FileCopyrightText: 2026 hirashix0
 #include <LibreSCRS/Agent/operations/FlowPrelude.h>
+#include <LibreSCRS/Agent/backend/PrompterWire.h> // shared kind vocabulary (alt_kinds value)
 #include <LibreSCRS/Agent/cache/CredentialCache.h>
 #include <LibreSCRS/Agent/operations/CardSessionHolder.h>
 #include <LibreSCRS/Agent/OperationPhase.h> // OperationPhase enum
@@ -9,8 +10,10 @@
 #include <LibreSCRS/Auth/AuthRequirement.h>
 #include <LibreSCRS/Auth/CredentialResult.h>
 #include <LibreSCRS/Auth/ErrorKeys.h> // ErrorKeys::preReadAuthFailed (A2 re-key signal)
+#include <LibreSCRS/Auth/PaceSecretKind.h>
 #include <atomic>
 #include <cstdint>
+#include <optional>
 #include <utility>
 
 namespace LibreSCRS::Agent::Operations::FlowPrelude {
@@ -81,12 +84,13 @@ LibreSCRS::Auth::CredentialProvider makeReadCredentialProvider(
     CredentialCache& cache, PrompterClientBase& prompter, PromptSerializer& serializer, OperationPhaseSink& phaseSink,
     std::string cardKey, std::string requester, std::string artifact, LibreSCRS::CancelToken token,
     std::shared_ptr<std::atomic<bool>> prompterFailed, std::shared_ptr<std::atomic<bool>> userCancelled,
-    std::shared_ptr<std::atomic<bool>> providerMarkedWrong)
+    std::shared_ptr<std::atomic<bool>> providerMarkedWrong, bool offerMrzAlternative,
+    std::shared_ptr<MrzChoiceSink> mrzChoice)
 {
     return [&cache, &prompter, &serializer, &phaseSink, cardKey = std::move(cardKey), requester = std::move(requester),
             artifact = std::move(artifact), token = std::move(token), prompterFailed = std::move(prompterFailed),
-            userCancelled = std::move(userCancelled),
-            providerMarkedWrong = std::move(providerMarkedWrong)](const LibreSCRS::Auth::AuthRequirement& req) {
+            userCancelled = std::move(userCancelled), providerMarkedWrong = std::move(providerMarkedWrong),
+            offerMrzAlternative, mrzChoice = std::move(mrzChoice)](const LibreSCRS::Auth::AuthRequirement& req) {
         try {
             // About to (potentially) block on the prompter for user input —
             // surface the modal-dialog progress phase.
@@ -109,13 +113,41 @@ LibreSCRS::Auth::CredentialProvider makeReadCredentialProvider(
             PromptOptions opts;
             opts.requester = requester;
             opts.artifact = artifact;
+            // The CAN⇄MRZ choice half. Reached only on a CAN requirement for a
+            // card family that HAS the duality (the flag is derived from the
+            // candidate list). The cache probe runs AFTER the rejection-signal
+            // eviction above, so a rejected MRZ can never be re-served here.
+            const auto kind = req.paceKind();
+            const bool offeringAlternative =
+                offerMrzAlternative && kind.has_value() && *kind == LibreSCRS::Auth::PaceSecretKind::Can;
+            std::optional<LibreSCRS::Auth::CredentialResult> renegotiated;
+            if (offeringAlternative) {
+                if (mrzChoice) {
+                    if (auto cached = cache.getMrz(cardKey)) {
+                        // Same-insertion repeat read: renegotiate silently.
+                        mrzChoice->offer(std::move(*cached));
+                        renegotiated = LibreSCRS::Auth::CredentialResult::cancelled();
+                    }
+                }
+                if (!renegotiated.has_value()) {
+                    opts.altKinds = {PrompterWire::kKindMrz};
+                }
+            }
             // Route through the agent-wide gate so two readers cannot stack two
             // dialogs. A cache hit returns inside requestCredential before the
             // wrapper's request* is reached, so the gate is contended only on a
             // real prompt. The routing keys off the AuthRequirement LM hands the
             // callback (its paceKind selects CAN vs MRZ), not a pre-read guess.
             SerializingPrompter gated{serializer, prompter, token};
-            auto result = cache.requestCredential(cardKey, req, gated, opts, prompterFailed.get(), userCancelled.get());
+            // The sink is handed down ONLY on the prompt that actually
+            // advertised the alternative, so a chosen-kind reply to a prompt
+            // that never offered one fails closed agent-side too, not only at
+            // the backend's own only-if-sent parse guard.
+            auto result =
+                renegotiated.has_value()
+                    ? std::move(*renegotiated)
+                    : cache.requestCredential(cardKey, req, gated, opts, prompterFailed.get(), userCancelled.get(),
+                                              offeringAlternative ? mrzChoice.get() : nullptr);
             if (providerMarkedWrong) {
                 // Double-mark guard: the value now live for LM is the one THIS
                 // provider marked wrong IFF we marked and did NOT collect a fresh
