@@ -3,6 +3,7 @@
 
 #include "DBusTransport.h"
 
+#include "../ConfigKeys.h"
 #include "AgentDBus.h"
 #include "CappedCall.h"
 #include "ErrorNameMap.h"
@@ -33,6 +34,87 @@ using ManagedObjectMap = QMap<QDBusObjectPath, AgentInterfaceProps>;
 const char* propertiesIfaceFor(ObjectKind kind)
 {
     return kind == ObjectKind::Reader ? kReaderIface : kCardIface;
+}
+
+/// The `a(sbb) TslSources` property value as it arrives inside a `v` — a
+/// QDBusArgument that still has to be demarshaled — flattened to the
+/// canonical three-entry rows `configSnapshot()` promises. Anything else
+/// (an agent serving a shape this build does not expect) yields an EMPTY
+/// list rather than a half-decoded one: the caller's contract is "rows in
+/// this shape or nothing", never "sometimes something else".
+QVariant demarshalTslSources(const QVariant& raw)
+{
+    if (raw.metaType().id() != qMetaTypeId<QDBusArgument>()) {
+        return QVariantList();
+    }
+    TslSourcesWire wire;
+    raw.value<QDBusArgument>() >> wire;
+    QVariantList rows;
+    rows.reserve(wire.size());
+    for (const TslSourceWire& source : std::as_const(wire)) {
+        rows.append(tslSourceRow(source.url, source.isLotl, source.eager));
+    }
+    return rows;
+}
+
+/// One Config1 property value, out of the `v` it arrived in and into the
+/// canonical client vocabulary. Only TslSources needs work: every other key
+/// is `s` or `as`, which QtDBus has already demarshaled into a QString /
+/// QStringList by the time it reaches here.
+QVariant demarshalConfigValue(const QString& key, const QVariant& raw)
+{
+    return key == kConfigTslSources ? demarshalTslSources(raw) : raw;
+}
+
+/// The per-key marshal table for `Config1.SetValue`: the property's declared
+/// D-Bus type, spelled here because the caller hands us a QVariant and the
+/// agent type-checks what arrives. `s` for the three plain-text settings and
+/// the read-only paths, `as` for TsaUrls, `a(sbb)` for TslSources.
+///
+/// An UNKNOWN key falls through with the caller's value wrapped as-is. That
+/// is deliberate rather than a local refusal: on this wire every key
+/// marshals, the agent owns the vocabulary, and letting it answer
+/// `UnknownConfigKey` keeps one authority for what a key is instead of two
+/// that can disagree.
+QDBusVariant marshalConfigValue(const QString& key, const QVariant& value)
+{
+    if (key == kConfigTsaUrls) {
+        return QDBusVariant(value.toStringList());
+    }
+    if (key == kConfigTslSources) {
+        TslSourcesWire wire;
+        const QVariantList rows = value.toList();
+        wire.reserve(rows.size());
+        for (const QVariant& row : rows) {
+            const QVariantList cells = row.toList();
+            if (cells.size() != 3) {
+                continue; // not a [url, isLotl, eager] row — see the API doc
+            }
+            wire.append(TslSourceWire{cells.at(0).toString(), cells.at(1).toBool(), cells.at(2).toBool()});
+        }
+        return QDBusVariant(QVariant::fromValue(wire));
+    }
+    if (isKnownConfigKey(key)) {
+        return QDBusVariant(value.toString()); // every remaining Config1 key is `s`
+    }
+    return QDBusVariant(value);
+}
+
+/// A Config1 mutation's reply as the public named outcome: disengaged on
+/// success, else the enumerator.
+///
+/// `mapDBusErrorName` engages `syncError` for exactly the agent-namespace
+/// names, which is the distinction that matters here — a bus-daemon failure
+/// (ServiceUnknown, NoReply, the capped call's synthesized timeout) named
+/// nothing about the WRITE, so it collapses to CommunicationError: the write
+/// never arrived, and that is the retryable class.
+std::optional<SyncError> configOutcome(const QDBusMessage& reply)
+{
+    if (reply.type() == QDBusMessage::ReplyMessage) {
+        return std::nullopt;
+    }
+    const SeamError error = mapDBusErrorName(reply.errorName(), reply.errorMessage());
+    return error.syncError.value_or(SyncError::CommunicationError);
 }
 
 const char* typedIfaceFor(OperationKind kind)
@@ -178,6 +260,13 @@ DBusTransport::DBusTransport(const QDBusConnection& connection, const QString& s
     m_connection.connect(m_service, QLatin1String(kRootPath), QLatin1String(kObjectManagerIface),
                          QStringLiteral("InterfacesRemoved"), this,
                          SLOT(onInterfacesRemoved(QDBusObjectPath, QStringList)));
+    // Config1.Changed rides the same root object. Subscribed unconditionally
+    // at construction, exactly like the ObjectManager signals above and for
+    // the same reason: a match rule installed only once a consumer first
+    // reads the settings would miss every change until then, and an agent
+    // without the interface simply never emits it.
+    m_connection.connect(m_service, QLatin1String(kRootPath), QLatin1String(kConfigIface), QStringLiteral("Changed"),
+                         this, SLOT(onConfigChanged(QString)));
 }
 
 DBusTransport::~DBusTransport() = default;
@@ -244,6 +333,90 @@ QStringList DBusTransport::features() const
 QString DBusTransport::agentVersion() const
 {
     return m_agentVersion;
+}
+
+void DBusTransport::refreshConfig()
+{
+    QDBusMessage call = QDBusMessage::createMethodCall(m_service, QLatin1String(kRootPath),
+                                                       QLatin1String(kPropertiesIface), QStringLiteral("GetAll"));
+    call.setArguments(QList<QVariant>{QLatin1String(kConfigIface)});
+    // ONE GetAll for the whole set, bounded like every other discovery-path
+    // property read. An agent without Config1 answers a D-Bus error, which
+    // degrades to the empty map below — absence is expected, not a fault.
+    const QDBusMessage reply = cappedCall(m_connection, call, kHandshakeTimeoutMs);
+    m_config.clear();
+    if (reply.type() != QDBusMessage::ReplyMessage || reply.arguments().isEmpty()) {
+        return;
+    }
+    const QVariantMap props = demarshalVariantMap(reply.arguments().constFirst());
+    for (auto it = props.constBegin(); it != props.constEnd(); ++it) {
+        m_config.insert(it.key(), demarshalConfigValue(it.key(), it.value()));
+    }
+}
+
+void DBusTransport::refreshConfigKey(const QString& key)
+{
+    if (!m_configFetched) {
+        return; // nothing cached yet — the first configSnapshot() reads it all
+    }
+    QDBusMessage call = QDBusMessage::createMethodCall(m_service, QLatin1String(kRootPath),
+                                                       QLatin1String(kPropertiesIface), QStringLiteral("Get"));
+    call.setArguments(QList<QVariant>{QLatin1String(kConfigIface), key});
+    const QDBusMessage reply = cappedCall(m_connection, call, kHandshakeTimeoutMs);
+    if (reply.type() != QDBusMessage::ReplyMessage || reply.arguments().isEmpty()) {
+        // Keep whatever was cached: a failed re-read makes the entry stale,
+        // which is strictly better than dropping a key a consumer is
+        // rendering. The next full snapshot after a reconnect fixes it.
+        return;
+    }
+    m_config.insert(key,
+                    demarshalConfigValue(key, qvariant_cast<QDBusVariant>(reply.arguments().constFirst()).variant()));
+}
+
+QVariantMap DBusTransport::configSnapshot()
+{
+    if (!m_configFetched) {
+        // "Once per connect", lazily — see the seam's own doc comment for why
+        // this one is not primed beside Features/Version. A failed fetch is
+        // not retried before the next connect (onServiceRegistered clears the
+        // flag), mirroring appearanceFont()'s posture.
+        m_configFetched = true;
+        refreshConfig();
+    }
+    return m_config;
+}
+
+std::optional<SyncError> DBusTransport::setConfig(const QString& key, const QVariant& value)
+{
+    QDBusMessage call = QDBusMessage::createMethodCall(m_service, QLatin1String(kRootPath), QLatin1String(kConfigIface),
+                                                       QStringLiteral("SetValue"));
+    call.setArguments(QList<QVariant>{key, QVariant::fromValue(marshalConfigValue(key, value))});
+    // No local refusal on this wire: every key marshals, and the agent owns
+    // both the vocabulary and the authorization decision (its polkit tiers
+    // are not knowable here). Bounded like the property reads above — a
+    // settings write is a cheap round-trip with no card work behind it.
+    return configOutcome(cappedCall(m_connection, call, kHandshakeTimeoutMs));
+}
+
+std::optional<SyncError> DBusTransport::resetConfig(const QString& key)
+{
+    QDBusMessage call = QDBusMessage::createMethodCall(m_service, QLatin1String(kRootPath), QLatin1String(kConfigIface),
+                                                       QStringLiteral("Reset"));
+    call.setArguments(QList<QVariant>{key});
+    return configOutcome(cappedCall(m_connection, call, kHandshakeTimeoutMs));
+}
+
+void DBusTransport::onConfigChanged(const QString& key)
+{
+    // Changed carries ONLY the key (the value could have raced anyway), so
+    // the freshness debt is the transport's: re-read, THEN announce. A
+    // consumer reading configSnapshot() from its slot therefore always sees
+    // the new value, and never has to run its own asynchronous re-read that
+    // would race the next change.
+    refreshConfigKey(key);
+    if (m_registry != nullptr) {
+        m_registry->onConfigChanged(key);
+    }
 }
 
 std::optional<LayoutResult> DBusTransport::layoutVisualSignature(const QString& text, QRectF box)
@@ -771,6 +944,13 @@ void DBusTransport::onServiceRegistered(const QString& /*service*/)
         refreshManagerProperties();
         m_managerPropertiesFetched = true;
     }
+    // The settings are NOT fetched here — they are lazy (see refreshConfig).
+    // Only the guard is released, so the next read goes to the newly present
+    // agent. This matters for the client constructed while the agent was
+    // down: its first configSnapshot() failed and latched the flag, and
+    // without this line that failure would outlive the agent's arrival.
+    m_configFetched = false;
+    m_config.clear();
     if (m_registry != nullptr) {
         m_registry->onServiceRegistered();
     }
@@ -790,6 +970,11 @@ void DBusTransport::onServiceUnregistered(const QString& /*service*/)
     // serve a different font, and a dead one's fd must never be handed out.
     m_appearanceFontFetched = false;
     m_appearanceFont = FdHandle{};
+    // Ditto the settings snapshot: it described THAT agent's configuration,
+    // and a client rendering a dead agent's TSA list as the live one is the
+    // same lie the empty-when-absent rule prevents for the version above.
+    m_configFetched = false;
+    m_config.clear();
     if (m_registry != nullptr) {
         m_registry->onServiceUnregistered();
     }

@@ -343,6 +343,8 @@ LibreSCRS::AgentClient::AgentClient::card(QString const&) const
 LibreSCRS::AgentClient::AgentClient::cardChanged(QString const&)
 LibreSCRS::AgentClient::AgentClient::certificateDer(QString const&, QString const&)
 LibreSCRS::AgentClient::AgentClient::clearRegistry()
+LibreSCRS::AgentClient::AgentClient::configChanged(QString const&)
+LibreSCRS::AgentClient::AgentClient::configSnapshot() const
 LibreSCRS::AgentClient::AgentClient::features() const
 LibreSCRS::AgentClient::AgentClient::hasFeature(QString const&) const
 LibreSCRS::AgentClient::AgentClient::isAvailable() const
@@ -359,6 +361,8 @@ LibreSCRS::AgentClient::AgentClient::refreshDiscovery()
 LibreSCRS::AgentClient::AgentClient::removeCard(QString const&)
 LibreSCRS::AgentClient::AgentClient::removeReader(QString const&)
 LibreSCRS::AgentClient::AgentClient::repopulate()
+LibreSCRS::AgentClient::AgentClient::resetConfigValue(QString const&)
+LibreSCRS::AgentClient::AgentClient::setConfigValue(QString const&, QVariant const&)
 LibreSCRS::AgentClient::AgentClient::~AgentClient()
 LibreSCRS::AgentClient::AgentOperation::AgentOperation(LibreSCRS::AgentClient::AgentOperation::Kind, QObject*)
 LibreSCRS::AgentClient::AgentOperation::AgentOperation(LibreSCRS::AgentClient::TransportSeam*, QString const&, LibreSCRS::AgentClient::AgentOperation::Kind, QObject*)

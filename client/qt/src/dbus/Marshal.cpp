@@ -163,6 +163,22 @@ const QDBusArgument& operator>>(const QDBusArgument& arg, SignBatchRowWire& r)
     return arg;
 }
 
+// (sbb) struct marshalling for Config1's `a(sbb) TslSources` property.
+QDBusArgument& operator<<(QDBusArgument& arg, const TslSourceWire& s)
+{
+    arg.beginStructure();
+    arg << s.url << s.isLotl << s.eager;
+    arg.endStructure();
+    return arg;
+}
+const QDBusArgument& operator>>(const QDBusArgument& arg, TslSourceWire& s)
+{
+    arg.beginStructure();
+    arg >> s.url >> s.isLotl >> s.eager;
+    arg.endStructure();
+    return arg;
+}
+
 void ensureDBusMetatypes()
 {
     static const bool done = [] {
@@ -182,6 +198,8 @@ void ensureDBusMetatypes()
         qDBusRegisterMetaType<BatchDocumentsWire>();
         qDBusRegisterMetaType<SignBatchRowWire>();
         qDBusRegisterMetaType<SignBatchRowsWire>();
+        qDBusRegisterMetaType<TslSourceWire>();
+        qDBusRegisterMetaType<TslSourcesWire>();
         return true;
     }();
     Q_UNUSED(done)

@@ -18,6 +18,8 @@
 // same two-thread arrangement the D-Bus suites' Harness uses for the same
 // reason — and marshal every scripting call onto that thread.
 
+#include "FakeConfig.h" // the Config1 property set both fakes serve, in one shape
+
 #include <LibreSCRS/Agent/wire/FrameReassembler.h>
 #include <LibreSCRS/Agent/wire/Messages.h>
 #include <LibreSCRS/Agent/wire/UniqueFd.h>
@@ -169,6 +171,27 @@ public:
         /// model a client that subscribes too late to observe ANY of them
         /// (mirrors the D-Bus fake's own late-subscriber race).
         QList<FakeSocketIdentityGroup> identityGroupScript;
+        /// The Config1 property set this fake serves on GetConfig, keyed by
+        /// the nine wire spellings and valued in the canonical client-side
+        /// shape — the SAME map FakeAgent::Config::config takes (see
+        /// defaultAgentConfig()), so a parity scenario scripts one and hands
+        /// it to both fakes. Also the RESET target: the fake snapshots it at
+        /// construction and ResetConfig(key) restores that entry.
+        QVariantMap config = defaultAgentConfig();
+        /// Refuse every config MUTATION with this named sync-error instead of
+        /// applying it — the authorization/validation half of the refusal
+        /// vocabulary a client can only observe (the structural
+        /// unknown-key / read-only-key policy is enforced for real). Disengaged
+        /// (default) applies the real policy. Mirrors
+        /// FakeAgent::Config::configMutationError.
+        std::optional<LibreSCRS::Agent::Wire::SyncError> configMutationError;
+        /// Encode `TslSources` as an array of MAPS ({url, lotl, eager})
+        /// rather than the canonical array of three-entry ARRAYS. Both are
+        /// lawful: the socket grammar types a config value as bare `any`
+        /// (unlike D-Bus's typed `a(sbb)`), so the client — not the wire — is
+        /// what guarantees consumers one shape. This knob is how that
+        /// normalization gets tested against a shape it does not itself emit.
+        bool tslSourcesAsMaps = false;
     };
 
     explicit FakeSocketAgent(Config config, QObject* parent = nullptr);
@@ -198,6 +221,10 @@ public:
     /// the full new value -- the post-read authoritative update.
     void emitCardTypeChanged(const QString& cardType);
     void sendAgentQuiesced(quint32 reason);
+    /// Broadcast a "ConfigChanged" event for @p key with no client-side
+    /// mutation behind it — the agent-internal change path (LastTsaUrl after
+    /// a timestamped sign), the socket twin of FakeAgent::emitConfigChanged.
+    void emitConfigChanged(const QString& key);
     /// Broadcast one frame whose body is well-formed-length but NON-CANONICAL
     /// CBOR (a non-shortest-form integer) — must fail the client closed.
     void sendNonCanonicalFrame();
@@ -213,6 +240,16 @@ public:
     [[nodiscard]] int appearanceFontCallCount() const;
     [[nodiscard]] int listCredentialsCount() const;
     [[nodiscard]] int getSignResultCount() const;
+    /// How many GetConfig / SetConfig+ResetConfig requests reached this fake.
+    /// The mutation counter is what proves a client-side LOCAL refusal (a
+    /// non-settable or unknown key, which this wire's `set-config` grammar
+    /// cannot even encode) never dialed the wire at all — the same purpose
+    /// layoutCallCount() serves for the layout-preview gate.
+    [[nodiscard]] int getConfigCount() const;
+    [[nodiscard]] int configMutationCount() const;
+    /// The live config value behind @p key (empty when absent) — what the
+    /// agent ACTUALLY stored, as distinct from what the client read back.
+    [[nodiscard]] QVariant configValue(const QString& key) const;
     [[nodiscard]] QString lastSignCertId() const;
     [[nodiscard]] QByteArray lastSignInputBytes() const;
     [[nodiscard]] QVariantMap lastSignOptions() const;
@@ -303,6 +340,10 @@ private:
     int m_appearanceFontCalls = 0;
     int m_listCredentialsCalls = 0;
     int m_getSignResultCalls = 0;
+    int m_getConfigCalls = 0;
+    int m_configMutationCalls = 0;
+    /// Config::config as constructed — ResetConfig(key)'s restore target.
+    QVariantMap m_configDefaults;
     bool m_hasListing = false;
     QStringList m_listedIds;
     QString m_lastSignCertId;

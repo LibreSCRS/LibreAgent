@@ -3,6 +3,8 @@
 
 #include "FakeAgent.h"
 
+#include "ConfigKeys.h" // the Config1 key vocabulary + the canonical TslSources row shape
+
 #include <QDBusConnection>
 #include <QDBusMessage>
 #include <QDBusMetaType>
@@ -11,6 +13,8 @@
 #include <fcntl.h>
 #include <sys/mman.h>
 #include <unistd.h>
+
+#include <utility>
 
 namespace LibreSCRS::AgentClient::Fakes {
 
@@ -915,6 +919,141 @@ QDBusUnixFileDescriptor ManagerAdaptor::GetAppearanceFont()
     return out;
 }
 
+// --- Config1Adaptor ---------------------------------------------------------
+
+namespace {
+
+/// A SetValue in-arg back into the canonical client-side shape this fake
+/// stores and later re-serves through its typed properties — the inverse of
+/// Config1Adaptor::tslSources() below, and the D-Bus twin of the socket
+/// fake's own cborConfigValueToVariant. Storing the raw `v` payload instead
+/// would keep an a(sbb) QDBusArgument in the map, which the property getter
+/// cannot read back and no test could compare against.
+QVariant configValueFromVariant(const QString& key, const QVariant& value)
+{
+    if (key == kConfigTslSources) {
+        LibreSCRS::AgentClient::TslSourcesWire wire;
+        if (value.metaType().id() == qMetaTypeId<QDBusArgument>()) {
+            value.value<QDBusArgument>() >> wire;
+        }
+        QVariantList rows;
+        rows.reserve(wire.size());
+        for (const LibreSCRS::AgentClient::TslSourceWire& source : std::as_const(wire)) {
+            rows.append(tslSourceRow(source.url, source.isLotl, source.eager));
+        }
+        return rows;
+    }
+    if (key == kConfigTsaUrls) {
+        return value.toStringList();
+    }
+    return value.toString();
+}
+
+} // namespace
+
+Config1Adaptor::Config1Adaptor(QObject* parent, FakeAgent* agent) : QDBusAbstractAdaptor(parent), m_agent(agent) {}
+
+QString Config1Adaptor::defaultLevel() const
+{
+    return m_agent->configValue(QString(kConfigDefaultLevel)).toString();
+}
+QStringList Config1Adaptor::tsaUrls() const
+{
+    return m_agent->configValue(QString(kConfigTsaUrls)).toStringList();
+}
+QString Config1Adaptor::lastTsaUrl() const
+{
+    return m_agent->configValue(QString(kConfigLastTsaUrl)).toString();
+}
+LibreSCRS::AgentClient::TslSourcesWire Config1Adaptor::tslSources() const
+{
+    // The scripted rows are canonical three-entry lists (see
+    // defaultAgentConfig); this is where the fake turns them back into the
+    // property's real (sbb) wire struct, so the client demarshals from the
+    // SAME shape a production agent serves.
+    LibreSCRS::AgentClient::TslSourcesWire wire;
+    const QVariantList rows = m_agent->configValue(QString(kConfigTslSources)).toList();
+    wire.reserve(rows.size());
+    for (const QVariant& row : rows) {
+        const QVariantList cells = row.toList();
+        if (cells.size() != 3) {
+            continue;
+        }
+        wire.append(
+            LibreSCRS::AgentClient::TslSourceWire{cells.at(0).toString(), cells.at(1).toBool(), cells.at(2).toBool()});
+    }
+    return wire;
+}
+QString Config1Adaptor::tslCacheDir() const
+{
+    return m_agent->configValue(QString(kConfigTslCacheDir)).toString();
+}
+QString Config1Adaptor::aiaCacheDir() const
+{
+    return m_agent->configValue(QString(kConfigAiaCacheDir)).toString();
+}
+QString Config1Adaptor::defaultReason() const
+{
+    return m_agent->configValue(QString(kConfigDefaultReason)).toString();
+}
+QString Config1Adaptor::defaultLocation() const
+{
+    return m_agent->configValue(QString(kConfigDefaultLocation)).toString();
+}
+QString Config1Adaptor::pluginDir() const
+{
+    return m_agent->configValue(QString(kConfigPluginDir)).toString();
+}
+
+bool Config1Adaptor::refuse(const QString& shortName, const QString& message)
+{
+    auto* ctx = qobject_cast<ContextObject*>(parent());
+    if (ctx == nullptr || !ctx->calledFromDBus()) {
+        return false;
+    }
+    ctx->setDelayedReply(true);
+    ctx->connection().send(
+        ctx->message().createErrorReply(QLatin1String("org.librescrs.Agent.Error.") + shortName, message));
+    return true;
+}
+
+void Config1Adaptor::SetValue(const QString& key, const QDBusVariant& value)
+{
+    if (!isKnownConfigKey(key)) {
+        refuse(QStringLiteral("UnknownConfigKey"), QStringLiteral("no such config key: ") + key);
+        return;
+    }
+    if (!isSettableConfigKey(key)) {
+        refuse(QStringLiteral("ReadOnlyConfig"), QStringLiteral("config key is not settable over D-Bus: ") + key);
+        return;
+    }
+    if (!m_agent->config().configMutationError.isEmpty()) {
+        refuse(m_agent->config().configMutationError, QStringLiteral("scripted config refusal for ") + key);
+        return;
+    }
+    m_agent->applyConfigValue(key, configValueFromVariant(key, value.variant()));
+}
+
+void Config1Adaptor::Reset(const QString& key)
+{
+    // Reset takes the FULL config-key set (unlike SetValue's settable-only
+    // grammar on the socket wire), but honours the same mutability gate: a
+    // file-only or agent-internal key is not a client's to restore either.
+    if (!isKnownConfigKey(key)) {
+        refuse(QStringLiteral("UnknownConfigKey"), QStringLiteral("no such config key: ") + key);
+        return;
+    }
+    if (!isSettableConfigKey(key)) {
+        refuse(QStringLiteral("ReadOnlyConfig"), QStringLiteral("config key is not resettable over D-Bus: ") + key);
+        return;
+    }
+    if (!m_agent->config().configMutationError.isEmpty()) {
+        refuse(m_agent->config().configMutationError, QStringLiteral("scripted config refusal for ") + key);
+        return;
+    }
+    m_agent->resetConfigValue(key);
+}
+
 // --- ReaderAdaptor ---------------------------------------------------------
 ReaderAdaptor::ReaderAdaptor(QObject* parent, QString name, bool hasCard, QDBusObjectPath card)
     : QDBusAbstractAdaptor(parent), m_name(std::move(name)), m_hasCard(hasCard), m_card(std::move(card))
@@ -1215,7 +1354,7 @@ QDBusObjectPath CredentialsAdaptor::ListCredentials()
 
 // --- FakeAgent -------------------------------------------------------------
 FakeAgent::FakeAgent(QDBusConnection connection, Config config, QObject* parent)
-    : QObject(parent), m_connection(connection), m_config(std::move(config))
+    : QObject(parent), m_connection(connection), m_config(std::move(config)), m_configDefaults(m_config.config)
 {
     ensureMetatypes();
     exportTree();
@@ -1241,6 +1380,13 @@ void FakeAgent::exportTree()
     if (m_config.exportManager1) {
         m_managerAdaptor = new ManagerAdaptor(m_rootObject, m_config.agentVersion, m_config.features, this);
     }
+    // Config1 is root-hosted alongside Manager1, exactly as the interface XML
+    // says ("Hosted on the root object /org/librescrs/Agent alongside
+    // Manager1"), and unconditionally: unlike Manager1 there is no
+    // agent-predating-it case to model — a client reading Config1 off an
+    // agent without it simply gets an empty snapshot, which is the same
+    // degradation a failed GetAll already produces.
+    m_configAdaptor = new Config1Adaptor(m_rootObject, this);
     m_connection.registerObject(m_rootPath, m_rootObject);
 
     // Reader. A ContextObject (not a plain QObject) so an optional
@@ -1293,6 +1439,30 @@ QString FakeAgent::cardPath() const
 FakeAgent::Config& FakeAgent::config()
 {
     return m_config;
+}
+
+QVariant FakeAgent::configValue(const QString& key) const
+{
+    return m_config.config.value(key);
+}
+
+void FakeAgent::applyConfigValue(const QString& key, const QVariant& value)
+{
+    m_config.config.insert(key, value);
+    emitConfigChanged(key);
+}
+
+void FakeAgent::resetConfigValue(const QString& key)
+{
+    m_config.config.insert(key, m_configDefaults.value(key));
+    emitConfigChanged(key);
+}
+
+void FakeAgent::emitConfigChanged(const QString& key)
+{
+    if (m_configAdaptor != nullptr) {
+        Q_EMIT m_configAdaptor->Changed(key);
+    }
 }
 
 void FakeAgent::scriptCardGetAll(int delayMs, const QVariantMap& props)

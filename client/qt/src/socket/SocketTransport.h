@@ -101,6 +101,9 @@ public:
     // block: it is satisfied by the HelloAck-capture declaration further down,
     // which predates the seam method it now implements and carries the
     // `override` there.
+    [[nodiscard]] QVariantMap configSnapshot() override;
+    [[nodiscard]] std::optional<SyncError> setConfig(const QString& key, const QVariant& value) override;
+    [[nodiscard]] std::optional<SyncError> resetConfig(const QString& key) override;
     [[nodiscard]] std::optional<LayoutResult> layoutVisualSignature(const QString& text, QRectF box) override;
     [[nodiscard]] FdHandle appearanceFont() override;
     void subscribeProperties(const QString& objectId, ObjectKind kind, PropertyListener* listener) override;
@@ -194,6 +197,13 @@ private:
     };
 
     [[nodiscard]] bool connectAndHandshake();
+    /// Re-read the whole Config1 set with one bounded GetConfig, replacing
+    /// `m_config`. Called at most once per connect, LAZILY from
+    /// `configSnapshot()` and again from each ConfigChanged event — this wire
+    /// has no per-key read (the reply arm is the entire `entries` map), so the
+    /// one-key refresh IS the whole-set refresh here, unlike D-Bus's
+    /// `Properties.Get`.
+    void refreshConfig();
     /// Tear down the connection. In-flight async requests are answered
     /// (failure outcomes) and the registry listener is told the agent is gone
     /// — ALWAYS deferred onto the event loop (queued), never delivered inline
@@ -235,6 +245,12 @@ private:
     // connection, so "once per connect" naturally falls out of that reset).
     FdHandle m_appearanceFont;
     bool m_appearanceFontFetched = false;
+    // The Config1 snapshot, cached per connection like the font above and
+    // seeded lazily (see refreshConfig); dropped in dropConnection alongside
+    // the handshake's own captures, so a dead agent's settings are never
+    // served as live.
+    QVariantMap m_config;
+    bool m_configFetched = false;
 
     RegistryListener* m_registry = nullptr;
     QHash<PropertyListener*, PropertyWatch> m_propertyWatches;

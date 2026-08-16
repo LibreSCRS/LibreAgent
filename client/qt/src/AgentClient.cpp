@@ -81,6 +81,13 @@ struct AgentClient::Private final : public RegistryListener
             q->removeCard(cardId);
         }
     }
+    void onConfigChanged(const QString& key) override
+    {
+        // Nothing to reconcile here: the transport refreshed its snapshot
+        // before calling, so this is a pure re-broadcast — a slot reading
+        // configSnapshot() sees the new value.
+        Q_EMIT q->configChanged(key);
+    }
 };
 
 AgentClient::AgentClient(QObject* parent) : AgentClient(createDefaultTransport(), parent) {}
@@ -142,6 +149,32 @@ QString AgentClient::agentVersion() const
     // here — a transport-less client reads empty, which is exactly what an
     // unreachable agent reads.
     return d->transport ? d->transport->agentVersion() : QString();
+}
+
+QVariantMap AgentClient::configSnapshot() const
+{
+    // Same transport-less degradation as features()/agentVersion(): empty,
+    // which is exactly what an unreachable agent reads.
+    return d->transport ? d->transport->configSnapshot() : QVariantMap();
+}
+
+std::optional<SyncError> AgentClient::setConfigValue(const QString& key, const QVariant& value)
+{
+    if (!d->transport) {
+        // A write cannot be "refused" by an agent that was never dialed, and
+        // the caller's whole reason for a named error is to tell the two
+        // apart: this is the never-arrived class, the retryable one.
+        return SyncError::CommunicationError;
+    }
+    return d->transport->setConfig(key, value);
+}
+
+std::optional<SyncError> AgentClient::resetConfigValue(const QString& key)
+{
+    if (!d->transport) {
+        return SyncError::CommunicationError;
+    }
+    return d->transport->resetConfig(key);
 }
 
 std::optional<LayoutResult> AgentClient::layoutVisualSignature(const QString& text, QRectF box) const

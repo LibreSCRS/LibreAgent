@@ -20,11 +20,13 @@
 #include <LibreSCRS/AgentClient/ClientTimeouts.h>
 #include <LibreSCRS/AgentClient/IdentityRows.h>
 
+#include "ConfigKeys.h"
 #include "fakes/ClientOnHarness.h"
 #include "fakes/TestBus.h"
 
 #include <QCryptographicHash>
 #include <QElapsedTimer>
+#include <QSignalSpy>
 #include <algorithm>
 #include <gtest/gtest.h>
 #include <fcntl.h>
@@ -156,6 +158,198 @@ TEST(DBusIntegration, AgentVersionEmptyAgainstAnAgentWithoutManager1)
     EXPECT_TRUE(client->agentVersion().isEmpty())
         << "an agent predating the surface degrades to empty, exactly like features()";
     EXPECT_TRUE(client->features().isEmpty());
+}
+
+// ---- Config1: snapshot, write, named refusals -------------------------------
+//
+// The agent owns the operation-affecting settings; this is the client half of
+// that contract. Three properties matter to the shape of these cases: the set
+// is READ-only as properties (every write goes through SetValue/Reset so the
+// agent can gate it per key), the refusals are NAMED (so a caller can tell a
+// read-only key from a denied one from a bad value), and the Changed signal
+// carries ONLY the key (so the transport, not the consumer, owes the re-read).
+// SocketIntegrationTest's Config* cases pin the same contract over the other
+// wire's very different mechanics, and TransportParityTest's own Config* pair
+// proves the two converge on one observable outcome.
+
+TEST(DBusIntegration, ConfigSnapshotCarriesTypedEntries)
+{
+    FakeAgent::Config cfg;
+    Harness h(cfg);
+    auto client = makeClient(h);
+    ASSERT_TRUE(client->isAvailable());
+
+    const QVariantMap config = client->configSnapshot();
+    EXPECT_EQ(config.value(QStringLiteral("DefaultLevel")).toString(), QStringLiteral("b-t"));
+    EXPECT_EQ(config.value(QStringLiteral("TsaUrls")).toStringList(),
+              QStringList{QStringLiteral("https://tsa.example.invalid/tsr")});
+    EXPECT_EQ(config.value(QStringLiteral("PluginDir")).toString(), QStringLiteral("/usr/lib/librescrs/plugins"));
+
+    // The one property whose D-Bus type is neither `s` nor `as`: a(sbb),
+    // flattened to the canonical three-entry row the socket transport also
+    // has to produce out of its own untyped `any`.
+    const QVariantList tslSources = config.value(QStringLiteral("TslSources")).toList();
+    ASSERT_EQ(tslSources.size(), 1);
+    const QVariantList row = tslSources.first().toList();
+    ASSERT_EQ(row.size(), 3);
+    EXPECT_EQ(row.at(0).toString(), QStringLiteral("https://example.invalid/tl.xml"));
+    EXPECT_FALSE(row.at(1).toBool());
+    EXPECT_TRUE(row.at(2).toBool());
+}
+
+TEST(DBusIntegration, SetConfigValueRoundTripsAndSignalsChanged)
+{
+    FakeAgent::Config cfg;
+    Harness h(cfg);
+    auto client = makeClient(h);
+    ASSERT_TRUE(client->isAvailable());
+    ASSERT_FALSE(client->configSnapshot().isEmpty());
+
+    QSignalSpy changed(client.get(), &AgentClient::configChanged);
+    EXPECT_EQ(client->setConfigValue(QStringLiteral("DefaultReason"), QStringLiteral("approval")), std::nullopt);
+    // waitFor, not QSignalSpy::wait(): the write is a bounded call that pumps
+    // a local event loop of its own, so Changed can arrive BEFORE this line
+    // and wait() — which only reports signals seen during its own run —
+    // would then time out on a signal already in the spy.
+    ASSERT_TRUE(waitFor([&changed]() { return !changed.isEmpty(); }));
+    EXPECT_EQ(changed.takeFirst().at(0).toString(), QStringLiteral("DefaultReason"));
+    EXPECT_EQ(client->configSnapshot().value(QStringLiteral("DefaultReason")).toString(), QStringLiteral("approval"));
+    EXPECT_EQ(h.configValue(QStringLiteral("DefaultReason")).toString(), QStringLiteral("approval"))
+        << "the agent, not just the client cache, must hold the new value";
+}
+
+// The trust-tier property with the structured type, written end to end: the
+// per-key marshal table has to build a real a(sbb) here, and a table that
+// silently fell back to `s` would be caught by the agent's own type check,
+// not by a client-side assertion.
+TEST(DBusIntegration, SetConfigValueMarshalsTheStructuredTslSourcesType)
+{
+    FakeAgent::Config cfg;
+    Harness h(cfg);
+    auto client = makeClient(h);
+    ASSERT_TRUE(client->isAvailable());
+
+    const QVariantList sources{tslSourceRow(QStringLiteral("https://eu.example.invalid/lotl.xml"), true, false),
+                               tslSourceRow(QStringLiteral("https://rs.example.invalid/tl.xml"), false, true)};
+    EXPECT_EQ(client->setConfigValue(QStringLiteral("TslSources"), sources), std::nullopt);
+
+    const QVariantList stored = h.configValue(QStringLiteral("TslSources")).toList();
+    ASSERT_EQ(stored.size(), 2);
+    EXPECT_EQ(stored.at(0).toList().at(0).toString(), QStringLiteral("https://eu.example.invalid/lotl.xml"));
+    EXPECT_TRUE(stored.at(0).toList().at(1).toBool());
+    EXPECT_FALSE(stored.at(0).toList().at(2).toBool());
+    EXPECT_EQ(stored.at(1).toList().at(0).toString(), QStringLiteral("https://rs.example.invalid/tl.xml"));
+}
+
+TEST(DBusIntegration, SetConfigValueNamesTheRefusal)
+{
+    FakeAgent::Config cfg;
+    Harness h(cfg);
+    auto client = makeClient(h);
+    ASSERT_TRUE(client->isAvailable());
+
+    // A file-only key: the agent refuses it by name (a wire-settable PluginDir
+    // is a dlopen code-exec vector). Unlike the socket transport, this one has
+    // nothing to refuse locally — every key marshals here, so the refusal is
+    // the agent's own, and the parity corpus asserts both arrive at the SAME
+    // enumerator anyway.
+    const std::optional<SyncError> readOnly =
+        client->setConfigValue(QStringLiteral("PluginDir"), QStringLiteral("/tmp/x"));
+    ASSERT_TRUE(readOnly.has_value());
+    EXPECT_EQ(*readOnly, SyncError::ReadOnlyConfig);
+
+    const std::optional<SyncError> unknown = client->setConfigValue(QStringLiteral("NoSuchKey"), QStringLiteral("x"));
+    ASSERT_TRUE(unknown.has_value());
+    EXPECT_EQ(*unknown, SyncError::UnknownConfigKey);
+
+    // The authorization verdict a client can only observe (polkit denied the
+    // trust tier), scripted rather than modelled.
+    h.mutateConfig([](FakeAgent::Config& c) { c.configMutationError = QStringLiteral("NotAuthorized"); });
+    const std::optional<SyncError> denied =
+        client->setConfigValue(QStringLiteral("DefaultLevel"), QStringLiteral("b-lta"));
+    ASSERT_TRUE(denied.has_value());
+    EXPECT_EQ(*denied, SyncError::NotAuthorized);
+    EXPECT_EQ(h.configValue(QStringLiteral("DefaultLevel")).toString(), QStringLiteral("b-t"))
+        << "a refused write must change nothing";
+}
+
+// The distinction Task 30's retry class keys off: "the agent refused the
+// write" and "the write never arrived" must not look alike. A refusal is the
+// agent's named verdict; an unreachable agent is CommunicationError, and the
+// snapshot goes empty with it rather than serving a dead agent's settings.
+TEST(DBusIntegration, ConfigWriteWithNoAgentIsCommunicationErrorAndTheSnapshotEmpties)
+{
+    FakeAgent::Config cfg;
+    Harness h(cfg);
+    auto client = makeClient(h);
+    ASSERT_TRUE(client->isAvailable());
+    ASSERT_FALSE(client->configSnapshot().isEmpty());
+
+    h.unregisterService();
+    ASSERT_TRUE(waitFor([&]() { return !client->isAvailable(); }));
+
+    const std::optional<SyncError> gone =
+        client->setConfigValue(QStringLiteral("DefaultReason"), QStringLiteral("approval"));
+    ASSERT_TRUE(gone.has_value());
+    EXPECT_EQ(*gone, SyncError::CommunicationError);
+    EXPECT_TRUE(client->configSnapshot().isEmpty());
+}
+
+TEST(DBusIntegration, ResetConfigValueRestoresTheDefaultAndSignalsChanged)
+{
+    FakeAgent::Config cfg;
+    Harness h(cfg);
+    auto client = makeClient(h);
+    ASSERT_TRUE(client->isAvailable());
+    ASSERT_EQ(client->setConfigValue(QStringLiteral("DefaultLocation"), QStringLiteral("Novi Sad")), std::nullopt);
+    ASSERT_TRUE(waitFor([&]() {
+        return client->configSnapshot().value(QStringLiteral("DefaultLocation")) == QStringLiteral("Novi Sad");
+    }));
+
+    QSignalSpy changed(client.get(), &AgentClient::configChanged);
+    EXPECT_EQ(client->resetConfigValue(QStringLiteral("DefaultLocation")), std::nullopt);
+    ASSERT_TRUE(waitFor([&changed]() { return !changed.isEmpty(); })); // same race as the write above
+    EXPECT_EQ(changed.takeFirst().at(0).toString(), QStringLiteral("DefaultLocation"));
+    EXPECT_EQ(client->configSnapshot().value(QStringLiteral("DefaultLocation")).toString(), QStringLiteral("Belgrade"));
+
+    // Reset honours the same mutability gate SetValue does.
+    const std::optional<SyncError> readOnly = client->resetConfigValue(QStringLiteral("PluginDir"));
+    ASSERT_TRUE(readOnly.has_value());
+    EXPECT_EQ(*readOnly, SyncError::ReadOnlyConfig);
+}
+
+// Changed carries ONLY the key, so the cache the consumer reads must already
+// be fresh when the signal lands — otherwise every consumer has to re-read
+// asynchronously and race the next change. Driven through the AGENT-INTERNAL
+// mutation path (the store fires Changed for LastTsaUrl after a timestamped
+// sign, with no client write behind it), which is both the realistic case and
+// the only one where a stale cache cannot be masked by the writer already
+// knowing the value it wrote.
+TEST(DBusIntegration, ConfigChangedRefreshesTheCacheBeforeItAnnounces)
+{
+    FakeAgent::Config cfg;
+    Harness h(cfg);
+    auto client = makeClient(h);
+    ASSERT_TRUE(client->isAvailable());
+    ASSERT_EQ(client->configSnapshot().value(QStringLiteral("LastTsaUrl")).toString(),
+              QStringLiteral("https://tsa.example.invalid/tsr"));
+
+    int announced = 0;
+    QString seenFromSlot;
+    QObject::connect(client.get(), &AgentClient::configChanged, client.get(), [&](const QString& key) {
+        ++announced;
+        seenFromSlot = client->configSnapshot().value(key).toString();
+    });
+
+    h.mutateConfig([](FakeAgent::Config& c) {
+        c.config.insert(QStringLiteral("LastTsaUrl"), QStringLiteral("https://tsa2.example.invalid/tsr"));
+    });
+    h.emitConfigChanged(QStringLiteral("LastTsaUrl"));
+
+    ASSERT_TRUE(waitFor([&]() { return announced > 0; }));
+    EXPECT_EQ(seenFromSlot, QStringLiteral("https://tsa2.example.invalid/tsr"))
+        << "a slot reading configSnapshot() must see the re-read value, not the one the cache held "
+           "when Changed arrived";
 }
 
 // ---- reader/card discovery --------------------------------------------------

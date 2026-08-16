@@ -70,6 +70,23 @@
 //                         retained HelloAck HANDSHAKE field — surfaces
 //                         identically, INCLUDING going empty for a connection
 //                         that died and re-seeding on the next connect)
+//   feature lifetime    FeaturesEmptyWhileUnavailableAcrossTransports (the
+//                         version pair's twin, and the consequential half:
+//                         the optional-surface gating reads features(), so a
+//                         token set surviving a dead agent offers a consumer
+//                         capabilities nothing is behind)
+//   agent config        ConfigSnapshotMatchesAcrossTransports (incl. the
+//                         canonical TslSources row — a typed a(sbb) array on
+//                         one wire, a bare `any` on the other),
+//                         SetConfigValueRoundTripsAndAnnouncesAcrossTransports
+//                         (the write plus the cache-then-announce ordering
+//                         both change notifications owe), and
+//                         NonSettableConfigKeyRefusesIdenticallyAcrossTransports
+//                         / UnknownConfigKeyRefusesIdenticallyAcrossTransports
+//                         (an agent-named refusal on D-Bus and a
+//                         locally-decided one on the socket — whose
+//                         `set-config` grammar cannot encode the key at all —
+//                         reaching the caller as ONE enumerator)
 //   feature-gated entry MissingTokenInfoFeatureRefusesIdenticallyAcrossTransports
 //                         (readTokenInfo() with "token-info" absent from
 //                         features() refuses at entry — CapabilityMissing,
@@ -208,12 +225,15 @@
 #include <QRectF>
 #include <QTemporaryDir>
 #include <QThread>
+#include <QVariant>
+#include <QVariantList>
 #include <QVariantMap>
 
 #include <gtest/gtest.h>
 
 #include <algorithm>
 #include <memory>
+#include <optional>
 #include <string>
 #include <type_traits>
 
@@ -288,6 +308,11 @@ struct ParityConfig
     // compared verbatim across transports (each fake's own default differs
     // on purpose, so a scenario that cares must set this).
     QString agentVersion = QStringLiteral("4.3.0-parity");
+    // The Config1 property set, in the canonical client-side shape both fakes
+    // accept (see fakes/FakeConfig.h): scripted ONCE here and re-encoded by
+    // each fake into its own wire form — a typed a(sbb) property array on
+    // D-Bus, a CBOR value the grammar types as bare `any` on the socket.
+    QVariantMap agentConfig = Fakes::defaultAgentConfig();
     bool failMethodEntry = false;
     // The public-data fetch answers a reply that is OUTSIDE this request's
     // contract — the same fault expressed in each wire's own terms (D-Bus: a
@@ -446,6 +471,7 @@ private:
         out.operationDelayMs = cfg.operationDelayMs;
         out.features = cfg.features;
         out.agentVersion = cfg.agentVersion;
+        out.config = cfg.agentConfig;
         out.cardType = cfg.cardType;
         out.atrHex = cfg.atrHex;
         out.failMethodEntry = cfg.failMethodEntry;
@@ -672,6 +698,7 @@ private:
         out.operationDelayMs = cfg.operationDelayMs;
         out.features = cfg.features;
         out.agentVersion = cfg.agentVersion;
+        out.config = cfg.agentConfig;
         out.cardType = cfg.cardType;
         out.atrHex = cfg.atrHex;
         out.failMethodEntry = cfg.failMethodEntry;
@@ -1818,6 +1845,137 @@ TYPED_TEST(TransportParity, AgentVersionEmptyWhileUnavailableAcrossTransports)
     ASSERT_TRUE(waitFor([&]() { return client->isAvailable(); }));
     EXPECT_EQ(client->agentVersion(), QStringLiteral("4.3.0-parity"))
         << "the next connect must re-seed the version, not leave it empty";
+}
+
+// Features has the SAME forget-on-loss contract as the version above, reached
+// by the same two different mechanisms, and is the more consequential of the
+// pair: the client's own optional-surface gating reads features(), so a token
+// set left over from a dead agent makes a consumer offer capabilities nothing
+// is behind. Kept beside its version twin rather than folded into
+// FeatureTokensMatchAcrossTransports, which asserts only the live set.
+TYPED_TEST(TransportParity, FeaturesEmptyWhileUnavailableAcrossTransports)
+{
+    using Env = typename TypeParam::Env;
+    ParityConfig cfg;
+    cfg.capabilities = Cap::Pki;
+    Env env(cfg);
+
+    AgentClient* client = env.client();
+    ASSERT_TRUE(client->isAvailable());
+    ASSERT_TRUE(client->hasFeature(QStringLiteral("credentials")));
+
+    env.vanishAgent();
+    ASSERT_TRUE(waitFor([&]() { return !client->isAvailable(); }));
+    EXPECT_TRUE(client->features().isEmpty())
+        << "a dead agent's feature tokens must never be served as if they were live";
+    EXPECT_FALSE(client->hasFeature(QStringLiteral("credentials")));
+
+    env.reappearAgent();
+    ASSERT_TRUE(waitFor([&]() { return client->isAvailable(); }));
+    EXPECT_TRUE(client->hasFeature(QStringLiteral("credentials")))
+        << "the next connect must re-seed the tokens, not leave them empty";
+}
+
+// ---- Config1: one settings surface, two refusal mechanisms -----------------
+//
+// Config1 is where the two wires diverge MOST while still owing one
+// observable outcome. Reading: a typed a(sbb) property array on D-Bus versus
+// a CBOR value the grammar types as bare `any` on the socket — so the
+// canonical TslSources row is the client's guarantee, and only a shared
+// scenario can prove both halves produce it. Writing: D-Bus marshals every
+// key and lets the agent name the refusal, while the socket's `set-config`
+// grammar cannot even ENCODE a non-settable key, so its transport refuses
+// locally. Different mechanism, same enumerator — which is exactly the kind
+// of claim a per-transport assertion cannot make.
+
+TYPED_TEST(TransportParity, ConfigSnapshotMatchesAcrossTransports)
+{
+    using Env = typename TypeParam::Env;
+    ParityConfig cfg;
+    cfg.capabilities = Cap::Pki;
+    Env env(cfg);
+
+    AgentClient* client = env.client();
+    ASSERT_TRUE(client->isAvailable());
+
+    const QVariantMap config = client->configSnapshot();
+    EXPECT_EQ(config.value(QStringLiteral("DefaultLevel")).toString(), QStringLiteral("b-t"));
+    EXPECT_EQ(config.value(QStringLiteral("DefaultReason")).toString(), QStringLiteral("Approval"));
+    EXPECT_EQ(config.value(QStringLiteral("TsaUrls")).toStringList(),
+              QStringList{QStringLiteral("https://tsa.example.invalid/tsr")});
+    EXPECT_EQ(config.value(QStringLiteral("PluginDir")).toString(), QStringLiteral("/usr/lib/librescrs/plugins"));
+
+    const QVariantList tslSources = config.value(QStringLiteral("TslSources")).toList();
+    ASSERT_EQ(tslSources.size(), 1) << "the structured property must survive both decodes";
+    const QVariantList row = tslSources.first().toList();
+    ASSERT_EQ(row.size(), 3) << "both transports must produce the canonical [url, isLotl, eager] row";
+    EXPECT_EQ(row.at(0).toString(), QStringLiteral("https://example.invalid/tl.xml"));
+    EXPECT_FALSE(row.at(1).toBool());
+    EXPECT_TRUE(row.at(2).toBool());
+}
+
+TYPED_TEST(TransportParity, SetConfigValueRoundTripsAndAnnouncesAcrossTransports)
+{
+    using Env = typename TypeParam::Env;
+    ParityConfig cfg;
+    cfg.capabilities = Cap::Pki;
+    Env env(cfg);
+
+    AgentClient* client = env.client();
+    ASSERT_TRUE(client->isAvailable());
+    ASSERT_FALSE(client->configSnapshot().isEmpty());
+
+    QStringList announced;
+    QString seenFromSlot;
+    QObject::connect(client, &AgentClient::configChanged, client, [&](const QString& key) {
+        announced.append(key);
+        seenFromSlot = client->configSnapshot().value(key).toString();
+    });
+
+    EXPECT_EQ(client->setConfigValue(QStringLiteral("DefaultReason"), QStringLiteral("approval")), std::nullopt);
+    ASSERT_TRUE(waitFor([&]() { return !announced.isEmpty(); }));
+    EXPECT_EQ(announced.constFirst(), QStringLiteral("DefaultReason"));
+    EXPECT_EQ(seenFromSlot, QStringLiteral("approval"))
+        << "both transports must refresh the cache BEFORE announcing — the change notification "
+           "carries only the key on either wire";
+    EXPECT_EQ(client->configSnapshot().value(QStringLiteral("DefaultReason")).toString(), QStringLiteral("approval"));
+}
+
+TYPED_TEST(TransportParity, NonSettableConfigKeyRefusesIdenticallyAcrossTransports)
+{
+    using Env = typename TypeParam::Env;
+    ParityConfig cfg;
+    cfg.capabilities = Cap::Pki;
+    Env env(cfg);
+
+    AgentClient* client = env.client();
+    ASSERT_TRUE(client->isAvailable());
+
+    const std::optional<SyncError> refusal =
+        client->setConfigValue(QStringLiteral("PluginDir"), QStringLiteral("/tmp/x"));
+    ASSERT_TRUE(refusal.has_value());
+    EXPECT_EQ(*refusal, SyncError::ReadOnlyConfig)
+        << "an agent-named refusal on one wire and a locally-decided one on the other must be the "
+           "same enumerator to a caller";
+}
+
+TYPED_TEST(TransportParity, UnknownConfigKeyRefusesIdenticallyAcrossTransports)
+{
+    using Env = typename TypeParam::Env;
+    ParityConfig cfg;
+    cfg.capabilities = Cap::Pki;
+    Env env(cfg);
+
+    AgentClient* client = env.client();
+    ASSERT_TRUE(client->isAvailable());
+
+    const std::optional<SyncError> refusal = client->setConfigValue(QStringLiteral("NoSuchKey"), QStringLiteral("x"));
+    ASSERT_TRUE(refusal.has_value());
+    EXPECT_EQ(*refusal, SyncError::UnknownConfigKey);
+
+    const std::optional<SyncError> resetRefusal = client->resetConfigValue(QStringLiteral("NoSuchKey"));
+    ASSERT_TRUE(resetRefusal.has_value());
+    EXPECT_EQ(*resetRefusal, SyncError::UnknownConfigKey);
 }
 
 // ---- feature-gated entry: readTokenInfo() without "token-info" refuses

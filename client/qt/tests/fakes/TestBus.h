@@ -12,6 +12,7 @@
 #include <QObject>
 #include <QString>
 #include <QThread>
+#include <QVariant>
 #include <gtest/gtest.h>
 #include <memory>
 
@@ -371,6 +372,23 @@ public:
     {
         runOnThread(m_context,
                     [this, &changed, &invalidated]() { m_agent->emitReaderPropertiesChanged(changed, invalidated); });
+    }
+
+    /// @brief The live Config1 value behind @p key, read off the server
+    ///        thread — what the agent ACTUALLY stored, as distinct from what
+    ///        the client read back through its own cache.
+    [[nodiscard]] QVariant configValue(const QString& key)
+    {
+        QVariant out;
+        runOnThread(m_context, [this, &key, &out]() { out = m_agent->configValue(key); });
+        return out;
+    }
+    /// @brief Fire Config1.Changed(key) with no client-side mutation behind
+    ///        it — the agent-internal change path (LastTsaUrl after a
+    ///        timestamped sign).
+    void emitConfigChanged(const QString& key)
+    {
+        runOnThread(m_context, [this, &key]() { m_agent->emitConfigChanged(key); });
     }
 
     /// @brief Drop the agent's bus name (simulates the daemon vanishing).

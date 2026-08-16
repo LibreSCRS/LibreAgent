@@ -136,6 +136,24 @@ const QDBusArgument& operator>>(const QDBusArgument& arg, SignBatchRowWire& r);
 /// the scrub internalized out of the public CredentialTypes.h.
 using CredentialRecordsWire = QList<QVariantMap>;
 
+/// One `Config1.TslSources` entry — the `(sbb)` struct of that property's
+/// `a(sbb)` type: the trusted-list URL, whether it is a List-of-Trusted-Lists
+/// pivot rather than a leaf list, and whether the agent fetches it eagerly at
+/// startup. The ONLY Config1 property whose D-Bus type is not `s` or `as`,
+/// hence the only one needing a registered metatype in both directions (the
+/// property READ demarshals it out of the GetAll variant; SetValue marshals
+/// it back).
+struct TslSourceWire
+{
+    QString url;
+    bool isLotl = false;
+    bool eager = false;
+};
+using TslSourcesWire = QList<TslSourceWire>;
+
+QDBusArgument& operator<<(QDBusArgument& arg, const TslSourceWire& s);
+const QDBusArgument& operator>>(const QDBusArgument& arg, TslSourceWire& s);
+
 /// Register every wire shape above as a D-Bus metatype. Idempotent; MUST run
 /// before any signal connect / demarshal that names them.
 void ensureDBusMetatypes();
@@ -209,3 +227,5 @@ Q_DECLARE_METATYPE(LibreSCRS::AgentClient::BatchDocumentWire)
 Q_DECLARE_METATYPE(LibreSCRS::AgentClient::BatchDocumentsWire)
 Q_DECLARE_METATYPE(LibreSCRS::AgentClient::SignBatchRowWire)
 Q_DECLARE_METATYPE(LibreSCRS::AgentClient::SignBatchRowsWire)
+Q_DECLARE_METATYPE(LibreSCRS::AgentClient::TslSourceWire)
+Q_DECLARE_METATYPE(LibreSCRS::AgentClient::TslSourcesWire)

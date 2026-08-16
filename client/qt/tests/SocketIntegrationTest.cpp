@@ -39,11 +39,13 @@
 #include <QMetaObject>
 #include <QTemporaryDir>
 #include <QThread>
+#include <QVariant>
 
 #include <gtest/gtest.h>
 
 #include <algorithm>
 #include <memory>
+#include <optional>
 
 using namespace LibreSCRS::AgentClient;
 using namespace LibreSCRS::AgentClient::Fakes;
@@ -172,6 +174,28 @@ public:
         int out = 0;
         runOnThread(m_context, [this, &out]() { out = m_agent->getSignResultCount(); });
         return out;
+    }
+    [[nodiscard]] int getConfigCount()
+    {
+        int out = 0;
+        runOnThread(m_context, [this, &out]() { out = m_agent->getConfigCount(); });
+        return out;
+    }
+    [[nodiscard]] int configMutationCount()
+    {
+        int out = 0;
+        runOnThread(m_context, [this, &out]() { out = m_agent->configMutationCount(); });
+        return out;
+    }
+    [[nodiscard]] QVariant configValue(const QString& key)
+    {
+        QVariant out;
+        runOnThread(m_context, [this, &key, &out]() { out = m_agent->configValue(key); });
+        return out;
+    }
+    void emitConfigChanged(const QString& key)
+    {
+        runOnThread(m_context, [this, &key]() { m_agent->emitConfigChanged(key); });
     }
     [[nodiscard]] QString lastSignCertId()
     {
@@ -384,6 +408,171 @@ TEST(SocketIntegration, AgentVersionFromHelloAckAndEmptyOnceGone)
     client->refreshDiscovery();
     ASSERT_TRUE(client->isAvailable());
     EXPECT_EQ(client->agentVersion(), QStringLiteral("9.9-socket-fake"));
+}
+
+// ---- Config1 over the socket wire ---------------------------------------------
+//
+// The same client contract DBusIntegrationTest's Config* cases pin, over a
+// wire with two structural differences the D-Bus side does not have:
+//
+//   * `set-config`'s grammar takes a `settable-config-key` ONLY, so a
+//     non-settable (or unknown) key cannot be ENCODED at all. The transport
+//     therefore refuses it locally, before building a frame — and the
+//     mutation counter proves it never dialed the wire, the same way
+//     layoutCallCount() proves the layout-preview gate does not.
+//     `reset-config` is deliberately different: its argument is the FULL
+//     `config-key` set, so a read-only key IS encodable there and the agent
+//     is the one that names the refusal.
+//   * a config value is typed `any`, not D-Bus's declared `a(sbb)`, so the
+//     canonical TslSources row shape is the CLIENT's guarantee rather than
+//     the wire's.
+
+TEST(SocketIntegration, ConfigSnapshotCarriesTypedEntriesFromGetConfig)
+{
+    FakeSocketAgent::Config cfg;
+    cfg.capabilities = Cap::Pki;
+    SocketHarness h(cfg);
+
+    auto client = makeClient(h);
+    ASSERT_TRUE(client->isAvailable());
+
+    const QVariantMap config = client->configSnapshot();
+    EXPECT_EQ(config.value(QStringLiteral("DefaultLevel")).toString(), QStringLiteral("b-t"));
+    EXPECT_EQ(config.value(QStringLiteral("TsaUrls")).toStringList(),
+              QStringList{QStringLiteral("https://tsa.example.invalid/tsr")});
+    EXPECT_EQ(config.value(QStringLiteral("PluginDir")).toString(), QStringLiteral("/usr/lib/librescrs/plugins"));
+
+    const QVariantList tslSources = config.value(QStringLiteral("TslSources")).toList();
+    ASSERT_EQ(tslSources.size(), 1);
+    const QVariantList row = tslSources.first().toList();
+    ASSERT_EQ(row.size(), 3);
+    EXPECT_EQ(row.at(0).toString(), QStringLiteral("https://example.invalid/tl.xml"));
+    EXPECT_FALSE(row.at(1).toBool());
+    EXPECT_TRUE(row.at(2).toBool());
+
+    // Cached per connection: a second read must not re-dial GetConfig.
+    EXPECT_EQ(client->configSnapshot(), config);
+    EXPECT_EQ(h.getConfigCount(), 1);
+}
+
+// The `any`-typed value, served in the OTHER lawful encoding this wire admits
+// (an array of maps rather than of three-entry arrays). The client normalizes
+// both onto one shape — the whole reason `configSnapshot()` can promise a
+// consumer anything at all here.
+TEST(SocketIntegration, TslSourcesNormalizeFromTheMapEncodingToo)
+{
+    FakeSocketAgent::Config cfg;
+    cfg.capabilities = Cap::Pki;
+    cfg.tslSourcesAsMaps = true;
+    SocketHarness h(cfg);
+
+    auto client = makeClient(h);
+    ASSERT_TRUE(client->isAvailable());
+
+    const QVariantList tslSources = client->configSnapshot().value(QStringLiteral("TslSources")).toList();
+    ASSERT_EQ(tslSources.size(), 1);
+    const QVariantList row = tslSources.first().toList();
+    ASSERT_EQ(row.size(), 3) << "the map encoding must normalize to the SAME three-entry row";
+    EXPECT_EQ(row.at(0).toString(), QStringLiteral("https://example.invalid/tl.xml"));
+    EXPECT_FALSE(row.at(1).toBool());
+    EXPECT_TRUE(row.at(2).toBool());
+}
+
+TEST(SocketIntegration, SetConfigRoundTripsAndSignalsConfigChanged)
+{
+    FakeSocketAgent::Config cfg;
+    cfg.capabilities = Cap::Pki;
+    SocketHarness h(cfg);
+
+    auto client = makeClient(h);
+    ASSERT_TRUE(client->isAvailable());
+    ASSERT_FALSE(client->configSnapshot().isEmpty());
+
+    QStringList announced;
+    QString seenFromSlot;
+    QObject::connect(client.get(), &AgentClient::configChanged, client.get(), [&](const QString& key) {
+        announced.append(key);
+        seenFromSlot = client->configSnapshot().value(key).toString();
+    });
+
+    EXPECT_EQ(client->setConfigValue(QStringLiteral("DefaultReason"), QStringLiteral("approval")), std::nullopt);
+    ASSERT_TRUE(waitFor([&]() { return !announced.isEmpty(); }));
+    EXPECT_EQ(announced.constFirst(), QStringLiteral("DefaultReason"));
+    // The ConfigChanged event carries only the key, so the transport owes the
+    // re-read BEFORE it announces — a slot reading the snapshot sees the new
+    // value, never the one the cache held when the event arrived.
+    EXPECT_EQ(seenFromSlot, QStringLiteral("approval"));
+    EXPECT_EQ(h.configValue(QStringLiteral("DefaultReason")).toString(), QStringLiteral("approval"));
+}
+
+TEST(SocketIntegration, SetConfigRefusesANonSettableOrUnknownKeyLocally)
+{
+    FakeSocketAgent::Config cfg;
+    cfg.capabilities = Cap::Pki;
+    SocketHarness h(cfg);
+
+    auto client = makeClient(h);
+    ASSERT_TRUE(client->isAvailable());
+
+    const std::optional<SyncError> readOnly =
+        client->setConfigValue(QStringLiteral("PluginDir"), QStringLiteral("/tmp/x"));
+    ASSERT_TRUE(readOnly.has_value());
+    EXPECT_EQ(*readOnly, SyncError::ReadOnlyConfig);
+
+    const std::optional<SyncError> unknown = client->setConfigValue(QStringLiteral("NoSuchKey"), QStringLiteral("x"));
+    ASSERT_TRUE(unknown.has_value());
+    EXPECT_EQ(*unknown, SyncError::UnknownConfigKey);
+
+    EXPECT_EQ(h.configMutationCount(), 0)
+        << "a key this wire's set-config grammar cannot encode must be refused before any frame is built";
+}
+
+// Reset's own grammar admits the full config-key set, so the read-only
+// verdict comes from the AGENT here — the one config verb where the two wires
+// agree on the mechanism as well as the outcome.
+TEST(SocketIntegration, ResetConfigForAReadOnlyKeyReachesTheAgentAndIsRefused)
+{
+    FakeSocketAgent::Config cfg;
+    cfg.capabilities = Cap::Pki;
+    SocketHarness h(cfg);
+
+    auto client = makeClient(h);
+    ASSERT_TRUE(client->isAvailable());
+
+    const std::optional<SyncError> readOnly = client->resetConfigValue(QStringLiteral("PluginDir"));
+    ASSERT_TRUE(readOnly.has_value());
+    EXPECT_EQ(*readOnly, SyncError::ReadOnlyConfig);
+    EXPECT_EQ(h.configMutationCount(), 1) << "reset-config CAN encode a read-only key, so it is sent";
+
+    // An unknown key is outside `config-key` entirely and stays local.
+    const std::optional<SyncError> unknown = client->resetConfigValue(QStringLiteral("NoSuchKey"));
+    ASSERT_TRUE(unknown.has_value());
+    EXPECT_EQ(*unknown, SyncError::UnknownConfigKey);
+    EXPECT_EQ(h.configMutationCount(), 1);
+}
+
+// The snapshot describes the CONNECTED agent, so it must not survive the
+// connection — and the next connect must re-read rather than serve the dead
+// one's settings.
+TEST(SocketIntegration, ConfigSnapshotEmptiesOnConnectionLossAndReSeeds)
+{
+    FakeSocketAgent::Config cfg;
+    cfg.capabilities = Cap::Pki;
+    SocketHarness h(cfg);
+
+    auto client = makeClient(h);
+    ASSERT_TRUE(client->isAvailable());
+    ASSERT_FALSE(client->configSnapshot().isEmpty());
+
+    h.closeAllConnections();
+    h.stopListening();
+    ASSERT_TRUE(waitFor([&]() { return !client->isAvailable(); }));
+    EXPECT_TRUE(client->configSnapshot().isEmpty());
+
+    h.relisten();
+    client->refreshDiscovery();
+    ASSERT_TRUE(client->isAvailable());
+    EXPECT_EQ(client->configSnapshot().value(QStringLiteral("DefaultLevel")).toString(), QStringLiteral("b-t"));
 }
 
 // ---- reader/card discovery from GetState ---------------------------------------
@@ -1552,6 +1741,10 @@ struct RecordingRegistryListener final : RegistryListener
     void onCardRemoved(const QString& cardId) override
     {
         Q_UNUSED(cardId)
+    }
+    void onConfigChanged(const QString& key) override
+    {
+        Q_UNUSED(key)
     }
 };
 

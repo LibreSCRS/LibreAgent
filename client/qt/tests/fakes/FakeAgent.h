@@ -4,6 +4,8 @@
 
 #include "dbus/Marshal.h" // reuse the client's own wire-shape mirrors + AgentInterfaceProps
 
+#include "FakeConfig.h" // the Config1 property set both fakes serve, in one shape
+
 #include <QByteArray>
 #include <QDBusAbstractAdaptor>
 #include <QDBusConnection>
@@ -156,6 +158,70 @@ private:
     FakeAgent* m_agent;
     int m_layoutCalls = 0;
     int m_appearanceFontCalls = 0;
+};
+
+/// @brief Config1 adaptor (root path): the nine agent-owned settings, all
+///        read-only as PROPERTIES, mutated through SetValue/Reset so each
+///        change is gated per key — faithful to
+///        `org.librescrs.Agent.Config1`, including its four documented
+///        refusals:
+///          - `UnknownConfigKey`   no such key;
+///          - `ReadOnlyConfig`     a file-only / agent-internal key
+///                                 (TslCacheDir / AiaCacheDir / PluginDir /
+///                                 LastTsaUrl);
+///          - `NotAuthorized`      polkit denied;
+///          - `InvalidConfigValue` wrong variant type for the key.
+///
+///        The first two are the agent's own STRUCTURAL policy and are
+///        enforced here for real, because the client's socket half refuses
+///        exactly those two locally and the parity corpus asserts both wires
+///        land on the same refusal. The last two are authorization/validation
+///        verdicts a client can only observe, so they are scripted
+///        (`Config::configMutationError`) rather than modelled.
+///
+///        The error reply is minted through the registered root object's
+///        QDBusContext (a `ContextObject`), mirroring `Pkcs11Adaptor` — an
+///        adaptor's own context is not populated for plain method calls.
+class Config1Adaptor : public QDBusAbstractAdaptor
+{
+    Q_OBJECT
+    Q_CLASSINFO("D-Bus Interface", "org.librescrs.Agent.Config1")
+    Q_PROPERTY(QString DefaultLevel READ defaultLevel)
+    Q_PROPERTY(QStringList TsaUrls READ tsaUrls)
+    Q_PROPERTY(QString LastTsaUrl READ lastTsaUrl)
+    Q_PROPERTY(LibreSCRS::AgentClient::TslSourcesWire TslSources READ tslSources)
+    Q_PROPERTY(QString TslCacheDir READ tslCacheDir)
+    Q_PROPERTY(QString AiaCacheDir READ aiaCacheDir)
+    Q_PROPERTY(QString DefaultReason READ defaultReason)
+    Q_PROPERTY(QString DefaultLocation READ defaultLocation)
+    Q_PROPERTY(QString PluginDir READ pluginDir)
+public:
+    Config1Adaptor(QObject* parent, FakeAgent* agent);
+
+    [[nodiscard]] QString defaultLevel() const;
+    [[nodiscard]] QStringList tsaUrls() const;
+    [[nodiscard]] QString lastTsaUrl() const;
+    [[nodiscard]] LibreSCRS::AgentClient::TslSourcesWire tslSources() const;
+    [[nodiscard]] QString tslCacheDir() const;
+    [[nodiscard]] QString aiaCacheDir() const;
+    [[nodiscard]] QString defaultReason() const;
+    [[nodiscard]] QString defaultLocation() const;
+    [[nodiscard]] QString pluginDir() const;
+
+public Q_SLOTS:
+    void SetValue(const QString& key, const QDBusVariant& value);
+    void Reset(const QString& key);
+
+Q_SIGNALS:
+    void Changed(const QString& key);
+
+private:
+    /// @brief Send the agent's per-key refusal for the active call, mirroring
+    ///        `CardAdaptor::sendMethodEntryError`. Returns true when a refusal
+    ///        was sent (the caller then changes nothing).
+    bool refuse(const QString& shortName, const QString& message);
+
+    FakeAgent* m_agent;
 };
 
 /// @brief Reader1 adaptor (Name / HasCard / Card properties).
@@ -603,6 +669,20 @@ public:
         /// Properties.GetAll("...Manager1") on the root object fails closed,
         /// and features() must degrade to an empty list, never an error.
         bool exportManager1 = true;
+        /// The Config1 property set this fake serves, keyed by the nine wire
+        /// spellings and valued in the canonical client-side shape (see
+        /// defaultAgentConfig()). Also the RESET target: the fake snapshots
+        /// this map at construction and Reset(key) restores that entry, which
+        /// is exactly the real store's "reset to the built-in default".
+        QVariantMap config = defaultAgentConfig();
+        /// Refuse every Config1 MUTATION with this agent-namespace short
+        /// name instead of applying it — the authorization/validation half of
+        /// the interface's refusal vocabulary ("NotAuthorized" for a polkit
+        /// denial, "InvalidConfigValue" for a value the agent rejects), which
+        /// a client can only observe. Empty (default) applies the real
+        /// structural policy instead (unknown key / read-only key). Mirrors
+        /// FakeSocketAgent::Config::configMutationError.
+        QString configMutationError;
         /// Manager1.LayoutVisualSignature's scripted reply. Defaults
         /// model a plausible two-line layout; a cross-transport parity test
         /// scripts these to the SAME values on both fakes for an exact
@@ -659,6 +739,21 @@ public:
 
     [[nodiscard]] FakeManagedObjects managedObjects() const;
     [[nodiscard]] Config& config();
+
+    /// @brief The live Config1 value behind @p key (empty QVariant when the
+    ///        key is absent), so a test can assert what the agent ACTUALLY
+    ///        stored rather than only what the client read back.
+    [[nodiscard]] QVariant configValue(const QString& key) const;
+    /// @brief Apply a Config1 mutation the way the interface does: store the
+    ///        value (or, for @p reset, restore the construction-time default)
+    ///        and emit Changed(key). Called by Config1Adaptor after its
+    ///        refusal checks pass.
+    void applyConfigValue(const QString& key, const QVariant& value);
+    void resetConfigValue(const QString& key);
+    /// @brief Emit Config1.Changed(key) without changing anything — the
+    ///        agent-internal mutation path (the real agent fires Changed for
+    ///        LastTsaUrl after a timestamped sign, which no client wrote).
+    void emitConfigChanged(const QString& key);
 
     /// @brief How many Manager1.LayoutVisualSignature/GetAppearanceFont calls
     ///        reached this fake — proves a client-side "layout-preview"
@@ -853,6 +948,9 @@ private:
     WedgedPropertiesAdaptor* m_readerPropsWedge = nullptr;
     ObjectManagerAdaptor* m_objectManager = nullptr;
     ManagerAdaptor* m_managerAdaptor = nullptr; // null when Config::exportManager1 is false
+    Config1Adaptor* m_configAdaptor = nullptr;
+    /// Config::config as constructed — Reset(key)'s restore target.
+    QVariantMap m_configDefaults;
     ReaderAdaptor* m_readerAdaptor = nullptr;
     CardAdaptor* m_cardAdaptor = nullptr;
     Pkcs11Adaptor* m_pkcs11Adaptor = nullptr;

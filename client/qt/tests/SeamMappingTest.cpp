@@ -17,6 +17,8 @@
 
 #include <QCoreApplication>
 #include <QHash>
+#include <QVariant>
+#include <QVariantList>
 #include <QVariantMap>
 
 #include <fcntl.h>
@@ -25,6 +27,7 @@
 #include <memory>
 #include <optional>
 #include <type_traits>
+#include <utility>
 #include <vector>
 
 using namespace LibreSCRS::AgentClient;
@@ -50,7 +53,11 @@ public:
     RegistrySnapshot snapshot;
     QStringList featureTokens; // TransportSeam::features()
     QString version;           // TransportSeam::agentVersion()
-    QString nextOperationId;   // empty -> refuse entry with entryError
+    QVariantMap config;        // TransportSeam::configSnapshot()
+    /// Engaged -> every setConfig/resetConfig answers this instead of
+    /// applying (the named-refusal pass-through).
+    std::optional<SyncError> configRefusal;
+    QString nextOperationId; // empty -> refuse entry with entryError
     SeamError entryError;
     std::optional<TerminalSnapshot> terminal;                 // ctor lost-Finished recovery read
     std::function<std::optional<OperationPayload>()> recover; // GetResult recovery pull
@@ -68,6 +75,8 @@ public:
     };
     std::vector<StartRecord> starts;
     std::vector<QString> cancelled;
+    std::vector<std::pair<QString, QVariant>> configWrites;
+    std::vector<QString> configResets;
     /// Card ids handed to warmCertificates(), in call order. The fake records
     /// and does nothing else: the debounce is a TRANSPORT obligation (only a
     /// transport knows when its own entry call finished), so a seam fake that
@@ -115,6 +124,28 @@ public:
     [[nodiscard]] QString agentVersion() const override
     {
         return version;
+    }
+    // Config1: the public methods are thin forwards over these three, so the
+    // fake records the mutations and serves a scripted map — enough to pin
+    // the forwarding without re-modelling either wire's refusal policy, which
+    // is a TRANSPORT obligation the integration and parity suites own.
+    [[nodiscard]] QVariantMap configSnapshot() override
+    {
+        return config;
+    }
+    [[nodiscard]] std::optional<SyncError> setConfig(const QString& key, const QVariant& value) override
+    {
+        configWrites.push_back({key, value});
+        if (configRefusal) {
+            return configRefusal;
+        }
+        config.insert(key, value);
+        return std::nullopt;
+    }
+    [[nodiscard]] std::optional<SyncError> resetConfig(const QString& key) override
+    {
+        configResets.push_back(key);
+        return configRefusal;
     }
     // Not exercised by this seam-mapping corpus (no scenario here scripts
     // "layout-preview" or calls these); trivial stubs only to satisfy the
@@ -302,6 +333,65 @@ TEST(SeamRegistry, ReadersAreSortedById)
     ASSERT_EQ(readers.size(), 2);
     EXPECT_EQ(readers[0]->id(), QStringLiteral("/reader/1"));
     EXPECT_EQ(readers[1]->id(), QStringLiteral("/reader/9"));
+}
+
+// ---- Config1 -> seam forwarding -------------------------------------------------
+//
+// What only this layer can pin: the three public config methods are thin,
+// verbatim forwards, the change notification re-broadcasts the seam callback,
+// and a client with NO transport at all reports the never-arrived class
+// rather than pretending an agent refused it. Which refusal a given key earns
+// is a transport decision, exercised against the real wires in the
+// integration and parity suites.
+
+TEST(SeamConfig, PublicMethodsForwardVerbatimAndPassRefusalsBack)
+{
+    ClientOnFake h;
+    h.fake->config.insert(QStringLiteral("DefaultLevel"), QStringLiteral("b-lt"));
+    EXPECT_EQ(h.client->configSnapshot().value(QStringLiteral("DefaultLevel")).toString(), QStringLiteral("b-lt"));
+
+    EXPECT_EQ(h.client->setConfigValue(QStringLiteral("DefaultReason"), QStringLiteral("approval")), std::nullopt);
+    ASSERT_EQ(h.fake->configWrites.size(), 1U);
+    EXPECT_EQ(h.fake->configWrites.front().first, QStringLiteral("DefaultReason"));
+    EXPECT_EQ(h.fake->configWrites.front().second.toString(), QStringLiteral("approval"));
+
+    h.fake->configRefusal = SyncError::NotAuthorized;
+    const std::optional<SyncError> denied = h.client->setConfigValue(QStringLiteral("TslSources"), QVariantList{});
+    ASSERT_TRUE(denied.has_value());
+    EXPECT_EQ(*denied, SyncError::NotAuthorized);
+
+    const std::optional<SyncError> deniedReset = h.client->resetConfigValue(QStringLiteral("TslSources"));
+    ASSERT_TRUE(deniedReset.has_value());
+    EXPECT_EQ(*deniedReset, SyncError::NotAuthorized);
+    ASSERT_EQ(h.fake->configResets.size(), 1U);
+    EXPECT_EQ(h.fake->configResets.front(), QStringLiteral("TslSources"));
+}
+
+TEST(SeamConfig, SeamNotificationReachesTheClientSignal)
+{
+    ClientOnFake h;
+    QStringList announced;
+    QObject::connect(h.client.get(), &AgentClient::configChanged, h.client.get(),
+                     [&announced](const QString& key) { announced.append(key); });
+
+    h.fake->registry->onConfigChanged(QStringLiteral("LastTsaUrl"));
+    EXPECT_EQ(announced, QStringList{QStringLiteral("LastTsaUrl")});
+}
+
+TEST(SeamConfig, TransportLessClientReportsTheNeverArrivedClass)
+{
+    std::unique_ptr<AgentClient> client{ClientTestAccess::create(nullptr)};
+    EXPECT_TRUE(client->configSnapshot().isEmpty());
+
+    const std::optional<SyncError> write =
+        client->setConfigValue(QStringLiteral("DefaultReason"), QStringLiteral("approval"));
+    ASSERT_TRUE(write.has_value());
+    EXPECT_EQ(*write, SyncError::CommunicationError)
+        << "no transport means the write never arrived, which is not the same as a refusal";
+
+    const std::optional<SyncError> reset = client->resetConfigValue(QStringLiteral("DefaultReason"));
+    ASSERT_TRUE(reset.has_value());
+    EXPECT_EQ(*reset, SyncError::CommunicationError);
 }
 
 // ---- SignOptions / PinVerb -> request mapping -----------------------------------
