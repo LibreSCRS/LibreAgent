@@ -18,7 +18,8 @@
 // same two-thread arrangement the D-Bus suites' Harness uses for the same
 // reason — and marshal every scripting call onto that thread.
 
-#include "FakeConfig.h" // the Config1 property set both fakes serve, in one shape
+#include "FakeCertFields.h" // the scripted cert `fields` dict, in one shape both fakes accept
+#include "FakeConfig.h"     // the Config1 property set both fakes serve, in one shape
 
 #include <LibreSCRS/Agent/wire/FrameReassembler.h>
 #include <LibreSCRS/Agent/wire/Messages.h>
@@ -58,6 +59,12 @@ struct FakeSocketCert
     /// Tokens riding the "security" fields-group, mirroring trustStatus (e.g.
     /// {"revoked"} for trustStatus=5). Empty by default.
     QStringList securityStatus;
+    /// Any OTHER field group the real agent emits -- publicKey, cert, ext,
+    /// basicConstraints, san, ian, crlDp, aia, certificatePolicies. The five
+    /// cells the members above stand for are derived from those members, so
+    /// scripting the SAME cell here as well is pointless rather than harmful --
+    /// the derived value wins. Twin of FakeCert::extraFields.
+    Fakes::FakeCertFieldGroups extraFields;
 };
 
 /// One scripted progressive field group: the ordered payload of ONE

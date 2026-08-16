@@ -3,6 +3,7 @@
 
 #include "Marshal.h"
 
+#include "../CertFieldsExtra.h"
 #include "../FieldExtraKeys.h"
 
 #include <QDBusMetaType>
@@ -10,6 +11,7 @@
 #include <QDateTime>
 
 #include <fcntl.h>
+#include <utility>
 
 namespace LibreSCRS::AgentClient {
 
@@ -53,7 +55,10 @@ const QDBusArgument& operator>>(const QDBusArgument& arg, CertFieldWire& f)
 // for qDBusRegisterMetaType<CertListWire>().
 QDBusArgument& operator<<(QDBusArgument& arg, const CertInfoWire& c)
 {
-    CertFieldGroupsWire fields;
+    // Seeded from the whole-dict member, then overlaid with the cells derived
+    // from the convenience members below -- a producer that set only those
+    // members emits precisely what it always did.
+    CertFieldGroupsWire fields = c.fields;
     if (!c.subjectCn.isEmpty()) {
         fields[QStringLiteral("subject")][QStringLiteral("cn")] = {
             QStringLiteral("label_subject_cn"), QStringLiteral("Subject CN"), QDBusVariant(c.subjectCn)};
@@ -128,6 +133,10 @@ const QDBusArgument& operator>>(const QDBusArgument& arg, CertInfoWire& c)
             c.securityStatus.append(it->value.variant().toString());
         }
     }
+    // The convenience members above are an EXTRACTION, not a filter: the dict
+    // itself is kept whole for the decode to surface, groups this build knows
+    // nothing about included.
+    c.fields = std::move(fields);
     return arg;
 }
 
@@ -322,6 +331,21 @@ QList<CertificateInfo> toCertificateInfos(const CertListWire& certs)
         // collapses several wire verdicts into one display value, so the raw
         // number is the only way back to the cause. It stays in `extra`.
         info.extra.insert(QStringLiteral("trustStatusWire"), wire.trustStatus);
+        // The grouped fields dict, whole. The typed members above are the four
+        // cells a caller needs without knowing the group vocabulary; a viewer
+        // needs the rest -- serial, version, DN components, public-key detail,
+        // SKI/AKI, basic constraints, SAN/IAN, CRL DPs, AIA, policies and every
+        // remaining extension -- and all of it has been arriving here and being
+        // dropped. Shape single-sourced with the socket transport, which walks
+        // its own container into the same builder.
+        CertFieldsExtra fieldsExtra;
+        for (auto group = wire.fields.constBegin(); group != wire.fields.constEnd(); ++group) {
+            for (auto cell = group->constBegin(); cell != group->constEnd(); ++cell) {
+                fieldsExtra.add(group.key(), cell.key(), cell->labelKey, cell->labelFallback,
+                                cell->value.variant().toString());
+            }
+        }
+        fieldsExtra.installInto(info.extra);
         out.append(std::move(info));
     }
     return out;

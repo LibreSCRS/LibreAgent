@@ -105,7 +105,36 @@ struct CertificateInfo
     ///        `keyUsageBits` for why this is typed rather than an `extra`
     ///        entry.
     QStringList chainSubjectCns;
-    QVariantMap extra; ///< Forward-compatible pass-through, as on every result struct.
+    /// @brief Forward-compatible pass-through, as on every result struct, plus
+    ///        two entries this type always carries.
+    ///
+    /// `extra["trustStatusWire"]` (`uint`) is the raw wire verdict `trust`
+    /// collapsed — several wire causes share one display value, so this is the
+    /// only way back to the cause.
+    ///
+    /// `extra["fields"]` (`QVariantMap`) is the agent's grouped certificate
+    /// field dict, whole and in the agent's own grouping:
+    ///
+    ///     group key -> QVariantMap( field key -> QVariantList{ labelKey,
+    ///                                                          labelFallback,
+    ///                                                          value } )
+    ///
+    /// all three cell elements being `QString`. The group keys the agent emits
+    /// today are `subject`, `issuer`, `validity`, `publicKey`, `cert`,
+    /// `basicConstraints`, `san`, `ian`, `crlDp`, `aia`,
+    /// `certificatePolicies`, `ext` and `security` — but that vocabulary is
+    /// APPEND-ONLY on the wire and is forwarded verbatim, so a consumer must
+    /// render the groups it recognises and ignore the rest rather than assume
+    /// the list is closed. `labelKey` is the agent's i18n key for the field's
+    /// label and `labelFallback` its English text; a consumer that has no
+    /// catalogue entry for the key renders the fallback.
+    ///
+    /// The key is ABSENT — not an empty map — when the certificate carried no
+    /// field dict at all. The typed members above are extracted FROM this dict
+    /// and remain the supported way to read what they name; the dict is
+    /// additional, for a consumer (a certificate viewer) that renders detail
+    /// no typed member carries.
+    QVariantMap extra;
 };
 
 /// @brief The card-independent, synchronous visible-signature layout preview

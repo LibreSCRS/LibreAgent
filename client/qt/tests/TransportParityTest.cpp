@@ -265,6 +265,12 @@ struct ParityCert
     quint32 keyUsageBits = 0;
     QStringList extendedKeyUsageOids;
     QStringList chainSubjectCns;
+    /// The rest of the `fields` dict — every group beyond the four cells the
+    /// members above derive. Scripted ONCE here and re-encoded by each fake
+    /// into its own wire form (a nested `a{sa{s(ssv)}}` D-Bus map on one side,
+    /// a CBOR map of 3-element arrays on the other), which is the only way a
+    /// scenario can assert the two decodes agree on the shape they surface.
+    Fakes::FakeCertFieldGroups extraFields;
 };
 
 struct ParityCredRecord
@@ -492,6 +498,7 @@ private:
             fc.keyUsageBits = c.keyUsageBits;
             fc.extendedKeyUsageOids = c.extendedKeyUsageOids;
             fc.chainSubjectCns = c.chainSubjectCns;
+            fc.extraFields = c.extraFields;
             out.certScript.append(fc);
         }
         for (const ParityCredRecord& r : cfg.credRecords) {
@@ -719,6 +726,7 @@ private:
             fc.keyUsageBits = c.keyUsageBits;
             fc.extendedKeyUsageOids = c.extendedKeyUsageOids;
             fc.chainSubjectCns = c.chainSubjectCns;
+            fc.extraFields = c.extraFields;
             out.certScript.append(fc);
         }
         for (const ParityCredRecord& r : cfg.credRecords) {
@@ -1152,6 +1160,178 @@ TYPED_TEST(TransportParity, CertificatesEndToEnd)
     // would pass on a transport that stopped carrying the key at all.
     EXPECT_TRUE(c.extra.contains(QStringLiteral("trustStatusWire")));
     EXPECT_EQ(c.extra.value(QStringLiteral("trustStatusWire")).toUInt(), 0u);
+}
+
+// The whole cert-info `fields` dict, one body against both wires.
+//
+// The two decodes read the dict out of containers that have nothing in common
+// -- a QtDBus-demarshalled `a{sa{s(ssv)}}` of QDBusVariant cells on one side,
+// a `std::map<std::string, std::map<std::string, Wire::CertField>>` of CBOR
+// text on the other -- and both must land it on `extra["fields"]` in ONE
+// shape, because the consumer that renders it is written against that shape
+// and not against either wire. So the assertion is a WHOLE-MAP comparison
+// against one expected value, not a spot-check: a transport that dropped a
+// group, flattened the nesting, ordered the triple differently or stringified
+// a cell would each still pass a `contains()`-shaped test on its own suite,
+// and every one of them is a different rendering on the two wires.
+//
+// Every group the CDDL enumerates is scripted, for the reason the per-group
+// D-Bus cases exist: the decode that shipped before this one special-cased
+// four cells by name, and a scenario carrying one group cannot tell a generic
+// copy from a lucky special case.
+TYPED_TEST(TransportParity, CertificateFieldsDictSurfacesIdenticallyOnBothWires)
+{
+    using Env = typename TypeParam::Env;
+    ParityConfig cfg;
+    cfg.capabilities = Cap::Pki;
+    ParityCert pc;
+    pc.certId = QStringLiteral("cert-fields-parity");
+    pc.signingCapable = true;
+    // The four derived cells, scripted through the typed members exactly as
+    // every other cert scenario does -- they must appear in the dict TOO, in
+    // their own groups, alongside the scripted ones.
+    pc.subjectCn = QStringLiteral("Ana Anić");
+    pc.issuerCn = QStringLiteral("Republika Srbija CA");
+    pc.notBefore = QStringLiteral("2020-01-01T00:00:00Z");
+    pc.notAfter = QStringLiteral("2030-12-31T23:59:59Z");
+    pc.trustStatus = 4; // Expired -- the "security" group's token rides along
+    pc.securityStatus = QStringList{QStringLiteral("expired")};
+    pc.extraFields = Fakes::FakeCertFieldGroups{
+        {QStringLiteral("subject"),
+         {{QStringLiteral("dn"),
+           {QStringLiteral("cert.subject.dn"), QStringLiteral("Distinguished Name"),
+            QStringLiteral("CN=Ana Anić, O=Republika Srbija")}}}},
+        {QStringLiteral("publicKey"),
+         {{QStringLiteral("algorithm"),
+           {QStringLiteral("cert.publicKey.algorithm"), QStringLiteral("Algorithm"), QStringLiteral("ECDSA")}},
+          {QStringLiteral("sizeBits"),
+           {QStringLiteral("cert.publicKey.sizeBits"), QStringLiteral("Key Size"), QStringLiteral("256")}},
+          {QStringLiteral("curveOid"),
+           {QStringLiteral("cert.publicKey.curveOid"), QStringLiteral("Curve"),
+            QStringLiteral("1.2.840.10045.3.1.7")}}}},
+        {QStringLiteral("cert"),
+         {{QStringLiteral("serial"),
+           {QStringLiteral("cert.cert.serial"), QStringLiteral("Serial Number"), QStringLiteral("1A:2B:3C:4D")}},
+          {QStringLiteral("version"),
+           {QStringLiteral("cert.cert.version"), QStringLiteral("Version"), QStringLiteral("v3")}},
+          {QStringLiteral("subjectKeyIdentifier"),
+           {QStringLiteral("cert.cert.subjectKeyIdentifier"), QStringLiteral("Subject Key Identifier"),
+            QStringLiteral("AA:BB:CC")}}}},
+        {QStringLiteral("basicConstraints"),
+         {{QStringLiteral("isCa"),
+           {QStringLiteral("cert.basicConstraints.isCa"), QStringLiteral("CA"), QStringLiteral("false")}}}},
+        {QStringLiteral("san"),
+         {{QStringLiteral("email0"),
+           {QStringLiteral("cert.san.email"), QStringLiteral("Email"), QStringLiteral("ana@example.invalid")}}}},
+        {QStringLiteral("ian"),
+         {{QStringLiteral("uri0"),
+           {QStringLiteral("cert.ian.uri"), QStringLiteral("URI"), QStringLiteral("https://ca.example.invalid/")}}}},
+        {QStringLiteral("crlDp"),
+         {{QStringLiteral("url0"),
+           {QStringLiteral("cert.crlDp.url0"), QStringLiteral("CRL Distribution Point"),
+            QStringLiteral("http://crl.example.invalid/a")}}}},
+        {QStringLiteral("aia"),
+         {{QStringLiteral("ocsp0"),
+           {QStringLiteral("cert.aia.ocsp0"), QStringLiteral("OCSP Responder"),
+            QStringLiteral("http://ocsp.example.invalid/")}}}},
+        {QStringLiteral("certificatePolicies"),
+         {{QStringLiteral("policy0"),
+           {QStringLiteral("cert.certificatePolicies.policy0"), QStringLiteral("Certificate Policy"),
+            QStringLiteral("1.3.6.1.4.1.1.1.1")}}}},
+        {QStringLiteral("ext"),
+         {{QStringLiteral("2.5.29.9"),
+           {QStringLiteral("cert.ext.2.5.29.9"), QStringLiteral("X509v3 Subject Directory Attributes (Critical)"),
+            QStringLiteral("30820103")}}}},
+    };
+    cfg.certScript = {pc};
+    Env env(cfg);
+
+    AgentCard* card = env.card();
+    ASSERT_NE(card, nullptr);
+    AgentOperation* op = card->readCertificates();
+    ASSERT_NE(op, nullptr);
+    ASSERT_TRUE(waitFor([&]() { return op->isFinished(); }));
+    EXPECT_EQ(op->status(), OperationStatus::Ok);
+
+    const QList<CertificateInfo> certs = op->certificatesResult();
+    ASSERT_EQ(certs.size(), 1);
+    const CertificateInfo& c = certs.constFirst();
+
+    const auto cell = [](const QString& labelKey, const QString& labelFallback, const QString& value) {
+        return QVariant(QVariantList{labelKey, labelFallback, value});
+    };
+    const QVariantMap expected{
+        {QStringLiteral("subject"),
+         QVariantMap{
+             {QStringLiteral("cn"),
+              cell(QStringLiteral("label_subject_cn"), QStringLiteral("Subject CN"), QStringLiteral("Ana Anić"))},
+             {QStringLiteral("dn"), cell(QStringLiteral("cert.subject.dn"), QStringLiteral("Distinguished Name"),
+                                         QStringLiteral("CN=Ana Anić, O=Republika Srbija"))}}},
+        {QStringLiteral("issuer"),
+         QVariantMap{{QStringLiteral("cn"), cell(QStringLiteral("label_issuer_cn"), QStringLiteral("Issuer CN"),
+                                                 QStringLiteral("Republika Srbija CA"))}}},
+        {QStringLiteral("validity"),
+         QVariantMap{
+             {QStringLiteral("notBefore"), cell(QStringLiteral("label_not_before"), QStringLiteral("Not before"),
+                                                QStringLiteral("2020-01-01T00:00:00Z"))},
+             {QStringLiteral("notAfter"), cell(QStringLiteral("label_not_after"), QStringLiteral("Not after"),
+                                               QStringLiteral("2030-12-31T23:59:59Z"))}}},
+        {QStringLiteral("publicKey"),
+         QVariantMap{
+             {QStringLiteral("algorithm"),
+              cell(QStringLiteral("cert.publicKey.algorithm"), QStringLiteral("Algorithm"), QStringLiteral("ECDSA"))},
+             {QStringLiteral("sizeBits"),
+              cell(QStringLiteral("cert.publicKey.sizeBits"), QStringLiteral("Key Size"), QStringLiteral("256"))},
+             {QStringLiteral("curveOid"), cell(QStringLiteral("cert.publicKey.curveOid"), QStringLiteral("Curve"),
+                                               QStringLiteral("1.2.840.10045.3.1.7"))}}},
+        {QStringLiteral("cert"),
+         QVariantMap{{QStringLiteral("serial"), cell(QStringLiteral("cert.cert.serial"),
+                                                     QStringLiteral("Serial Number"), QStringLiteral("1A:2B:3C:4D"))},
+                     {QStringLiteral("version"),
+                      cell(QStringLiteral("cert.cert.version"), QStringLiteral("Version"), QStringLiteral("v3"))},
+                     {QStringLiteral("subjectKeyIdentifier"),
+                      cell(QStringLiteral("cert.cert.subjectKeyIdentifier"), QStringLiteral("Subject Key Identifier"),
+                           QStringLiteral("AA:BB:CC"))}}},
+        {QStringLiteral("basicConstraints"),
+         QVariantMap{{QStringLiteral("isCa"), cell(QStringLiteral("cert.basicConstraints.isCa"), QStringLiteral("CA"),
+                                                   QStringLiteral("false"))}}},
+        {QStringLiteral("san"),
+         QVariantMap{{QStringLiteral("email0"), cell(QStringLiteral("cert.san.email"), QStringLiteral("Email"),
+                                                     QStringLiteral("ana@example.invalid"))}}},
+        {QStringLiteral("ian"),
+         QVariantMap{{QStringLiteral("uri0"), cell(QStringLiteral("cert.ian.uri"), QStringLiteral("URI"),
+                                                   QStringLiteral("https://ca.example.invalid/"))}}},
+        {QStringLiteral("crlDp"),
+         QVariantMap{
+             {QStringLiteral("url0"), cell(QStringLiteral("cert.crlDp.url0"), QStringLiteral("CRL Distribution Point"),
+                                           QStringLiteral("http://crl.example.invalid/a"))}}},
+        {QStringLiteral("aia"),
+         QVariantMap{{QStringLiteral("ocsp0"), cell(QStringLiteral("cert.aia.ocsp0"), QStringLiteral("OCSP Responder"),
+                                                    QStringLiteral("http://ocsp.example.invalid/"))}}},
+        {QStringLiteral("certificatePolicies"),
+         QVariantMap{{QStringLiteral("policy0"),
+                      cell(QStringLiteral("cert.certificatePolicies.policy0"), QStringLiteral("Certificate Policy"),
+                           QStringLiteral("1.3.6.1.4.1.1.1.1"))}}},
+        {QStringLiteral("ext"),
+         QVariantMap{{QStringLiteral("2.5.29.9"), cell(QStringLiteral("cert.ext.2.5.29.9"),
+                                                       QStringLiteral("X509v3 Subject Directory Attributes (Critical)"),
+                                                       QStringLiteral("30820103"))}}},
+        {QStringLiteral("security"),
+         QVariantMap{{QStringLiteral("expired"), cell(QStringLiteral("cert.security.expired"),
+                                                      QStringLiteral("expired"), QStringLiteral("expired"))}}},
+    };
+
+    ASSERT_TRUE(c.extra.contains(QStringLiteral("fields")))
+        << "the fields dict must reach the consumer on BOTH transports, not just the one whose decode was edited";
+    EXPECT_EQ(c.extra.value(QStringLiteral("fields")).toMap(), expected)
+        << "both wires must surface the SAME grouped shape — group -> field -> [labelKey, labelFallback, value]";
+
+    // The dict is surfaced IN ADDITION to the typed extraction, never instead
+    // of it: a consumer reading `subject` must still get the CN, and one
+    // reading the dict must still find the same cell inside it.
+    EXPECT_EQ(c.subject, QStringLiteral("Ana Anić"));
+    EXPECT_EQ(c.issuer, QStringLiteral("Republika Srbija CA"));
+    EXPECT_EQ(c.securityStatus, (QStringList{QStringLiteral("expired")}));
 }
 
 // The best-effort warm, one body against both wires. Most of what this verb

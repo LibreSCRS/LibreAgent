@@ -92,6 +92,18 @@ struct CertInfoWire
     /// out of that group here purely for the client's convenience, mirroring
     /// how subjectCn/issuerCn/notBefore/notAfter are pulled out of `fields`.
     QStringList securityStatus;
+    /// The `a{sa{s(ssv)}}` field groups, WHOLE — including the five cells the
+    /// convenience members above are pulled out of. `operator>>` fills it and
+    /// the public decode surfaces it on `CertificateInfo::extra["fields"]`, so
+    /// a group this build has never heard of still reaches a consumer (the
+    /// group vocabulary is append-only on the wire).
+    ///
+    /// `operator<<` SEEDS its payload from this member and then overlays the
+    /// cells it derives from the convenience members, so a producer that sets
+    /// only those members emits exactly what it emitted before this member
+    /// existed, and one that sets both never has a scripted cell shadow the
+    /// member it mirrors.
+    CertFieldGroupsWire fields;
 };
 
 using CertListWire = QList<CertInfoWire>;

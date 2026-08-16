@@ -101,10 +101,21 @@ std::vector<std::uint8_t> makeRichV3Der(const char* commonName)
             X509_EXTENSION_free(ext);
         }
     };
-    addExt(NID_subject_key_identifier, "hash");
+    // SKI is minted CRITICAL, which RFC 5280 §4.2.1.2 says it must never be.
+    // Deliberate: the criticality marker reaches a `cert`-group CELL's label
+    // through a different code path than a typed GROUP's label, and SKI/AKI
+    // are the only two typed OIDs that land in a cell -- neither of which any
+    // conforming issuer ever marks critical. A KAT is the only place that path
+    // can be exercised at all, so this certificate is odd on purpose.
+    addExt(NID_subject_key_identifier, "critical,hash");
     // SKI must exist on the (self-)issuer cert BEFORE AKI's "keyid" lookup runs.
     addExt(NID_authority_key_identifier, "keyid:always");
     addExt(NID_basic_constraints, "critical,CA:TRUE,pathlen:1");
+    // One EKU the OID database knows by name and one it cannot possibly know,
+    // in that order -- the friendly-name treatment and its dotted fallback are
+    // the same call, and only a pair proves the fallback is a fallback rather
+    // than the whole behaviour.
+    addExt(NID_ext_key_usage, "emailProtection,1.3.6.1.4.1.99999.1");
     addExt(NID_subject_alt_name, "DNS:example.org,email:pera@example.org");
     addExt(NID_issuer_alt_name, "DNS:issuer.example.org");
     addExt(NID_crl_distribution_points, "URI:https://example.org/crl.der");
@@ -142,6 +153,48 @@ std::optional<std::string> field(const CertSnapshot& s, const std::string& group
             for (const auto& f : g.fields) {
                 if (f.fieldKey == key) {
                     return f.textValue;
+                }
+            }
+        }
+    }
+    return std::nullopt;
+}
+
+// The English label a client renders for a whole group when it has no
+// catalogue entry for the group's labelKey.
+std::optional<std::string> groupLabel(const CertSnapshot& s, const std::string& group)
+{
+    for (const auto& g : s.fields) {
+        if (g.groupKey == group) {
+            return g.labelFallback;
+        }
+    }
+    return std::nullopt;
+}
+
+// The same, for one field inside a group.
+std::optional<std::string> fieldLabel(const CertSnapshot& s, const std::string& group, const std::string& key)
+{
+    for (const auto& g : s.fields) {
+        if (g.groupKey == group) {
+            for (const auto& f : g.fields) {
+                if (f.fieldKey == key) {
+                    return f.labelFallback;
+                }
+            }
+        }
+    }
+    return std::nullopt;
+}
+
+// The i18n key a client would look a field's label up under.
+std::optional<std::string> fieldLabelKey(const CertSnapshot& s, const std::string& group, const std::string& key)
+{
+    for (const auto& g : s.fields) {
+        if (g.groupKey == group) {
+            for (const auto& f : g.fields) {
+                if (f.fieldKey == key) {
+                    return f.labelKey;
                 }
             }
         }
@@ -298,4 +351,132 @@ TEST(LmCertReaderKat, CriticalExtensionLabelSuffixAndNoDuplicateRawDump)
             EXPECT_NE(f.fieldKey, "2.5.29.19") << "BasicConstraints must not duplicate into the raw ext dump";
         }
     }
+}
+
+// --- criticality on the typed groups + friendly extended key usage ---------
+// The generic "ext" dump has always suffixed a critical extension's label with
+// " (Critical)". The ten OIDs a typed group serves are skipped by that dump, so
+// until now their criticality reached no client at all -- a viewer that renders
+// critical extensions differently (a label suffix, a bold row) had nothing to
+// render from for exactly the extensions most likely to BE critical.
+//
+// A typed group's criticality rides a FIELD, not the group's own label. The
+// group label was the first shape tried and it never reached anybody: the wire
+// carries group KEYS and per-field tuples only, so neither transport had a slot
+// to serialize a group's label into, and this KAT -- which reads the snapshot
+// BEFORE serialization -- passed while the marker died inside the daemon. A
+// field is the one carrier both emitters already move generically, and these
+// assertions are on the same field pipeline the decode tests prove end to end.
+
+TEST(LmCertReaderKat, TypedGroupsCarryCriticalityAsADataCell)
+{
+    const auto der = makeRichV3Der("Rich Cert");
+    ASSERT_FALSE(der.empty());
+    LibreSCRS::Plugin::CertificateData cd;
+    cd.derBytes = der;
+    const CertSnapshot s = certSnapshotFromDer(cd);
+
+    // basicConstraints is minted critical: the group grows a "critical" cell
+    // whose value says so. The empty labelKey is the cell's own signature --
+    // it is group metadata, not a row a client should look a catalogue entry
+    // up for and print.
+    EXPECT_EQ(field(s, "basicConstraints", "critical"), "true");
+    EXPECT_EQ(fieldLabel(s, "basicConstraints", "critical"), "Critical");
+    EXPECT_EQ(fieldLabelKey(s, "basicConstraints", "critical"), "");
+
+    // The non-critical typed groups must NOT grow the cell at all -- a marker
+    // every group carries marks nothing, and an absent cell is how a client
+    // tells "not critical" from "this agent does not report criticality".
+    EXPECT_FALSE(field(s, "san", "critical").has_value());
+    EXPECT_FALSE(field(s, "ian", "critical").has_value());
+    EXPECT_FALSE(field(s, "crlDp", "critical").has_value());
+    EXPECT_FALSE(field(s, "aia", "critical").has_value());
+    EXPECT_FALSE(field(s, "certificatePolicies", "critical").has_value());
+    EXPECT_FALSE(field(s, "eku", "critical").has_value());
+
+    // And the group labels stay plain: the suffix that never reached a client
+    // is gone, so no consumer can be tempted to parse a label for a flag.
+    EXPECT_EQ(groupLabel(s, "basicConstraints"), "Basic Constraints");
+    EXPECT_EQ(groupLabel(s, "san"), "Subject Alternative Name");
+    EXPECT_EQ(groupLabel(s, "ian"), "Issuer Alternative Name");
+    EXPECT_EQ(groupLabel(s, "crlDp"), "CRL Distribution Points");
+    EXPECT_EQ(groupLabel(s, "aia"), "Authority Information Access");
+    EXPECT_EQ(groupLabel(s, "certificatePolicies"), "Certificate Policies");
+    EXPECT_EQ(groupLabel(s, "eku"), "Extended Key Usage");
+}
+
+TEST(LmCertReaderKat, CriticalSuffixReachesCertGroupCellLabelsToo)
+{
+    const auto der = makeRichV3Der("Rich Cert");
+    ASSERT_FALSE(der.empty());
+    LibreSCRS::Plugin::CertificateData cd;
+    cd.derBytes = der;
+    const CertSnapshot s = certSnapshotFromDer(cd);
+
+    // SKI and AKI are the two typed OIDs whose values are CELLS of the "cert"
+    // group rather than groups of their own, so their marker rides the field
+    // label. The fixture mints SKI critical and AKI not, which is the only way
+    // one certificate pins both sides of the branch.
+    EXPECT_EQ(fieldLabel(s, "cert", "subjectKeyIdentifier"), "Subject Key Identifier (Critical)");
+    EXPECT_EQ(fieldLabel(s, "cert", "authorityKeyIdentifier"), "Authority Key Identifier");
+
+    // A cell the marker has no business touching stays exactly as it was.
+    EXPECT_EQ(fieldLabel(s, "cert", "serial"), "Serial Number");
+}
+
+TEST(LmCertReaderKat, ExtendedKeyUsageGroupCarriesFriendlyNamesWithDottedFallback)
+{
+    const auto der = makeRichV3Der("Rich Cert");
+    ASSERT_FALSE(der.empty());
+    LibreSCRS::Plugin::CertificateData cd;
+    cd.derBytes = der;
+    const CertSnapshot s = certSnapshotFromDer(cd);
+
+    // The OID database resolves the first; the second cannot be resolved by
+    // anything, and falls back to its dotted form rather than to an empty row.
+    EXPECT_EQ(field(s, "eku", "usage0"), "E-mail Protection");
+    EXPECT_EQ(field(s, "eku", "usage1"), "1.3.6.1.4.1.99999.1");
+
+    // The typed member is untouched: it stays the machine-readable dotted list
+    // a caller matches on, and the group is the human-readable rendering. One
+    // is not a copy of the other, which is why both may exist.
+    ASSERT_EQ(s.ekuOids.size(), 2u);
+    EXPECT_EQ(s.ekuOids[0], "1.3.6.1.5.5.7.3.4");
+    EXPECT_EQ(s.ekuOids[1], "1.3.6.1.4.1.99999.1");
+}
+
+TEST(LmCertReaderKat, ExtendedKeyUsageIsNotAlsoDumpedRaw)
+{
+    const auto der = makeRichV3Der("Rich Cert");
+    ASSERT_FALSE(der.empty());
+    LibreSCRS::Plugin::CertificateData cd;
+    cd.derBytes = der;
+    const CertSnapshot s = certSnapshotFromDer(cd);
+
+    // 2.5.29.37 has been on the typed-OID skip list all along; now that it also
+    // owns a group, a client seeing it twice -- once named, once as opaque hex
+    // -- would be the same duplicate the skip list exists to prevent.
+    for (const auto& g : s.fields) {
+        if (g.groupKey != "ext") {
+            continue;
+        }
+        for (const auto& f : g.fields) {
+            EXPECT_NE(f.fieldKey, "2.5.29.37") << "ExtendedKeyUsage must not duplicate into the raw ext dump";
+        }
+    }
+}
+
+// A certificate carrying NO extended key usage extension must carry no "eku"
+// group at all -- an empty group is a row a viewer renders as a blank heading,
+// and every other optional typed group already declines to emit one.
+TEST(LmCertReaderKat, NoExtendedKeyUsageMeansNoEkuGroup)
+{
+    const auto der = makeSelfSignedV3Der("Plain Cert", "critical,digitalSignature");
+    ASSERT_FALSE(der.empty());
+    LibreSCRS::Plugin::CertificateData cd;
+    cd.derBytes = der;
+    const CertSnapshot s = certSnapshotFromDer(cd);
+
+    EXPECT_FALSE(groupLabel(s, "eku").has_value());
+    EXPECT_TRUE(s.ekuOids.empty());
 }

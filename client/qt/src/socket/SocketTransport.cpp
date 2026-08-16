@@ -5,6 +5,7 @@
 
 #include "SocketPath.h"
 
+#include "../CertFieldsExtra.h"
 #include "../ConfigKeys.h"
 #include "../FieldExtraKeys.h"
 #include "../dbus/AgentDBus.h"    // shared object/interface name spellings (constants only, no QtDBus)
@@ -407,6 +408,19 @@ QList<CertificateInfo> toCertificateInfos(const std::vector<Wire::CertInfo>& cer
         // collapses several wire verdicts into one display value, so the raw
         // number is the only way back to the cause. It stays in `extra`.
         info.extra.insert(QStringLiteral("trustStatusWire"), static_cast<uint>(cert.trustStatus));
+        // The grouped fields dict, whole -- the same surface Marshal.cpp
+        // produces from the D-Bus container, through the same builder, because
+        // the consumer renders one shape and does not know which wire it came
+        // over. The four cells extracted above are in here too; extraction and
+        // surfacing are additive, never alternatives.
+        CertFieldsExtra fieldsExtra;
+        for (const auto& [groupKey, cells] : cert.fields) {
+            for (const auto& [fieldKey, cell] : cells) {
+                fieldsExtra.add(fromStd(groupKey), fromStd(fieldKey), fromStd(cell.labelKey),
+                                fromStd(cell.labelFallback), fromStd(cell.value));
+            }
+        }
+        fieldsExtra.installInto(info.extra);
         out.append(std::move(info));
     }
     return out;

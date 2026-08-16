@@ -567,33 +567,46 @@ void FakeOperation::emitRawCertResult()
         arg << fc.certId;
         arg << fc.signingCapable;
 
-        arg.beginMap(QMetaType::fromType<QString>().id(), qMetaTypeId<LibreSCRS::AgentClient::CertFieldGroupWire>());
+        // Collect every group into ONE ordered map before writing, so a group
+        // the script and the derived cells BOTH name is emitted as a single
+        // outer entry. Two outer entries under one key is a duplicate wire key,
+        // and Qt's demarshaller silently keeps only the last of them.
+        QMap<QString, QList<FieldEntry>> groups;
+        for (auto g = fc.extraFields.constBegin(); g != fc.extraFields.constEnd(); ++g) {
+            QList<FieldEntry> entries;
+            entries.reserve(g->size());
+            for (auto f = g->constBegin(); f != g->constEnd(); ++f) {
+                entries.append({f.key(), f->labelKey, f->labelFallback, f->value});
+            }
+            groups.insert(g.key(), entries);
+        }
         if (!fc.subjectCn.isEmpty()) {
-            writeGroup(arg, QStringLiteral("subject"),
-                       {FieldEntry{QStringLiteral("cn"), QStringLiteral("label_subject_cn"),
-                                   QStringLiteral("Subject CN"), fc.subjectCn}});
+            groups[QStringLiteral("subject")].append(FieldEntry{
+                QStringLiteral("cn"), QStringLiteral("label_subject_cn"), QStringLiteral("Subject CN"), fc.subjectCn});
         }
         if (!fc.issuerCn.isEmpty()) {
-            writeGroup(arg, QStringLiteral("issuer"),
-                       {FieldEntry{QStringLiteral("cn"), QStringLiteral("label_issuer_cn"), QStringLiteral("Issuer CN"),
-                                   fc.issuerCn}});
+            groups[QStringLiteral("issuer")].append(FieldEntry{QStringLiteral("cn"), QStringLiteral("label_issuer_cn"),
+                                                               QStringLiteral("Issuer CN"), fc.issuerCn});
         }
-        QList<FieldEntry> validity;
         if (!fc.notBefore.isEmpty()) {
-            validity.append({QStringLiteral("notBefore"), QStringLiteral("label_not_before"),
-                             QStringLiteral("Not before"), fc.notBefore});
+            groups[QStringLiteral("validity")].append(FieldEntry{QStringLiteral("notBefore"),
+                                                                 QStringLiteral("label_not_before"),
+                                                                 QStringLiteral("Not before"), fc.notBefore});
         }
         if (!fc.notAfter.isEmpty()) {
-            validity.append({QStringLiteral("notAfter"), QStringLiteral("label_not_after"), QStringLiteral("Not after"),
-                             fc.notAfter});
+            groups[QStringLiteral("validity")].append(FieldEntry{QStringLiteral("notAfter"),
+                                                                 QStringLiteral("label_not_after"),
+                                                                 QStringLiteral("Not after"), fc.notAfter});
         }
-        writeGroup(arg, QStringLiteral("validity"), validity);
-        QList<FieldEntry> security;
-        security.reserve(fc.securityStatus.size());
         for (const QString& token : fc.securityStatus) {
-            security.append({token, QStringLiteral("cert.security.") + token, token, token});
+            groups[QStringLiteral("security")].append(
+                FieldEntry{token, QStringLiteral("cert.security.") + token, token, token});
         }
-        writeGroup(arg, QStringLiteral("security"), security);
+
+        arg.beginMap(QMetaType::fromType<QString>().id(), qMetaTypeId<LibreSCRS::AgentClient::CertFieldGroupWire>());
+        for (auto g = groups.constBegin(); g != groups.constEnd(); ++g) {
+            writeGroup(arg, g.key(), g.value());
+        }
         arg.endMap();
 
         arg << fc.keyUsageBits;
@@ -694,6 +707,15 @@ LibreSCRS::AgentClient::CertListWire FakeOperation::buildCertificateList() const
         ci.chainSubjectCns = fc.chainSubjectCns;
         ci.trustStatus = fc.trustStatus;
         ci.securityStatus = fc.securityStatus;
+        // The scripted groups go in FIRST; operator<< then overlays the four
+        // cells it derives from the typed members above, so a script that
+        // named one of those cells never shadows the member it mirrors.
+        for (auto g = fc.extraFields.constBegin(); g != fc.extraFields.constEnd(); ++g) {
+            for (auto f = g->constBegin(); f != g->constEnd(); ++f) {
+                ci.fields[g.key()][f.key()] =
+                    LibreSCRS::AgentClient::CertFieldWire{f->labelKey, f->labelFallback, QDBusVariant(f->value)};
+            }
+        }
         certs.append(ci);
     }
     return certs;

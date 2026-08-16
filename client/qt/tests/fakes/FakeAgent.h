@@ -4,7 +4,8 @@
 
 #include "dbus/Marshal.h" // reuse the client's own wire-shape mirrors + AgentInterfaceProps
 
-#include "FakeConfig.h" // the Config1 property set both fakes serve, in one shape
+#include "FakeCertFields.h" // the scripted cert `fields` dict, in one shape both fakes accept
+#include "FakeConfig.h"     // the Config1 property set both fakes serve, in one shape
 
 #include <QByteArray>
 #include <QDBusAbstractAdaptor>
@@ -421,6 +422,13 @@ struct FakeCert
     /// for trustStatus=6. Empty by default (matches the pre-Inc-6 wire, where
     /// no cert carried a "security" group at all).
     QStringList securityStatus = {};
+    /// Any OTHER field group the real agent emits -- publicKey, cert, ext,
+    /// basicConstraints, san, ian, crlDp, aia, certificatePolicies. The five
+    /// cells the members above stand for (subject/cn, issuer/cn,
+    /// validity/notBefore, validity/notAfter and the security tokens) are
+    /// derived from those members, so scripting the SAME cell here as well is
+    /// pointless rather than harmful -- the derived value wins.
+    Fakes::FakeCertFieldGroups extraFields = {};
 };
 using FakeCertList = QList<FakeCert>;
 

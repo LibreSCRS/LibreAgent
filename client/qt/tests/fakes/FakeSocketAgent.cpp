@@ -427,6 +427,15 @@ std::vector<Wire::CertInfo> FakeSocketAgent::buildCertList() const
         Wire::CertInfo cert;
         cert.certId = scripted.certId.toStdString();
         cert.signingCapable = scripted.signingCapable;
+        // The scripted groups go in FIRST, so the four derived cells below
+        // overlay rather than are overlaid -- the D-Bus fake's operator<<
+        // orders the same two writes the same way.
+        for (auto g = scripted.extraFields.constBegin(); g != scripted.extraFields.constEnd(); ++g) {
+            for (auto f = g->constBegin(); f != g->constEnd(); ++f) {
+                cert.fields[g.key().toStdString()][f.key().toStdString()] =
+                    Wire::CertField{f->labelKey.toStdString(), f->labelFallback.toStdString(), f->value.toStdString()};
+            }
+        }
         if (!scripted.subjectCn.isEmpty()) {
             cert.fields["subject"]["cn"] =
                 Wire::CertField{"label_subject_cn", "Subject CN", scripted.subjectCn.toStdString()};
