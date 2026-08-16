@@ -135,6 +135,15 @@ bool AgentClient::hasFeature(const QString& token) const
     return features().contains(token);
 }
 
+QString AgentClient::agentVersion() const
+{
+    // Same shape as features() above, and for the same reason: the seam owns
+    // both the capture and the forget-on-loss, so there is nothing to gate
+    // here — a transport-less client reads empty, which is exactly what an
+    // unreachable agent reads.
+    return d->transport ? d->transport->agentVersion() : QString();
+}
+
 std::optional<LayoutResult> AgentClient::layoutVisualSignature(const QString& text, QRectF box) const
 {
     // Transport-neutral local refusal, mirroring AgentCard::startOperation's

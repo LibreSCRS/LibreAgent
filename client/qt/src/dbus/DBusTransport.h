@@ -95,6 +95,7 @@ public:
     [[nodiscard]] bool agentInstalled() override;
     [[nodiscard]] std::optional<RegistrySnapshot> fetchRegistry() override;
     [[nodiscard]] QStringList features() const override;
+    [[nodiscard]] QString agentVersion() const override;
     [[nodiscard]] std::optional<LayoutResult> layoutVisualSignature(const QString& text, QRectF box) override;
     [[nodiscard]] FdHandle appearanceFont() override;
     void subscribeProperties(const QString& objectId, ObjectKind kind, PropertyListener* listener) override;
@@ -123,13 +124,17 @@ private:
     /// isServiceRegistered helper, which can block ~25 s against a wedged
     /// daemon and would freeze a running outer loop the whole time).
     [[nodiscard]] bool nameHasOwner();
-    /// Re-read `Manager1.Features` (a bounded `Properties.GetAll` on the root
-    /// path) into `m_features`, tolerating an agent that lacks the property —
-    /// or Manager1 entirely — by leaving `m_features` empty. Called at most
-    /// once per connect (guarded by `m_featuresFetched`), from `probeAvailability()`
-    /// and `onServiceRegistered()` alike, so whichever path first observes the
-    /// agent reachable seeds it.
-    void refreshFeatures();
+    /// Re-read the root `Manager1` properties — `Features` into `m_features`
+    /// and `Version` into `m_agentVersion` — with ONE bounded
+    /// `Properties.GetAll` on the root path, tolerating an agent that lacks
+    /// either property, or Manager1 entirely, by leaving both empty. The two
+    /// ride one call because they are one fact ("who is on the other end"),
+    /// fetched at the same moment for the same lifetime; splitting them
+    /// would double the handshake-budget exposure for nothing. Called at
+    /// most once per connect (guarded by `m_managerPropertiesFetched`), from
+    /// `probeAvailability()` and `onServiceRegistered()` alike, so whichever
+    /// path first observes the agent reachable seeds both.
+    void refreshManagerProperties();
 
     QDBusConnection m_connection;
     QString m_service;
@@ -145,7 +150,8 @@ private:
     DerListenerRegistry m_derListeners;
     quint64 m_nextToken = 0; // requestProperties only — DER tokens live in m_derListeners
     QStringList m_features;
-    bool m_featuresFetched = false; // reset on onServiceUnregistered — "once per connect"
+    QString m_agentVersion;
+    bool m_managerPropertiesFetched = false; // reset on onServiceUnregistered — "once per connect"
     // The sealed appearance-font fd, cached per connection exactly like
     // m_features (fetched at most once per connect, reset on
     // onServiceUnregistered so a reconnect re-fetches rather than serving a

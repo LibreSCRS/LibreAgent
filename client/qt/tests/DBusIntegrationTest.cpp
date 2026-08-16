@@ -107,6 +107,57 @@ TEST(DBusIntegration, AvailabilityAppearAndVanish)
     EXPECT_NE(client->card(h.cardPath()), nullptr);
 }
 
+// ---- agent version: Manager1.Version, and empty once the agent is gone ------
+//
+// The version rides the SAME once-per-connect Manager1 property fetch that
+// primes Features, so these two cases pin both halves of its contract: the
+// connected agent's string reaches the public surface verbatim, and it goes
+// EMPTY when the agent is not reachable — never a stale string for a dead
+// agent, and never an error. SocketIntegrationTest's
+// AvailabilityHandshakeFeatureTokensAndReappear pins the HelloAck twin, and
+// TransportParityTest's AgentVersion* pair proves the two converge.
+
+TEST(DBusIntegration, AgentVersionReflectsManagerVersionProperty)
+{
+    FakeAgent::Config cfg;
+    cfg.agentVersion = QStringLiteral("4.3.0-test"); // fake serves Manager1.Version
+    Harness h(cfg);
+    auto client = makeClient(h);
+    ASSERT_TRUE(client->isAvailable());
+    EXPECT_EQ(client->agentVersion(), QStringLiteral("4.3.0-test"));
+}
+
+TEST(DBusIntegration, AgentVersionEmptyWhileUnavailable)
+{
+    FakeAgent::Config cfg;
+    cfg.agentVersion = QStringLiteral("4.3.0-test");
+    Harness h(cfg);
+    auto client = makeClient(h);
+    ASSERT_EQ(client->agentVersion(), QStringLiteral("4.3.0-test"));
+
+    h.unregisterService(); // vanish, same as AvailabilityAppearAndVanish
+    ASSERT_TRUE(waitFor([&]() { return !client->isAvailable(); }));
+    EXPECT_TRUE(client->agentVersion().isEmpty());
+
+    // Re-appearance re-seeds it from the fresh connect, exactly like Features.
+    h.registerService();
+    ASSERT_TRUE(waitFor([&]() { return client->isAvailable(); }));
+    EXPECT_EQ(client->agentVersion(), QStringLiteral("4.3.0-test"));
+}
+
+TEST(DBusIntegration, AgentVersionEmptyAgainstAnAgentWithoutManager1)
+{
+    FakeAgent::Config cfg;
+    cfg.agentVersion = QStringLiteral("4.3.0-test"); // never served: no Manager1 at all
+    cfg.exportManager1 = false;
+    Harness h(cfg);
+    auto client = makeClient(h);
+    ASSERT_TRUE(client->isAvailable()) << "a missing Manager1 must not cost availability";
+    EXPECT_TRUE(client->agentVersion().isEmpty())
+        << "an agent predating the surface degrades to empty, exactly like features()";
+    EXPECT_TRUE(client->features().isEmpty());
+}
+
 // ---- reader/card discovery --------------------------------------------------
 
 TEST(DBusIntegration, ReaderAndCardDiscovery)

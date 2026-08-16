@@ -49,6 +49,7 @@ public:
     bool installed = true;
     RegistrySnapshot snapshot;
     QStringList featureTokens; // TransportSeam::features()
+    QString version;           // TransportSeam::agentVersion()
     QString nextOperationId;   // empty -> refuse entry with entryError
     SeamError entryError;
     std::optional<TerminalSnapshot> terminal;                 // ctor lost-Finished recovery read
@@ -110,6 +111,10 @@ public:
     [[nodiscard]] QStringList features() const override
     {
         return featureTokens;
+    }
+    [[nodiscard]] QString agentVersion() const override
+    {
+        return version;
     }
     // Not exercised by this seam-mapping corpus (no scenario here scripts
     // "layout-preview" or calls these); trivial stubs only to satisfy the

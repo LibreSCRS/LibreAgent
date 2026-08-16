@@ -115,6 +115,7 @@ LibreSCRS::Agent::Operations::CredentialListFlow::CredentialListFlow(LibreSCRS::
 LibreSCRS::Agent::Operations::CredentialListFlow::run()
 LibreSCRS::Agent::Operations::FlowPrelude::installScopedReadProvider(std::shared_ptr<LibreSCRS::SmartCard::CardSession>, std::function<LibreSCRS::Auth::CredentialResult (LibreSCRS::Auth::AuthRequirement const&)>)
 LibreSCRS::Agent::Operations::FlowPrelude::makeReadCredentialProvider(LibreSCRS::Agent::CredentialCache&, LibreSCRS::Agent::Operations::PrompterClientBase&, LibreSCRS::Agent::Operations::PromptSerializer&, LibreSCRS::Agent::Operations::OperationPhaseSink&, std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> >, std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> >, std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> >, LibreSCRS::CancelToken, std::shared_ptr<std::atomic<bool> >, std::shared_ptr<std::atomic<bool> >)
+LibreSCRS::Agent::Operations::FlowPrelude::openFailureOutcome(LibreSCRS::Agent::ErrorCode)
 LibreSCRS::Agent::Operations::FlowPrelude::openSession(LibreSCRS::Agent::Operations::CardSessionHolder&, LibreSCRS::CancelToken const&)
 LibreSCRS::Agent::Operations::IdentityReadFlow::IdentityReadFlow(LibreSCRS::Agent::Operations::IdentityReadFlowDeps)
 LibreSCRS::Agent::Operations::IdentityReadFlow::run()
@@ -335,6 +336,7 @@ LibreSCRS::AgentClient::AgentClient::AgentClient(std::unique_ptr<LibreSCRS::Agen
 LibreSCRS::AgentClient::AgentClient::addCard(QString const&, QMap<QString, QVariant> const&)
 LibreSCRS::AgentClient::AgentClient::addReader(QString const&, QMap<QString, QVariant> const&)
 LibreSCRS::AgentClient::AgentClient::agentInstalled() const
+LibreSCRS::AgentClient::AgentClient::agentVersion() const
 LibreSCRS::AgentClient::AgentClient::appearanceFont() const
 LibreSCRS::AgentClient::AgentClient::availabilityChanged(bool)
 LibreSCRS::AgentClient::AgentClient::card(QString const&) const

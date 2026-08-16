@@ -206,37 +206,44 @@ bool DBusTransport::nameHasOwner()
 bool DBusTransport::probeAvailability()
 {
     const bool hasOwner = nameHasOwner();
-    if (hasOwner && !m_featuresFetched) {
+    if (hasOwner && !m_managerPropertiesFetched) {
         // The ctor's initial probe is never preceded by a serviceRegistered
         // signal (the watcher only reports FUTURE transitions), so this is
         // the seed path for an agent already running at construction time.
-        refreshFeatures();
-        m_featuresFetched = true;
+        refreshManagerProperties();
+        m_managerPropertiesFetched = true;
     }
     return hasOwner;
 }
 
-void DBusTransport::refreshFeatures()
+void DBusTransport::refreshManagerProperties()
 {
     QDBusMessage call = QDBusMessage::createMethodCall(m_service, QLatin1String(kRootPath),
                                                        QLatin1String(kPropertiesIface), QStringLiteral("GetAll"));
     call.setArguments(QList<QVariant>{QLatin1String(kManagerIface)});
     // Bounded exactly like every other discovery-path property read. An agent
-    // predating this property (or Manager1 entirely) answers with a D-Bus
-    // error or an incomplete map — both degrade to an empty list below,
+    // predating either property (or Manager1 entirely) answers with a D-Bus
+    // error or an incomplete map — both degrade to the empty values below,
     // never surfaced as a failure: absence is expected, not a fault.
     const QDBusMessage reply = cappedCall(m_connection, call, kHandshakeTimeoutMs);
     m_features.clear();
+    m_agentVersion.clear();
     if (reply.type() != QDBusMessage::ReplyMessage || reply.arguments().isEmpty()) {
         return;
     }
     const QVariantMap props = demarshalVariantMap(reply.arguments().constFirst());
     m_features = props.value(QStringLiteral("Features")).toStringList();
+    m_agentVersion = props.value(QStringLiteral("Version")).toString();
 }
 
 QStringList DBusTransport::features() const
 {
     return m_features;
+}
+
+QString DBusTransport::agentVersion() const
+{
+    return m_agentVersion;
 }
 
 std::optional<LayoutResult> DBusTransport::layoutVisualSignature(const QString& text, QRectF box)
@@ -760,9 +767,9 @@ void DBusTransport::cancelCertificateDer(quint64 token, DerListener* listener)
 
 void DBusTransport::onServiceRegistered(const QString& /*service*/)
 {
-    if (!m_featuresFetched) {
-        refreshFeatures();
-        m_featuresFetched = true;
+    if (!m_managerPropertiesFetched) {
+        refreshManagerProperties();
+        m_managerPropertiesFetched = true;
     }
     if (m_registry != nullptr) {
         m_registry->onServiceRegistered();
@@ -772,11 +779,12 @@ void DBusTransport::onServiceRegistered(const QString& /*service*/)
 void DBusTransport::onServiceUnregistered(const QString& /*service*/)
 {
     // The agent (and with it, whatever it advertised) is gone: forget the
-    // cached list so a stale feature survives neither past a real death nor a
+    // cached list and version so neither survives past a real death nor a
     // different-generation agent that re-registers with a different set —
-    // the next registration re-seeds it via onServiceRegistered() above.
-    m_featuresFetched = false;
+    // the next registration re-seeds both via onServiceRegistered() above.
+    m_managerPropertiesFetched = false;
     m_features.clear();
+    m_agentVersion.clear();
     // Same "forget on death, re-fetch on the next connect" posture for
     // the cached appearance-font fd — a different-generation agent could
     // serve a different font, and a dead one's fd must never be handed out.

@@ -271,6 +271,16 @@ public:
     /// normal, expected state, not a fault.
     [[nodiscard]] virtual QStringList features() const = 0;
 
+    /// The connected agent's version string, captured on the SAME
+    /// once-per-connect exchange that primes `features()` above — served as
+    /// D-Bus `Manager1.Version` (a property read folded into the Features
+    /// fetch) or socket `HelloAck.agentVer` (retained from the handshake) —
+    /// and forgotten when the agent is lost, so a dead connection's version
+    /// is never handed out for a live one. Identical graceful-degrade
+    /// posture to `features()`: an unreachable agent, or one predating the
+    /// surface, answers with an EMPTY string, never an error.
+    [[nodiscard]] virtual QString agentVersion() const = 0;
+
     // ---- Visual-signature layout preview ---------------------------------
     /// Bounded synchronous layout call (Manager1.LayoutVisualSignature /
     /// socket "LayoutVisual") — card-independent, pure CPU: no card, no

@@ -101,6 +101,20 @@ public:
     /// @brief Whether the agent advertises @p token (`features().contains(token)`).
     [[nodiscard]] bool hasFeature(const QString& token) const;
 
+    /// @brief The connected agent's version string (`Manager1.Version` on
+    ///        D-Bus; the socket handshake's `HelloAck.agentVer`). Cached per
+    ///        connection. Empty while no agent is reachable or against an
+    ///        agent predating the surface — never an error.
+    ///
+    ///        "Per connection" is the whole lifetime rule: the string is
+    ///        forgotten when the connection is lost and re-read from the
+    ///        next one, so it always describes the agent answering NOW.
+    ///        Treat it as a DISPLAY datum only (an About box, a support
+    ///        report). It is a free-form string the agent chooses — never
+    ///        parse it to decide what the agent can do; that is what
+    ///        `hasFeature()` is for.
+    [[nodiscard]] QString agentVersion() const;
+
     /// @brief Card-independent, synchronous visible-signature layout preview
     ///        (`Manager1.LayoutVisualSignature` / socket `"LayoutVisual"`) —
     ///        no card, no `AgentOperation`, just a bounded round-trip. This

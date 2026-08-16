@@ -353,6 +353,39 @@ TEST(SocketIntegration, FeaturesIncludeUnknownExtraToken)
     EXPECT_FALSE(client->hasFeature(QStringLiteral("nonexistent-token")));
 }
 
+// ---- agent version: the HelloAck agentVer, on the PUBLIC surface -----------
+//
+// AvailabilityHandshakeFeatureTokensAndReappear above already asserts the
+// transport-internal capture (transport->agentVersion()); this pins the
+// public AgentClient surface the GUI consumers read, plus the other half of
+// its contract — EMPTY once the connection is gone, so a dead agent's version
+// is never rendered as if it were live. The D-Bus twin is
+// DBusIntegrationTest's AgentVersion* pair; TransportParityTest's own pair
+// proves the two wires converge.
+TEST(SocketIntegration, AgentVersionFromHelloAckAndEmptyOnceGone)
+{
+    FakeSocketAgent::Config cfg;
+    cfg.capabilities = Cap::Pki;
+    cfg.agentVersion = QStringLiteral("9.9-socket-fake");
+    SocketHarness h(cfg);
+
+    auto client = makeClient(h);
+    ASSERT_TRUE(client->isAvailable());
+    EXPECT_EQ(client->agentVersion(), QStringLiteral("9.9-socket-fake"));
+
+    // The agent dies: its connections close AND the bound socket disappears.
+    h.closeAllConnections();
+    h.stopListening();
+    ASSERT_TRUE(waitFor([&]() { return !client->isAvailable(); }));
+    EXPECT_TRUE(client->agentVersion().isEmpty());
+
+    // The reconnect's own HelloAck re-seeds it.
+    h.relisten();
+    client->refreshDiscovery();
+    ASSERT_TRUE(client->isAvailable());
+    EXPECT_EQ(client->agentVersion(), QStringLiteral("9.9-socket-fake"));
+}
+
 // ---- reader/card discovery from GetState ---------------------------------------
 
 TEST(SocketIntegration, ReaderAndCardDiscovery)

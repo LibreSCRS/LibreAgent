@@ -63,6 +63,13 @@
 //   feature tokens      FeatureTokensMatchAcrossTransports (Manager1.Features /
 //                         HelloAck.features from the same kAgentFeatures source;
 //                         an unrecognised extra token surfaces identically)
+//   agent version       AgentVersionMatchesAcrossTransports and
+//                         AgentVersionEmptyWhileUnavailableAcrossTransports
+//                         (the one datum whose two wires share no mechanism at
+//                         all — a D-Bus Manager1.Version PROPERTY read vs a
+//                         retained HelloAck HANDSHAKE field — surfaces
+//                         identically, INCLUDING going empty for a connection
+//                         that died and re-seeding on the next connect)
 //   feature-gated entry MissingTokenInfoFeatureRefusesIdenticallyAcrossTransports
 //                         (readTokenInfo() with "token-info" absent from
 //                         features() refuses at entry — CapabilityMissing,
@@ -276,6 +283,11 @@ struct ParityConfig
     // ({"credentials"}); a scenario overrides it to script an extra,
     // unrecognised token or an agent predating the surface (empty).
     QStringList features = {QStringLiteral("credentials")};
+    // Manager1.Version / HelloAck.agentVer — the two wires' single version
+    // surface, scripted identically so the client-observed string can be
+    // compared verbatim across transports (each fake's own default differs
+    // on purpose, so a scenario that cares must set this).
+    QString agentVersion = QStringLiteral("4.3.0-parity");
     bool failMethodEntry = false;
     // The public-data fetch answers a reply that is OUTSIDE this request's
     // contract — the same fault expressed in each wire's own terms (D-Bus: a
@@ -433,6 +445,7 @@ private:
         out.capabilities = cfg.capabilities;
         out.operationDelayMs = cfg.operationDelayMs;
         out.features = cfg.features;
+        out.agentVersion = cfg.agentVersion;
         out.cardType = cfg.cardType;
         out.atrHex = cfg.atrHex;
         out.failMethodEntry = cfg.failMethodEntry;
@@ -658,6 +671,7 @@ private:
         out.capabilities = cfg.capabilities;
         out.operationDelayMs = cfg.operationDelayMs;
         out.features = cfg.features;
+        out.agentVersion = cfg.agentVersion;
         out.cardType = cfg.cardType;
         out.atrHex = cfg.atrHex;
         out.failMethodEntry = cfg.failMethodEntry;
@@ -1756,6 +1770,54 @@ TYPED_TEST(TransportParity, FeatureTokensMatchAcrossTransports)
     EXPECT_TRUE(client->hasFeature(QStringLiteral("a-future-token-this-build-does-not-name")))
         << "an unrecognised extra token must surface identically on both transports, never be dropped";
     EXPECT_FALSE(client->hasFeature(QStringLiteral("nonexistent-token")));
+}
+
+// ---- agent version: one string, two very different wires -------------------
+//
+// The version is the one discovery datum whose two wires do NOT share a
+// mechanism: D-Bus reads it as a Manager1.Version PROPERTY on the root
+// object, the socket retains it from the HelloAck HANDSHAKE. Only a shared
+// scenario can prove the client surfaces them identically — a per-transport
+// assertion pins each mechanism but would let the two contracts drift.
+TYPED_TEST(TransportParity, AgentVersionMatchesAcrossTransports)
+{
+    using Env = typename TypeParam::Env;
+    ParityConfig cfg;
+    cfg.capabilities = Cap::Pki;
+    cfg.agentVersion = QStringLiteral("4.3.0-parity");
+    Env env(cfg);
+
+    AgentClient* client = env.client();
+    ASSERT_TRUE(client->isAvailable());
+    EXPECT_EQ(client->agentVersion(), QStringLiteral("4.3.0-parity"))
+        << "the connected agent's version must reach the public surface verbatim on both wires";
+}
+
+// The other half of the contract, and the half a transport is most likely to
+// get wrong on its own: a version cached for a connection that is GONE must
+// not survive it. D-Bus forgets on the name's unregistration, the socket on
+// the connection drop; the client must read empty either way, and re-seed
+// from the next connect.
+TYPED_TEST(TransportParity, AgentVersionEmptyWhileUnavailableAcrossTransports)
+{
+    using Env = typename TypeParam::Env;
+    ParityConfig cfg;
+    cfg.capabilities = Cap::Pki;
+    cfg.agentVersion = QStringLiteral("4.3.0-parity");
+    Env env(cfg);
+
+    AgentClient* client = env.client();
+    ASSERT_TRUE(client->isAvailable());
+    ASSERT_EQ(client->agentVersion(), QStringLiteral("4.3.0-parity"));
+
+    env.vanishAgent();
+    ASSERT_TRUE(waitFor([&]() { return !client->isAvailable(); }));
+    EXPECT_TRUE(client->agentVersion().isEmpty()) << "a dead agent's version must never be served as if it were live";
+
+    env.reappearAgent();
+    ASSERT_TRUE(waitFor([&]() { return client->isAvailable(); }));
+    EXPECT_EQ(client->agentVersion(), QStringLiteral("4.3.0-parity"))
+        << "the next connect must re-seed the version, not leave it empty";
 }
 
 // ---- feature-gated entry: readTokenInfo() without "token-info" refuses

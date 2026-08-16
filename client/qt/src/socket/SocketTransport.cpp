@@ -1139,6 +1139,14 @@ void SocketTransport::dropConnection()
     const bool wasEstablished = m_established;
     m_established = false;
     m_quiesced = false;
+    // The HelloAck's version described THAT connection's peer. Forget it here
+    // rather than only overwriting it at the next handshake: between the drop
+    // and a reconnect there is no agent, and TransportSeam::agentVersion()'s
+    // contract is empty-while-unreachable — a consumer rendering "connected
+    // to 4.3.0" for a process that died is exactly the lie the contract
+    // exists to prevent. Unconditional, before the wasEstablished gate: a
+    // mid-handshake drop must not leave a half-seeded value behind either.
+    m_agentVersion.clear();
     if (!wasEstablished) {
         return; // mid-handshake failure: nothing was ever announced
     }

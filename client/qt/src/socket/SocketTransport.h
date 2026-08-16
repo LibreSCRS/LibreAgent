@@ -97,6 +97,10 @@ public:
     [[nodiscard]] bool agentInstalled() override;
     [[nodiscard]] std::optional<RegistrySnapshot> fetchRegistry() override;
     [[nodiscard]] QStringList features() const override;
+    // TransportSeam::agentVersion() is deliberately absent from this override
+    // block: it is satisfied by the HelloAck-capture declaration further down,
+    // which predates the seam method it now implements and carries the
+    // `override` there.
     [[nodiscard]] std::optional<LayoutResult> layoutVisualSignature(const QString& text, QRectF box) override;
     [[nodiscard]] FdHandle appearanceFont() override;
     void subscribeProperties(const QString& objectId, ObjectKind kind, PropertyListener* listener) override;
@@ -120,8 +124,10 @@ public:
     /// D-Bus name having an owner).
     [[nodiscard]] bool isConnected() const;
     /// The agent version the HelloAck carried (empty before the first
-    /// successful handshake).
-    [[nodiscard]] QString agentVersion() const;
+    /// successful handshake, and again once the connection is dropped —
+    /// TransportSeam::agentVersion()'s forget-on-loss contract; every
+    /// reconnect re-runs the handshake and re-seeds it).
+    [[nodiscard]] QString agentVersion() const override;
     /// The optional request families the agent advertised.
     [[nodiscard]] QStringList agentFeatures() const;
     /// Feature-token membership test (the credentials gate reads this).
