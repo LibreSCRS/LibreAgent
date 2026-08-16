@@ -3,7 +3,10 @@
 #pragma once
 #include <LibreSCRS/Agent/backend/PromptTypes.h>
 #include <LibreSCRS/Agent/backend/PrompterClientBase.h>
+#include <LibreSCRS/Auth/PaceSecretKind.h>
+#include <LibreSCRS/Secure/String.h>
 
+#include <utility>
 #include <vector>
 
 namespace LibreSCRS::Agent::Operations {
@@ -27,15 +30,27 @@ struct FakePrompter final : PrompterClientBase
     // metadata (card/pin labels, action title, per-role bounds) reached the
     // prompter seam.
     PromptOptions lastChangePromptOptions;
+    // Options as received by the CAN prompt; tests assert the alternative
+    // kinds a caller advertised (altKinds) reached the prompter seam.
+    PromptOptions lastCanPromptOptions;
+
+    // Script the reply a prompter gives when the user took the in-dialog
+    // switch to MRZ on a CAN request: an Ok carrying the MRZ payload and the
+    // kind actually collected.
+    void answerCanWithMrz(LibreSCRS::Secure::String payload)
+    {
+        canResult = PromptResult{PromptStatus::Ok, std::move(payload), "", LibreSCRS::Auth::PaceSecretKind::Mrz};
+    }
 
     [[nodiscard]] PromptResult requestPin(const PromptOptions&) override
     {
         calls.push_back(Kind::Pin);
         return pinResult;
     }
-    [[nodiscard]] PromptResult requestCan(const PromptOptions&) override
+    [[nodiscard]] PromptResult requestCan(const PromptOptions& options) override
     {
         calls.push_back(Kind::Can);
+        lastCanPromptOptions = options;
         return canResult;
     }
     [[nodiscard]] PromptResult requestMrz(const PromptOptions&) override

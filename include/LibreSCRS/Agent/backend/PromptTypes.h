@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 // SPDX-FileCopyrightText: 2026 hirashix0
 #pragma once
+#include <LibreSCRS/Auth/PaceSecretKind.h>
 #include <LibreSCRS/Secure/String.h>
 #include <cstdint>
 #include <optional>
@@ -50,6 +51,11 @@ struct PromptOptions
     // seam covers today.
     std::uint32_t attempt = 0;
     std::string lastError;
+    // Alternative secret kinds the caller can consume if the user switches
+    // in-dialog (Prompter1 option "alt_kinds"). Empty for every caller that
+    // does not opt in; the only value the stack emits today is {"mrz"} on a
+    // kind-"can" request. Backends that predate the option ignore it.
+    std::vector<std::string> altKinds;
 };
 
 enum class PromptStatus : std::uint8_t {
@@ -67,6 +73,13 @@ struct PromptResult
     // Localised explanation supplied by the prompter (empty on Ok), or a
     // diagnostic supplied by this client when D-Bus / memfd I/O fails.
     std::string userMessage;
+    // Engaged iff the prompter honoured an alt_kinds switch: the secret
+    // above is of THIS kind, not the requested one (e.g. an MRZ payload on
+    // a CAN request). Disengaged on every legacy/ordinary reply. The explicit
+    // default keeps every pre-existing positional brace-init of this aggregate
+    // (which lists the three members above it) free of
+    // -Wmissing-field-initializers, so appending here stays source-compatible.
+    std::optional<LibreSCRS::Auth::PaceSecretKind> chosenKind = std::nullopt;
 };
 
 // Result of a two-secret PIN-change prompt: the current and the new PIN are

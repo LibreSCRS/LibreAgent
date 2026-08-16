@@ -15,8 +15,13 @@
 
 #include <LibreSCRS/Agent/backend/Logging.h>
 
+#include <LibreSCRS/Auth/PaceSecretKind.h>
 #include <LibreSCRS/Secure/String.h>
 #include <gtest/gtest.h>
+
+#include <string>
+#include <string_view>
+#include <vector>
 
 using namespace LibreSCRS::Agent;
 using namespace LibreSCRS::Agent::Operations;
@@ -52,6 +57,43 @@ TEST(FakePrompter, ReturnsSeededResultAndRecordsCall)
     EXPECT_EQ(p.calls[0], FakePrompter::Kind::Can);
     iface.cancel();
     EXPECT_EQ(p.cancels, 1);
+}
+
+// A prompter that honoured an in-dialog switch answers a CAN request with a
+// secret of a DIFFERENT kind; the fake scripts that reply through
+// answerCanWithMrz and the result carries the kind actually collected.
+TEST(FakePrompter, CanAnswerWithChosenMrz)
+{
+    // ICAO Doc 9303 TD3 specimen values -- not a real document's secret.
+    constexpr std::string_view kMrzPayload{"L898902C36\n7408122\n1204159"};
+
+    FakePrompter p;
+    p.answerCanWithMrz(LibreSCRS::Secure::String{std::string{kMrzPayload}});
+    PrompterClientBase& iface = p;
+
+    const PromptResult r = iface.requestCan(PromptOptions{});
+
+    EXPECT_EQ(r.status, PromptStatus::Ok);
+    ASSERT_TRUE(r.secret.has_value());
+    EXPECT_EQ(r.secret->view(), kMrzPayload);
+    ASSERT_TRUE(r.chosenKind.has_value());
+    EXPECT_EQ(*r.chosenKind, LibreSCRS::Auth::PaceSecretKind::Mrz);
+    ASSERT_EQ(p.calls.size(), 1u);
+    EXPECT_EQ(p.calls[0], FakePrompter::Kind::Can);
+}
+
+// The alternative kinds a caller advertises reach the prompter seam verbatim,
+// so a test can assert the opt-in was made without a live prompter.
+TEST(FakePrompter, RecordsAltKinds)
+{
+    FakePrompter p;
+    PrompterClientBase& iface = p;
+
+    PromptOptions options;
+    options.altKinds = {"mrz"};
+    (void)iface.requestCan(options);
+
+    EXPECT_EQ(p.lastCanPromptOptions.altKinds, (std::vector<std::string>{"mrz"}));
 }
 
 TEST(FakeAuthorizer, AllowAllThenScopedAllowList)
