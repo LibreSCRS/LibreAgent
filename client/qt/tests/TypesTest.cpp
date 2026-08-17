@@ -172,6 +172,7 @@ TEST(SignOptionsValueType, DefaultsMatchTheAgentsInvisibleEnvelopedDefaultAndDef
     EXPECT_EQ(opts.packaging, Packaging::Enveloped);
     EXPECT_TRUE(opts.visualSignature.isEmpty());
     EXPECT_TRUE(opts.tsaUrl.isEmpty());
+    EXPECT_TRUE(opts.displayName.isEmpty());
     EXPECT_TRUE(opts.extra.isEmpty());
 }
 

@@ -153,6 +153,30 @@ struct SignOptions
     /// alongside `Auto` could resolve to b-b and then be rejected for carrying
     /// a tsaUrl at that level.
     QString tsaUrl;
+    /// Untrusted display name of the document being signed; empty (the
+    /// default) sends nothing. It does two jobs agent-side. It names the
+    /// document in the consent prompt's chrome — client-supplied, so the agent
+    /// SANITIZES it at method entry (control bytes collapsed, length capped),
+    /// exactly the treatment `BatchDocument::displayName` gets, and it rides
+    /// the prompt's untrusted description slot rather than the trusted "what is
+    /// being signed" label. And it names the signed artifact on the byte paths:
+    /// the ASiC-E container's data entry is named from it — a container created
+    /// without a name is REFUSED, not silently unnamed — and the XAdES/JAdES
+    /// detached `ds:Reference` URI basename derives from it. It is a name only
+    /// — nothing is ever opened by it, the document always arrives as the fd.
+    ///
+    /// Unlike `visualSignature`/`tsaUrl` above there is NO feature-token gate
+    /// here: this key belongs to the BASE sign-opts vocabulary
+    /// (wire/librescrs-agent.cddl's `sign-opts`), which both transports have
+    /// always carried, so `AgentCard::sign()` never refuses locally on its
+    /// account and no `features()` token has to be advertised for it.
+    ///
+    /// SINGLE-SIGN ONLY. `AgentCard::signBatch()` takes this same struct, but a
+    /// batch names each document individually via `BatchDocument::displayName`
+    /// and the agent deliberately never reads a displayName option off a
+    /// SignBatch request — a value set here still rides along on a batch and
+    /// does nothing there.
+    QString displayName;
     QVariantMap extra; ///< Forward-compatible pass-through, as on every result/options struct.
 };
 

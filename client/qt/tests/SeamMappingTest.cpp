@@ -412,6 +412,9 @@ TEST(SeamMapping, SignOptionsMapToWireTokens)
     options.level = SignatureLevel::BT;
     options.packaging = Packaging::Detached;
     options.tsaUrl = QStringLiteral("http://tsa.example");
+    // displayName needs NO feature token, unlike the tsaUrl above: it is part
+    // of the base sign-opts vocabulary both transports have always carried.
+    options.displayName = QStringLiteral("invoice.pdf");
     options.extra.insert(QStringLiteral("reason"), QStringLiteral("approval"));
 
     FdHandle document{::open("/dev/null", O_RDONLY | O_CLOEXEC)};
@@ -430,6 +433,7 @@ TEST(SeamMapping, SignOptionsMapToWireTokens)
     EXPECT_EQ(record.options.value(QStringLiteral("level")).toString(), QStringLiteral("b-t"));
     EXPECT_EQ(record.options.value(QStringLiteral("packaging")).toString(), QStringLiteral("detached"));
     EXPECT_EQ(record.options.value(QStringLiteral("tsaUrl")).toString(), QStringLiteral("http://tsa.example"));
+    EXPECT_EQ(record.options.value(QStringLiteral("displayName")).toString(), QStringLiteral("invoice.pdf"));
     // extra passes through untouched
     EXPECT_EQ(record.options.value(QStringLiteral("reason")).toString(), QStringLiteral("approval"));
 }
@@ -453,6 +457,7 @@ TEST(SeamMapping, DefaultSignOptionsOmitOptionalKeys)
     EXPECT_FALSE(record.options.contains(QStringLiteral("level")));
     EXPECT_EQ(record.options.value(QStringLiteral("packaging")).toString(), QStringLiteral("enveloped"));
     EXPECT_FALSE(record.options.contains(QStringLiteral("tsaUrl")));
+    EXPECT_FALSE(record.options.contains(QStringLiteral("displayName")));
     EXPECT_FALSE(record.options.contains(QStringLiteral("visualSignature")));
 }
 
@@ -529,6 +534,37 @@ TEST(SeamMapping, TypedSignOptionsOverrideCollidingExtraKeys)
     (void)card->sign(QStringLiteral("c"), std::move(document), options);
 
     EXPECT_EQ(h.fake->starts.front().options.value(QStringLiteral("format")).toString(), QStringLiteral("pades"));
+}
+
+// displayName follows tsaUrl's shape, not the level's: a populated typed value
+// overrides a same-named `extra` key, and an empty one inserts nothing rather
+// than REMOVING a colliding extra key. Both halves are pinned here because the
+// second is the part a reader is likely to assume works the other way.
+TEST(SeamMapping, TypedDisplayNameOverridesACollidingExtraKey)
+{
+    ClientOnFake h;
+    h.fake->nextOperationId = QStringLiteral("/op/1");
+    AgentCard* card = h.client->card(QStringLiteral("/card/0"));
+    ASSERT_NE(card, nullptr);
+
+    SignOptions options;
+    options.displayName = QStringLiteral("typed.pdf");
+    options.extra.insert(QStringLiteral("displayName"), QStringLiteral("from-extra.pdf"));
+    FdHandle document{::open("/dev/null", O_RDONLY | O_CLOEXEC)};
+    (void)card->sign(QStringLiteral("c"), std::move(document), options);
+
+    ASSERT_EQ(h.fake->starts.size(), 1u);
+    EXPECT_EQ(h.fake->starts.front().options.value(QStringLiteral("displayName")).toString(),
+              QStringLiteral("typed.pdf"));
+
+    SignOptions unnamed; // displayName left at its empty default
+    unnamed.extra.insert(QStringLiteral("displayName"), QStringLiteral("from-extra.pdf"));
+    FdHandle second{::open("/dev/null", O_RDONLY | O_CLOEXEC)};
+    (void)card->sign(QStringLiteral("c"), std::move(second), unnamed);
+
+    ASSERT_EQ(h.fake->starts.size(), 2u);
+    EXPECT_EQ(h.fake->starts.back().options.value(QStringLiteral("displayName")).toString(),
+              QStringLiteral("from-extra.pdf"));
 }
 
 TEST(SeamMapping, PinVerbsMapToWireTokens)

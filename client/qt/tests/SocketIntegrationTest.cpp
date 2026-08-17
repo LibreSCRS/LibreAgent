@@ -996,6 +996,7 @@ TEST(SocketIntegration, SignTypedOptionsToWireAndArtifactBack)
     // asymmetry (this comment used to say the transport must drop it) is
     // retired; both transports forward it identically.
     options.tsaUrl = QStringLiteral("https://tsa.example/socket");
+    options.displayName = QStringLiteral("integration.pdf");
     options.extra.insert(QStringLiteral("reason"), QStringLiteral("integration-suite"));
 
     AgentOperation* op = card->sign(QStringLiteral("cert-for-sign"), makeMemfdDocument(document), options);
@@ -1014,6 +1015,10 @@ TEST(SocketIntegration, SignTypedOptionsToWireAndArtifactBack)
     EXPECT_EQ(wireOptions.value(QStringLiteral("reason")).toString(), QStringLiteral("integration-suite"));
     EXPECT_EQ(wireOptions.value(QStringLiteral("tsaUrl")).toString(), QStringLiteral("https://tsa.example/socket"))
         << "tsaUrl now crosses the socket wire";
+    // Unlike D-Bus's verbatim a{sv}, this transport builds the CLOSED sign-opts
+    // shape key by key: a typed member whose key it does not extract is dropped
+    // with a warning, so the socket leg is pinned separately.
+    EXPECT_EQ(wireOptions.value(QStringLiteral("displayName")).toString(), QStringLiteral("integration.pdf"));
 
     FdHandle artifact = op->takeSignedArtifact();
     ASSERT_TRUE(artifact.valid());

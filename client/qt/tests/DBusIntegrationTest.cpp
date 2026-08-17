@@ -662,6 +662,7 @@ TEST(DBusIntegration, SignTypedOptionsToWireAndArtifactBack)
     options.level = SignatureLevel::BT;
     options.packaging = Packaging::Detached;
     options.tsaUrl = QStringLiteral("http://tsa.example/integration");
+    options.displayName = QStringLiteral("integration.pdf");
     options.extra.insert(QStringLiteral("reason"), QStringLiteral("integration-suite"));
 
     AgentOperation* op = card->sign(QStringLiteral("cert-for-sign"), makeDocumentFd(document), options);
@@ -681,6 +682,9 @@ TEST(DBusIntegration, SignTypedOptionsToWireAndArtifactBack)
     EXPECT_EQ(wireOptions.value(QStringLiteral("level")).toString(), QStringLiteral("b-t"));
     EXPECT_EQ(wireOptions.value(QStringLiteral("packaging")).toString(), QStringLiteral("detached"));
     EXPECT_EQ(wireOptions.value(QStringLiteral("tsaUrl")).toString(), QStringLiteral("http://tsa.example/integration"));
+    // The D-Bus transport forwards the option map verbatim, so displayName
+    // needs no per-key handling there — this pins that it actually arrives.
+    EXPECT_EQ(wireOptions.value(QStringLiteral("displayName")).toString(), QStringLiteral("integration.pdf"));
     EXPECT_EQ(wireOptions.value(QStringLiteral("reason")).toString(), QStringLiteral("integration-suite"));
 
     // artifact fd out + signMeta.

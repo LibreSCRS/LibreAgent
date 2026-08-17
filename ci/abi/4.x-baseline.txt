@@ -438,4 +438,4 @@ LayoutResult size=56 align=8 members=5 fontSize@0 lineHeight@8 lines@16 clipped@
 ManagePinOptions size=1 align=1 members=1 activateKey@0
 PhotoItem size=40 align=8 members=3 key@0 fd@24 extra@32
 PinResult size=32 align=8 members=6 outcome@0 retriesLeft@4 blocked@12 pinActivated@13 keyActivated@15 extra@24
-SignOptions size=48 align=8 members=6 format@0 level@1 packaging@2 visualSignature@8 tsaUrl@16 extra@40
+SignOptions size=72 align=8 members=7 format@0 level@1 packaging@2 visualSignature@8 tsaUrl@16 displayName@40 extra@64
