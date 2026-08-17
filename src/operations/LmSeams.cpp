@@ -942,10 +942,17 @@ sign::SigningRequest buildSigningRequest(const SignParams& params, sign::Signatu
     if (!params.location.empty()) {
         b.location(params.location);
     }
-    // Name hint only (never opened): drives the XAdES/JAdES detached
-    // ds:Reference URI basename. Empty is fine.
+    // The document's identity INSIDE the produced artifact: it becomes the
+    // ASiC-E container entry name and the basename of the XAdES/JAdES detached
+    // ds:Reference. It is a NAME, never a location -- the document is never
+    // opened, resolved or written through it (this is the buffer-sign path;
+    // the bytes come from params.inputDocument). Forwarded verbatim: LM owns
+    // the name policy (it strips any path components, honouring only the final
+    // one, and treats a degenerate result -- "", "." or ".." -- as unset,
+    // falling back to its inputFile derivation), so a second sanitisation
+    // layer here would only be able to disagree with it. Empty is fine.
     if (!params.displayName.empty()) {
-        b.inputFile(params.displayName);
+        b.documentName(params.displayName);
     }
     if (allowExpiredCert) {
         b.allowExpiredCert(true);

@@ -178,7 +178,14 @@ struct SignParams
     std::string level;
     std::string packaging;
     bool allowExpired{false}; // B-B only; ignored for the timestamped/LT family
-    std::string displayName;  // client-supplied chrome — never trusted
+    // Client-supplied chrome — never trusted. It has two roles: the consent
+    // prompt's document description, and (forwarded to LM as `documentName`)
+    // the document's name INSIDE the produced artifact — the ASiC-E container
+    // entry name, the basename of the XAdES/JAdES detached reference. It is a
+    // NAME in both roles, never a location: nothing is opened through it.
+    // LmSigner forwards it verbatim because LM owns the name policy there
+    // (path components stripped, degenerate names treated as unset).
+    std::string displayName;
     std::string reason;
     std::string location;
     // Per-request TSA override (https-only, validated at method entry before

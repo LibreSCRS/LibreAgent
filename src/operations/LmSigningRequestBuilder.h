@@ -35,6 +35,15 @@ namespace LibreSCRS::Agent::Operations {
 // the non-throwing factory here means a THIRD, defense-in-depth check would
 // never itself throw for an input that already passed entry validation.
 //
+// displayName -> LM's `documentName`: the document's identity inside the
+// produced artifact (the ASiC-E container entry name, the basename of the
+// XAdES/JAdES detached ds:Reference), NOT a location -- these requests are
+// built for `buildForBufferSign`, so nothing is ever opened and `inputFile` is
+// never set. Empty installs nothing. A non-empty value is forwarded verbatim:
+// LM strips path components (only the final one is honoured) and treats a
+// degenerate result ("", "." or "..") as unset, so the agent adds no second
+// sanitisation layer of its own.
+//
 // visual -> LM's PAdES-only VisualSignatureParams::Builder (pageIndex/rect/
 // textTemplate), float pixel-parity source (x/y/width/height are the wire's
 // float64) rounded to LM's integer Rect (PDF user units are integer
