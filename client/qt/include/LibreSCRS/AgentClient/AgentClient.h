@@ -168,6 +168,10 @@ public:
     ///        Both transports report the identical enumerator for the
     ///        identical key, though they may decide it in different places.
     ///
+    /// @param key Wire spelling of the setting, exactly as `configSnapshot()`
+    ///        above lists it. A key outside that vocabulary answers
+    ///        `UnknownConfigKey` and one outside the five writable ones
+    ///        answers `ReadOnlyConfig`; neither writes anything.
     /// @param value Must match the key's type as documented on
     ///        `configSnapshot()` above; a `"TslSources"` row that is not a
     ///        three-entry list is dropped from the write.
