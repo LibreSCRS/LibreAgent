@@ -329,3 +329,45 @@ TEST(FieldKeyParity, Pkcs15GroupAndFieldKeysArriveVerbatim)
     ASSERT_TRUE(result.snapshot.has_value());
     assertGroupsArriveVerbatim(scripted, *result.snapshot, h.groupSink.groups);
 }
+
+// -- value display-safety at the same seam ---------------------------------
+// Keys pass through verbatim (above); VALUES of Text/Date fields feed GUI
+// labels directly, so the seam is the display boundary: bytes that are not
+// renderable text must arrive hex-formatted ("AA:BB:.."), and well-formed
+// UTF-8 — multi-byte included — must arrive verbatim. The LM layer keeps the
+// raw bytes untouched (card-data integrity); pre-agent LibreCelik applied
+// exactly this printable-or-hex rendering client-side
+// (tokensection.cpp formatSerialNumber), and the raw bytes no longer cross
+// the wire, so the seam is the only place left that can do it. Live trigger:
+// a fielded pkcs15 token whose EF(TokenInfo) serialNumber is BCD
+// 23 53 14 29 33 20 49 24 (0x14 = C0 control) — rendered as mojibake
+// "#S␔)3 I$" before this law existed.
+TEST(FieldKeyParity, NonDisplayableTextValuesArriveHexFormatted)
+{
+    Harness h;
+    CardFieldGroup token;
+    token.groupKey = "token";
+    token.groupLabel = "Token Info";
+    // BCD serial with an embedded C0 control byte (a live card's exact bytes).
+    token.addText("serial_number", "Serial Number", std::string_view{"\x23\x53\x14\x29\x33\x20\x49\x24", 8});
+    // Multi-byte UTF-8 ("š" = C5 A1) is real text and must never be hexed.
+    token.addText("label", "Label", "Nemanja Hir\xC5\xA1l 200111996");
+    // Structurally invalid UTF-8 (C3 lead byte with a non-continuation) is not text.
+    token.addText("manufacturer", "Manufacturer", std::string_view{"\xC3\x28", 2});
+    h.candidates = {std::make_shared<ScriptedFamilyPlugin>("pkcs15", "pkcs15", std::vector<CardFieldGroup>{token})};
+
+    auto result = h.make().run();
+    ASSERT_EQ(result.outcome, IdentityReadFlow::Outcome::Ok);
+    ASSERT_TRUE(result.snapshot.has_value());
+    ASSERT_EQ(result.snapshot->groups.size(), 1u);
+    const auto& fields = result.snapshot->groups[0].fields;
+    ASSERT_EQ(fields.size(), 3u);
+    EXPECT_EQ(fields[0].textValue, "23:53:14:29:33:20:49:24");
+    EXPECT_EQ(fields[1].textValue, "Nemanja Hir\xC5\xA1l 200111996");
+    EXPECT_EQ(fields[2].textValue, "C3:28");
+    // The streamed surface shares mapFields with the Result (proven above);
+    // spot-check it applies the same rendering.
+    ASSERT_EQ(h.groupSink.groups.size(), 1u);
+    ASSERT_EQ(h.groupSink.groups[0].fields.size(), 3u);
+    EXPECT_EQ(h.groupSink.groups[0].fields[0].textValue, "23:53:14:29:33:20:49:24");
+}

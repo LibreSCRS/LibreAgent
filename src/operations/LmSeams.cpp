@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 // SPDX-FileCopyrightText: 2026 hirashix0
 #include <LibreSCRS/Agent/operations/LmSeams.h>
-#include <LibreSCRS/Agent/util/Sha256Hex.h> // sha256Hex (certId)
-#include <LibreSCRS/Agent/util/HexEncode.h> // toHex (serial / extension presentation)
+#include <LibreSCRS/Agent/util/Sha256Hex.h>   // sha256Hex (certId)
+#include <LibreSCRS/Agent/util/DisplayText.h> // isDisplayableUtf8 (text-field display safety)
+#include <LibreSCRS/Agent/util/HexEncode.h>   // toHex (serial / extension presentation)
 #include <LibreSCRS/Agent/backend/Logging.h>
 #include "LmSigningRequestBuilder.h" // buildSigningRequest (extracted, unit-testable)
 #include "LmSignResultMapping.h"     // mapSigningResultStatus (extracted, unit-testable)
@@ -114,7 +115,19 @@ std::vector<FieldSnapshot> mapFields(const std::vector<LibreSCRS::Plugin::CardFi
         fs.labelFallback = f.label;
         fs.type = mapFieldType(f.type);
         if (fs.type == FieldType::Text || fs.type == FieldType::Date) {
-            fs.textValue.assign(f.value.begin(), f.value.end());
+            // Display-safety law: Text/Date values feed GUI labels directly,
+            // but LM deliberately keeps CardField::value as the card's raw
+            // bytes (card-data integrity), and some cards put binary in
+            // nominally-textual slots — e.g. a pkcs15 EF(TokenInfo) BCD
+            // serialNumber. Pre-agent LibreCelik rendered printable-or-hex
+            // client-side; the raw bytes no longer cross the wire, so this
+            // seam is the only place left that can make that call. Same hex
+            // rendering the certificate serial below already uses.
+            if (isDisplayableUtf8(f.value)) {
+                fs.textValue.assign(f.value.begin(), f.value.end());
+            } else {
+                fs.textValue = toHex(f.value, ':', /*upper=*/true);
+            }
         } else {
             fs.binaryValue = f.value;
         }
