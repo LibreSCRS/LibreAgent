@@ -49,6 +49,67 @@ constexpr const char* kErrInvalidValue = "org.librescrs.Agent.Error.InvalidConfi
 constexpr const char* kTslSubdir = "tsl";
 constexpr const char* kAiaSubdir = "aia";
 
+// First-run seed (see seedFirstRunDefaults below). Public timestamp authorities
+// an installation can use out of the box; the first entry is the one the engine
+// binds, the rest are the alternatives an administrator can promote by
+// reordering the list.
+constexpr std::array<const char*, 3> kSeedTsaUrls{
+    "https://timestamp.sectigo.com",
+    "https://timestamp.digicert.com",
+    "https://ts.ssl.com",
+};
+
+// The trusted lists the seed carries: the national list, and the EU
+// list-of-trusted-lists pivot from which the rest of the member-state lists are
+// reached. `eager` is deliberately ABSENT from this table rather than false in
+// it: no seeded source may be fetched at startup, and a table with no field for
+// it cannot acquire one by a careless edit.
+struct SeedTslSource
+{
+    const char* url;
+    bool isLotl;
+};
+constexpr std::array<SeedTslSource, 2> kSeedTslSources{
+    SeedTslSource{"https://www.mit.gov.rs/TrustedList/TSL-RS.xml", false},
+    SeedTslSource{"https://ec.europa.eu/tools/lotl/eu-lotl.xml", true},
+};
+
+// Seed @p tsaUrls and @p tslSources for an installation that has never been
+// configured, giving a usable timestamp + trusted-list configuration to an agent
+// that would otherwise start with nothing to timestamp against and nothing to
+// validate a certificate chain with. Returns true when it seeded, which obliges
+// the caller to PERSIST: loadFromFile() clears both list keys before parsing
+// whenever the file exists, so a seed that only reaches the in-memory value set
+// is correct on the first start and silently gone from the second one onwards.
+//
+// The gate is the existence of the whole file, and can only be that. An empty
+// list persists as zero lines, byte-identical to a list that was never set, and
+// the store has no per-key presence signal to tell the two apart -- so "never
+// configured" is expressible only as "no config file". The consequence is
+// deliberate: once the file exists its lists are the administrator's answer,
+// including when they are empty, and no later start re-seeds them.
+bool seedFirstRunDefaults(const std::filesystem::path& configFile, std::vector<std::string>& tsaUrls,
+                          std::vector<TslSource>& tslSources)
+{
+    std::error_code ec;
+    if (std::filesystem::exists(configFile, ec) || ec) {
+        return false; // already configured, or its state cannot be established
+    }
+    tsaUrls.assign(kSeedTsaUrls.begin(), kSeedTsaUrls.end());
+    // eager stays false for every source. That flag drives a fetch at trust-store
+    // construction -- one worker thread and one HTTPS round trip per source, on
+    // every start -- and nothing about seeding a default requires it: the lazy
+    // path exists precisely so a host that is offline at login is not forced into
+    // startup network traffic. The lists are fetched on the first signature whose
+    // level needs them.
+    tslSources.clear();
+    tslSources.reserve(kSeedTslSources.size());
+    for (const auto& src : kSeedTslSources) {
+        tslSources.push_back(TslSource{.url = src.url, .isLotl = src.isLotl, .eager = false});
+    }
+    return true;
+}
+
 std::string trim(std::string_view s)
 {
     const auto first = s.find_first_not_of(" \t\r\n");
@@ -96,6 +157,13 @@ ConfigStore::ConfigStore(std::filesystem::path configFile, std::filesystem::path
     : m_configFile(std::move(configFile)), m_cacheRoot(std::move(cacheRoot))
 {
     applyDefaults();
+    // First start of a never-configured installation: seed the list keys and write
+    // them out before the load, which then reads back exactly what was just
+    // written. On a failed write the seed still stands for this run (persist() logs
+    // and returns) and the next start seeds again -- degraded, never wrong.
+    if (seedFirstRunDefaults(m_configFile, m_tsaUrls, m_tslSources)) {
+        persist();
+    }
     loadFromFile();
 }
 

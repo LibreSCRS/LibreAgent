@@ -6,8 +6,10 @@
 #include <filesystem>
 #include <fstream>
 #include <gtest/gtest.h>
+#include <iterator>
 #include <string>
 #include <thread>
+#include <vector>
 
 using LibreSCRS::Agent::Config::ConfigStore;
 using LibreSCRS::Agent::Config::Mutability;
@@ -41,21 +43,114 @@ protected:
         out << contents;
     }
 
+    [[nodiscard]] std::string readConfig() const
+    {
+        std::ifstream in(m_configFile, std::ios::binary);
+        return std::string{std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>()};
+    }
+
     std::filesystem::path m_dir;
     std::filesystem::path m_configFile;
     std::filesystem::path m_cacheRoot;
+};
+
+// The first-run seed the ctor writes, mirrored from the table in
+// ConfigStore.cpp. eager is false for EVERY trusted-list source: a fresh
+// installation must not open an outbound connection at startup — the lists are
+// fetched lazily, on the first signature that needs them.
+const std::vector<std::string> kSeededTsaUrls{
+    "https://timestamp.sectigo.com",
+    "https://timestamp.digicert.com",
+    "https://ts.ssl.com",
+};
+const std::vector<TslSource> kSeededTslSources{
+    TslSource{"https://www.mit.gov.rs/TrustedList/TSL-RS.xml", false, false},
+    TslSource{"https://ec.europa.eu/tools/lotl/eu-lotl.xml", true, false},
 };
 
 TEST_F(ConfigStoreTest, DefaultsWhenNoFile)
 {
     ConfigStore cfg(m_configFile, m_cacheRoot);
     EXPECT_EQ(cfg.defaultLevel(), "b-b");
-    EXPECT_TRUE(cfg.tsaUrls().empty());
-    EXPECT_TRUE(cfg.tslSources().empty());
+    // The two list keys are the exception: with no file on disk they are seeded
+    // rather than left empty (see FirstRunSeedIsWrittenToDiskAndSurvivesReload).
+    EXPECT_EQ(cfg.tsaUrls(), kSeededTsaUrls);
+    EXPECT_EQ(cfg.tslSources(), kSeededTslSources);
     EXPECT_TRUE(cfg.lastTsaUrl().empty());
     EXPECT_TRUE(cfg.pluginDir().empty());
     EXPECT_EQ(cfg.tslCacheDir(), (m_cacheRoot / "tsl").string()); // TSL = Trusted Service List, not "tls"
     EXPECT_EQ(cfg.aiaCacheDir(), (m_cacheRoot / "aia").string());
+}
+
+TEST_F(ConfigStoreTest, FirstRunSeedIsWrittenToDiskAndSurvivesReload)
+{
+    ASSERT_FALSE(std::filesystem::exists(m_configFile)) << "fixture must start with no config file";
+    {
+        ConfigStore fresh(m_configFile, m_cacheRoot);
+        EXPECT_EQ(fresh.tsaUrls(), kSeededTsaUrls);
+        EXPECT_EQ(fresh.tslSources(), kSeededTslSources);
+        // Half one: the seed must reach the DISK. A seed that only populates the
+        // in-memory value set (the applyDefaults-style shortcut) satisfies the two
+        // getters above and fails right here.
+        EXPECT_TRUE(std::filesystem::exists(m_configFile)) << "the first-run seed never wrote the config file";
+    }
+    // Half two: loadFromFile CLEARS both list keys before parsing whenever the file
+    // exists, so a seed that never reached disk is dropped by the NEXT construction
+    // — the first boot looks seeded and every boot after it is silently empty.
+    ConfigStore reopened(m_configFile, m_cacheRoot);
+    EXPECT_FALSE(reopened.tsaUrls().empty()) << "the seeded TSA list did not survive a reload";
+    EXPECT_FALSE(reopened.tslSources().empty()) << "the seeded trusted lists did not survive a reload";
+    EXPECT_EQ(reopened.tsaUrls(), kSeededTsaUrls);
+    EXPECT_EQ(reopened.tslSources(), kSeededTslSources);
+    // The eager flag is what routes a source into a startup fetch thread; no
+    // seeded source carries it, before or after the round trip through the file.
+    for (const auto& src : reopened.tslSources()) {
+        EXPECT_FALSE(src.eager) << "seeded source " << src.url << " would be fetched at startup";
+    }
+}
+
+TEST_F(ConfigStoreTest, ExistingConfigWithEmptyListsIsNotReseeded)
+{
+    // Documentary pin for an accepted limitation: a never-set list and a list an
+    // administrator deliberately emptied are INDISTINGUISHABLE — an empty list
+    // writes zero lines, and the store has no per-key presence signal. Whole-file
+    // existence is therefore the only gate the seed can use, so a config file that
+    // exists is taken at its word, empty lists and all.
+    writeConfig("DefaultLevel = b-b\n");
+    ConfigStore cfg(m_configFile, m_cacheRoot);
+    EXPECT_TRUE(cfg.tsaUrls().empty()) << "an existing config file was re-seeded";
+    EXPECT_TRUE(cfg.tslSources().empty()) << "an existing config file was re-seeded";
+    // And it stays that way: the store rewrites the file on any mutation, which
+    // must not resurrect the seed either.
+    EXPECT_TRUE(cfg.setDefaultReason("keeps the file current").ok);
+    ConfigStore reopened(m_configFile, m_cacheRoot);
+    EXPECT_TRUE(reopened.tsaUrls().empty());
+    EXPECT_TRUE(reopened.tslSources().empty());
+}
+
+TEST_F(ConfigStoreTest, ProvisionedConfigIsLeftByteIdenticalByConstruction)
+{
+    // A deployment that provisioned its own values (Config1.SetValue, or an
+    // administrator editing the file) must not be re-provisioned, merged into or
+    // reordered by a later start: construction of a store over an existing file is
+    // a pure read.
+    {
+        ConfigStore provisioning(m_configFile, m_cacheRoot);
+        ASSERT_TRUE(provisioning.setTsaUrls(std::vector<std::string>{"https://tsa.example.test/tsr"}).ok);
+        const TslSource leaf{"https://tl.example.test/leaf.xml", false, false};
+        ASSERT_TRUE(provisioning.setTslSources(std::vector<TslSource>{leaf}).ok);
+    }
+    const std::string before = readConfig();
+    ASSERT_FALSE(before.empty());
+    const auto writtenAt = std::filesystem::last_write_time(m_configFile);
+
+    ConfigStore reopened(m_configFile, m_cacheRoot);
+    EXPECT_EQ(readConfig(), before) << "construction rewrote a provisioned config file";
+    EXPECT_EQ(std::filesystem::last_write_time(m_configFile), writtenAt) << "construction touched the config file";
+    // The provisioned values are what the store serves — nothing was merged in.
+    EXPECT_EQ(reopened.tsaUrls(), std::vector<std::string>{"https://tsa.example.test/tsr"});
+    ASSERT_EQ(reopened.tslSources().size(), 1u);
+    EXPECT_EQ(reopened.tslSources()[0].url, "https://tl.example.test/leaf.xml");
 }
 
 TEST_F(ConfigStoreTest, GarbledFileFallsBackToDefaults)
@@ -116,6 +211,7 @@ TEST_F(ConfigStoreTest, SetDefaultLevelValidatesAndPersists)
 TEST_F(ConfigStoreTest, SetTsaUrlsValidatesAndPersists)
 {
     ConfigStore cfg(m_configFile, m_cacheRoot);
+    ASSERT_TRUE(cfg.setTsaUrls({}).ok); // drop the first-run seed; this test is about the validator
     EXPECT_FALSE(cfg.setTsaUrls({"https://ok", "ftp://bad"}).ok);
     EXPECT_TRUE(cfg.tsaUrls().empty()); // rejected wholesale; nothing applied
     EXPECT_TRUE(cfg.setTsaUrls({"https://a", "http://b"}).ok);
@@ -131,6 +227,7 @@ TEST_F(ConfigStoreTest, RejectsSchemeOnlyTsaUrl)
     // provider from it, silently failing every default sign closed. The validator
     // must reject it so the default never upgrades.
     ConfigStore cfg(m_configFile, m_cacheRoot);
+    ASSERT_TRUE(cfg.setTsaUrls({}).ok); // drop the first-run seed; this test is about the validator
     EXPECT_FALSE(cfg.setTsaUrls({"http://"}).ok);
     EXPECT_TRUE(cfg.tsaUrls().empty()) << "scheme-only http:// must not be stored";
     EXPECT_FALSE(cfg.setTsaUrls({"https://"}).ok);
@@ -158,6 +255,7 @@ TEST_F(ConfigStoreTest, SchemeOnlyTsaUrlDroppedOnLoad)
 TEST_F(ConfigStoreTest, TslSourcesRoundTrip)
 {
     ConfigStore cfg(m_configFile, m_cacheRoot);
+    ASSERT_TRUE(cfg.setTslSources({}).ok); // drop the first-run seed; this test is about the validator
     // Non-http(s) entries are rejected wholesale (symmetric to TsaUrls).
     EXPECT_FALSE(cfg.setTslSources({TslSource{"ftp://bad", false, false}}).ok);
     EXPECT_TRUE(cfg.tslSources().empty());

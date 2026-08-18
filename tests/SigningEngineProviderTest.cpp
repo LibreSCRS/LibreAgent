@@ -14,6 +14,10 @@
 // SignFlow FakeSigner tests (tsaUsed derivation) and the env-gated HW smoke.
 #include <LibreSCRS/Agent/config/ConfigStore.h>
 #include <LibreSCRS/Agent/operations/SigningEngineProvider.h>
+// The startup-fetch assertion below reads the trust store's own per-source
+// status, so this one TU needs the full LM Trust header the provider's public
+// shared_ptr return type only forward-declares.
+#include <LibreSCRS/Trust/TrustStoreService.h>
 
 #include <gtest/gtest.h>
 #include <filesystem>
@@ -36,6 +40,10 @@ TEST(SigningEngineProvider, EnginePresentWithoutTsa)
     const auto dir = uniqueDir("notsa");
     fs::remove_all(dir);
     Config::ConfigStore cfg{dir / "agent.conf", dir / "cache"};
+    // A fresh store is SEEDED with timestamp authorities, so "no TSA" has to be
+    // asked for rather than assumed — a site that cleared the list, or one whose
+    // seed never applied.
+    ASSERT_TRUE(cfg.setTsaUrls(std::vector<std::string>{}).ok);
     SigningEngineProvider engine{cfg};
     // No TSA configured: B-B must still sign, so the engine is present.
     EXPECT_NE(engine.snapshot().engine, nullptr);
@@ -69,6 +77,7 @@ TEST(SigningEngineProvider, BoundTsaUrlTracksTheUrlList)
     const auto dir = uniqueDir("hastsa");
     fs::remove_all(dir);
     Config::ConfigStore cfg{dir / "agent.conf", dir / "cache"};
+    ASSERT_TRUE(cfg.setTsaUrls(std::vector<std::string>{}).ok); // clear the first-run seed
     SigningEngineProvider engine{cfg};
     EXPECT_TRUE(engine.snapshot().boundTsaUrl.empty());
     ASSERT_TRUE(cfg.setTsaUrls(std::vector<std::string>{"https://tsa.example.test/tsr"}).ok);
@@ -114,6 +123,38 @@ TEST(SigningEngineProvider, CapturedSnapshotBoundUrlIsImmuneToLaterConfigChange)
     const auto third = engine.snapshot();
     ASSERT_NE(third.engine, nullptr);
     EXPECT_TRUE(third.boundTsaUrl.empty());
+    fs::remove_all(dir);
+}
+
+TEST(SigningEngineProvider, SeededTrustedListsAreNotFetchedAtStartup)
+{
+    // The first-run seed populates TslSources, and building the engine hands that
+    // list straight to the trust store. Populating the list is not what opens a
+    // socket, though: the per-source `eager` flag is, and it does so at
+    // construction, on one worker thread per eager source. Every seeded source is
+    // lazy, so a fresh agent must reach its steady state with zero eager sources —
+    // no thread, no traffic, nothing to fail on a host that is offline at login.
+    // The lists are fetched later, on the first signature that needs them.
+    const auto dir = uniqueDir("seedlazy");
+    fs::remove_all(dir);
+    Config::ConfigStore cfg{dir / "agent.conf", dir / "cache"};
+    const auto seeded = cfg.tslSources();
+    ASSERT_FALSE(seeded.empty()) << "no seeded sources: this test would assert nothing";
+
+    SigningEngineProvider engine{cfg};
+    const auto trust = engine.trustSnapshot();
+    ASSERT_NE(trust, nullptr);
+
+    // Ready (not Loading) is the aggregate state of a trust store with no eager
+    // source: nothing was scheduled, so nothing is outstanding.
+    EXPECT_EQ(trust->status(), LibreSCRS::Trust::TrustStoreService::AggregateStatus::Ready)
+        << "the seeded configuration scheduled a startup fetch";
+    const auto statuses = trust->sourceStatuses();
+    ASSERT_EQ(statuses.size(), seeded.size()) << "the seeded sources did not reach the trust store";
+    for (const auto& [url, status] : statuses) {
+        EXPECT_EQ(status, LibreSCRS::Trust::TrustStoreService::SourceStatus::Skipped)
+            << "seeded source " << url << " was fetched at startup";
+    }
     fs::remove_all(dir);
 }
 

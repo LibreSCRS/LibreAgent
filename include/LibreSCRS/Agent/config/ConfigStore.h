@@ -49,6 +49,13 @@ public:
     // otherwise applies built-in defaults. Never throws on a missing/garbled
     // file — a parse failure logs and falls back to defaults (fail-open to a
     // safe B-B-no-TSA posture, never fail-closed-unusable).
+    //
+    // When no config file exists at all, construction additionally SEEDS the
+    // timestamp-authority and trusted-list keys with a working default set and
+    // WRITES the file, so the first start of a never-configured installation
+    // leaves a configuration behind rather than an empty one. No seeded trusted
+    // list is eager: seeding never puts network traffic in the startup path.
+    // Construction over an existing file leaves that file byte-untouched.
     ConfigStore(std::filesystem::path configFile, std::filesystem::path cacheRoot);
 
     ConfigStore(const ConfigStore&) = delete;

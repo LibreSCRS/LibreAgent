@@ -76,12 +76,15 @@ std::vector<std::uint8_t> mintKatCertDer()
 
 TEST(LmTrustVerifier, OfflineUnverifiedWhenNoTslSourcesConfigured)
 {
-    // A fresh ConfigStore (no config file on disk yet) applies built-in
-    // defaults, which carry an empty tslSources -- the production-reachable
-    // configuration on a Linux box with no TSL configured.
+    // A ConfigStore whose trusted-list sources are empty -- the
+    // production-reachable configuration of a site that has cleared them. A
+    // fresh store SEEDS that list, so emptying it is now an explicit step: left
+    // implicit, this test would stop reaching the branch it exists to cover and
+    // would silently start asserting against a real chain validation instead.
     const auto dir = uniqueDir("offline");
     fs::remove_all(dir);
     Config::ConfigStore cfg{dir / "agent.conf", dir / "cache"};
+    ASSERT_TRUE(cfg.setTslSources(std::vector<Config::TslSource>{}).ok);
     SigningEngineProvider engine{cfg};
     LmTrustVerifier verifier{engine};
 
