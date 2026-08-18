@@ -877,6 +877,35 @@ TEST(IdentityReadFlow, CachedMrzShortCircuitsWithoutPrompting)
     EXPECT_EQ(payload->view(), kTd3MrzPayload);
 }
 
+TEST(IdentityReadFlow, ALaterEmptyReasonInvocationLeavesTheMarkedFlagAlone)
+{
+    // Multi-candidate walk, both prompts dismissed. Invocation 1 carries the
+    // rejection signal: it marks the cached CAN wrong (evicting it) and its
+    // re-prompt is cancelled, so the flag tells the flow's AuthFailed arm the
+    // marking is already done. Invocation 2 is a later candidate's
+    // empty-reason retry, also cancelled: it marked nothing and owns nothing,
+    // so it must leave the flag ALONE — clearing it here is how one wrong CAN
+    // used to count as two failed attempts.
+    Harness h;
+    auto prompterFailed = std::make_shared<std::atomic<bool>>(false);
+    auto marked = std::make_shared<std::atomic<bool>>(false);
+    auto provider = FlowPrelude::makeReadCredentialProvider(h.cache, h.prompter, h.serializer, h.phaseSink, "card-A",
+                                                            h.requester, h.artifact, h.source.token(), prompterFailed,
+                                                            /*userCancelled=*/{}, marked);
+    h.cache.putCan("card-A", LibreSCRS::Secure::String{"000000"});
+    h.prompter.cancelCan();
+
+    const auto first = provider(rejectedPaceReq(PaceSecretKind::Can));
+    ASSERT_NE(first.status, LibreSCRS::Auth::CredentialResult::Status::Ok);
+    EXPECT_FALSE(h.cache.hasCan("card-A")) << "the rejection signal must evict";
+    EXPECT_TRUE(marked->load()) << "the marking invocation must set the flag";
+
+    const auto second = provider(paceReq(PaceSecretKind::Can));
+    ASSERT_NE(second.status, LibreSCRS::Auth::CredentialResult::Status::Ok);
+    EXPECT_TRUE(marked->load()) << "an empty-reason invocation that marked nothing cleared the flag — "
+                                   "the flow will mark the same wrong CAN a second time";
+}
+
 TEST(IdentityReadFlow, GenuineUserCancelStillCancels)
 {
     // No chosen kind, no sink content: a dismissed dialog is still a cancel.

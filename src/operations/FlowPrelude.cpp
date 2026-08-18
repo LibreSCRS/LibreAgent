@@ -149,15 +149,20 @@ LibreSCRS::Auth::CredentialProvider makeReadCredentialProvider(
                     : cache.requestCredential(cardKey, req, gated, opts, prompterFailed.get(), userCancelled.get(),
                                               offeringAlternative ? mrzChoice.get() : nullptr);
             if (providerMarkedWrong) {
-                // Double-mark guard: the value now live for LM is the one THIS
-                // provider marked wrong IFF we marked and did NOT collect a fresh
-                // replacement (a non-Ok result: prompt failed/cancelled/malformed
-                // after the eviction). A fresh Ok collection — or any invocation
-                // that did not mark — leaves an UNMARKED value live, so the flow
-                // must still mark it on a later AuthFailed. Per-invocation store,
-                // last invocation wins (it owns the live value the flow will see).
-                providerMarkedWrong->store(markedNow && result.status != LibreSCRS::Auth::CredentialResult::Status::Ok,
-                                           std::memory_order_relaxed);
+                // Double-mark guard. An Ok result means a FRESH value is live
+                // — unmarked, so a later AuthFailed must still mark it. A
+                // non-Ok invocation that marked owns the live (now-evicted)
+                // value and sets the flag. A non-Ok invocation that did NOT
+                // mark owns nothing and must leave the flag ALONE: on a
+                // multi-candidate walk a later candidate's empty-reason
+                // invocation used to CLEAR the flag a prior invocation had
+                // set, and one wrong CAN counted as two failed attempts.
+                const bool ok = result.status == LibreSCRS::Auth::CredentialResult::Status::Ok;
+                if (ok) {
+                    providerMarkedWrong->store(false, std::memory_order_relaxed);
+                } else if (markedNow) {
+                    providerMarkedWrong->store(true, std::memory_order_relaxed);
+                }
             }
             return result;
         } catch (...) {
