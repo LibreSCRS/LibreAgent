@@ -91,12 +91,21 @@ struct OpenOutcome
 // activation — M5′), the provider FIRST calls
 // cache.markCredentialWrong(cardKey, preReadAuthFailed().key) — evicting the
 // rejected value AND arming applyRetryContext, so the re-prompt carries
-// attempt/last_error instead of replaying the rejected secret. The flag is set
-// true iff, after that invocation, the value now live for LM is the one THIS
-// provider marked wrong AND did not replace with a freshly collected value; the
-// flow's AuthFailed branch consults it to skip its own markCredentialWrong so a
-// rejected value is marked EXACTLY once (truthful attempt numbering). A
-// same-kind re-invocation WITHOUT the signal serves the cache normally.
+// attempt/last_error instead of replaying the rejected secret. The flag is then
+// moved by three cases, and it is STICKY across invocations: an Ok result
+// CLEARS it, because a freshly collected value is live and unmarked and a later
+// AuthFailed must still mark that one; a non-Ok invocation that marked SETS it,
+// because it owns the value it just evicted; and a non-Ok invocation that
+// marked NOTHING leaves it alone, because it owns nothing. That last case is
+// the whole point: on a multi-candidate walk a later candidate's empty-reason
+// invocation used to CLEAR a flag a prior invocation had set, and one wrong CAN
+// then counted as two failed attempts. Note what stickiness means — after such
+// an invocation the flag can read true while the value live for LM is NOT the
+// one that invocation marked; the flag tracks whether SOMEONE in this run
+// already marked, not who owns the current value. The flow's AuthFailed branch
+// consults it to skip its own markCredentialWrong so a rejected value is marked
+// EXACTLY once (truthful attempt numbering). A same-kind re-invocation WITHOUT
+// the signal serves the cache normally.
 //
 // @p offerMrzAlternative and @p mrzChoice are the CAN⇄MRZ choice half, and they
 // are ONE argument in two halves: the flag alone offers nothing, because a

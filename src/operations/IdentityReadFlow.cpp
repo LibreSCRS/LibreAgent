@@ -147,7 +147,7 @@ IdentityReadFlow::Result IdentityReadFlow::run()
         m_deps.cache, m_deps.prompter, m_deps.serializer, m_deps.phaseSink, m_deps.cardKey, m_deps.requester,
         m_deps.artifact, m_deps.token, prompterFailed,
         /*userCancelled=*/{}, providerMarkedWrong, offerMrzAlternative, m_mrzChoice);
-    const FlowPrelude::ProviderResetGuard providerScrub{m_provider};
+    const FlowPrelude::ProviderResetGuard providerReset{m_provider};
     const auto providerGuard = FlowPrelude::installScopedReadProvider(session, m_provider);
 
     // -- Step 4: read card data ------------------------------------------
