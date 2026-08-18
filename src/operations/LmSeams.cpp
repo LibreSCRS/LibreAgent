@@ -33,6 +33,7 @@
 #include <span>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -248,6 +249,63 @@ GroupSnapshot makeGroup(std::string key, std::string labelFallback)
     return g;
 }
 
+// The marker a critical extension's LABEL carries, in one spelling. It applies
+// to the two carriers whose label a client actually receives: the generic "ext"
+// dump's per-extension cells, and the subjectKeyIdentifier/
+// authorityKeyIdentifier cells of the "cert" group. An extension served by a
+// typed GROUP has no such label on the wire -- see addCriticalFlag below.
+constexpr std::string_view kCriticalSuffix = " (Critical)";
+
+std::string withCriticalSuffix(std::string label, bool critical)
+{
+    if (critical) {
+        label += kCriticalSuffix;
+    }
+    return label;
+}
+
+// Criticality for an extension served by a typed GROUP, carried as a data cell.
+//
+// It cannot ride the group's label: `fields` is `group -> field -> (labelKey,
+// labelFallback, value)` on both transports, so a GroupSnapshot's own
+// labelKey/labelFallback has no slot to be serialized into and never leaves
+// this process. A field does — every field a group carries is moved
+// generically by both emitters and both client decoders — so the flag is a
+// field, and needs no transport change to reach anyone.
+//
+// The cell is emitted ONLY when the extension is critical: an absent cell is
+// how a client tells "not critical" from "this agent does not report
+// criticality at all", and a marker every group carried would mark nothing.
+// Its labelKey is deliberately EMPTY, which is what says "group metadata, not
+// a row": a client renders the group's own marker from it (a suffix, a bold
+// row) instead of printing it as a field.
+void addCriticalFlag(GroupSnapshot& g, bool critical)
+{
+    if (!critical) {
+        return;
+    }
+    FieldSnapshot f;
+    f.fieldKey = "critical";
+    f.labelKey = "";
+    f.labelFallback = "Critical";
+    f.type = FieldType::Text;
+    f.textValue = "true";
+    g.fields.push_back(std::move(f));
+}
+
+// True iff @p c carries the extension @p dottedOid AND the issuer marked it
+// critical. False for an extension the certificate does not carry at all,
+// which is the same answer a caller wants: no extension, no marker.
+bool extensionIsCritical(const cert::ParsedCertificate& c, std::string_view dottedOid)
+{
+    for (const auto& e : c.extensions()) {
+        if (e.oid.dottedDecimal == dottedOid) {
+            return e.critical;
+        }
+    }
+    return false;
+}
+
 // Friendly name for an OID, falling back to its dotted-decimal form when the
 // LM OID database has no entry -- the same fallback the generic "ext" group
 // already applies per-extension, reused here for the typed groups below
@@ -438,11 +496,21 @@ CertSnapshot toCertSnapshot(const LibreSCRS::Plugin::CertificateData& cd)
     // "ext" dump below would otherwise show for these two OIDs -- SKI/AKI's
     // extnValue is itself a DER-encoded OCTET STRING, so the raw dump's hex
     // carries a tag+length prefix the typed accessor already strips).
+    //
+    // These two are the only typed OIDs whose value is a CELL of this group
+    // rather than a group of its own, so their criticality marker rides the
+    // FIELD label -- which, unlike a group's label, does reach a client. Every
+    // other typed OID reports criticality through its group's "critical" cell
+    // (see addCriticalFlag).
     if (const auto ski = c.subjectKeyIdentifier()) {
-        addText(certg, "subjectKeyIdentifier", "Subject Key Identifier", toHex(*ski, ':', /*upper=*/true));
+        addText(certg, "subjectKeyIdentifier",
+                withCriticalSuffix("Subject Key Identifier", extensionIsCritical(c, "2.5.29.14")),
+                toHex(*ski, ':', /*upper=*/true));
     }
     if (const auto aki = c.authorityKeyIdentifier()) {
-        addText(certg, "authorityKeyIdentifier", "Authority Key Identifier", toHex(*aki, ':', /*upper=*/true));
+        addText(certg, "authorityKeyIdentifier",
+                withCriticalSuffix("Authority Key Identifier", extensionIsCritical(c, "2.5.29.35")),
+                toHex(*aki, ':', /*upper=*/true));
     }
     snap.fields.push_back(std::move(certg));
 
@@ -452,13 +520,18 @@ CertSnapshot toCertSnapshot(const LibreSCRS::Plugin::CertificateData& cd)
         if (bc->pathLenConstraint) {
             addText(g, "pathLen", "Path Length Constraint", std::to_string(*bc->pathLenConstraint));
         }
+        addCriticalFlag(g, extensionIsCritical(c, "2.5.29.19"));
         snap.fields.push_back(std::move(g));
     }
 
     if (const auto san = c.subjectAlternativeNames(); san && !san->empty()) {
         GroupSnapshot g = makeGroup("san", "Subject Alternative Name");
         addGeneralNames(g, *san);
+        // The flag goes on AFTER the emptiness check: a group whose every
+        // entry was dropped is not published at all, and a lone marker is not
+        // a reason to publish one.
         if (!g.fields.empty()) {
+            addCriticalFlag(g, extensionIsCritical(c, "2.5.29.17"));
             snap.fields.push_back(std::move(g));
         }
     }
@@ -466,6 +539,7 @@ CertSnapshot toCertSnapshot(const LibreSCRS::Plugin::CertificateData& cd)
         GroupSnapshot g = makeGroup("ian", "Issuer Alternative Name");
         addGeneralNames(g, *ian);
         if (!g.fields.empty()) {
+            addCriticalFlag(g, extensionIsCritical(c, "2.5.29.18"));
             snap.fields.push_back(std::move(g));
         }
     }
@@ -473,6 +547,7 @@ CertSnapshot toCertSnapshot(const LibreSCRS::Plugin::CertificateData& cd)
     if (const auto crlDp = c.crlDistributionPoints(); crlDp && !crlDp->empty()) {
         GroupSnapshot g = makeGroup("crlDp", "CRL Distribution Points");
         addOrdinalList(g, "url", "CRL Distribution Point", *crlDp);
+        addCriticalFlag(g, extensionIsCritical(c, "2.5.29.31"));
         snap.fields.push_back(std::move(g));
     }
 
@@ -487,6 +562,7 @@ CertSnapshot toCertSnapshot(const LibreSCRS::Plugin::CertificateData& cd)
             if (caIssuers) {
                 addOrdinalList(g, "caIssuers", "CA Issuers", *caIssuers);
             }
+            addCriticalFlag(g, extensionIsCritical(c, "1.3.6.1.5.5.7.1.1"));
             snap.fields.push_back(std::move(g));
         }
     }
@@ -499,6 +575,27 @@ CertSnapshot toCertSnapshot(const LibreSCRS::Plugin::CertificateData& cd)
             names.push_back(oidLabel(oid));
         }
         addOrdinalList(g, "policy", "Certificate Policy", names);
+        addCriticalFlag(g, extensionIsCritical(c, "2.5.29.32"));
+        snap.fields.push_back(std::move(g));
+    }
+
+    // ExtendedKeyUsage, by NAME. The dotted OIDs have always ridden the typed
+    // `ekuOids` member and still do -- that member is what a caller MATCHES on,
+    // and re-spelling it here would be a second source of the same truth. This
+    // group is the other half a renderer needs and could not derive: a client
+    // has no OID database, so without this it prints "1.3.6.1.5.5.7.3.4" where
+    // it means "E-mail Protection". Same oidLabel() treatment (and same dotted
+    // fallback for an OID the database does not know) as certificatePolicies
+    // above, for the same reason.
+    if (const auto eku = c.extendedKeyUsage(); eku && !eku->empty()) {
+        GroupSnapshot g = makeGroup("eku", "Extended Key Usage");
+        std::vector<std::string> names;
+        names.reserve(eku->size());
+        for (const auto& oid : *eku) {
+            names.push_back(oidLabel(oid));
+        }
+        addOrdinalList(g, "usage", "Extended Key Usage", names);
+        addCriticalFlag(g, extensionIsCritical(c, "2.5.29.37"));
         snap.fields.push_back(std::move(g));
     }
 
@@ -515,11 +612,9 @@ CertSnapshot toCertSnapshot(const LibreSCRS::Plugin::CertificateData& cd)
             continue;
         }
         const std::string name = e.oid.friendlyName();
-        std::string label = name.empty() ? e.oid.dottedDecimal : name;
-        if (e.critical) {
-            label += " (Critical)";
-        }
-        addText(ext, e.oid.dottedDecimal, label, toHex(e.value, /*separator=*/'\0', /*upper=*/true));
+        const std::string label = name.empty() ? e.oid.dottedDecimal : name;
+        addText(ext, e.oid.dottedDecimal, withCriticalSuffix(label, e.critical),
+                toHex(e.value, /*separator=*/'\0', /*upper=*/true));
     }
     if (!ext.fields.empty()) {
         snap.fields.push_back(std::move(ext));

@@ -24,9 +24,13 @@
 #include <QSignalSpy>
 #include <QThread>
 #include <QTimer>
+#include <QVariantList>
+#include <QVariantMap>
 #include <algorithm>
+#include <array>
 #include <gtest/gtest.h>
 #include <utility>
+#include <vector>
 #include <fcntl.h>
 #include <sys/mman.h>
 #include <unistd.h>
@@ -474,6 +478,237 @@ TEST(AgentCard, UnknownFutureTrustStatusMapsToUnknown)
     EXPECT_EQ(c.trust, TrustStatus::Unknown);
     EXPECT_TRUE(c.securityStatus.isEmpty());
     EXPECT_EQ(c.extra.value(QStringLiteral("trustStatusWire")).toUInt(), 42u);
+}
+
+// ---- cert-info `fields` dict, one decode case per wire group ---------------
+//
+// The wire has always carried the whole grouped dict; until now the decode
+// read four named cells plus the security tokens out of it and dropped every
+// other group on the floor, so a viewer had no way to reach the data even
+// though it had arrived. `extra["fields"]` is that dict, surfaced whole and
+// keyed exactly as the agent grouped it.
+//
+// One case per group key the CDDL enumerates, because the value under test is
+// the VOCABULARY surviving the decode, not the loop that copies it: a decode
+// that special-cased group names (as the old one did) passes a single-group
+// scenario and drops the other twelve. Every case runs over
+// `rawCertResult` — the hand-marshalled payload that bypasses the client's own
+// operator<< — so this is a genuine foreign wire decode, not a round trip of
+// the encoder against itself.
+namespace {
+
+struct CertFieldsGroupCase
+{
+    const char* name; // gtest case name (also the wire group key)
+    FakeCertFieldGroups scripted;
+    QVariantMap expected; // the expected extra["fields"] value, whole
+};
+
+// One group's cells, in both the scripted-in and the expected-out shape, so
+// the two can never be written to disagree by a typo.
+CertFieldsGroupCase makeCase(const char* group, const QList<std::array<QString, 4>>& cells)
+{
+    CertFieldsGroupCase c;
+    c.name = group;
+    QMap<QString, FakeCertField> in;
+    QVariantMap out;
+    for (const auto& cell : cells) {
+        in.insert(cell[0], FakeCertField{cell[1], cell[2], cell[3]});
+        out.insert(cell[0], QVariantList{cell[1], cell[2], cell[3]});
+    }
+    c.scripted.insert(QString::fromLatin1(group), in);
+    c.expected.insert(QString::fromLatin1(group), out);
+    return c;
+}
+
+std::vector<CertFieldsGroupCase> certFieldsGroupCases()
+{
+    // Keys, labels and values are the agent's own spellings for each group
+    // (LmSeams' cert-snapshot builder), not invented ones: a decode that
+    // mangled a real key would otherwise pass against a scenario that never
+    // used one.
+    return {
+        makeCase("subject",
+                 {{QStringLiteral("o"), QStringLiteral("cert.subject.o"), QStringLiteral("Organization"),
+                   QStringLiteral("Republika Srbija")},
+                  {QStringLiteral("ou"), QStringLiteral("cert.subject.ou"), QStringLiteral("Organizational Unit"),
+                   QStringLiteral("Sertifikaciono telo")},
+                  {QStringLiteral("dn"), QStringLiteral("cert.subject.dn"), QStringLiteral("Distinguished Name"),
+                   QStringLiteral("CN=Ana Anić, O=Republika Srbija")}}),
+        makeCase("issuer", {{QStringLiteral("o"), QStringLiteral("cert.issuer.o"), QStringLiteral("Organization"),
+                             QStringLiteral("Republika Srbija")},
+                            {QStringLiteral("dn"), QStringLiteral("cert.issuer.dn"),
+                             QStringLiteral("Distinguished Name"), QStringLiteral("CN=CA, O=Republika Srbija")}}),
+        makeCase("validity", {{QStringLiteral("notBefore"), QStringLiteral("cert.validity.notBefore"),
+                               QStringLiteral("Not Before"), QStringLiteral("2020-01-01T00:00:00Z")},
+                              {QStringLiteral("notAfter"), QStringLiteral("cert.validity.notAfter"),
+                               QStringLiteral("Not After"), QStringLiteral("2030-12-31T23:59:59Z")}}),
+        makeCase("publicKey", {{QStringLiteral("algorithm"), QStringLiteral("cert.publicKey.algorithm"),
+                                QStringLiteral("Algorithm"), QStringLiteral("ECDSA")},
+                               {QStringLiteral("sizeBits"), QStringLiteral("cert.publicKey.sizeBits"),
+                                QStringLiteral("Key Size"), QStringLiteral("256")},
+                               {QStringLiteral("curveOid"), QStringLiteral("cert.publicKey.curveOid"),
+                                QStringLiteral("Curve"), QStringLiteral("1.2.840.10045.3.1.7")}}),
+        makeCase("cert", {{QStringLiteral("serial"), QStringLiteral("cert.cert.serial"),
+                           QStringLiteral("Serial Number"), QStringLiteral("1A:2B:3C:4D")},
+                          {QStringLiteral("version"), QStringLiteral("cert.cert.version"), QStringLiteral("Version"),
+                           QStringLiteral("v3")},
+                          {QStringLiteral("signatureAlgorithm"), QStringLiteral("cert.cert.signatureAlgorithm"),
+                           QStringLiteral("Signature Algorithm"), QStringLiteral("sha256WithRSAEncryption")},
+                          {QStringLiteral("subjectKeyIdentifier"), QStringLiteral("cert.cert.subjectKeyIdentifier"),
+                           QStringLiteral("Subject Key Identifier"), QStringLiteral("AA:BB:CC")},
+                          {QStringLiteral("authorityKeyIdentifier"), QStringLiteral("cert.cert.authorityKeyIdentifier"),
+                           QStringLiteral("Authority Key Identifier"), QStringLiteral("DD:EE:FF")}}),
+        makeCase("ext",
+                 {{QStringLiteral("2.5.29.9"), QStringLiteral("cert.ext.2.5.29.9"),
+                   QStringLiteral("X509v3 Subject Directory Attributes (Critical)"), QStringLiteral("30820103")}}),
+        // The "critical" cell is how a typed extension group reports that the
+        // issuer marked it critical: an ordinary cell, with an empty labelKey
+        // marking it as group metadata rather than a row. It is here to prove
+        // the wire carries it — the group's own label has no slot on either
+        // transport, which is exactly why criticality became a field.
+        makeCase("basicConstraints",
+                 {{QStringLiteral("isCa"), QStringLiteral("cert.basicConstraints.isCa"), QStringLiteral("CA"),
+                   QStringLiteral("false")},
+                  {QStringLiteral("pathLen"), QStringLiteral("cert.basicConstraints.pathLen"),
+                   QStringLiteral("Path Length Constraint"), QStringLiteral("0")},
+                  {QStringLiteral("critical"), QString(), QStringLiteral("Critical"), QStringLiteral("true")}}),
+        makeCase("san", {{QStringLiteral("email0"), QStringLiteral("cert.san.email"), QStringLiteral("Email"),
+                          QStringLiteral("ana@example.invalid")},
+                         {QStringLiteral("dns1"), QStringLiteral("cert.san.dns"), QStringLiteral("DNS"),
+                          QStringLiteral("example.invalid")},
+                         {QStringLiteral("otherName2"), QStringLiteral("cert.san.otherName"),
+                          QStringLiteral("Other Name"), QStringLiteral("A0143012")}}),
+        makeCase("ian", {{QStringLiteral("uri0"), QStringLiteral("cert.ian.uri"), QStringLiteral("URI"),
+                          QStringLiteral("https://ca.example.invalid/")}}),
+        makeCase("crlDp", {{QStringLiteral("url0"), QStringLiteral("cert.crlDp.url0"),
+                            QStringLiteral("CRL Distribution Point"), QStringLiteral("http://crl.example.invalid/a")},
+                           {QStringLiteral("url1"), QStringLiteral("cert.crlDp.url1"),
+                            QStringLiteral("CRL Distribution Point"), QStringLiteral("http://crl.example.invalid/b")}}),
+        makeCase("aia", {{QStringLiteral("ocsp0"), QStringLiteral("cert.aia.ocsp0"), QStringLiteral("OCSP Responder"),
+                          QStringLiteral("http://ocsp.example.invalid/")},
+                         {QStringLiteral("caIssuers0"), QStringLiteral("cert.aia.caIssuers0"),
+                          QStringLiteral("CA Issuers"), QStringLiteral("http://aia.example.invalid/ca.cer")}}),
+        makeCase("certificatePolicies", {{QStringLiteral("policy0"), QStringLiteral("cert.certificatePolicies.policy0"),
+                                          QStringLiteral("Certificate Policy"), QStringLiteral("1.3.6.1.4.1.1.1.1")}}),
+        // The agent renders extended key usages by NAME here and falls back to
+        // the dotted OID for one the database cannot resolve; both forms are
+        // just cell values to this decode, and the case exists to prove that a
+        // group appended AFTER this decode was written needs nothing added to
+        // it.
+        makeCase("eku", {{QStringLiteral("usage0"), QStringLiteral("cert.eku.usage0"),
+                          QStringLiteral("Extended Key Usage"), QStringLiteral("E-mail Protection")},
+                         {QStringLiteral("usage1"), QStringLiteral("cert.eku.usage1"),
+                          QStringLiteral("Extended Key Usage"), QStringLiteral("1.3.6.1.4.1.99999.1")}}),
+    };
+}
+
+class CertFieldsGroupDecode : public testing::TestWithParam<CertFieldsGroupCase>
+{};
+
+} // namespace
+
+TEST_P(CertFieldsGroupDecode, GroupReachesExtraFieldsWhole)
+{
+    const CertFieldsGroupCase& c = GetParam();
+
+    FakeAgent::Config cfg;
+    cfg.capabilities = Cap::Pki;
+    cfg.operationDelayMs = 20;
+    cfg.rawCertResult = true; // hand-marshalled raw signal, bypasses operator<<
+    FakeCert fc;
+    fc.certId = QStringLiteral("fields-group-cert");
+    // Nothing else is scripted: the four derived cells would otherwise add
+    // groups this case does not own, and the whole-map comparison below is the
+    // point — a decode that surfaced only SOME groups must fail here.
+    fc.extraFields = c.scripted;
+    cfg.certScript = FakeCertList{fc};
+    Harness h(cfg);
+
+    auto client = makeClient(h);
+    AgentCard* card = client->card(h.cardPath());
+    ASSERT_NE(card, nullptr);
+    AgentOperation* op = card->readCertificates();
+    ASSERT_NE(op, nullptr);
+    ASSERT_TRUE(waitFor([&]() { return op->isFinished(); }));
+    EXPECT_EQ(op->status(), OperationStatus::Ok);
+
+    const QList<CertificateInfo> certs = op->certificatesResult();
+    ASSERT_EQ(certs.size(), 1);
+    const CertificateInfo& info = certs.constFirst();
+
+    ASSERT_TRUE(info.extra.contains(QStringLiteral("fields")))
+        << "the cert-info fields dict must reach the consumer on extra[\"fields\"]";
+    EXPECT_EQ(info.extra.value(QStringLiteral("fields")).toMap(), c.expected)
+        << "every cell of the '" << c.name << "' group must arrive whole — key, labelKey, labelFallback and value";
+}
+
+INSTANTIATE_TEST_SUITE_P(CertInfoWireGroups, CertFieldsGroupDecode, testing::ValuesIn(certFieldsGroupCases()),
+                         [](const testing::TestParamInfo<CertFieldsGroupCase>& info) { return info.param.name; });
+
+// The "security" group is the thirteenth CDDL group and the one case that is
+// NOT scripted through extraFields: it is derived from the security tokens, so
+// scripting it as a raw group would test the fake rather than the decode. It
+// must reach `extra["fields"]` like every other group WHILE still populating
+// the typed `securityStatus` member — the dict is surfaced in ADDITION to the
+// extraction, never instead of it.
+TEST(AgentCard, SecurityGroupReachesBothTheTypedMemberAndTheFieldsDict)
+{
+    FakeAgent::Config cfg;
+    cfg.capabilities = Cap::Pki;
+    cfg.operationDelayMs = 20;
+    cfg.rawCertResult = true;
+    FakeCert fc;
+    fc.certId = QStringLiteral("security-group-cert");
+    fc.trustStatus = 4u; // Expired
+    fc.securityStatus = QStringList{QStringLiteral("expired")};
+    cfg.certScript = FakeCertList{fc};
+    Harness h(cfg);
+
+    auto client = makeClient(h);
+    AgentCard* card = client->card(h.cardPath());
+    ASSERT_NE(card, nullptr);
+    AgentOperation* op = card->readCertificates();
+    ASSERT_NE(op, nullptr);
+    ASSERT_TRUE(waitFor([&]() { return op->isFinished(); }));
+
+    const QList<CertificateInfo> certs = op->certificatesResult();
+    ASSERT_EQ(certs.size(), 1);
+    const CertificateInfo& info = certs.constFirst();
+    EXPECT_EQ(info.securityStatus, (QStringList{QStringLiteral("expired")}));
+
+    const QVariantMap fields = info.extra.value(QStringLiteral("fields")).toMap();
+    const QVariantMap security = fields.value(QStringLiteral("security")).toMap();
+    EXPECT_EQ(
+        security.value(QStringLiteral("expired")).toList(),
+        (QVariantList{QStringLiteral("cert.security.expired"), QStringLiteral("expired"), QStringLiteral("expired")}));
+}
+
+// A cert whose wire carried no fields dict at all must not grow an empty
+// `fields` key: a consumer distinguishes "the agent sent nothing" from "the
+// agent sent an empty group" by the key's absence, and an unconditional insert
+// would erase that distinction on every cert.
+TEST(AgentCard, ACertWithNoFieldsDictCarriesNoFieldsKey)
+{
+    FakeAgent::Config cfg;
+    cfg.capabilities = Cap::Pki;
+    cfg.operationDelayMs = 20;
+    cfg.rawCertResult = true;
+    FakeCert fc;
+    fc.certId = QStringLiteral("bare-cert");
+    cfg.certScript = FakeCertList{fc};
+    Harness h(cfg);
+
+    auto client = makeClient(h);
+    AgentCard* card = client->card(h.cardPath());
+    ASSERT_NE(card, nullptr);
+    AgentOperation* op = card->readCertificates();
+    ASSERT_NE(op, nullptr);
+    ASSERT_TRUE(waitFor([&]() { return op->isFinished(); }));
+
+    const QList<CertificateInfo> certs = op->certificatesResult();
+    ASSERT_EQ(certs.size(), 1);
+    EXPECT_FALSE(certs.constFirst().extra.contains(QStringLiteral("fields")));
 }
 
 // the FakeAgent's Sign must honor + expose its in-args. Assert verbatim

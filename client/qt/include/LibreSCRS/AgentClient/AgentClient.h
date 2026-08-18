@@ -5,6 +5,7 @@
 #include <LibreSCRS/AgentClient/AgentReader.h>
 #include <LibreSCRS/AgentClient/Export.h>
 #include <LibreSCRS/AgentClient/FdHandle.h>
+#include <LibreSCRS/AgentClient/SyncError.h>
 #include <LibreSCRS/AgentClient/Types.h>
 
 #include <QList>
@@ -12,6 +13,8 @@
 #include <QRectF>
 #include <QString>
 #include <QStringList>
+#include <QVariant>
+#include <QVariantMap>
 
 #include <memory>
 #include <optional>
@@ -101,6 +104,86 @@ public:
     /// @brief Whether the agent advertises @p token (`features().contains(token)`).
     [[nodiscard]] bool hasFeature(const QString& token) const;
 
+    /// @brief The connected agent's version string (`Manager1.Version` on
+    ///        D-Bus; the socket handshake's `HelloAck.agentVer`). Cached per
+    ///        connection. Empty while no agent is reachable or against an
+    ///        agent predating the surface — never an error.
+    ///
+    ///        "Per connection" is the whole lifetime rule: the string is
+    ///        forgotten when the connection is lost and re-read from the
+    ///        next one, so it always describes the agent answering NOW.
+    ///        Treat it as a DISPLAY datum only (an About box, a support
+    ///        report). It is a free-form string the agent chooses — never
+    ///        parse it to decide what the agent can do; that is what
+    ///        `hasFeature()` is for.
+    [[nodiscard]] QString agentVersion() const;
+
+    /// @brief Snapshot of the agent's `Config1` property set, key → value —
+    ///        the agent-owned, operation-affecting settings (signature level,
+    ///        TSA, trusted lists, cache dirs, plugin dir). All NON-secret:
+    ///        a PIN/CAN/MRZ is never configuration and never appears here.
+    ///
+    ///        Keys use the wire spellings: `"DefaultLevel"`, `"TsaUrls"`,
+    ///        `"LastTsaUrl"`, `"TslSources"`, `"TslCacheDir"`,
+    ///        `"AiaCacheDir"`, `"DefaultReason"`, `"DefaultLocation"`,
+    ///        `"PluginDir"`. Values are `QString` except `"TsaUrls"`
+    ///        (`QStringList`) and `"TslSources"`, which is a `QVariantList`
+    ///        of three-entry `QVariantList`s —
+    ///        `[QString url, bool isLotl, bool eager]`. That one shape is a
+    ///        CLIENT guarantee, identical on every transport, even though the
+    ///        wires carry it differently.
+    ///
+    ///        Cached per connection and refreshed before `configChanged()`
+    ///        announces a key, so reading this from that signal's slot always
+    ///        sees the new value. EMPTY while no agent is reachable — a dead
+    ///        agent's settings are never served as if they were live — and
+    ///        empty against an agent that does not expose the interface.
+    ///        Never an error.
+    [[nodiscard]] QVariantMap configSnapshot() const;
+
+    /// @brief Write one agent setting (`Config1.SetValue` / socket
+    ///        `SetConfig`). Synchronous and bounded; disengaged on success.
+    ///
+    ///        Only five keys are writable — `"DefaultLevel"`,
+    ///        `"DefaultReason"`, `"DefaultLocation"`, `"TsaUrls"`,
+    ///        `"TslSources"`. The rest are read-only by design (a
+    ///        wire-settable `"PluginDir"` would be a code-execution vector,
+    ///        and `"LastTsaUrl"` is agent-internal state), and writing one
+    ///        answers `SyncError::ReadOnlyConfig`.
+    ///
+    ///        A returned error is always NAMED, so a caller can act on WHICH
+    ///        refusal it was:
+    ///          - `UnknownConfigKey`   no such setting;
+    ///          - `ReadOnlyConfig`     the setting is not client-writable;
+    ///          - `InvalidConfigValue` the agent rejected @p value;
+    ///          - `NotAuthorized`      the user declined, or policy denied,
+    ///                                 the authorization this key needs (the
+    ///                                 trust-tier keys `"TsaUrls"` and
+    ///                                 `"TslSources"` prompt for it);
+    ///          - `CommunicationError` the write never REACHED the agent
+    ///                                 (unreachable, timed out, no reply) —
+    ///                                 the one case worth retrying, and the
+    ///                                 reason this is a named enumerator
+    ///                                 rather than a bool.
+    ///        Both transports report the identical enumerator for the
+    ///        identical key, though they may decide it in different places.
+    ///
+    /// @param key Wire spelling of the setting, exactly as `configSnapshot()`
+    ///        above lists it. A key outside that vocabulary answers
+    ///        `UnknownConfigKey` and one outside the five writable ones
+    ///        answers `ReadOnlyConfig`; neither writes anything.
+    /// @param value Must match the key's type as documented on
+    ///        `configSnapshot()` above; a `"TslSources"` row that is not a
+    ///        three-entry list is dropped from the write.
+    [[nodiscard]] std::optional<SyncError> setConfigValue(const QString& key, const QVariant& value);
+
+    /// @brief Restore one setting to the agent's built-in default
+    ///        (`Config1.Reset` / socket `ResetConfig`). Same synchronous,
+    ///        named-refusal contract as `setConfigValue()` above, including
+    ///        the read-only gate — a setting a client may not write is not
+    ///        one it may reset either.
+    [[nodiscard]] std::optional<SyncError> resetConfigValue(const QString& key);
+
     /// @brief Card-independent, synchronous visible-signature layout preview
     ///        (`Manager1.LayoutVisualSignature` / socket `"LayoutVisual"`) —
     ///        no card, no `AgentOperation`, just a bounded round-trip. This
@@ -163,6 +246,16 @@ Q_SIGNALS:
     ///        appeared/vanished (@p objectId is the card id) or a reader's
     ///        tracked properties changed (@p objectId is the reader id).
     void cardChanged(const QString& objectId);
+    /// @brief One agent setting changed — from THIS client's own
+    ///        `setConfigValue()`/`resetConfigValue()`, from another client's,
+    ///        or from the agent itself (it records `"LastTsaUrl"` after a
+    ///        timestamped signature).
+    ///
+    /// Carries only @p key: read the value from `configSnapshot()`, which is
+    /// already refreshed when this fires. Declared LAST on purpose — a signal
+    /// appended after the existing ones keeps every earlier signal's moc
+    /// index stable, so an already-compiled consumer keeps working.
+    void configChanged(const QString& key);
 
 private:
     friend struct ClientTestAccess; // internal: inject a TransportSeam in tests

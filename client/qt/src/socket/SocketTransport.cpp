@@ -5,6 +5,8 @@
 
 #include "SocketPath.h"
 
+#include "../CertFieldsExtra.h"
+#include "../ConfigKeys.h"
 #include "../FieldExtraKeys.h"
 #include "../dbus/AgentDBus.h"    // shared object/interface name spellings (constants only, no QtDBus)
 #include "../dbus/ErrorNameMap.h" // the short-name half doubles as the socket sync-error map
@@ -150,6 +152,86 @@ QVariant cborToVariant(const Wire::CborValue& value)
     }
     }
     return {};
+}
+
+// ---- Config1 values --------------------------------------------------------------
+
+/// `TslSources` as it arrives on THIS wire, normalized to the canonical
+/// three-entry rows `configSnapshot()` promises.
+///
+/// The grammar types every config value as bare `any` (CDDL `config`), unlike
+/// D-Bus's declared `a(sbb)`, so the shape a consumer sees is this client's
+/// guarantee rather than the wire's — and this function is where the
+/// guarantee is made. Two encodings are accepted because both are lawful
+/// under `any` and an agent is free to pick either: an array of three-entry
+/// arrays (what this client itself emits on SetConfig) and an array of maps
+/// keyed url/lotl/eager (the shape a JSON-derived serializer naturally
+/// produces). An entry matching neither is DROPPED rather than half-decoded:
+/// a row with an empty URL would read as a configured-but-broken trusted
+/// list, which is worse than one the agent will re-report on the next read.
+QVariant normalizeTslSources(const QVariant& raw)
+{
+    QVariantList rows;
+    for (const QVariant& entry : raw.toList()) {
+        if (entry.metaType().id() == QMetaType::QVariantMap) {
+            const QVariantMap fields = entry.toMap();
+            const QVariant url = fields.value(QStringLiteral("url"));
+            if (!url.isValid()) {
+                continue;
+            }
+            rows.append(tslSourceRow(url.toString(), fields.value(QStringLiteral("lotl")).toBool(),
+                                     fields.value(QStringLiteral("eager")).toBool()));
+            continue;
+        }
+        const QVariantList cells = entry.toList();
+        if (cells.size() != 3) {
+            continue;
+        }
+        rows.append(tslSourceRow(cells.at(0).toString(), cells.at(1).toBool(), cells.at(2).toBool()));
+    }
+    return rows;
+}
+
+/// One entry of the `config` reply arm in the canonical client vocabulary.
+QVariant configValueToVariant(const QString& key, const Wire::CborValue& value)
+{
+    const QVariant generic = cborToVariant(value);
+    if (key == kConfigTslSources) {
+        return normalizeTslSources(generic);
+    }
+    if (key == kConfigTsaUrls) {
+        return generic.toStringList(); // `as` on the other wire; a CBOR array here
+    }
+    return generic;
+}
+
+/// The per-key marshal table for `SetConfig`, the socket twin of the D-Bus
+/// `marshalConfigValue`. Only reached for a `settable-config-key` — the
+/// grammar admits nothing else, and setConfig() refuses the rest before
+/// building a frame — so there is no unknown-key fallthrough here.
+Wire::CborValue configValueToCbor(const QString& key, const QVariant& value)
+{
+    if (key == kConfigTslSources) {
+        Wire::CborValue::Array rows;
+        for (const QVariant& row : value.toList()) {
+            const QVariantList cells = row.toList();
+            if (cells.size() != 3) {
+                continue; // not a [url, isLotl, eager] row — see the API doc
+            }
+            rows.push_back(Wire::CborValue(Wire::CborValue::Array{Wire::CborValue(cells.at(0).toString().toStdString()),
+                                                                  Wire::CborValue(cells.at(1).toBool()),
+                                                                  Wire::CborValue(cells.at(2).toBool())}));
+        }
+        return Wire::CborValue(std::move(rows));
+    }
+    if (key == kConfigTsaUrls) {
+        Wire::CborValue::Array urls;
+        for (const QString& url : value.toStringList()) {
+            urls.push_back(Wire::CborValue(url.toStdString()));
+        }
+        return Wire::CborValue(std::move(urls));
+    }
+    return Wire::CborValue(value.toString().toStdString());
 }
 
 // ---- wire err-info -> SeamError ------------------------------------------------
@@ -326,6 +408,19 @@ QList<CertificateInfo> toCertificateInfos(const std::vector<Wire::CertInfo>& cer
         // collapses several wire verdicts into one display value, so the raw
         // number is the only way back to the cause. It stays in `extra`.
         info.extra.insert(QStringLiteral("trustStatusWire"), static_cast<uint>(cert.trustStatus));
+        // The grouped fields dict, whole -- the same surface Marshal.cpp
+        // produces from the D-Bus container, through the same builder, because
+        // the consumer renders one shape and does not know which wire it came
+        // over. The four cells extracted above are in here too; extraction and
+        // surfacing are additive, never alternatives.
+        CertFieldsExtra fieldsExtra;
+        for (const auto& [groupKey, cells] : cert.fields) {
+            for (const auto& [fieldKey, cell] : cells) {
+                fieldsExtra.add(fromStd(groupKey), fromStd(fieldKey), fromStd(cell.labelKey),
+                                fromStd(cell.labelFallback), fromStd(cell.value));
+            }
+        }
+        fieldsExtra.installInto(info.extra);
         out.append(std::move(info));
     }
     return out;
@@ -604,6 +699,92 @@ QStringList SocketTransport::features() const
     // (the two names coexist because SocketIntegrationTest.cpp's white-box
     // suite predates the seam method and asserts on the transport directly).
     return agentFeatures();
+}
+
+// ---- agent configuration (Config1) ------------------------------------------------
+
+void SocketTransport::refreshConfig()
+{
+    SyncResult result = callSync(Wire::GetConfig{}, kHandshakeTimeoutMs);
+    m_config.clear();
+    if (result.failure != CallError::None) {
+        return;
+    }
+    const auto* config = std::get_if<Wire::ConfigReply>(&result.reply);
+    if (config == nullptr) {
+        return; // err-info (an agent without the request family), or an unexpected arm
+    }
+    for (const auto& [key, value] : config->entries) {
+        const QString name = fromStd(key);
+        m_config.insert(name, configValueToVariant(name, value));
+    }
+}
+
+QVariantMap SocketTransport::configSnapshot()
+{
+    if (!m_configFetched) {
+        // "Once per connect", lazily, same posture as appearanceFont() above
+        // (and this transport's re-handshake-per-reconnect makes the
+        // connection the natural invalidation boundary).
+        m_configFetched = true;
+        refreshConfig();
+    }
+    return m_config;
+}
+
+std::optional<SyncError> SocketTransport::setConfig(const QString& key, const QVariant& value)
+{
+    // MANDATORY local refusal, not an optimization: this wire's `set-config`
+    // grammar takes a `settable-config-key` ONLY, so a read-only key has no
+    // encodable form here at all. The refusal has to name the same enumerator
+    // the D-Bus agent would have answered — that transport CAN marshal the
+    // key and lets the agent refuse it — or the same call would mean
+    // different things to a caller depending on which wire it took.
+    if (!isKnownConfigKey(key)) {
+        return SyncError::UnknownConfigKey;
+    }
+    if (!isSettableConfigKey(key)) {
+        return SyncError::ReadOnlyConfig;
+    }
+    Wire::SetConfig request;
+    request.key = key.toStdString();
+    request.value = configValueToCbor(key, value);
+    SyncResult result = callSync(request, kHandshakeTimeoutMs);
+    if (result.failure != CallError::None) {
+        return SyncError::CommunicationError; // the write never arrived — the retryable class
+    }
+    if (const auto* err = std::get_if<Wire::ErrInfo>(&result.reply)) {
+        return mapErrInfo(*err).syncError.value_or(SyncError::CommunicationError);
+    }
+    if (!std::holds_alternative<Wire::AckReply>(result.reply)) {
+        return SyncError::CommunicationError; // a reply outside this request's contract
+    }
+    return std::nullopt;
+}
+
+std::optional<SyncError> SocketTransport::resetConfig(const QString& key)
+{
+    // `reset-config` takes the FULL `config-key` set, unlike set-config
+    // above, so only an UNKNOWN key is unencodable and refused locally. A
+    // read-only key IS encodable, so it goes to the agent and earns the
+    // agent's own ReadOnlyConfig — the client does not pre-empt a refusal the
+    // grammar leaves to the peer.
+    if (!isKnownConfigKey(key)) {
+        return SyncError::UnknownConfigKey;
+    }
+    Wire::ResetConfig request;
+    request.key = key.toStdString();
+    SyncResult result = callSync(request, kHandshakeTimeoutMs);
+    if (result.failure != CallError::None) {
+        return SyncError::CommunicationError;
+    }
+    if (const auto* err = std::get_if<Wire::ErrInfo>(&result.reply)) {
+        return mapErrInfo(*err).syncError.value_or(SyncError::CommunicationError);
+    }
+    if (!std::holds_alternative<Wire::AckReply>(result.reply)) {
+        return SyncError::CommunicationError;
+    }
+    return std::nullopt;
 }
 
 // ---- registry ------------------------------------------------------------------------
@@ -1111,9 +1292,13 @@ bool SocketTransport::connectAndHandshake()
     }
     // Forget any previously cached appearance-font fd — a fresh
     // connection may be a different-generation agent serving a different
-    // font, and appearanceFont() re-fetches lazily on next use.
+    // font, and appearanceFont() re-fetches lazily on next use. Same for the
+    // settings snapshot: a different-generation agent may be configured
+    // differently, and configSnapshot() likewise re-fetches lazily.
     m_appearanceFontFetched = false;
     m_appearanceFont = FdHandle{};
+    m_configFetched = false;
+    m_config.clear();
     m_established = true;
     m_quiesced = false;
     // A new connection generation: any ConnectionLost notice still queued
@@ -1139,6 +1324,26 @@ void SocketTransport::dropConnection()
     const bool wasEstablished = m_established;
     m_established = false;
     m_quiesced = false;
+    // The HelloAck's version described THAT connection's peer. Forget it here
+    // rather than only overwriting it at the next handshake: between the drop
+    // and a reconnect there is no agent, and TransportSeam::agentVersion()'s
+    // contract is empty-while-unreachable — a consumer rendering "connected
+    // to 4.3.0" for a process that died is exactly the lie the contract
+    // exists to prevent. Unconditional, before the wasEstablished gate: a
+    // mid-handshake drop must not leave a half-seeded value behind either.
+    m_agentVersion.clear();
+    // The feature tokens are the SAME HelloAck capture with the same
+    // lifetime, and were the half that had been getting it wrong: they were
+    // cleared only on the next handshake, so between an agent's death and a
+    // reconnect features() still listed the dead agent's tokens —
+    // contradicting the seam's own "cached until the agent is lost" and
+    // diverging from D-Bus, which clears them on the name's unregistration.
+    // Consequential, not cosmetic: a client gates its optional surfaces on
+    // features(), so a stale set offers capabilities nothing is behind.
+    m_features.clear();
+    // Ditto the settings snapshot — it described THAT agent's configuration.
+    m_configFetched = false;
+    m_config.clear();
     if (!wasEstablished) {
         return; // mid-handshake failure: nothing was ever announced
     }
@@ -1388,6 +1593,27 @@ void SocketTransport::dispatchEvent(Wire::DecodedEvent&& decoded, std::vector<Wi
         }
         return;
     }
+    if (const auto* configChanged = std::get_if<Wire::ConfigChanged>(&event)) {
+        // The event carries ONLY the key, so the freshness debt is the
+        // transport's: re-read, THEN announce, so a consumer reading
+        // configSnapshot() from its slot sees the new value. This wire has no
+        // per-key read, so the refresh is the whole set — one bounded
+        // round-trip, and only when a snapshot was already cached (nothing to
+        // keep fresh otherwise; the first read will fetch everything).
+        //
+        // The nested callSync is safe here despite running inside an event
+        // dispatch: it polls the socket on a deadline rather than spinning an
+        // event loop, so nothing foreign re-enters a consumer, and a drop
+        // discovered mid-call defers its notice exactly as dropConnection
+        // guarantees.
+        if (m_configFetched) {
+            refreshConfig();
+        }
+        if (m_registry != nullptr) {
+            m_registry->onConfigChanged(fromStd(configChanged->key));
+        }
+        return;
+    }
     if (const auto* quiesced = std::get_if<Wire::AgentQuiesced>(&event)) {
         // Availability semantics: card access is quiesced (sleep / lock /
         // user switch), so the agent counts as unavailable — in-flight
@@ -1400,8 +1626,7 @@ void SocketTransport::dispatchEvent(Wire::DecodedEvent&& decoded, std::vector<Wi
         }
         return;
     }
-    // ConfigChanged (not consumed by this client) and UnknownEvent (the
-    // forward-compatibility escape): tolerated, ignored.
+    // UnknownEvent (the forward-compatibility escape): tolerated, ignored.
 }
 
 void SocketTransport::dispatchAsyncReply(Wire::DecodedReply&& reply)

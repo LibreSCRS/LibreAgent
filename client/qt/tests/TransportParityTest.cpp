@@ -63,6 +63,30 @@
 //   feature tokens      FeatureTokensMatchAcrossTransports (Manager1.Features /
 //                         HelloAck.features from the same kAgentFeatures source;
 //                         an unrecognised extra token surfaces identically)
+//   agent version       AgentVersionMatchesAcrossTransports and
+//                         AgentVersionEmptyWhileUnavailableAcrossTransports
+//                         (the one datum whose two wires share no mechanism at
+//                         all — a D-Bus Manager1.Version PROPERTY read vs a
+//                         retained HelloAck HANDSHAKE field — surfaces
+//                         identically, INCLUDING going empty for a connection
+//                         that died and re-seeding on the next connect)
+//   feature lifetime    FeaturesEmptyWhileUnavailableAcrossTransports (the
+//                         version pair's twin, and the consequential half:
+//                         the optional-surface gating reads features(), so a
+//                         token set surviving a dead agent offers a consumer
+//                         capabilities nothing is behind)
+//   agent config        ConfigSnapshotMatchesAcrossTransports (incl. the
+//                         canonical TslSources row — a typed a(sbb) array on
+//                         one wire, a bare `any` on the other),
+//                         SetConfigValueRoundTripsAndAnnouncesAcrossTransports
+//                         (the write plus the cache-then-announce ordering
+//                         both change notifications owe), and
+//                         NonSettableConfigKeyRefusesIdenticallyAcrossTransports
+//                         / UnknownConfigKeyRefusesIdenticallyAcrossTransports
+//                         (an agent-named refusal on D-Bus and a
+//                         locally-decided one on the socket — whose
+//                         `set-config` grammar cannot encode the key at all —
+//                         reaching the caller as ONE enumerator)
 //   feature-gated entry MissingTokenInfoFeatureRefusesIdenticallyAcrossTransports
 //                         (readTokenInfo() with "token-info" absent from
 //                         features() refuses at entry — CapabilityMissing,
@@ -201,12 +225,15 @@
 #include <QRectF>
 #include <QTemporaryDir>
 #include <QThread>
+#include <QVariant>
+#include <QVariantList>
 #include <QVariantMap>
 
 #include <gtest/gtest.h>
 
 #include <algorithm>
 #include <memory>
+#include <optional>
 #include <string>
 #include <type_traits>
 
@@ -238,6 +265,12 @@ struct ParityCert
     quint32 keyUsageBits = 0;
     QStringList extendedKeyUsageOids;
     QStringList chainSubjectCns;
+    /// The rest of the `fields` dict — every group beyond the four cells the
+    /// members above derive. Scripted ONCE here and re-encoded by each fake
+    /// into its own wire form (a nested `a{sa{s(ssv)}}` D-Bus map on one side,
+    /// a CBOR map of 3-element arrays on the other), which is the only way a
+    /// scenario can assert the two decodes agree on the shape they surface.
+    Fakes::FakeCertFieldGroups extraFields;
 };
 
 struct ParityCredRecord
@@ -276,6 +309,16 @@ struct ParityConfig
     // ({"credentials"}); a scenario overrides it to script an extra,
     // unrecognised token or an agent predating the surface (empty).
     QStringList features = {QStringLiteral("credentials")};
+    // Manager1.Version / HelloAck.agentVer — the two wires' single version
+    // surface, scripted identically so the client-observed string can be
+    // compared verbatim across transports (each fake's own default differs
+    // on purpose, so a scenario that cares must set this).
+    QString agentVersion = QStringLiteral("4.3.0-parity");
+    // The Config1 property set, in the canonical client-side shape both fakes
+    // accept (see fakes/FakeConfig.h): scripted ONCE here and re-encoded by
+    // each fake into its own wire form — a typed a(sbb) property array on
+    // D-Bus, a CBOR value the grammar types as bare `any` on the socket.
+    QVariantMap agentConfig = Fakes::defaultAgentConfig();
     bool failMethodEntry = false;
     // The public-data fetch answers a reply that is OUTSIDE this request's
     // contract — the same fault expressed in each wire's own terms (D-Bus: a
@@ -433,6 +476,8 @@ private:
         out.capabilities = cfg.capabilities;
         out.operationDelayMs = cfg.operationDelayMs;
         out.features = cfg.features;
+        out.agentVersion = cfg.agentVersion;
+        out.config = cfg.agentConfig;
         out.cardType = cfg.cardType;
         out.atrHex = cfg.atrHex;
         out.failMethodEntry = cfg.failMethodEntry;
@@ -453,6 +498,7 @@ private:
             fc.keyUsageBits = c.keyUsageBits;
             fc.extendedKeyUsageOids = c.extendedKeyUsageOids;
             fc.chainSubjectCns = c.chainSubjectCns;
+            fc.extraFields = c.extraFields;
             out.certScript.append(fc);
         }
         for (const ParityCredRecord& r : cfg.credRecords) {
@@ -658,6 +704,8 @@ private:
         out.capabilities = cfg.capabilities;
         out.operationDelayMs = cfg.operationDelayMs;
         out.features = cfg.features;
+        out.agentVersion = cfg.agentVersion;
+        out.config = cfg.agentConfig;
         out.cardType = cfg.cardType;
         out.atrHex = cfg.atrHex;
         out.failMethodEntry = cfg.failMethodEntry;
@@ -678,6 +726,7 @@ private:
             fc.keyUsageBits = c.keyUsageBits;
             fc.extendedKeyUsageOids = c.extendedKeyUsageOids;
             fc.chainSubjectCns = c.chainSubjectCns;
+            fc.extraFields = c.extraFields;
             out.certScript.append(fc);
         }
         for (const ParityCredRecord& r : cfg.credRecords) {
@@ -1111,6 +1160,178 @@ TYPED_TEST(TransportParity, CertificatesEndToEnd)
     // would pass on a transport that stopped carrying the key at all.
     EXPECT_TRUE(c.extra.contains(QStringLiteral("trustStatusWire")));
     EXPECT_EQ(c.extra.value(QStringLiteral("trustStatusWire")).toUInt(), 0u);
+}
+
+// The whole cert-info `fields` dict, one body against both wires.
+//
+// The two decodes read the dict out of containers that have nothing in common
+// -- a QtDBus-demarshalled `a{sa{s(ssv)}}` of QDBusVariant cells on one side,
+// a `std::map<std::string, std::map<std::string, Wire::CertField>>` of CBOR
+// text on the other -- and both must land it on `extra["fields"]` in ONE
+// shape, because the consumer that renders it is written against that shape
+// and not against either wire. So the assertion is a WHOLE-MAP comparison
+// against one expected value, not a spot-check: a transport that dropped a
+// group, flattened the nesting, ordered the triple differently or stringified
+// a cell would each still pass a `contains()`-shaped test on its own suite,
+// and every one of them is a different rendering on the two wires.
+//
+// Every group the CDDL enumerates is scripted, for the reason the per-group
+// D-Bus cases exist: the decode that shipped before this one special-cased
+// four cells by name, and a scenario carrying one group cannot tell a generic
+// copy from a lucky special case.
+TYPED_TEST(TransportParity, CertificateFieldsDictSurfacesIdenticallyOnBothWires)
+{
+    using Env = typename TypeParam::Env;
+    ParityConfig cfg;
+    cfg.capabilities = Cap::Pki;
+    ParityCert pc;
+    pc.certId = QStringLiteral("cert-fields-parity");
+    pc.signingCapable = true;
+    // The four derived cells, scripted through the typed members exactly as
+    // every other cert scenario does -- they must appear in the dict TOO, in
+    // their own groups, alongside the scripted ones.
+    pc.subjectCn = QStringLiteral("Ana Anić");
+    pc.issuerCn = QStringLiteral("Republika Srbija CA");
+    pc.notBefore = QStringLiteral("2020-01-01T00:00:00Z");
+    pc.notAfter = QStringLiteral("2030-12-31T23:59:59Z");
+    pc.trustStatus = 4; // Expired -- the "security" group's token rides along
+    pc.securityStatus = QStringList{QStringLiteral("expired")};
+    pc.extraFields = Fakes::FakeCertFieldGroups{
+        {QStringLiteral("subject"),
+         {{QStringLiteral("dn"),
+           {QStringLiteral("cert.subject.dn"), QStringLiteral("Distinguished Name"),
+            QStringLiteral("CN=Ana Anić, O=Republika Srbija")}}}},
+        {QStringLiteral("publicKey"),
+         {{QStringLiteral("algorithm"),
+           {QStringLiteral("cert.publicKey.algorithm"), QStringLiteral("Algorithm"), QStringLiteral("ECDSA")}},
+          {QStringLiteral("sizeBits"),
+           {QStringLiteral("cert.publicKey.sizeBits"), QStringLiteral("Key Size"), QStringLiteral("256")}},
+          {QStringLiteral("curveOid"),
+           {QStringLiteral("cert.publicKey.curveOid"), QStringLiteral("Curve"),
+            QStringLiteral("1.2.840.10045.3.1.7")}}}},
+        {QStringLiteral("cert"),
+         {{QStringLiteral("serial"),
+           {QStringLiteral("cert.cert.serial"), QStringLiteral("Serial Number"), QStringLiteral("1A:2B:3C:4D")}},
+          {QStringLiteral("version"),
+           {QStringLiteral("cert.cert.version"), QStringLiteral("Version"), QStringLiteral("v3")}},
+          {QStringLiteral("subjectKeyIdentifier"),
+           {QStringLiteral("cert.cert.subjectKeyIdentifier"), QStringLiteral("Subject Key Identifier"),
+            QStringLiteral("AA:BB:CC")}}}},
+        {QStringLiteral("basicConstraints"),
+         {{QStringLiteral("isCa"),
+           {QStringLiteral("cert.basicConstraints.isCa"), QStringLiteral("CA"), QStringLiteral("false")}}}},
+        {QStringLiteral("san"),
+         {{QStringLiteral("email0"),
+           {QStringLiteral("cert.san.email"), QStringLiteral("Email"), QStringLiteral("ana@example.invalid")}}}},
+        {QStringLiteral("ian"),
+         {{QStringLiteral("uri0"),
+           {QStringLiteral("cert.ian.uri"), QStringLiteral("URI"), QStringLiteral("https://ca.example.invalid/")}}}},
+        {QStringLiteral("crlDp"),
+         {{QStringLiteral("url0"),
+           {QStringLiteral("cert.crlDp.url0"), QStringLiteral("CRL Distribution Point"),
+            QStringLiteral("http://crl.example.invalid/a")}}}},
+        {QStringLiteral("aia"),
+         {{QStringLiteral("ocsp0"),
+           {QStringLiteral("cert.aia.ocsp0"), QStringLiteral("OCSP Responder"),
+            QStringLiteral("http://ocsp.example.invalid/")}}}},
+        {QStringLiteral("certificatePolicies"),
+         {{QStringLiteral("policy0"),
+           {QStringLiteral("cert.certificatePolicies.policy0"), QStringLiteral("Certificate Policy"),
+            QStringLiteral("1.3.6.1.4.1.1.1.1")}}}},
+        {QStringLiteral("ext"),
+         {{QStringLiteral("2.5.29.9"),
+           {QStringLiteral("cert.ext.2.5.29.9"), QStringLiteral("X509v3 Subject Directory Attributes (Critical)"),
+            QStringLiteral("30820103")}}}},
+    };
+    cfg.certScript = {pc};
+    Env env(cfg);
+
+    AgentCard* card = env.card();
+    ASSERT_NE(card, nullptr);
+    AgentOperation* op = card->readCertificates();
+    ASSERT_NE(op, nullptr);
+    ASSERT_TRUE(waitFor([&]() { return op->isFinished(); }));
+    EXPECT_EQ(op->status(), OperationStatus::Ok);
+
+    const QList<CertificateInfo> certs = op->certificatesResult();
+    ASSERT_EQ(certs.size(), 1);
+    const CertificateInfo& c = certs.constFirst();
+
+    const auto cell = [](const QString& labelKey, const QString& labelFallback, const QString& value) {
+        return QVariant(QVariantList{labelKey, labelFallback, value});
+    };
+    const QVariantMap expected{
+        {QStringLiteral("subject"),
+         QVariantMap{
+             {QStringLiteral("cn"),
+              cell(QStringLiteral("label_subject_cn"), QStringLiteral("Subject CN"), QStringLiteral("Ana Anić"))},
+             {QStringLiteral("dn"), cell(QStringLiteral("cert.subject.dn"), QStringLiteral("Distinguished Name"),
+                                         QStringLiteral("CN=Ana Anić, O=Republika Srbija"))}}},
+        {QStringLiteral("issuer"),
+         QVariantMap{{QStringLiteral("cn"), cell(QStringLiteral("label_issuer_cn"), QStringLiteral("Issuer CN"),
+                                                 QStringLiteral("Republika Srbija CA"))}}},
+        {QStringLiteral("validity"),
+         QVariantMap{
+             {QStringLiteral("notBefore"), cell(QStringLiteral("label_not_before"), QStringLiteral("Not before"),
+                                                QStringLiteral("2020-01-01T00:00:00Z"))},
+             {QStringLiteral("notAfter"), cell(QStringLiteral("label_not_after"), QStringLiteral("Not after"),
+                                               QStringLiteral("2030-12-31T23:59:59Z"))}}},
+        {QStringLiteral("publicKey"),
+         QVariantMap{
+             {QStringLiteral("algorithm"),
+              cell(QStringLiteral("cert.publicKey.algorithm"), QStringLiteral("Algorithm"), QStringLiteral("ECDSA"))},
+             {QStringLiteral("sizeBits"),
+              cell(QStringLiteral("cert.publicKey.sizeBits"), QStringLiteral("Key Size"), QStringLiteral("256"))},
+             {QStringLiteral("curveOid"), cell(QStringLiteral("cert.publicKey.curveOid"), QStringLiteral("Curve"),
+                                               QStringLiteral("1.2.840.10045.3.1.7"))}}},
+        {QStringLiteral("cert"),
+         QVariantMap{{QStringLiteral("serial"), cell(QStringLiteral("cert.cert.serial"),
+                                                     QStringLiteral("Serial Number"), QStringLiteral("1A:2B:3C:4D"))},
+                     {QStringLiteral("version"),
+                      cell(QStringLiteral("cert.cert.version"), QStringLiteral("Version"), QStringLiteral("v3"))},
+                     {QStringLiteral("subjectKeyIdentifier"),
+                      cell(QStringLiteral("cert.cert.subjectKeyIdentifier"), QStringLiteral("Subject Key Identifier"),
+                           QStringLiteral("AA:BB:CC"))}}},
+        {QStringLiteral("basicConstraints"),
+         QVariantMap{{QStringLiteral("isCa"), cell(QStringLiteral("cert.basicConstraints.isCa"), QStringLiteral("CA"),
+                                                   QStringLiteral("false"))}}},
+        {QStringLiteral("san"),
+         QVariantMap{{QStringLiteral("email0"), cell(QStringLiteral("cert.san.email"), QStringLiteral("Email"),
+                                                     QStringLiteral("ana@example.invalid"))}}},
+        {QStringLiteral("ian"),
+         QVariantMap{{QStringLiteral("uri0"), cell(QStringLiteral("cert.ian.uri"), QStringLiteral("URI"),
+                                                   QStringLiteral("https://ca.example.invalid/"))}}},
+        {QStringLiteral("crlDp"),
+         QVariantMap{
+             {QStringLiteral("url0"), cell(QStringLiteral("cert.crlDp.url0"), QStringLiteral("CRL Distribution Point"),
+                                           QStringLiteral("http://crl.example.invalid/a"))}}},
+        {QStringLiteral("aia"),
+         QVariantMap{{QStringLiteral("ocsp0"), cell(QStringLiteral("cert.aia.ocsp0"), QStringLiteral("OCSP Responder"),
+                                                    QStringLiteral("http://ocsp.example.invalid/"))}}},
+        {QStringLiteral("certificatePolicies"),
+         QVariantMap{{QStringLiteral("policy0"),
+                      cell(QStringLiteral("cert.certificatePolicies.policy0"), QStringLiteral("Certificate Policy"),
+                           QStringLiteral("1.3.6.1.4.1.1.1.1"))}}},
+        {QStringLiteral("ext"),
+         QVariantMap{{QStringLiteral("2.5.29.9"), cell(QStringLiteral("cert.ext.2.5.29.9"),
+                                                       QStringLiteral("X509v3 Subject Directory Attributes (Critical)"),
+                                                       QStringLiteral("30820103"))}}},
+        {QStringLiteral("security"),
+         QVariantMap{{QStringLiteral("expired"), cell(QStringLiteral("cert.security.expired"),
+                                                      QStringLiteral("expired"), QStringLiteral("expired"))}}},
+    };
+
+    ASSERT_TRUE(c.extra.contains(QStringLiteral("fields")))
+        << "the fields dict must reach the consumer on BOTH transports, not just the one whose decode was edited";
+    EXPECT_EQ(c.extra.value(QStringLiteral("fields")).toMap(), expected)
+        << "both wires must surface the SAME grouped shape — group -> field -> [labelKey, labelFallback, value]";
+
+    // The dict is surfaced IN ADDITION to the typed extraction, never instead
+    // of it: a consumer reading `subject` must still get the CN, and one
+    // reading the dict must still find the same cell inside it.
+    EXPECT_EQ(c.subject, QStringLiteral("Ana Anić"));
+    EXPECT_EQ(c.issuer, QStringLiteral("Republika Srbija CA"));
+    EXPECT_EQ(c.securityStatus, (QStringList{QStringLiteral("expired")}));
 }
 
 // The best-effort warm, one body against both wires. Most of what this verb
@@ -1756,6 +1977,185 @@ TYPED_TEST(TransportParity, FeatureTokensMatchAcrossTransports)
     EXPECT_TRUE(client->hasFeature(QStringLiteral("a-future-token-this-build-does-not-name")))
         << "an unrecognised extra token must surface identically on both transports, never be dropped";
     EXPECT_FALSE(client->hasFeature(QStringLiteral("nonexistent-token")));
+}
+
+// ---- agent version: one string, two very different wires -------------------
+//
+// The version is the one discovery datum whose two wires do NOT share a
+// mechanism: D-Bus reads it as a Manager1.Version PROPERTY on the root
+// object, the socket retains it from the HelloAck HANDSHAKE. Only a shared
+// scenario can prove the client surfaces them identically — a per-transport
+// assertion pins each mechanism but would let the two contracts drift.
+TYPED_TEST(TransportParity, AgentVersionMatchesAcrossTransports)
+{
+    using Env = typename TypeParam::Env;
+    ParityConfig cfg;
+    cfg.capabilities = Cap::Pki;
+    cfg.agentVersion = QStringLiteral("4.3.0-parity");
+    Env env(cfg);
+
+    AgentClient* client = env.client();
+    ASSERT_TRUE(client->isAvailable());
+    EXPECT_EQ(client->agentVersion(), QStringLiteral("4.3.0-parity"))
+        << "the connected agent's version must reach the public surface verbatim on both wires";
+}
+
+// The other half of the contract, and the half a transport is most likely to
+// get wrong on its own: a version cached for a connection that is GONE must
+// not survive it. D-Bus forgets on the name's unregistration, the socket on
+// the connection drop; the client must read empty either way, and re-seed
+// from the next connect.
+TYPED_TEST(TransportParity, AgentVersionEmptyWhileUnavailableAcrossTransports)
+{
+    using Env = typename TypeParam::Env;
+    ParityConfig cfg;
+    cfg.capabilities = Cap::Pki;
+    cfg.agentVersion = QStringLiteral("4.3.0-parity");
+    Env env(cfg);
+
+    AgentClient* client = env.client();
+    ASSERT_TRUE(client->isAvailable());
+    ASSERT_EQ(client->agentVersion(), QStringLiteral("4.3.0-parity"));
+
+    env.vanishAgent();
+    ASSERT_TRUE(waitFor([&]() { return !client->isAvailable(); }));
+    EXPECT_TRUE(client->agentVersion().isEmpty()) << "a dead agent's version must never be served as if it were live";
+
+    env.reappearAgent();
+    ASSERT_TRUE(waitFor([&]() { return client->isAvailable(); }));
+    EXPECT_EQ(client->agentVersion(), QStringLiteral("4.3.0-parity"))
+        << "the next connect must re-seed the version, not leave it empty";
+}
+
+// Features has the SAME forget-on-loss contract as the version above, reached
+// by the same two different mechanisms, and is the more consequential of the
+// pair: the client's own optional-surface gating reads features(), so a token
+// set left over from a dead agent makes a consumer offer capabilities nothing
+// is behind. Kept beside its version twin rather than folded into
+// FeatureTokensMatchAcrossTransports, which asserts only the live set.
+TYPED_TEST(TransportParity, FeaturesEmptyWhileUnavailableAcrossTransports)
+{
+    using Env = typename TypeParam::Env;
+    ParityConfig cfg;
+    cfg.capabilities = Cap::Pki;
+    Env env(cfg);
+
+    AgentClient* client = env.client();
+    ASSERT_TRUE(client->isAvailable());
+    ASSERT_TRUE(client->hasFeature(QStringLiteral("credentials")));
+
+    env.vanishAgent();
+    ASSERT_TRUE(waitFor([&]() { return !client->isAvailable(); }));
+    EXPECT_TRUE(client->features().isEmpty())
+        << "a dead agent's feature tokens must never be served as if they were live";
+    EXPECT_FALSE(client->hasFeature(QStringLiteral("credentials")));
+
+    env.reappearAgent();
+    ASSERT_TRUE(waitFor([&]() { return client->isAvailable(); }));
+    EXPECT_TRUE(client->hasFeature(QStringLiteral("credentials")))
+        << "the next connect must re-seed the tokens, not leave them empty";
+}
+
+// ---- Config1: one settings surface, two refusal mechanisms -----------------
+//
+// Config1 is where the two wires diverge MOST while still owing one
+// observable outcome. Reading: a typed a(sbb) property array on D-Bus versus
+// a CBOR value the grammar types as bare `any` on the socket — so the
+// canonical TslSources row is the client's guarantee, and only a shared
+// scenario can prove both halves produce it. Writing: D-Bus marshals every
+// key and lets the agent name the refusal, while the socket's `set-config`
+// grammar cannot even ENCODE a non-settable key, so its transport refuses
+// locally. Different mechanism, same enumerator — which is exactly the kind
+// of claim a per-transport assertion cannot make.
+
+TYPED_TEST(TransportParity, ConfigSnapshotMatchesAcrossTransports)
+{
+    using Env = typename TypeParam::Env;
+    ParityConfig cfg;
+    cfg.capabilities = Cap::Pki;
+    Env env(cfg);
+
+    AgentClient* client = env.client();
+    ASSERT_TRUE(client->isAvailable());
+
+    const QVariantMap config = client->configSnapshot();
+    EXPECT_EQ(config.value(QStringLiteral("DefaultLevel")).toString(), QStringLiteral("b-t"));
+    EXPECT_EQ(config.value(QStringLiteral("DefaultReason")).toString(), QStringLiteral("Approval"));
+    EXPECT_EQ(config.value(QStringLiteral("TsaUrls")).toStringList(),
+              QStringList{QStringLiteral("https://tsa.example.invalid/tsr")});
+    EXPECT_EQ(config.value(QStringLiteral("PluginDir")).toString(), QStringLiteral("/usr/lib/librescrs/plugins"));
+
+    const QVariantList tslSources = config.value(QStringLiteral("TslSources")).toList();
+    ASSERT_EQ(tslSources.size(), 1) << "the structured property must survive both decodes";
+    const QVariantList row = tslSources.first().toList();
+    ASSERT_EQ(row.size(), 3) << "both transports must produce the canonical [url, isLotl, eager] row";
+    EXPECT_EQ(row.at(0).toString(), QStringLiteral("https://example.invalid/tl.xml"));
+    EXPECT_FALSE(row.at(1).toBool());
+    EXPECT_TRUE(row.at(2).toBool());
+}
+
+TYPED_TEST(TransportParity, SetConfigValueRoundTripsAndAnnouncesAcrossTransports)
+{
+    using Env = typename TypeParam::Env;
+    ParityConfig cfg;
+    cfg.capabilities = Cap::Pki;
+    Env env(cfg);
+
+    AgentClient* client = env.client();
+    ASSERT_TRUE(client->isAvailable());
+    ASSERT_FALSE(client->configSnapshot().isEmpty());
+
+    QStringList announced;
+    QString seenFromSlot;
+    QObject::connect(client, &AgentClient::configChanged, client, [&](const QString& key) {
+        announced.append(key);
+        seenFromSlot = client->configSnapshot().value(key).toString();
+    });
+
+    EXPECT_EQ(client->setConfigValue(QStringLiteral("DefaultReason"), QStringLiteral("approval")), std::nullopt);
+    ASSERT_TRUE(waitFor([&]() { return !announced.isEmpty(); }));
+    EXPECT_EQ(announced.constFirst(), QStringLiteral("DefaultReason"));
+    EXPECT_EQ(seenFromSlot, QStringLiteral("approval"))
+        << "both transports must refresh the cache BEFORE announcing — the change notification "
+           "carries only the key on either wire";
+    EXPECT_EQ(client->configSnapshot().value(QStringLiteral("DefaultReason")).toString(), QStringLiteral("approval"));
+}
+
+TYPED_TEST(TransportParity, NonSettableConfigKeyRefusesIdenticallyAcrossTransports)
+{
+    using Env = typename TypeParam::Env;
+    ParityConfig cfg;
+    cfg.capabilities = Cap::Pki;
+    Env env(cfg);
+
+    AgentClient* client = env.client();
+    ASSERT_TRUE(client->isAvailable());
+
+    const std::optional<SyncError> refusal =
+        client->setConfigValue(QStringLiteral("PluginDir"), QStringLiteral("/tmp/x"));
+    ASSERT_TRUE(refusal.has_value());
+    EXPECT_EQ(*refusal, SyncError::ReadOnlyConfig)
+        << "an agent-named refusal on one wire and a locally-decided one on the other must be the "
+           "same enumerator to a caller";
+}
+
+TYPED_TEST(TransportParity, UnknownConfigKeyRefusesIdenticallyAcrossTransports)
+{
+    using Env = typename TypeParam::Env;
+    ParityConfig cfg;
+    cfg.capabilities = Cap::Pki;
+    Env env(cfg);
+
+    AgentClient* client = env.client();
+    ASSERT_TRUE(client->isAvailable());
+
+    const std::optional<SyncError> refusal = client->setConfigValue(QStringLiteral("NoSuchKey"), QStringLiteral("x"));
+    ASSERT_TRUE(refusal.has_value());
+    EXPECT_EQ(*refusal, SyncError::UnknownConfigKey);
+
+    const std::optional<SyncError> resetRefusal = client->resetConfigValue(QStringLiteral("NoSuchKey"));
+    ASSERT_TRUE(resetRefusal.has_value());
+    EXPECT_EQ(*resetRefusal, SyncError::UnknownConfigKey);
 }
 
 // ---- feature-gated entry: readTokenInfo() without "token-info" refuses

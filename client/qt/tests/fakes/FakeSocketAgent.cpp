@@ -3,6 +3,7 @@
 
 #include "FakeSocketAgent.h"
 
+#include "ConfigKeys.h"         // the Config1 key vocabulary + the canonical TslSources row shape
 #include "dbus/AgentDBus.h"     // the shared object/interface name spellings (constants only)
 #include "socket/MemfdSource.h" // memfd document/artifact source + readFdAll (Linux test helper)
 
@@ -40,6 +41,79 @@ Wire::PreReadAuth preAuthFromToken(const QString& token)
         return Wire::PreReadAuth::Can;
     }
     return Wire::PreReadAuth::None;
+}
+
+/// One scripted config value -> the CBOR the `config` reply arm carries.
+/// `TslSources` is the interesting one: the socket grammar types every config
+/// value as bare `any` (unlike D-Bus's declared `a(sbb)`), so this fake can —
+/// and, under Config::tslSourcesAsMaps, does — serve the SAME rows in two
+/// lawful encodings, which is what makes the client's normalization a real
+/// claim rather than a pass-through.
+Wire::CborValue configValueToCbor(const QString& key, const QVariant& value, bool tslSourcesAsMaps)
+{
+    if (key == kConfigTslSources) {
+        Wire::CborValue::Array rows;
+        for (const QVariant& row : value.toList()) {
+            const QVariantList cells = row.toList();
+            if (cells.size() != 3) {
+                continue;
+            }
+            const std::string url = cells.at(0).toString().toStdString();
+            const bool isLotl = cells.at(1).toBool();
+            const bool eager = cells.at(2).toBool();
+            if (tslSourcesAsMaps) {
+                Wire::CborValue::Map entry;
+                entry.emplace("url", Wire::CborValue(url));
+                entry.emplace("lotl", Wire::CborValue(isLotl));
+                entry.emplace("eager", Wire::CborValue(eager));
+                rows.push_back(Wire::CborValue(std::move(entry)));
+                continue;
+            }
+            rows.push_back(Wire::CborValue(
+                Wire::CborValue::Array{Wire::CborValue(url), Wire::CborValue(isLotl), Wire::CborValue(eager)}));
+        }
+        return Wire::CborValue(std::move(rows));
+    }
+    if (value.metaType().id() == QMetaType::QStringList) {
+        Wire::CborValue::Array items;
+        for (const QString& item : value.toStringList()) {
+            items.push_back(Wire::CborValue(item.toStdString()));
+        }
+        return Wire::CborValue(std::move(items));
+    }
+    return Wire::CborValue(value.toString().toStdString());
+}
+
+/// The inverse, for SetConfig: the wire's `any` value back into the canonical
+/// client-side shape this fake stores and later re-serves.
+QVariant cborConfigValueToVariant(const QString& key, const Wire::CborValue& value)
+{
+    if (key == kConfigTslSources) {
+        QVariantList rows;
+        if (const auto* array = value.asArray()) {
+            for (const Wire::CborValue& row : *array) {
+                const auto* cells = row.asArray();
+                if (cells == nullptr || cells->size() != 3) {
+                    continue;
+                }
+                const std::string* url = (*cells)[0].asText();
+                rows.append(tslSourceRow(url != nullptr ? QString::fromStdString(*url) : QString(),
+                                         (*cells)[1].asBool().value_or(false), (*cells)[2].asBool().value_or(false)));
+            }
+        }
+        return rows;
+    }
+    if (const auto* array = value.asArray()) {
+        QStringList items;
+        for (const Wire::CborValue& item : *array) {
+            if (const std::string* text = item.asText()) {
+                items.append(QString::fromStdString(*text));
+            }
+        }
+        return items;
+    }
+    const std::string* text = value.asText();
+    return text != nullptr ? QString::fromStdString(*text) : QString();
 }
 
 void setNonBlockingCloexec(int fd)
@@ -89,7 +163,8 @@ QVariantMap signOptsToMap(const Wire::SignOpts& opts)
 
 } // namespace
 
-FakeSocketAgent::FakeSocketAgent(Config config, QObject* parent) : QObject(parent), m_config(std::move(config))
+FakeSocketAgent::FakeSocketAgent(Config config, QObject* parent)
+    : QObject(parent), m_config(std::move(config)), m_configDefaults(m_config.config)
 {
     relisten();
 }
@@ -352,6 +427,15 @@ std::vector<Wire::CertInfo> FakeSocketAgent::buildCertList() const
         Wire::CertInfo cert;
         cert.certId = scripted.certId.toStdString();
         cert.signingCapable = scripted.signingCapable;
+        // The scripted groups go in FIRST, so the four derived cells below
+        // overlay rather than are overlaid -- the D-Bus fake's operator<<
+        // orders the same two writes the same way.
+        for (auto g = scripted.extraFields.constBegin(); g != scripted.extraFields.constEnd(); ++g) {
+            for (auto f = g->constBegin(); f != g->constEnd(); ++f) {
+                cert.fields[g.key().toStdString()][f.key().toStdString()] =
+                    Wire::CertField{f->labelKey.toStdString(), f->labelFallback.toStdString(), f->value.toStdString()};
+            }
+        }
         if (!scripted.subjectCn.isEmpty()) {
             cert.fields["subject"]["cn"] =
                 Wire::CertField{"label_subject_cn", "Subject CN", scripted.subjectCn.toStdString()};
@@ -457,6 +541,21 @@ int FakeSocketAgent::listCredentialsCount() const
 int FakeSocketAgent::getSignResultCount() const
 {
     return m_getSignResultCalls;
+}
+
+int FakeSocketAgent::getConfigCount() const
+{
+    return m_getConfigCalls;
+}
+
+int FakeSocketAgent::configMutationCount() const
+{
+    return m_configMutationCalls;
+}
+
+QVariant FakeSocketAgent::configValue(const QString& key) const
+{
+    return m_config.config.value(key);
 }
 
 QString FakeSocketAgent::lastSignCertId() const
@@ -850,6 +949,63 @@ void FakeSocketAgent::handleRequest(Connection* connection, Wire::RequestEnvelop
         sendCbor(connection, Wire::makeErrorReply(req, info));
         return;
     }
+    if (std::get_if<Wire::GetConfig>(&body) != nullptr) {
+        ++m_getConfigCalls;
+        Wire::ConfigReply reply;
+        for (auto it = m_config.config.constBegin(); it != m_config.config.constEnd(); ++it) {
+            reply.entries.emplace(it.key().toStdString(),
+                                  configValueToCbor(it.key(), it.value(), m_config.tslSourcesAsMaps));
+        }
+        sendCbor(connection, Wire::makeReply(req, reply));
+        return;
+    }
+    if (const auto* setConfig = std::get_if<Wire::SetConfig>(&body)) {
+        ++m_configMutationCalls;
+        const QString key = QString::fromStdString(setConfig->key);
+        // The structural policy, enforced for real: this arm is only ever
+        // reached by a client that skipped its own local grammar check (the
+        // wire's `set-config` admits a settable-config-key ONLY), so the
+        // refusals it would then earn have to be the real ones.
+        if (!isKnownConfigKey(key)) {
+            sendEntryError(connection, req, Wire::SyncError::UnknownConfigKey);
+            return;
+        }
+        if (!isSettableConfigKey(key)) {
+            sendEntryError(connection, req, Wire::SyncError::ReadOnlyConfig);
+            return;
+        }
+        if (m_config.configMutationError) {
+            sendEntryError(connection, req, *m_config.configMutationError);
+            return;
+        }
+        m_config.config.insert(key, cborConfigValueToVariant(key, setConfig->value));
+        sendCbor(connection, Wire::makeReply(req, Wire::AckReply{}));
+        emitConfigChanged(key);
+        return;
+    }
+    if (const auto* resetConfig = std::get_if<Wire::ResetConfig>(&body)) {
+        ++m_configMutationCalls;
+        // `reset-config` takes the FULL config-key set, so unlike SetConfig a
+        // non-settable key genuinely arrives here and earns the agent's own
+        // ReadOnlyConfig — the client cannot pre-empt what the grammar admits.
+        const QString key = QString::fromStdString(resetConfig->key);
+        if (!isKnownConfigKey(key)) {
+            sendEntryError(connection, req, Wire::SyncError::UnknownConfigKey);
+            return;
+        }
+        if (!isSettableConfigKey(key)) {
+            sendEntryError(connection, req, Wire::SyncError::ReadOnlyConfig);
+            return;
+        }
+        if (m_config.configMutationError) {
+            sendEntryError(connection, req, *m_config.configMutationError);
+            return;
+        }
+        m_config.config.insert(key, m_configDefaults.value(key));
+        sendCbor(connection, Wire::makeReply(req, Wire::AckReply{}));
+        emitConfigChanged(key);
+        return;
+    }
     if (const auto* certDer = std::get_if<Wire::GetCertDer>(&body)) {
         m_lastCertDerReader = QString::fromStdString(certDer->reader);
         m_lastCertDerCertId = QString::fromStdString(certDer->cert);
@@ -958,7 +1114,7 @@ void FakeSocketAgent::handleRequest(Connection* connection, Wire::RequestEnvelop
         mintOperation(connection, req, OpKind::Credentials, false);
         return;
     }
-    // Request families this fake does not model (config, Pkcs11 raw crypto):
+    // Request families this fake does not model (Pkcs11 raw crypto):
     // answer a clean per-request refusal.
     Wire::ErrInfo info;
     info.code = Wire::SyncError::InvalidRequest;
@@ -1022,6 +1178,11 @@ void FakeSocketAgent::sendAgentQuiesced(quint32 reason)
     Wire::AgentQuiesced quiesced;
     quiesced.reason = static_cast<Wire::QuiesceReason>(reason);
     broadcastCbor(Wire::toCbor(quiesced));
+}
+
+void FakeSocketAgent::emitConfigChanged(const QString& key)
+{
+    broadcastCbor(Wire::toCbor(Wire::ConfigChanged{key.toStdString()}));
 }
 
 void FakeSocketAgent::sendNonCanonicalFrame()

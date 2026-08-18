@@ -46,6 +46,13 @@ QVariantMap signOptionsMap(const SignOptions& options)
     if (!options.tsaUrl.isEmpty()) {
         map.insert(QStringLiteral("tsaUrl"), options.tsaUrl);
     }
+    // Same shape as tsaUrl above, and deliberately NOT the level's: an empty
+    // displayName inserts nothing and leaves a caller's extra["displayName"]
+    // standing, because "no name" is not a decision this typed field can
+    // express -- absence and empty mean the same thing to both wires.
+    if (!options.displayName.isEmpty()) {
+        map.insert(QStringLiteral("displayName"), options.displayName);
+    }
     if (!options.visualSignature.isEmpty()) {
         map.insert(QStringLiteral("visualSignature"), options.visualSignature);
     }

@@ -304,14 +304,41 @@ card-state   = { handle: handle, reader: handle, caps: capabilities, preAuth: pr
 ; keyUsageBits, ekus, chainSubjectCns, trustStatus. No DER on the wire.
 ; `fields` group keys (dict-key growth is lawful and append-only on this
 ; map): subject | issuer | validity | publicKey | cert | ext |
-; basicConstraints | san | ian | crlDp | aia | certificatePolicies |
-; security. The V10 vocabulary-append groups (basicConstraints/san/ian/
+; basicConstraints | san | ian | crlDp | aia | certificatePolicies | eku |
+; security. One further group, "diagnostic", is emitted INSTEAD of all of
+; the above (and alone) when the agent cannot parse a certificate's DER at
+; all: it carries a single "parseError" field with the parser's own
+; message, and the cert's signingCapable stays false with an empty
+; chainSubjectCns. It is documented here rather than listed above because
+; it is a failure channel, not part of the certificate vocabulary -- but a
+; client decodes it through exactly the same generic path.
+; The V10 vocabulary-append groups (basicConstraints/san/ian/
 ; crlDp/aia/certificatePolicies) mirror LM's typed X.509 extension
 ; accessors (BasicConstraints/SubjectAltName/IssuerAltName/
 ; CRLDistributionPoints/AuthorityInfoAccess/CertificatePolicies); the
 ; generic "ext" group never duplicates an OID a typed group already
-; decoded, and a critical extension's labelFallback carries a
-; " (Critical)" suffix. `cert` also gained subjectKeyIdentifier /
+; decoded. Criticality reaches a client through TWO conventions, because
+; an extension lands in one of two shapes and only one of them has a
+; label on this wire:
+;   - an extension served by a CELL carries the marker on that cell's
+;     labelFallback, as a " (Critical)" suffix. That is the "ext" dump's
+;     per-extension rows and the "cert" group's subjectKeyIdentifier /
+;     authorityKeyIdentifier cells.
+;   - an extension served by a whole typed GROUP (basicConstraints, san,
+;     ian, crlDp, aia, certificatePolicies, eku) carries a "critical"
+;     FIELD instead: cert-field ["", "Critical", "true"], present ONLY
+;     when the extension is critical. A group has no label on this wire
+;     -- `fields` is group KEY -> field -> cert-field -- so a marker on
+;     the group's label would reach nobody; the empty labelKey is what
+;     marks this cell as group metadata rather than a row to print.
+;     Absent cell means not critical (or an agent that does not report
+;     criticality); it is never emitted with a false value.
+; `eku` is
+; the ExtendedKeyUsage purposes rendered by NAME through the OID
+; database, ordinal-keyed usage0/usage1/... and falling back to the
+; dotted OID when the database has no entry; it does NOT replace the
+; `ekus` member below, which stays the dotted list a caller matches on.
+; `cert` also gained subjectKeyIdentifier /
 ; authorityKeyIdentifier (clean colon-hex, distinct from the raw
 ; ASN.1-wrapped extnValue "ext" would otherwise show for those two OIDs)
 ; and a signatureAlgorithm OID fallback for an unrecognised description.

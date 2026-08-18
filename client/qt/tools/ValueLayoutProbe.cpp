@@ -241,6 +241,7 @@ int main()
     LAYOUT_MEMBER(packaging)
     LAYOUT_MEMBER(visualSignature)
     LAYOUT_MEMBER(tsaUrl)
+    LAYOUT_MEMBER(displayName)
     LAYOUT_MEMBER(extra)
     LAYOUT_END()
 

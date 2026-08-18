@@ -38,6 +38,7 @@
 #include <QRectF>
 #include <QString>
 #include <QStringList>
+#include <QVariant>
 #include <QVariantMap>
 
 #include <optional>
@@ -179,10 +180,14 @@ struct DerOutcome
     SeamError error;
 };
 
-/// Implemented by AgentClient: agent liveness + registry add/remove. A live
-/// object-added notification for one discovery event delivers the CARD before
-/// the READER (the lifted ordering — a reader's card reference must resolve
-/// immediately).
+/// Implemented by AgentClient: agent liveness + registry add/remove + the
+/// agent-wide settings change. A live object-added notification for one
+/// discovery event delivers the CARD before the READER (the lifted ordering —
+/// a reader's card reference must resolve immediately).
+///
+/// Config lands here rather than on a listener of its own because it is
+/// addressed the same way liveness is: to the CLIENT, not to any reader or
+/// card. One listener, one registration, one lifetime rule.
 class RegistryListener
 {
 public:
@@ -193,6 +198,10 @@ public:
     virtual void onCardAdded(const QString& cardId, const QVariantMap& properties) = 0;
     virtual void onReaderRemoved(const QString& readerId) = 0;
     virtual void onCardRemoved(const QString& cardId) = 0;
+    /// One Config1 key changed. The transport has ALREADY re-read the value
+    /// into its snapshot cache when this arrives (see `configSnapshot()`), so
+    /// a consumer reached from here reads the new value, never the old one.
+    virtual void onConfigChanged(const QString& key) = 0;
 };
 
 /// Implemented by AgentReader/AgentCard: live property updates for one
@@ -270,6 +279,46 @@ public:
     /// gracefully with an EMPTY list here, never an error: absence is a
     /// normal, expected state, not a fault.
     [[nodiscard]] virtual QStringList features() const = 0;
+
+    /// The connected agent's version string, captured on the SAME
+    /// once-per-connect exchange that primes `features()` above — served as
+    /// D-Bus `Manager1.Version` (a property read folded into the Features
+    /// fetch) or socket `HelloAck.agentVer` (retained from the handshake) —
+    /// and forgotten when the agent is lost, so a dead connection's version
+    /// is never handed out for a live one. Identical graceful-degrade
+    /// posture to `features()`: an unreachable agent, or one predating the
+    /// surface, answers with an EMPTY string, never an error.
+    [[nodiscard]] virtual QString agentVersion() const = 0;
+
+    // ---- agent configuration (Config1) ---------------------------------------
+    /// The agent's Config1 property set in the canonical client vocabulary
+    /// (see `AgentClient::configSnapshot()` for the key/value contract this
+    /// forwards verbatim, including the `[url, isLotl, eager]` TslSources
+    /// row every implementation must produce out of its own wire shape).
+    ///
+    /// NOT const, unlike `features()`/`agentVersion()` above, and for the
+    /// same reason `appearanceFont()` is not: this one is fetched LAZILY, on
+    /// first use, so a consumer that never reads settings never pays a
+    /// round-trip for them — the discovery-path pair are primed eagerly
+    /// because availability handling needs them regardless. Cached
+    /// afterwards, refreshed before each `onConfigChanged` announcement, and
+    /// forgotten when the agent is lost: an unreachable agent answers EMPTY,
+    /// never an error, exactly like the two above.
+    [[nodiscard]] virtual QVariantMap configSnapshot() = 0;
+    /// Write one setting; disengaged on success, else the NAMED refusal.
+    /// A failure the client never got an answer to — unreachable agent,
+    /// capped-call timeout, no reply — is `SyncError::CommunicationError`,
+    /// so a caller can tell "the agent refused" from "the write never
+    /// arrived" without a second axis.
+    ///
+    /// WHERE the refusal is decided is an implementation's own business: a
+    /// transport whose grammar cannot even express the request refuses
+    /// locally, one that can sends it and reports the agent's name. What is
+    /// NOT negotiable is the enumerator — the same key must produce the same
+    /// answer on every transport (the parity corpus asserts exactly this).
+    [[nodiscard]] virtual std::optional<SyncError> setConfig(const QString& key, const QVariant& value) = 0;
+    /// Restore one setting to the agent's built-in default; same contract.
+    [[nodiscard]] virtual std::optional<SyncError> resetConfig(const QString& key) = 0;
 
     // ---- Visual-signature layout preview ---------------------------------
     /// Bounded synchronous layout call (Manager1.LayoutVisualSignature /

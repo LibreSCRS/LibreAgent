@@ -27,6 +27,7 @@ inline constexpr const char* kPropertiesIface = "org.freedesktop.DBus.Properties
 
 // Root-object interfaces.
 inline constexpr const char* kManagerIface = "org.librescrs.Agent.Manager1";
+inline constexpr const char* kConfigIface = "org.librescrs.Agent.Config1";
 
 // Agent object interfaces.
 inline constexpr const char* kReaderIface = "org.librescrs.Agent.Reader1";

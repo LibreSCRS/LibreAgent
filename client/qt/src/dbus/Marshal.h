@@ -92,6 +92,18 @@ struct CertInfoWire
     /// out of that group here purely for the client's convenience, mirroring
     /// how subjectCn/issuerCn/notBefore/notAfter are pulled out of `fields`.
     QStringList securityStatus;
+    /// The `a{sa{s(ssv)}}` field groups, WHOLE — including the five cells the
+    /// convenience members above are pulled out of. `operator>>` fills it and
+    /// the public decode surfaces it on `CertificateInfo::extra["fields"]`, so
+    /// a group this build has never heard of still reaches a consumer (the
+    /// group vocabulary is append-only on the wire).
+    ///
+    /// `operator<<` SEEDS its payload from this member and then overlays the
+    /// cells it derives from the convenience members, so a producer that sets
+    /// only those members emits exactly what it emitted before this member
+    /// existed, and one that sets both never has a scripted cell shadow the
+    /// member it mirrors.
+    CertFieldGroupsWire fields;
 };
 
 using CertListWire = QList<CertInfoWire>;
@@ -135,6 +147,24 @@ const QDBusArgument& operator>>(const QDBusArgument& arg, SignBatchRowWire& r);
 /// Operation.Credentials1 Result signal / GetResult — the wire-shape typedef
 /// the scrub internalized out of the public CredentialTypes.h.
 using CredentialRecordsWire = QList<QVariantMap>;
+
+/// One `Config1.TslSources` entry — the `(sbb)` struct of that property's
+/// `a(sbb)` type: the trusted-list URL, whether it is a List-of-Trusted-Lists
+/// pivot rather than a leaf list, and whether the agent fetches it eagerly at
+/// startup. The ONLY Config1 property whose D-Bus type is not `s` or `as`,
+/// hence the only one needing a registered metatype in both directions (the
+/// property READ demarshals it out of the GetAll variant; SetValue marshals
+/// it back).
+struct TslSourceWire
+{
+    QString url;
+    bool isLotl = false;
+    bool eager = false;
+};
+using TslSourcesWire = QList<TslSourceWire>;
+
+QDBusArgument& operator<<(QDBusArgument& arg, const TslSourceWire& s);
+const QDBusArgument& operator>>(const QDBusArgument& arg, TslSourceWire& s);
 
 /// Register every wire shape above as a D-Bus metatype. Idempotent; MUST run
 /// before any signal connect / demarshal that names them.
@@ -209,3 +239,5 @@ Q_DECLARE_METATYPE(LibreSCRS::AgentClient::BatchDocumentWire)
 Q_DECLARE_METATYPE(LibreSCRS::AgentClient::BatchDocumentsWire)
 Q_DECLARE_METATYPE(LibreSCRS::AgentClient::SignBatchRowWire)
 Q_DECLARE_METATYPE(LibreSCRS::AgentClient::SignBatchRowsWire)
+Q_DECLARE_METATYPE(LibreSCRS::AgentClient::TslSourceWire)
+Q_DECLARE_METATYPE(LibreSCRS::AgentClient::TslSourcesWire)

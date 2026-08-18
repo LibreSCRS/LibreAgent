@@ -17,6 +17,8 @@
 
 #include <QCoreApplication>
 #include <QHash>
+#include <QVariant>
+#include <QVariantList>
 #include <QVariantMap>
 
 #include <fcntl.h>
@@ -25,6 +27,7 @@
 #include <memory>
 #include <optional>
 #include <type_traits>
+#include <utility>
 #include <vector>
 
 using namespace LibreSCRS::AgentClient;
@@ -49,7 +52,12 @@ public:
     bool installed = true;
     RegistrySnapshot snapshot;
     QStringList featureTokens; // TransportSeam::features()
-    QString nextOperationId;   // empty -> refuse entry with entryError
+    QString version;           // TransportSeam::agentVersion()
+    QVariantMap config;        // TransportSeam::configSnapshot()
+    /// Engaged -> every setConfig/resetConfig answers this instead of
+    /// applying (the named-refusal pass-through).
+    std::optional<SyncError> configRefusal;
+    QString nextOperationId; // empty -> refuse entry with entryError
     SeamError entryError;
     std::optional<TerminalSnapshot> terminal;                 // ctor lost-Finished recovery read
     std::function<std::optional<OperationPayload>()> recover; // GetResult recovery pull
@@ -67,6 +75,8 @@ public:
     };
     std::vector<StartRecord> starts;
     std::vector<QString> cancelled;
+    std::vector<std::pair<QString, QVariant>> configWrites;
+    std::vector<QString> configResets;
     /// Card ids handed to warmCertificates(), in call order. The fake records
     /// and does nothing else: the debounce is a TRANSPORT obligation (only a
     /// transport knows when its own entry call finished), so a seam fake that
@@ -110,6 +120,32 @@ public:
     [[nodiscard]] QStringList features() const override
     {
         return featureTokens;
+    }
+    [[nodiscard]] QString agentVersion() const override
+    {
+        return version;
+    }
+    // Config1: the public methods are thin forwards over these three, so the
+    // fake records the mutations and serves a scripted map — enough to pin
+    // the forwarding without re-modelling either wire's refusal policy, which
+    // is a TRANSPORT obligation the integration and parity suites own.
+    [[nodiscard]] QVariantMap configSnapshot() override
+    {
+        return config;
+    }
+    [[nodiscard]] std::optional<SyncError> setConfig(const QString& key, const QVariant& value) override
+    {
+        configWrites.push_back({key, value});
+        if (configRefusal) {
+            return configRefusal;
+        }
+        config.insert(key, value);
+        return std::nullopt;
+    }
+    [[nodiscard]] std::optional<SyncError> resetConfig(const QString& key) override
+    {
+        configResets.push_back(key);
+        return configRefusal;
     }
     // Not exercised by this seam-mapping corpus (no scenario here scripts
     // "layout-preview" or calls these); trivial stubs only to satisfy the
@@ -299,6 +335,65 @@ TEST(SeamRegistry, ReadersAreSortedById)
     EXPECT_EQ(readers[1]->id(), QStringLiteral("/reader/9"));
 }
 
+// ---- Config1 -> seam forwarding -------------------------------------------------
+//
+// What only this layer can pin: the three public config methods are thin,
+// verbatim forwards, the change notification re-broadcasts the seam callback,
+// and a client with NO transport at all reports the never-arrived class
+// rather than pretending an agent refused it. Which refusal a given key earns
+// is a transport decision, exercised against the real wires in the
+// integration and parity suites.
+
+TEST(SeamConfig, PublicMethodsForwardVerbatimAndPassRefusalsBack)
+{
+    ClientOnFake h;
+    h.fake->config.insert(QStringLiteral("DefaultLevel"), QStringLiteral("b-lt"));
+    EXPECT_EQ(h.client->configSnapshot().value(QStringLiteral("DefaultLevel")).toString(), QStringLiteral("b-lt"));
+
+    EXPECT_EQ(h.client->setConfigValue(QStringLiteral("DefaultReason"), QStringLiteral("approval")), std::nullopt);
+    ASSERT_EQ(h.fake->configWrites.size(), 1U);
+    EXPECT_EQ(h.fake->configWrites.front().first, QStringLiteral("DefaultReason"));
+    EXPECT_EQ(h.fake->configWrites.front().second.toString(), QStringLiteral("approval"));
+
+    h.fake->configRefusal = SyncError::NotAuthorized;
+    const std::optional<SyncError> denied = h.client->setConfigValue(QStringLiteral("TslSources"), QVariantList{});
+    ASSERT_TRUE(denied.has_value());
+    EXPECT_EQ(*denied, SyncError::NotAuthorized);
+
+    const std::optional<SyncError> deniedReset = h.client->resetConfigValue(QStringLiteral("TslSources"));
+    ASSERT_TRUE(deniedReset.has_value());
+    EXPECT_EQ(*deniedReset, SyncError::NotAuthorized);
+    ASSERT_EQ(h.fake->configResets.size(), 1U);
+    EXPECT_EQ(h.fake->configResets.front(), QStringLiteral("TslSources"));
+}
+
+TEST(SeamConfig, SeamNotificationReachesTheClientSignal)
+{
+    ClientOnFake h;
+    QStringList announced;
+    QObject::connect(h.client.get(), &AgentClient::configChanged, h.client.get(),
+                     [&announced](const QString& key) { announced.append(key); });
+
+    h.fake->registry->onConfigChanged(QStringLiteral("LastTsaUrl"));
+    EXPECT_EQ(announced, QStringList{QStringLiteral("LastTsaUrl")});
+}
+
+TEST(SeamConfig, TransportLessClientReportsTheNeverArrivedClass)
+{
+    std::unique_ptr<AgentClient> client{ClientTestAccess::create(nullptr)};
+    EXPECT_TRUE(client->configSnapshot().isEmpty());
+
+    const std::optional<SyncError> write =
+        client->setConfigValue(QStringLiteral("DefaultReason"), QStringLiteral("approval"));
+    ASSERT_TRUE(write.has_value());
+    EXPECT_EQ(*write, SyncError::CommunicationError)
+        << "no transport means the write never arrived, which is not the same as a refusal";
+
+    const std::optional<SyncError> reset = client->resetConfigValue(QStringLiteral("DefaultReason"));
+    ASSERT_TRUE(reset.has_value());
+    EXPECT_EQ(*reset, SyncError::CommunicationError);
+}
+
 // ---- SignOptions / PinVerb -> request mapping -----------------------------------
 
 TEST(SeamMapping, SignOptionsMapToWireTokens)
@@ -317,6 +412,9 @@ TEST(SeamMapping, SignOptionsMapToWireTokens)
     options.level = SignatureLevel::BT;
     options.packaging = Packaging::Detached;
     options.tsaUrl = QStringLiteral("http://tsa.example");
+    // displayName needs NO feature token, unlike the tsaUrl above: it is part
+    // of the base sign-opts vocabulary both transports have always carried.
+    options.displayName = QStringLiteral("invoice.pdf");
     options.extra.insert(QStringLiteral("reason"), QStringLiteral("approval"));
 
     FdHandle document{::open("/dev/null", O_RDONLY | O_CLOEXEC)};
@@ -335,6 +433,7 @@ TEST(SeamMapping, SignOptionsMapToWireTokens)
     EXPECT_EQ(record.options.value(QStringLiteral("level")).toString(), QStringLiteral("b-t"));
     EXPECT_EQ(record.options.value(QStringLiteral("packaging")).toString(), QStringLiteral("detached"));
     EXPECT_EQ(record.options.value(QStringLiteral("tsaUrl")).toString(), QStringLiteral("http://tsa.example"));
+    EXPECT_EQ(record.options.value(QStringLiteral("displayName")).toString(), QStringLiteral("invoice.pdf"));
     // extra passes through untouched
     EXPECT_EQ(record.options.value(QStringLiteral("reason")).toString(), QStringLiteral("approval"));
 }
@@ -358,6 +457,7 @@ TEST(SeamMapping, DefaultSignOptionsOmitOptionalKeys)
     EXPECT_FALSE(record.options.contains(QStringLiteral("level")));
     EXPECT_EQ(record.options.value(QStringLiteral("packaging")).toString(), QStringLiteral("enveloped"));
     EXPECT_FALSE(record.options.contains(QStringLiteral("tsaUrl")));
+    EXPECT_FALSE(record.options.contains(QStringLiteral("displayName")));
     EXPECT_FALSE(record.options.contains(QStringLiteral("visualSignature")));
 }
 
@@ -434,6 +534,37 @@ TEST(SeamMapping, TypedSignOptionsOverrideCollidingExtraKeys)
     (void)card->sign(QStringLiteral("c"), std::move(document), options);
 
     EXPECT_EQ(h.fake->starts.front().options.value(QStringLiteral("format")).toString(), QStringLiteral("pades"));
+}
+
+// displayName follows tsaUrl's shape, not the level's: a populated typed value
+// overrides a same-named `extra` key, and an empty one inserts nothing rather
+// than REMOVING a colliding extra key. Both halves are pinned here because the
+// second is the part a reader is likely to assume works the other way.
+TEST(SeamMapping, TypedDisplayNameOverridesACollidingExtraKey)
+{
+    ClientOnFake h;
+    h.fake->nextOperationId = QStringLiteral("/op/1");
+    AgentCard* card = h.client->card(QStringLiteral("/card/0"));
+    ASSERT_NE(card, nullptr);
+
+    SignOptions options;
+    options.displayName = QStringLiteral("typed.pdf");
+    options.extra.insert(QStringLiteral("displayName"), QStringLiteral("from-extra.pdf"));
+    FdHandle document{::open("/dev/null", O_RDONLY | O_CLOEXEC)};
+    (void)card->sign(QStringLiteral("c"), std::move(document), options);
+
+    ASSERT_EQ(h.fake->starts.size(), 1u);
+    EXPECT_EQ(h.fake->starts.front().options.value(QStringLiteral("displayName")).toString(),
+              QStringLiteral("typed.pdf"));
+
+    SignOptions unnamed; // displayName left at its empty default
+    unnamed.extra.insert(QStringLiteral("displayName"), QStringLiteral("from-extra.pdf"));
+    FdHandle second{::open("/dev/null", O_RDONLY | O_CLOEXEC)};
+    (void)card->sign(QStringLiteral("c"), std::move(second), unnamed);
+
+    ASSERT_EQ(h.fake->starts.size(), 2u);
+    EXPECT_EQ(h.fake->starts.back().options.value(QStringLiteral("displayName")).toString(),
+              QStringLiteral("from-extra.pdf"));
 }
 
 TEST(SeamMapping, PinVerbsMapToWireTokens)
