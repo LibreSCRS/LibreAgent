@@ -232,7 +232,7 @@ jobs:
       # exist in the neutral core.
       - name: Test
         working-directory: LibreAgent
-        run: ctest --test-dir build --output-on-failure
+        run: ctest --test-dir build --output-on-failure --no-tests=error
 
       # --- Installed CONFIG package smoke -----------------------------------
       # Prove the EXPORTED package actually resolves downstream — nothing the
@@ -273,7 +273,7 @@ jobs:
             -DCMAKE_CXX_FLAGS="-fsanitize=thread -g" \
             -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=thread"
           cmake --build build-tsan --target OperationManagerTest ZombieWorkerDrainTest PropertyEmissionThrottlerTest AgentShutdownUnderLoadTest PrompterKeepAliveDrainTest SignSeamKeepAliveDrainTest RawCryptoCaptureGuardTest WatchdogTest -j4
-          ctest --test-dir build-tsan -R "OperationManager|ZombieWorkerDrain|PropertyEmissionThrottler|AgentShutdownUnderLoad|PrompterKeepAliveDrain|SignSeamKeepAliveDrain|RawCryptoCaptureGuard|Watchdog" --output-on-failure
+          ctest --test-dir build-tsan -R "OperationManager|ZombieWorkerDrain|PropertyEmissionThrottler|AgentShutdownUnderLoad|PrompterKeepAliveDrain|SignSeamKeepAliveDrain|RawCryptoCaptureGuard|Watchdog" --output-on-failure --no-tests=error
 
   client:
     # The Qt client library (LibreAgent::ClientQt), full stack: same
@@ -348,7 +348,7 @@ jobs:
         working-directory: LibreAgent
         env:
           QT_QPA_PLATFORM: offscreen
-        run: ctest --test-dir build --output-on-failure
+        run: ctest --test-dir build --output-on-failure --no-tests=error
 
   client-lm-less:
     # The Wire+ClientQt "no LibreMiddleware anywhere" guarantee: Core stays
@@ -431,7 +431,7 @@ jobs:
         working-directory: LibreAgent
         env:
           QT_QPA_PLATFORM: offscreen
-        run: ctest --test-dir build --output-on-failure
+        run: ctest --test-dir build --output-on-failure --no-tests=error
 
       - name: Install ClientQt to a throwaway prefix
         working-directory: LibreAgent

@@ -54,10 +54,28 @@ jobs:
         # the shell branch.
         run: |
           VER="${GITHUB_REF_NAME#v}"
-          awk -v ver="$VER" \
-            '/^## / { if ($0 ~ ("(\\[|[[:space:]])" ver "(\\]|[[:space:]]|$)")) {f=1; next} else if (f) exit } f' \
-            CHANGELOG.md > "$RUNNER_TEMP/relnotes.md"
-          if [ -s "$RUNNER_TEMP/relnotes.md" ]; then
+          # The version's dots are escaped on the way into the pattern: an
+          # unescaped `.` is "any character", so 4.2.0 would also match a
+          # `## [432.0]` header.
+          #
+          # A missing CHANGELOG is the no-section case, said out loud — this
+          # step runs under -e, and an awk over an absent file would otherwise
+          # kill it before the fallback branch below is ever reached.
+          if [ -f CHANGELOG.md ]; then
+            awk -v ver="$VER" \
+              'BEGIN { gsub(/\./, "\\.", ver) }
+               /^## / { if ($0 ~ ("(\\[|[[:space:]])" ver "(\\]|[[:space:]]|$)")) {f=1; next} else if (f) exit } f' \
+              CHANGELOG.md > "$RUNNER_TEMP/relnotes.md"
+          else
+            echo "::warning::CHANGELOG.md is absent at this tag"
+            : > "$RUNNER_TEMP/relnotes.md"
+          fi
+          # Test for a non-whitespace character rather than for file size: a
+          # header followed only by blank lines is a section that exists and
+          # says nothing, and `gh release create --notes-file` accepts a blank
+          # file and publishes a release with no body at all. That has to fall
+          # back too.
+          if grep -q '[^[:space:]]' "$RUNNER_TEMP/relnotes.md"; then
             echo "NOTES_ARG=--notes-file $RUNNER_TEMP/relnotes.md" >> "$GITHUB_ENV"
           else
             echo "No CHANGELOG section for $VER — falling back to --generate-notes"
