@@ -109,6 +109,42 @@ TEST_F(ConfigStoreTest, FirstRunSeedIsWrittenToDiskAndSurvivesReload)
     }
 }
 
+// The seed owns the two list keys and NOTHING else. Persisting the whole value
+// set froze the first start's DERIVED answers into the file: a terminal first
+// run pinned $HOME/.cache into a config the packaged systemd unit — whose
+// CACHE_DIRECTORY names a different, writable-under-ProtectHome root — then
+// kept using, and the built-in default level could never change for an
+// already-installed agent.
+TEST_F(ConfigStoreTest, SeedWritesOnlyTheKeysItOwns)
+{
+    ASSERT_FALSE(std::filesystem::exists(m_configFile));
+    {
+        ConfigStore fresh(m_configFile, m_cacheRoot);
+    }
+
+    const std::string written = readConfig();
+    EXPECT_EQ(written.find("TslCacheDir"), std::string::npos) << "the seed froze a derived cache path into the file:\n"
+                                                              << written;
+    EXPECT_EQ(written.find("AiaCacheDir"), std::string::npos) << "the seed froze a derived cache path into the file:\n"
+                                                              << written;
+    EXPECT_EQ(written.find("DefaultLevel"), std::string::npos)
+        << "the seed froze the built-in default level into the file:\n"
+        << written;
+
+    // The consequence the rule exists for: the same file opened under another
+    // cache root must derive that root's paths, not replay the first one's.
+    const std::filesystem::path otherRoot = m_dir / "other-cache";
+    ConfigStore relocated(m_configFile, otherRoot);
+    EXPECT_EQ(relocated.tslCacheDir(), (otherRoot / "tsl").string())
+        << "the cache path followed the FIRST start's root instead of this one's";
+
+    // An admin-authored value still wins — the rule is about derived
+    // defaults, not about silencing the keys (they are file-only).
+    writeConfig(written + "TslCacheDir = " + (m_dir / "chosen").string() + "\n");
+    ConfigStore reopened(m_configFile, otherRoot);
+    EXPECT_EQ(reopened.tslCacheDir(), (m_dir / "chosen").string());
+}
+
 TEST_F(ConfigStoreTest, ExistingConfigWithEmptyListsIsNotReseeded)
 {
     // Documentary pin for an accepted limitation: a never-set list and a list an

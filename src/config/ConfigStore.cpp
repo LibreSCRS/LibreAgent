@@ -36,6 +36,7 @@ constexpr const char* kPkcs11MaxLifetimeSecs = "Pkcs11MaxLifetimeSecs";
 // drift.
 constexpr std::uint32_t kPkcs11IdleDefault = 600;
 constexpr std::uint32_t kPkcs11MaxLifetimeDefault = 28800;
+constexpr const char* kLevelDefault = "b-b"; // derived to "b-t" by the consumer when a TSA is set
 
 // D-Bus error names surfaced by a rejected SetValue/Reset.
 constexpr const char* kErrReadOnly = "org.librescrs.Agent.Error.ReadOnlyConfig";
@@ -169,7 +170,7 @@ ConfigStore::ConfigStore(std::filesystem::path configFile, std::filesystem::path
 
 void ConfigStore::applyDefaults()
 {
-    m_defaultLevel = "b-b"; // derived to "b-t" by the consumer when a TSA is set
+    m_defaultLevel = kLevelDefault;
     m_tsaUrls.clear();
     m_lastTsaUrl.clear();
     m_tslSources.clear();
@@ -289,7 +290,16 @@ void ConfigStore::persist()
             return;
         }
         out << "# LibreSCRS agent signing configuration (auto-managed; Config1)\n";
-        out << kDefaultLevel << " = " << m_defaultLevel << '\n';
+        // The level and the derived cache paths follow the lease-knob rule
+        // below: persisted only when they differ from the built-in defaults.
+        // Writing the derived values froze the FIRST start's answers into the
+        // file — a terminal first run pinned $HOME/.cache into a config the
+        // systemd unit (whose CACHE_DIRECTORY names a different root) then
+        // kept using, and a changed built-in level default could never reach
+        // an already-installed agent.
+        if (m_defaultLevel != kLevelDefault) {
+            out << kDefaultLevel << " = " << m_defaultLevel << '\n';
+        }
         for (const auto& u : m_tsaUrls) {
             out << "TsaUrl = " << u << '\n';
         }
@@ -306,8 +316,12 @@ void ConfigStore::persist()
             }
             out << '\n';
         }
-        out << kTslCacheDir << " = " << m_tslCacheDir << '\n';
-        out << kAiaCacheDir << " = " << m_aiaCacheDir << '\n';
+        if (m_tslCacheDir != (m_cacheRoot / kTslSubdir).string()) {
+            out << kTslCacheDir << " = " << m_tslCacheDir << '\n';
+        }
+        if (m_aiaCacheDir != (m_cacheRoot / kAiaSubdir).string()) {
+            out << kAiaCacheDir << " = " << m_aiaCacheDir << '\n';
+        }
         if (!m_defaultReason.empty()) {
             out << kDefaultReason << " = " << m_defaultReason << '\n';
         }
