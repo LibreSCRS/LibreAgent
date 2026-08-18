@@ -117,19 +117,19 @@ LibreSCRS::Auth::CredentialProvider makeReadCredentialProvider(
             // card family that HAS the duality (the flag is derived from the
             // candidate list). The cache probe runs AFTER the rejection-signal
             // eviction above, so a rejected MRZ can never be re-served here.
+            // The sink is part of the offer, not an optional extra: without one
+            // a chosen-kind reply has nowhere to land, so the user's switch to
+            // MRZ would be silently dropped. No sink, no offer.
             const auto kind = req.paceKind();
             const bool offeringAlternative =
-                offerMrzAlternative && kind.has_value() && *kind == LibreSCRS::Auth::PaceSecretKind::Can;
+                offerMrzAlternative && mrzChoice && kind.has_value() && *kind == LibreSCRS::Auth::PaceSecretKind::Can;
             std::optional<LibreSCRS::Auth::CredentialResult> renegotiated;
             if (offeringAlternative) {
-                if (mrzChoice) {
-                    if (auto cached = cache.getMrz(cardKey)) {
-                        // Same-insertion repeat read: renegotiate silently.
-                        mrzChoice->offer(std::move(*cached));
-                        renegotiated = LibreSCRS::Auth::CredentialResult::cancelled();
-                    }
-                }
-                if (!renegotiated.has_value()) {
+                if (auto cached = cache.getMrz(cardKey)) {
+                    // Same-insertion repeat read: renegotiate silently.
+                    mrzChoice->offer(std::move(*cached));
+                    renegotiated = LibreSCRS::Auth::CredentialResult::cancelled();
+                } else {
                     opts.altKinds = {PrompterWire::kKindMrz};
                 }
             }

@@ -147,6 +147,7 @@ IdentityReadFlow::Result IdentityReadFlow::run()
         m_deps.cache, m_deps.prompter, m_deps.serializer, m_deps.phaseSink, m_deps.cardKey, m_deps.requester,
         m_deps.artifact, m_deps.token, prompterFailed,
         /*userCancelled=*/{}, providerMarkedWrong, offerMrzAlternative, m_mrzChoice);
+    const FlowPrelude::ProviderScrubGuard providerScrub{m_provider};
     const auto providerGuard = FlowPrelude::installScopedReadProvider(session, m_provider);
 
     // -- Step 4: read card data ------------------------------------------
@@ -199,7 +200,15 @@ IdentityReadFlow::Result IdentityReadFlow::run()
             // Cache the RAW payload so any further read within this insertion
             // renegotiates silently (keyed on the per-insertion card identity).
             m_deps.cache.putMrz(m_deps.cardKey, std::move(*payload));
-            static_cast<void>(m_deps.depositor.depositMrz(*session, idCands, *parts));
+            if (!m_deps.depositor.depositMrz(*session, idCands, *parts)) {
+                // No candidate could take the MRZ, so the re-run below cannot
+                // possibly authenticate with it: it would re-ask for a CAN, the
+                // cached payload would renegotiate silently, and the walk would
+                // unwind as that renegotiation's cancellation — a silent cancel
+                // that spends a card read and tells the user nothing. Report
+                // the capability that is actually missing instead.
+                return makeError(ErrorCode::CapabilityMissing, "op.read_failed", std::move(readOutcome.msgFallback));
+            }
             // Re-check: the deposit is not instantaneous and the token may have
             // tripped while it ran.
             if (m_deps.token.isCancelled()) {

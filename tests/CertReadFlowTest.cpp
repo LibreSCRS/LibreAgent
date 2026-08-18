@@ -456,6 +456,22 @@ TEST(CertReadFlow, AuthFailedWithoutProviderMarkStillMarksCredentialWrong)
     EXPECT_EQ(h.probeNextPromptAttempt(), 2u) << "the flow recorded the retry context";
 }
 
+TEST(CertReadFlow, CredentialProviderIsClearedAtFlowExit)
+{
+    // The provider captures cache/prompter/serializer/phaseSink BY REFERENCE,
+    // and every one of those is bounded by run(). A member left callable past
+    // run() is a loaded gun pointed at dead references -- and it holds the
+    // run's cardKey/requester/artifact captures alive with it.
+    Harness h;
+    auto flow = h.make();
+    h.certReader.onRead = [&flow](int, LibreSCRS::SmartCard::CardSession&) {
+        EXPECT_TRUE(static_cast<bool>(flow.credentialProvider())) << "callable while the run is live";
+    };
+    static_cast<void>(flow.run());
+
+    EXPECT_FALSE(static_cast<bool>(flow.credentialProvider())) << "and empty once run() has returned";
+}
+
 TEST(CertReadFlow, StructuralFailureLeavesTheCredentialAlone)
 {
     // Only AuthFailed punishes the credential: a structural failure leaves the

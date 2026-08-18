@@ -116,8 +116,11 @@ public:
     // model that on-cache-miss callback at all. Without this seam the
     // capability-derived alternative-kind offer and the renegotiation leg could
     // only be asserted against a provider the TEST built — which is exactly the
-    // dead-wiring those assertions exist to rule out. Both are valid from
-    // construction; the provider is (re)bound at the top of run().
+    // dead-wiring those assertions exist to rule out. The sink is valid from
+    // construction; the provider is bound at the top of run() and EMPTY outside
+    // it (it closes over run()-bounded references — see
+    // FlowPrelude::ProviderScrubGuard), so it is callable only from within a
+    // seam the live run drives.
     [[nodiscard]] const LibreSCRS::Auth::CredentialProvider& credentialProvider() const noexcept
     {
         return m_provider;

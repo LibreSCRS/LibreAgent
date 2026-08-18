@@ -98,10 +98,12 @@ struct OpenOutcome
 // rejected value is marked EXACTLY once (truthful attempt numbering). A
 // same-kind re-invocation WITHOUT the signal serves the cache normally.
 //
-// @p offerMrzAlternative and @p mrzChoice are the CAN⇄MRZ choice half. The flag
+// @p offerMrzAlternative and @p mrzChoice are the CAN⇄MRZ choice half, and they
+// are ONE argument in two halves: the flag alone offers nothing, because a
+// chosen-kind reply with no sink to land in would be silently dropped. The flag
 // is computed BY THE FLOW from its candidate list (the travel-document family is
 // the only one with a CAN/MRZ duality); it is never a caller's guess. When it is
-// set and the requirement asks for a CAN:
+// set, a sink is supplied, and the requirement asks for a CAN:
 //   - if this card already has an MRZ cached for THIS insertion, the sink is
 //     filled straight from the cache and the result is a cancellation with NO
 //     prompt at all — a repeat read within one insertion renegotiates silently.
@@ -136,6 +138,34 @@ struct OpenOutcome
 [[nodiscard]] std::shared_ptr<void>
 installScopedReadProvider(std::shared_ptr<LibreSCRS::SmartCard::CardSession> session,
                           LibreSCRS::Auth::CredentialProvider provider);
+
+// Empties a flow-owned CredentialProvider member at scope exit. The member is
+// the flow's own handle on the provider it built (the session holds its own
+// copy, reset by installScopedReadProvider's guard): it closes over the
+// per-operation cache/prompter/serializer/phaseSink BY REFERENCE — all bounded
+// by run() — and carries that run's cardKey/requester/artifact by value. Left
+// populated past run() it both outlives its references and keeps those captures
+// alive. Every flow that keeps such a member declares one of these right after
+// binding it; run() has a return per failure mode, so a hand-written reset on
+// each is exactly the kind of thing that rots.
+class ProviderScrubGuard
+{
+public:
+    explicit ProviderScrubGuard(LibreSCRS::Auth::CredentialProvider& provider) noexcept : m_provider(provider) {}
+    ~ProviderScrubGuard()
+    {
+        // std::function's nullptr assignment is noexcept, so the destructor
+        // cannot throw during a stack unwind.
+        m_provider = nullptr;
+    }
+    ProviderScrubGuard(const ProviderScrubGuard&) = delete;
+    ProviderScrubGuard& operator=(const ProviderScrubGuard&) = delete;
+    ProviderScrubGuard(ProviderScrubGuard&&) = delete;
+    ProviderScrubGuard& operator=(ProviderScrubGuard&&) = delete;
+
+private:
+    LibreSCRS::Auth::CredentialProvider& m_provider;
+};
 
 } // namespace FlowPrelude
 } // namespace LibreSCRS::Agent::Operations

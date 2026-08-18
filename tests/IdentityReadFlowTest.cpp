@@ -971,6 +971,70 @@ TEST(IdentityReadFlow, OfferFlagComputedFromCandidates)
     }
 }
 
+TEST(IdentityReadFlow, AlternativeIsNotAdvertisedWithoutASinkToReceiveTheChoice)
+{
+    // The offer and the sink are ONE contract: requestCredential is handed the
+    // sink only on the prompt that advertised the alternative, so advertising
+    // with no sink invites a chosen-kind reply that has nowhere to land -- the
+    // user switches to MRZ and the payload is dropped on the floor. Fail
+    // closed: no sink, no offer.
+    Harness h;
+    auto prompterFailed = std::make_shared<std::atomic<bool>>(false);
+    auto provider = FlowPrelude::makeReadCredentialProvider(
+        h.cache, h.prompter, h.serializer, h.phaseSink, "card-A", h.requester, h.artifact, h.source.token(),
+        prompterFailed, /*userCancelled=*/{}, /*providerMarkedWrong=*/{}, /*offerMrzAlternative=*/true,
+        /*mrzChoice=*/{});
+
+    static_cast<void>(provider(paceReq(PaceSecretKind::Can)));
+
+    EXPECT_EQ(h.prompter.canPrompts, 1);
+    EXPECT_TRUE(h.prompter.lastCanOptions.altKinds.empty())
+        << "an alternative with nowhere to land must never be advertised";
+}
+
+TEST(IdentityReadFlow, RefusedDepositSurfacesTheMissingCapability)
+{
+    // No candidate could take the chosen MRZ, so the re-run cannot possibly
+    // authenticate with it: the second walk re-asks for a CAN, the cached
+    // payload renegotiates silently, and the read unwinds as that
+    // renegotiation's own cancellation -- a SILENT cancel that spends a card
+    // read and tells the user nothing. Say what actually happened: nothing on
+    // this card can consume an MRZ.
+    Harness h;
+    h.candidates = emrtdCandidates();
+    h.prompter.answerCanWithMrz(kTd3MrzPayload);
+    h.depositor.accepted = false;
+    h.reader.outcome = ReadOutcome{ReadOutcome::Status::Cancelled, std::nullopt, "cancelled"};
+
+    auto flow = h.make();
+    h.reader.onRead = [&flow](int, LibreSCRS::SmartCard::CardSession&) {
+        static_cast<void>(flow.credentialProvider()(paceReq(PaceSecretKind::Can)));
+    };
+    const auto result = flow.run();
+
+    EXPECT_EQ(result.outcome, IdentityReadFlow::Outcome::Error);
+    EXPECT_EQ(result.code, ErrorCode::CapabilityMissing);
+    EXPECT_EQ(h.depositor.deposits.size(), 1u) << "the deposit was attempted once";
+    EXPECT_EQ(h.reader.reads, 1) << "a refused deposit spends no second card read";
+}
+
+TEST(IdentityReadFlow, CredentialProviderIsClearedAtFlowExit)
+{
+    // The provider captures cache/prompter/serializer/phaseSink BY REFERENCE,
+    // and every one of those is bounded by run(). A member left callable past
+    // run() is a loaded gun pointed at dead references -- and it holds the
+    // run's cardKey/requester/artifact captures alive with it.
+    Harness h;
+    auto flow = h.make();
+    h.reader.onRead = [&flow](int, LibreSCRS::SmartCard::CardSession&) {
+        EXPECT_TRUE(static_cast<bool>(flow.credentialProvider())) << "callable while the run is live";
+        static_cast<void>(flow.credentialProvider()(paceReq(PaceSecretKind::Can)));
+    };
+    static_cast<void>(flow.run());
+
+    EXPECT_FALSE(static_cast<bool>(flow.credentialProvider())) << "and empty once run() has returned";
+}
+
 TEST(IdentityReadFlow, DepositorUsesPureCandidateLookup)
 {
     // Inside an open flow the deposit seam must resolve its non-const plugin
