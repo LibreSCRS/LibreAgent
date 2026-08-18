@@ -6,6 +6,7 @@
 #include <LibreSCRS/Agent/operations/CardPluginRouting.h>
 #include <LibreSCRS/Agent/backend/PrompterClientBase.h>
 #include <LibreSCRS/Agent/operations/Seams.h>
+#include <LibreSCRS/Auth/CredentialProvider.h>
 #include <LibreSCRS/CancelToken.h>
 #include <string>
 #include <vector>
@@ -70,8 +71,26 @@ public:
     explicit CertReadFlow(CertReadFlowDeps deps);
     [[nodiscard]] Result run();
 
+    // --- Observation seam (no production consumer) -------------------------
+    //
+    // The credential provider this flow installs on the held session.
+    // Production drives it through LM: readCertificates invokes it on a
+    // channel cache miss — nothing outside this class reaches for it.
+    //
+    // It is exposed because LM's CardSession offers no accessor for an
+    // installed credential provider, so a hermetic CertificateReader double
+    // cannot model that on-cache-miss callback at all. Without this seam the
+    // provider's re-key signal could only be asserted against a provider the
+    // TEST built — which is exactly the dead-wiring such assertions exist to
+    // rule out. Valid from construction; (re)bound at the top of run().
+    [[nodiscard]] const LibreSCRS::Auth::CredentialProvider& credentialProvider() const noexcept
+    {
+        return m_provider;
+    }
+
 private:
     CertReadFlowDeps m_deps;
+    LibreSCRS::Auth::CredentialProvider m_provider;
 };
 
 } // namespace LibreSCRS::Agent::Operations

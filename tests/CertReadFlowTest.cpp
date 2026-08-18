@@ -10,14 +10,21 @@
 #include <LibreSCRS/Agent/cache/CredentialCache.h>
 #include <LibreSCRS/Agent/operations/CardSessionHolder.h>
 #include <LibreSCRS/Agent/operations/CertReadFlow.h>
+#include <LibreSCRS/Agent/operations/FlowPrelude.h>
 #include <LibreSCRS/Agent/operations/OperationBase.h> // Phase enum, OperationPhaseSink
 #include <LibreSCRS/Agent/operations/PromptSerializer.h>
 
+#include <LibreSCRS/Auth/AuthRequirement.h>
+#include <LibreSCRS/Auth/ErrorKeys.h> // ErrorKeys::preReadAuthFailed (the card's re-prompt signal)
+#include <LibreSCRS/Auth/PaceSecretKind.h>
 #include <LibreSCRS/CancelToken.h>
 #include <LibreSCRS/LocalizedText.h>
+#include <LibreSCRS/SmartCard/AppletAid.h>
 #include <LibreSCRS/SmartCard/CardMap.h>
 #include <LibreSCRS/SmartCard/CardSession.h>
 #include <gtest/gtest.h>
+#include <atomic>
+#include <cstdint>
 #include <expected>
 #include <functional>
 #include <iostream>
@@ -51,11 +58,24 @@ inline std::unique_ptr<CardSessionHolder> makeHolder(std::optional<LibreSCRS::Sm
 class FakeCertReader final : public CertificateReader
 {
 public:
-    CertReadOutcome read(LibreSCRS::SmartCard::CardSession&, const CandidateList&, LibreSCRS::CancelToken) override
+    CertReadOutcome read(LibreSCRS::SmartCard::CardSession& session, const CandidateList&,
+                         LibreSCRS::CancelToken) override
     {
+        ++reads;
+        // Production LM invokes the flow-installed credential provider from
+        // INSIDE readCertificates on a channel cache miss. CardSession exposes
+        // no accessor for the installed provider, so a hermetic reader fake can
+        // only model that callback through a hook the test wires to the flow's
+        // own provider — see CertReadFlow::credentialProvider().
+        if (onRead) {
+            onRead(reads, session);
+        }
         return outcome;
     }
     CertReadOutcome outcome;
+    int reads = 0;
+    // Called at the top of every read with the 1-based pass index.
+    std::function<void(int, LibreSCRS::SmartCard::CardSession&)> onRead;
 };
 
 // Records every verify() call (by leaf DER) and answers either a fixed
@@ -85,14 +105,20 @@ public:
     {
         return {};
     }
-    PromptResult requestCan(const PromptOptions&) override
+    PromptResult requestCan(const PromptOptions& opts) override
     {
+        ++canPrompts;
+        lastCanOptions = opts;
         return {};
     }
     PromptResult requestMrz(const PromptOptions&) override
     {
         return {};
     }
+    int canPrompts = 0;
+    // Retry context the cache stamped onto the most recent CAN prompt; the
+    // attempt number is how a test counts markCredentialWrong calls.
+    PromptOptions lastCanOptions;
 };
 
 class RecordingPhaseSink final : public OperationPhaseSink
@@ -104,6 +130,21 @@ public:
     }
     std::vector<std::uint32_t> phases;
 };
+
+LibreSCRS::Auth::AuthRequirement paceReq(LibreSCRS::Auth::PaceSecretKind kind)
+{
+    return LibreSCRS::Auth::AuthRequirement::forPaceSecret(LibreSCRS::SmartCard::AppletAid{}, kind, std::nullopt,
+                                                           LibreSCRS::LocalizedText{});
+}
+
+// A PACE requirement carrying the rejected-retry reason LM sets ONLY on a
+// re-prompt after a wrong-secret rejection in the same activation. The provider
+// evicts and re-prompts on THIS shape, never on a bare same-kind re-invocation.
+LibreSCRS::Auth::AuthRequirement rejectedPaceReq(LibreSCRS::Auth::PaceSecretKind kind)
+{
+    return LibreSCRS::Auth::AuthRequirement::forPaceSecret(LibreSCRS::SmartCard::AppletAid{}, kind, std::nullopt,
+                                                           LibreSCRS::Auth::ErrorKeys::preReadAuthFailed());
+}
 
 CertSnapshot makeCert(std::string id, bool signing)
 {
@@ -165,6 +206,22 @@ struct Harness
             .artifact = "certificates",
             .token = source.token(),
         }};
+    }
+
+    // Attempt number the NEXT CAN prompt for this card would carry: 0 while no
+    // failure has been recorded, failedAttempts + 1 once markCredentialWrong
+    // ran. Stands up a throwaway provider and drives one prompt — the route
+    // production takes — so a test counts marks through the retry context the
+    // cache stamps onto the prompt. A still-cached secret is served without a
+    // prompt and leaves the answer at 0, which is itself the "nothing was
+    // marked" signal.
+    std::uint32_t probeNextPromptAttempt()
+    {
+        auto prompterFailed = std::make_shared<std::atomic<bool>>(false);
+        auto probe = FlowPrelude::makeReadCredentialProvider(cache, prompter, serializer, phaseSink, "card-A",
+                                                             requester, "certificates", source.token(), prompterFailed);
+        static_cast<void>(probe(paceReq(LibreSCRS::Auth::PaceSecretKind::Can)));
+        return prompter.lastCanOptions.attempt;
     }
 };
 
@@ -353,6 +410,66 @@ TEST(CertReadFlow, OfflinePathYieldsOfflineUnverifiedNotError)
         EXPECT_EQ(cert.trustStatus, static_cast<std::uint32_t>(CertTrustStatus::OfflineUnverified));
         EXPECT_EQ(cert.securityStatus, std::vector<std::string>{"offline-unverified"});
     }
+}
+
+// --- The rejected pre-read secret is marked wrong EXACTLY once -------------
+
+TEST(CertReadFlow, AuthFailedAfterProviderMarkedCountsOneAttempt)
+{
+    // The card rejected the pre-read secret and asked for it again, so the
+    // provider already evicted + counted that value. When the walk then unwinds
+    // as AuthFailed, the flow's own mark must NOT count the SAME rejected value
+    // a second time: the next prompt is attempt 2, not 3. An inflated count
+    // renders a wrong attempt number and can evict one refusal early.
+    Harness h;
+    h.certReader.outcome = CertReadOutcome{CertReadOutcome::Status::AuthFailed, {}, "auth rejected"};
+
+    auto flow = h.make();
+    h.certReader.onRead = [&flow](int, LibreSCRS::SmartCard::CardSession&) {
+        // Models LM's on-cache-miss provider callback inside readCertificates,
+        // carrying the card's re-prompt signal.
+        static_cast<void>(flow.credentialProvider()(rejectedPaceReq(LibreSCRS::Auth::PaceSecretKind::Can)));
+    };
+    const auto result = flow.run();
+
+    EXPECT_EQ(result.outcome, CertReadFlow::Outcome::Error);
+    EXPECT_EQ(h.probeNextPromptAttempt(), 2u)
+        << "one rejected value, one mark: the provider's mark and the flow's must not stack";
+}
+
+TEST(CertReadFlow, AuthFailedWithoutProviderMarkStillMarksCredentialWrong)
+{
+    // The counterpart pin: when the provider never saw a rejection signal (the
+    // value now live for LM is UNMARKED), the flow's own mark is the only one
+    // there is and must still fire — evicting the wrong secret AND recording
+    // the retry context. Deleting the flow-side mark is NOT the fix for the
+    // double count above.
+    Harness h;
+    h.cache.putCan("card-A", LibreSCRS::Secure::String{"000000"});
+    h.certReader.outcome = CertReadOutcome{CertReadOutcome::Status::AuthFailed, {}, "auth rejected"};
+
+    const auto result = h.make().run();
+
+    EXPECT_EQ(result.outcome, CertReadFlow::Outcome::Error);
+    EXPECT_EQ(result.code, ErrorCode::AuthFailed);
+    EXPECT_FALSE(h.cache.hasCan("card-A")) << "a wrong secret is evicted so a retry re-prompts";
+    EXPECT_EQ(h.probeNextPromptAttempt(), 2u) << "the flow recorded the retry context";
+}
+
+TEST(CertReadFlow, StructuralFailureLeavesTheCredentialAlone)
+{
+    // Only AuthFailed punishes the credential: a structural failure leaves the
+    // cached secret and the attempt counter untouched.
+    Harness h;
+    h.cache.putCan("card-A", LibreSCRS::Secure::String{"123456"});
+    h.certReader.outcome = CertReadOutcome{CertReadOutcome::Status::UnsupportedCard, {}, "no PKI applet"};
+
+    const auto result = h.make().run();
+
+    EXPECT_EQ(result.outcome, CertReadFlow::Outcome::Error);
+    EXPECT_EQ(result.code, ErrorCode::UnsupportedCard);
+    EXPECT_TRUE(h.cache.hasCan("card-A")) << "a structural failure must never evict/punish the credential";
+    EXPECT_EQ(h.probeNextPromptAttempt(), 0u) << "and records no retry context";
 }
 
 // A verdict with NO tokens (plain Unknown, never assessed) must not append a
