@@ -106,10 +106,11 @@ struct CardState
     std::uint32_t caps{0}; // capabilities bitmask (CardCapabilities bits)
     PreReadAuth preAuth{PreReadAuth::None};
     // Optional (append-only, feature-gated "card-type"): absent == not yet
-    // known / an older agent. cardType is the single-candidate pluginId at
-    // insertion (else absent until a real read resolves it authoritatively);
-    // atr is uppercase hex, no separators, the full session ATR (present from
-    // insertion onward in practice).
+    // known / an older agent. cardType is the host's arbitration hint drawn
+    // from the held-session candidate list at insertion (absent while the
+    // host has not picked one; a completed read overwrites it
+    // authoritatively); atr is uppercase hex, no separators, the full
+    // session ATR (present from insertion onward in practice).
     std::optional<std::string> cardType;
     std::optional<std::string> atr;
     bool operator==(const CardState&) const = default;

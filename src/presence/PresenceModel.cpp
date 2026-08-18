@@ -83,8 +83,9 @@ void PresenceModel::onCardInserted(const std::string& readerName, const std::vec
     // cardType, in contrast, needs the held-session candidate list (AID-probed
     // plugins included), which this ATR-only fast path does not have; it stays
     // empty here and is resolved by the per-reader worker at the same deferred
-    // point as capabilities/preReadAuth above (single-candidate pluginId, else
-    // empty), authoritatively overwritten by a real read thereafter.
+    // point as capabilities/preReadAuth above (the host's candidate
+    // arbitration, else empty), authoritatively overwritten by a real read
+    // thereafter.
     const std::string atrHex = toHex(atr, '\0', true);
 
     const ObjectId readerId = m_readerIds.at(readerName);
