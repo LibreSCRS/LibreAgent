@@ -54,8 +54,12 @@ public:
     // timestamp-authority and trusted-list keys with a working default set and
     // WRITES the file, so the first start of a never-configured installation
     // leaves a configuration behind rather than an empty one. No seeded trusted
-    // list is eager: seeding never puts network traffic in the startup path.
-    // Construction over an existing file leaves that file byte-untouched.
+    // list is eager: seeding never puts network traffic in the STARTUP path.
+    // It does change the SIGNING path: a non-empty TSA list makes a defaulted
+    // (auto/B-B) sign resolve to B-T, so a fresh installation's first default
+    // signature is timestamped and contacts a seeded TSA at signing time —
+    // user-initiated, never at boot. Construction over an existing file leaves
+    // that file byte-untouched.
     ConfigStore(std::filesystem::path configFile, std::filesystem::path cacheRoot);
 
     ConfigStore(const ConfigStore&) = delete;

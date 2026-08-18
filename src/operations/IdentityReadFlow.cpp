@@ -147,7 +147,7 @@ IdentityReadFlow::Result IdentityReadFlow::run()
         m_deps.cache, m_deps.prompter, m_deps.serializer, m_deps.phaseSink, m_deps.cardKey, m_deps.requester,
         m_deps.artifact, m_deps.token, prompterFailed,
         /*userCancelled=*/{}, providerMarkedWrong, offerMrzAlternative, m_mrzChoice);
-    const FlowPrelude::ProviderScrubGuard providerScrub{m_provider};
+    const FlowPrelude::ProviderResetGuard providerScrub{m_provider};
     const auto providerGuard = FlowPrelude::installScopedReadProvider(session, m_provider);
 
     // -- Step 4: read card data ------------------------------------------
@@ -206,8 +206,12 @@ IdentityReadFlow::Result IdentityReadFlow::run()
                 // cached payload would renegotiate silently, and the walk would
                 // unwind as that renegotiation's cancellation — a silent cancel
                 // that spends a card read and tells the user nothing. Report
-                // the capability that is actually missing instead.
-                return makeError(ErrorCode::CapabilityMissing, "op.read_failed", std::move(readOutcome.msgFallback));
+                // the capability that is actually missing, in words about THIS
+                // condition — the read outcome's own message at this point is
+                // the cancelled renegotiation's text, and a client without a
+                // per-code copy would render "cancelled" under an error code.
+                return makeError(ErrorCode::CapabilityMissing, "op.read_failed",
+                                 "No installed card driver can accept the entered document data for this card.");
             }
             // Re-check: the deposit is not instantaneous and the token may have
             // tripped while it ran.

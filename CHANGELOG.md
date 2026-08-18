@@ -5,6 +5,13 @@ Notable user-visible changes per release. Format follows
 
 ## [Unreleased] — 4.3.0
 
+A never-configured installation now seeds a working timestamp-authority
+and trusted-list configuration on first start. Startup stays
+network-free (no seeded list is fetched eagerly), but the first DEFAULT
+signature on a fresh installation changes shape: with timestamp
+authorities configured, an auto-level sign resolves to B-T, so it is
+timestamped and contacts a seeded TSA at signing time.
+
 First public release of LibreAgent: the platform-neutral, Qt-free core
 of the LibreSCRS smart-card agent, the shared wire vocabulary both of
 its transports speak, and the Qt client library desktop frontends use to

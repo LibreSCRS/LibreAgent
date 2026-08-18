@@ -177,7 +177,7 @@ CertReadFlow::Result CertReadFlow::run()
     m_provider = FlowPrelude::makeReadCredentialProvider(
         m_deps.cache, m_deps.prompter, m_deps.serializer, m_deps.phaseSink, m_deps.cardKey, m_deps.requester,
         m_deps.artifact, m_deps.token, prompterFailed, /*userCancelled=*/{}, providerMarkedWrong);
-    const FlowPrelude::ProviderScrubGuard providerScrub{m_provider};
+    const FlowPrelude::ProviderResetGuard providerScrub{m_provider};
     const auto providerGuard = FlowPrelude::installScopedReadProvider(session, m_provider);
 
     if (m_deps.token.isCancelled()) {

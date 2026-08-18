@@ -83,7 +83,7 @@ public:
     // provider's re-key signal could only be asserted against a provider the
     // TEST built — which is exactly the dead-wiring such assertions exist to
     // rule out. Bound at the top of run() and EMPTY outside it (it closes over
-    // run()-bounded references — see FlowPrelude::ProviderScrubGuard), so it is
+    // run()-bounded references — see FlowPrelude::ProviderResetGuard), so it is
     // callable only from within a seam the live run drives.
     [[nodiscard]] const LibreSCRS::Auth::CredentialProvider& credentialProvider() const noexcept
     {

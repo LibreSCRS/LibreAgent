@@ -148,20 +148,20 @@ installScopedReadProvider(std::shared_ptr<LibreSCRS::SmartCard::CardSession> ses
 // alive. Every flow that keeps such a member declares one of these right after
 // binding it; run() has a return per failure mode, so a hand-written reset on
 // each is exactly the kind of thing that rots.
-class ProviderScrubGuard
+class ProviderResetGuard
 {
 public:
-    explicit ProviderScrubGuard(LibreSCRS::Auth::CredentialProvider& provider) noexcept : m_provider(provider) {}
-    ~ProviderScrubGuard()
+    explicit ProviderResetGuard(LibreSCRS::Auth::CredentialProvider& provider) noexcept : m_provider(provider) {}
+    ~ProviderResetGuard()
     {
         // std::function's nullptr assignment is noexcept, so the destructor
         // cannot throw during a stack unwind.
         m_provider = nullptr;
     }
-    ProviderScrubGuard(const ProviderScrubGuard&) = delete;
-    ProviderScrubGuard& operator=(const ProviderScrubGuard&) = delete;
-    ProviderScrubGuard(ProviderScrubGuard&&) = delete;
-    ProviderScrubGuard& operator=(ProviderScrubGuard&&) = delete;
+    ProviderResetGuard(const ProviderResetGuard&) = delete;
+    ProviderResetGuard& operator=(const ProviderResetGuard&) = delete;
+    ProviderResetGuard(ProviderResetGuard&&) = delete;
+    ProviderResetGuard& operator=(ProviderResetGuard&&) = delete;
 
 private:
     LibreSCRS::Auth::CredentialProvider& m_provider;
