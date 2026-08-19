@@ -427,8 +427,11 @@ TEST(RunPinManageChange, ChangePromptSerializesBehindHeldSlot)
     bool slotHeld = false;
     bool releaseSlot = false;
     std::thread slotHog([&] {
+        // Same card key as the flow under test: the gate is per card, so a hog
+        // on another key would not serialize anything and this test would pass
+        // vacuously.
         h.serializer.serialize(
-            hogSource.token(),
+            h.cardKey, hogSource.token(),
             [&]() -> PromptResult {
                 {
                     std::lock_guard lk(m);

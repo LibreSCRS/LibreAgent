@@ -169,9 +169,9 @@ LibreSCRS::Agent::Operations::OperationManager::sweepFinished(std::chrono::durat
 LibreSCRS::Agent::Operations::OperationManager::workerFor(LibreSCRS::Agent::ObjectId, std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > const&)
 LibreSCRS::Agent::Operations::OperationManager::workerLoop(LibreSCRS::Agent::Operations::OperationManager::ReaderWorker&, std::stop_token)
 LibreSCRS::Agent::Operations::OperationManager::~OperationManager()
-LibreSCRS::Agent::Operations::PromptSerializer::acquire(LibreSCRS::CancelToken)
+LibreSCRS::Agent::Operations::PromptSerializer::acquire(std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > const&, LibreSCRS::CancelToken)
 LibreSCRS::Agent::Operations::PromptSerializer::hasPendingPrompt() const
-LibreSCRS::Agent::Operations::PromptSerializer::release()
+LibreSCRS::Agent::Operations::PromptSerializer::release(std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > const&)
 LibreSCRS::Agent::Operations::PropertyEmissionThrottler::PropertyEmissionThrottler(std::function<void ()>, std::chrono::duration<long, std::ratio<1l, 1000l> >)
 LibreSCRS::Agent::Operations::PropertyEmissionThrottler::dispatchLoop(std::stop_token)
 LibreSCRS::Agent::Operations::PropertyEmissionThrottler::flush()

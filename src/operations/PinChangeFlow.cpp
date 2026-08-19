@@ -197,7 +197,7 @@ CredentialOpResult runPinManage(PinManageFlowDeps& deps, const PinManageRequest&
         if (record->maxLength) {
             opts.maxLength = static_cast<std::uint32_t>(*record->maxLength);
         }
-        SerializingPrompter gated{deps.serializer, deps.prompter, deps.token};
+        SerializingPrompter gated{deps.serializer, deps.prompter, deps.token, deps.cardKey};
         const auto prompt = gated.requestPinChange(opts);
         if (prompt.status == PromptStatus::Cancelled) {
             // A genuine user dismissal: do NOT touch the card. No card interaction

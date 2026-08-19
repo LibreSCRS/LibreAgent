@@ -224,7 +224,7 @@ BatchSignFlow::Result BatchSignFlow::run()
         [&cache, &prompter, &serializer, &phaseSink, cardKey, requester, artifactNames, summary, token, prompterFailed,
          &pinHolder](const LibreSCRS::Auth::AuthRequirement& req) -> LibreSCRS::Auth::CredentialResult {
         try {
-            SerializingPrompter gated{serializer, prompter, token};
+            SerializingPrompter gated{serializer, prompter, token, cardKey};
 
             if (req.purpose() == LibreSCRS::Auth::Purpose::Signing) {
                 if (const auto* cached = pinHolder.get()) {

@@ -220,7 +220,7 @@ TEST(PrompterKeepAliveDrain, AbandonedWorkerKeepsSerializerAndPrompterAliveThrou
         // the agent-wide gate exactly as the raw-crypto seam does.
         mgr.enqueueHolderProbeForTest(kReaderId, [serializer, prompter](CardSessionHolder&) {
             LibreSCRS::CancelToken token; // no external cancel on this synchronous path
-            SerializingPrompter gated{*serializer, *prompter, std::move(token)};
+            SerializingPrompter gated{*serializer, *prompter, std::move(token), "card-drain"};
             static_cast<void>(gated.requestPin(PromptOptions{}));
         });
 

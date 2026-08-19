@@ -139,7 +139,7 @@ SignFlow::Result SignFlow::run()
             opts.requester = requester;
             opts.artifact = "signature";
             opts.description = description;
-            SerializingPrompter gated{serializer, prompter, token};
+            SerializingPrompter gated{serializer, prompter, token, cardKey};
 
             if (req.purpose() == LibreSCRS::Auth::Purpose::Signing) {
                 // PIN-as-consent: uncached, prompted every time.

@@ -138,7 +138,7 @@ LibreSCRS::Auth::CredentialProvider makeReadCredentialProvider(
             // wrapper's request* is reached, so the gate is contended only on a
             // real prompt. The routing keys off the AuthRequirement LM hands the
             // callback (its paceKind selects CAN vs MRZ), not a pre-read guess.
-            SerializingPrompter gated{serializer, prompter, token};
+            SerializingPrompter gated{serializer, prompter, token, cardKey};
             // The sink is handed down ONLY on the prompt that actually
             // advertised the alternative, so a chosen-kind reply to a prompt
             // that never offered one fails closed agent-side too, not only at

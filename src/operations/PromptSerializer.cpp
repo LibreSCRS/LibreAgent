@@ -6,7 +6,7 @@
 
 namespace LibreSCRS::Agent::Operations {
 
-bool PromptSerializer::acquire(LibreSCRS::CancelToken token)
+bool PromptSerializer::acquire(const std::string& key, LibreSCRS::CancelToken token)
 {
     // Wake this waiter when the op is cancelled while it is queued. The
     // callback locks m_mutex and notify_all()s so the wait below re-evaluates
@@ -39,43 +39,81 @@ bool PromptSerializer::acquire(LibreSCRS::CancelToken token)
     // running counter) keeps the sequence contiguous when a queued waiter
     // cancels mid-wait: removing our node from the middle leaves no gap that
     // could wedge the holder or the genuine next-in-line.
+    // Tickets are drawn from ONE counter across all keys: they only ever need
+    // to be unique and ordered within their own gate, and a single counter
+    // keeps that true without per-key bookkeeping.
     const std::uint64_t myTicket = m_nextTicket++;
-    m_waiters.push_back(myTicket);
+    Gate& gate = m_gates[key];
+    gate.waiters.push_back(myTicket);
 
-    const auto atHead = [&] { return !m_waiters.empty() && m_waiters.front() == myTicket; };
+    // Re-look-up the gate on every predicate evaluation rather than capturing
+    // the reference: this waiter parks and wakes repeatedly, and another key's
+    // release may erase ITS entry from the same map in between. Erasing a
+    // different key never invalidates this one's node (std::map references are
+    // stable), so holding `gate` across the wait would in fact be safe — but
+    // the lookup is trivial and it keeps the invariant local rather than
+    // depending on the container's reference-stability guarantee.
+    const auto atHead = [&] {
+        const auto it = m_gates.find(key);
+        return it != m_gates.end() && !it->second.waiters.empty() && it->second.waiters.front() == myTicket;
+    };
+    const auto slotFree = [&] {
+        const auto it = m_gates.find(key);
+        return it == m_gates.end() || !it->second.held;
+    };
 
-    m_cv.wait(lock, [&] { return token.isCancelled() || (!m_held && atHead()); });
+    m_cv.wait(lock, [&] { return token.isCancelled() || (slotFree() && atHead()); });
 
     // Cancellation wins unconditionally: a cancelled op must NEVER raise a
     // dialog, even if the slot happened to be free when we woke. Surrender our
     // ticket (wherever it sits in the queue) and let the genuine next-in-line
     // proceed. The holder and other waiters are untouched.
     if (token.isCancelled()) {
-        auto it = std::find(m_waiters.begin(), m_waiters.end(), myTicket);
-        if (it != m_waiters.end()) {
-            m_waiters.erase(it);
+        const auto git = m_gates.find(key);
+        if (git != m_gates.end()) {
+            auto& waiters = git->second.waiters;
+            auto it = std::find(waiters.begin(), waiters.end(), myTicket);
+            if (it != waiters.end()) {
+                waiters.erase(it);
+            }
+            // Drop an idle gate so the map cannot grow once per card ever seen.
+            if (waiters.empty() && !git->second.held) {
+                m_gates.erase(git);
+            }
         }
         m_cv.notify_all();
         return false;
     }
 
-    // We hold the slot. Pop our (head) node and mark the slot taken.
-    m_waiters.pop_front();
-    m_held = true;
+    // We hold this key's slot. Pop our (head) node and mark the slot taken.
+    Gate& mine = m_gates[key];
+    mine.waiters.pop_front();
+    mine.held = true;
     return true;
 }
 
-void PromptSerializer::release()
+void PromptSerializer::release(const std::string& key)
 {
     std::lock_guard lock(m_mutex);
-    m_held = false;
+    const auto it = m_gates.find(key);
+    if (it != m_gates.end()) {
+        it->second.held = false;
+        // Nobody queued for this card: forget it, so a long-lived agent does
+        // not accumulate one gate per card it has ever seen.
+        if (it->second.waiters.empty()) {
+            m_gates.erase(it);
+        }
+    }
     m_cv.notify_all();
 }
 
 bool PromptSerializer::hasPendingPrompt() const noexcept
 {
     std::lock_guard lock(m_mutex);
-    return m_held || !m_waiters.empty();
+    // ANY key: the shutdown drain needs "is anyone prompting or queued", not
+    // "is this card prompting".
+    return std::any_of(m_gates.begin(), m_gates.end(),
+                       [](const auto& kv) { return kv.second.held || !kv.second.waiters.empty(); });
 }
 
 } // namespace LibreSCRS::Agent::Operations

@@ -129,7 +129,7 @@ CredentialOpResult runKeyActivation(KeyActivationFlowDeps deps)
         if (const auto mx = deps.record.maxLength; mx && *mx > 0) {
             opts.maxLength = static_cast<std::uint32_t>(*mx);
         }
-        SerializingPrompter gated{deps.serializer, deps.prompter, deps.token};
+        SerializingPrompter gated{deps.serializer, deps.prompter, deps.token, deps.cardKey};
         const auto prompt = gated.requestPin(opts);
         if (prompt.status == PromptStatus::Cancelled) {
             return nonSeamResult(CredentialOutcome::UserCancelled, deps.pinActivated);

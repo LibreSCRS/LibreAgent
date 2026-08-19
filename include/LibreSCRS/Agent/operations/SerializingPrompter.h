@@ -5,6 +5,7 @@
 #include <LibreSCRS/Agent/operations/PromptSerializer.h>
 #include <LibreSCRS/Agent/backend/PrompterClientBase.h>
 #include <LibreSCRS/CancelToken.h>
+#include <string>
 
 namespace LibreSCRS::Agent::Operations {
 
@@ -28,8 +29,12 @@ namespace LibreSCRS::Agent::Operations {
 class SerializingPrompter final : public PrompterClientBase
 {
 public:
-    SerializingPrompter(PromptSerializer& serializer, PrompterClientBase& inner, LibreSCRS::CancelToken token)
-        : m_serializer(serializer), m_inner(inner), m_token(std::move(token))
+    /// @param cardKey Gate key: prompts for DIFFERENT cards run concurrently,
+    ///        prompts for the same card serialize. One card per reader slot, so
+    ///        this is per-reader independence in practice.
+    SerializingPrompter(PromptSerializer& serializer, PrompterClientBase& inner, LibreSCRS::CancelToken token,
+                        std::string cardKey)
+        : m_serializer(serializer), m_inner(inner), m_token(std::move(token)), m_cardKey(std::move(cardKey))
     {}
 
     [[nodiscard]] PromptResult requestPin(const PromptOptions& options) override
@@ -44,15 +49,15 @@ public:
     {
         return gated([&] { return m_inner.requestMrz(options); });
     }
-    // The two-secret change prompt is gated identically: it holds the single
-    // agent-wide slot across the one modal, so a change dialog can never stack on
-    // top of another reader's live prompt. Cancelled-while-queued surfaces as a
+    // The two-secret change prompt is gated identically: it holds THIS CARD's
+    // slot across the one modal, so a change dialog can never stack on top of
+    // another prompt for the same card. Cancelled-while-queued surfaces as a
     // Cancelled-shaped result, which the change flow maps to UserCancelled — the
     // same outcome as the user dismissing the dialog.
     [[nodiscard]] PinChangePromptResult requestPinChange(const PromptOptions& options) override
     {
         return m_serializer.serialize(
-            m_token, [&] { return m_inner.requestPinChange(options); },
+            m_cardKey, m_token, [&] { return m_inner.requestPinChange(options); },
             [] {
                 PinChangePromptResult r;
                 r.status = PromptStatus::Cancelled;
@@ -73,7 +78,7 @@ private:
     template <typename Fn>
     PromptResult gated(Fn&& doPrompt)
     {
-        return m_serializer.serialize(m_token, std::forward<Fn>(doPrompt), [] {
+        return m_serializer.serialize(m_cardKey, m_token, std::forward<Fn>(doPrompt), [] {
             // Cancelled while queued: surface as a user-cancelled prompt so the
             // credential path maps it to CredentialResult::cancelled() — the
             // same outcome as the user dismissing the dialog.
@@ -84,6 +89,7 @@ private:
     PromptSerializer& m_serializer;
     PrompterClientBase& m_inner;
     LibreSCRS::CancelToken m_token;
+    std::string m_cardKey;
 };
 
 } // namespace LibreSCRS::Agent::Operations

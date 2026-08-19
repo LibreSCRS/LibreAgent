@@ -124,7 +124,7 @@ RawCryptoFlow::Result RawCryptoFlow::run(Op op, std::span<const std::uint8_t> by
     // non-Ok PromptStatus and the caller maps it. The PIN is owned by the caller's
     // Secure::String and cleansed when it drops.
     auto collectPin = [&]() -> std::pair<PromptStatus, std::optional<LibreSCRS::Secure::String>> {
-        SerializingPrompter gated{serializer, prompter, token};
+        SerializingPrompter gated{serializer, prompter, token, cardKey};
         PromptOptions opts;
         opts.requester = requester;
         opts.artifact = "pkcs11";

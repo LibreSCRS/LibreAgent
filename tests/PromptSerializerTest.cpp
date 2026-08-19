@@ -136,8 +136,8 @@ TEST(PromptSerializer, SecondConcurrentPromptBlocksUntilFirstCompletes)
 
     LibreSCRS::CancelSource src1;
     LibreSCRS::CancelSource src2;
-    SerializingPrompter gated1{serializer, inner, src1.token()};
-    SerializingPrompter gated2{serializer, inner, src2.token()};
+    SerializingPrompter gated1{serializer, inner, src1.token(), "card-A"};
+    SerializingPrompter gated2{serializer, inner, src2.token(), "card-A"};
 
     std::atomic<bool> firstDone{false};
     std::atomic<bool> secondDone{false};
@@ -195,8 +195,8 @@ TEST(PromptSerializer, QueuedWaiterCancelledBreaksOutWithoutPrompting)
 
     LibreSCRS::CancelSource src1;
     LibreSCRS::CancelSource src2;
-    SerializingPrompter gated1{serializer, inner, src1.token()};
-    SerializingPrompter gated2{serializer, inner, src2.token()};
+    SerializingPrompter gated1{serializer, inner, src1.token(), "card-A"};
+    SerializingPrompter gated2{serializer, inner, src2.token(), "card-A"};
 
     PromptOptions opts;
     std::thread t1([&] {
@@ -251,7 +251,7 @@ TEST(PromptSerializer, CancelledBeforeAcquireNeverPrompts)
     LibreSCRS::CancelSource src;
     src.requestCancel();
 
-    SerializingPrompter gated{serializer, inner, src.token()};
+    SerializingPrompter gated{serializer, inner, src.token(), "card-A"};
     PromptOptions opts;
     auto r = gated.requestCan(opts);
 
@@ -271,8 +271,8 @@ TEST(PromptSerializer, PinChangePromptQueuesBehindLivePrompt)
 
     LibreSCRS::CancelSource src1;
     LibreSCRS::CancelSource src2;
-    SerializingPrompter gated1{serializer, inner, src1.token()};
-    SerializingPrompter gated2{serializer, inner, src2.token()};
+    SerializingPrompter gated1{serializer, inner, src1.token(), "card-A"};
+    SerializingPrompter gated2{serializer, inner, src2.token(), "card-A"};
 
     std::atomic<bool> changeDone{false};
 
@@ -321,7 +321,7 @@ TEST(PromptSerializer, PinChangeCancelledBeforeAcquireNeverPrompts)
     LibreSCRS::CancelSource src;
     src.requestCancel();
 
-    SerializingPrompter gated{serializer, inner, src.token()};
+    SerializingPrompter gated{serializer, inner, src.token(), "card-A"};
     PromptOptions opts;
     auto r = gated.requestPinChange(opts);
 
@@ -345,7 +345,7 @@ TEST(PromptSerializer, ThreeConcurrentPromptsSerializeFifoNoOverlap)
     threads.reserve(kThreads);
     for (int i = 0; i < kThreads; ++i) {
         threads.emplace_back([&, i] {
-            SerializingPrompter gated{serializer, inner, sources[static_cast<std::size_t>(i)].token()};
+            SerializingPrompter gated{serializer, inner, sources[static_cast<std::size_t>(i)].token(), "card-A"};
             PromptOptions opts;
             auto r = gated.requestCan(opts);
             EXPECT_EQ(r.status, PromptStatus::Ok);
@@ -356,4 +356,70 @@ TEST(PromptSerializer, ThreeConcurrentPromptsSerializeFifoNoOverlap)
     }
     EXPECT_EQ(inner.totalCalls.load(), kThreads);
     EXPECT_EQ(inner.maxConcurrent.load(), 1) << "the gate must serialize every prompt";
+}
+
+// The reason the gate is keyed at all. Two DIFFERENT cards must be able to
+// prompt at the same time: the gate used to be agent-wide, and because the
+// per-operation watchdog arms before a worker queues here, an unanswered dialog
+// on one reader did not merely delay the others — after the watchdog budget
+// elapsed their operations died with WatchdogTimeout and took their pages with
+// them. One card waiting for a CAN cost the user every other card in the
+// machine.
+//
+// Concurrency is asserted positively: the second prompt must be observed INSIDE
+// the first one's dialog, not merely complete eventually. A gate that still
+// serialized would leave the second entrant parked and this test would time out
+// on the latch rather than pass slowly.
+TEST(PromptSerializer, PromptsForDifferentCardsRunConcurrently)
+{
+    // The reason the gate is keyed at all. Two DIFFERENT cards must prompt at
+    // the same time. The gate used to be agent-wide, and because the
+    // per-operation watchdog arms BEFORE a worker queues here, an unanswered
+    // dialog on one reader did not merely delay the others: once the watchdog
+    // budget elapsed their operations died with WatchdogTimeout and took their
+    // pages with them. One card waiting for a CAN cost every other card in the
+    // machine.
+    PromptSerializer serializer;
+    RecordingFakePrompter inner;
+
+    LibreSCRS::CancelSource srcA;
+    LibreSCRS::CancelSource srcB;
+    SerializingPrompter gatedA{serializer, inner, srcA.token(), "card-A"};
+    SerializingPrompter gatedB{serializer, inner, srcB.token(), "card-B"};
+
+    std::atomic<bool> secondDone{false};
+    PromptOptions opts;
+
+    // A enters and parks inside its dialog, holding card-A's slot.
+    std::thread t1([&] { (void)gatedA.requestCan(opts); });
+    {
+        std::unique_lock lock(inner.holdMutex);
+        ASSERT_TRUE(inner.holdCv.wait_for(lock, 2s, [&] { return inner.firstEntered; }))
+            << "first prompt must enter the slot";
+    }
+
+    // B is a DIFFERENT card: it must reach the prompter while A is still parked,
+    // rather than queueing behind it.
+    std::thread t2([&] {
+        auto r = gatedB.requestCan(opts);
+        EXPECT_EQ(r.status, PromptStatus::Ok);
+        secondDone = true;
+    });
+
+    const auto deadline = std::chrono::steady_clock::now() + 3s;
+    while (!secondDone.load() && std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::sleep_for(5ms);
+    }
+    EXPECT_TRUE(secondDone.load()) << "a prompt for card-B waited on card-A's dialog — the gate is still agent-wide, "
+                                      "so one unanswered dialog starves every other reader";
+    EXPECT_EQ(inner.totalCalls.load(), 2) << "both cards must have reached the prompter";
+    EXPECT_EQ(inner.maxConcurrent.load(), 2) << "the two dialogs must have been live at the same moment";
+
+    {
+        std::lock_guard lock(inner.holdMutex);
+        inner.releaseHold = true;
+        inner.holdCv.notify_all();
+    }
+    t1.join();
+    t2.join();
 }
