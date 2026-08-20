@@ -53,6 +53,7 @@ if(LIBREAGENT_BUILD_CORE)
     add_library(LibreAgentCore STATIC
         # value/
         src/value/ErrorTaxonomy.cpp
+        src/value/ReaderLabels.cpp
         # util/
         src/util/Sha256Hex.cpp
         # cache/

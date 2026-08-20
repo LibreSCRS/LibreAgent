@@ -8,9 +8,10 @@
 //   1. The cleansing secret round-trips as std::optional<Secure::String>,
 //      never an fd — value preserved, empty-but-present distinguishable.
 //   2. requestPin/Can/Mrz take a const PromptOptions& and return PromptResult.
-//   3. cancel() is noexcept and its default base implementation is a no-op
-//      (a trivial subclass that does not override it stays valid + silent);
-//      an overriding fake still observes the call.
+//   3. cancel(promptId) is noexcept, ADDRESSED (it names which prompt to
+//      dismiss, because more than one dialog can be on screen), and its default
+//      base implementation is a no-op (a trivial subclass that does not
+//      override it stays valid + silent); an overriding fake observes the id.
 
 #include <LibreSCRS/Agent/backend/PromptTypes.h>
 #include <LibreSCRS/Agent/backend/PrompterClientBase.h>
@@ -18,7 +19,9 @@
 #include <LibreSCRS/Secure/String.h>
 #include <gtest/gtest.h>
 
+#include <cstdint>
 #include <optional>
+#include <string>
 #include <string_view>
 #include <type_traits>
 #include <utility>
@@ -37,6 +40,7 @@ class FakePrompter final : public PrompterClientBase
 {
 public:
     int cancelCount{0};
+    std::string lastCancelledId;
 
     PromptResult requestPin(const PromptOptions&) override
     {
@@ -50,9 +54,10 @@ public:
     {
         return PromptResult{PromptStatus::Error, std::nullopt, {}};
     }
-    void cancel() noexcept override
+    void cancel(const std::string& promptId) noexcept override
     {
         ++cancelCount;
+        lastCancelledId = promptId;
     }
 };
 
@@ -93,8 +98,12 @@ static_assert(std::is_same_v<decltype(&PrompterClientBase::requestMrz),
                              PromptResult (PrompterClientBase::*)(const PromptOptions&)>,
               "frozen: requestMrz(const PromptOptions&) -> PromptResult");
 
-// cancel() is part of the frozen noexcept contract.
-static_assert(noexcept(std::declval<PrompterClientBase&>().cancel()), "frozen: Prompter::cancel() must be noexcept");
+// cancel is addressed AND noexcept -- both halves of the frozen contract. The
+// signature is asserted, not just the noexcept: an unaddressed cancel would
+// compile everywhere and close the wrong card's dialog at runtime.
+static_assert(
+    std::is_same_v<decltype(&PrompterClientBase::cancel), void (PrompterClientBase::*)(const std::string&) noexcept>,
+    "frozen: Prompter::cancel(const std::string& promptId) is the addressed, noexcept cancel");
 
 } // namespace
 
@@ -124,16 +133,35 @@ TEST(PrompterConformance, CancelledAndErrorCarryNoSecret)
     EXPECT_FALSE(mrz.secret.has_value());
 }
 
-TEST(PrompterConformance, CancelIsRecordedByOverrideAndNoopByDefault)
+TEST(PrompterConformance, CancelCarriesItsPromptIdAndIsNoopByDefault)
 {
     FakePrompter fake;
     EXPECT_EQ(fake.cancelCount, 0);
-    fake.cancel();
+    fake.cancel("nonce:7");
     EXPECT_EQ(fake.cancelCount, 1);
+    EXPECT_EQ(fake.lastCancelledId, "nonce:7");
 
-    // The base default cancel() is a no-op: calling it on a subclass that does
-    // not override it must be silent and must not throw (it is noexcept).
+    // The base default is a no-op: calling it on a subclass that does not
+    // override it must be silent and must not throw (it is noexcept).
     TrivialPrompter trivial;
-    trivial.cancel();
+    trivial.cancel("nonce:8");
     SUCCEED();
 }
+
+TEST(PrompterConformance, EntryExpiryIsNotAUserCancellation)
+{
+    // A window that ran out of time and a holder who dismissed it are different
+    // events, and a client that conflates them tells the holder they cancelled
+    // something the clock took.
+    EXPECT_NE(PromptStatus::Timeout, PromptStatus::Cancelled);
+    EXPECT_NE(PromptStatus::Timeout, PromptStatus::Ok);
+    EXPECT_NE(PromptStatus::Timeout, PromptStatus::Error);
+}
+
+// Appended, never inserted: the three values below it are compiled into every
+// consumer built against an older header, so renumbering them would silently
+// change what an existing binary reads off the wire.
+static_assert(static_cast<std::uint8_t>(PromptStatus::Ok) == 0);
+static_assert(static_cast<std::uint8_t>(PromptStatus::Cancelled) == 1);
+static_assert(static_cast<std::uint8_t>(PromptStatus::Error) == 2);
+static_assert(static_cast<std::uint8_t>(PromptStatus::Timeout) == 3);

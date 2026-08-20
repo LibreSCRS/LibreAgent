@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 // SPDX-FileCopyrightText: 2026 hirashix0
 #pragma once
+#include <LibreSCRS/Agent/value/ReaderLabels.h>
 #include <LibreSCRS/Auth/PaceSecretKind.h>
 #include <LibreSCRS/Secure/String.h>
 #include <cstdint>
@@ -56,12 +57,39 @@ struct PromptOptions
     // does not opt in; the only value the stack emits today is {"mrz"} on a
     // kind-"can" request. Backends that predate the option ignore it.
     std::vector<std::string> altKinds;
+    // Identifies THIS prompt end to end, so a cancel can name which window it
+    // means. Opaque; minted by PromptIdMinter and never parsed by a prompter.
+    // Empty on any path that has not been stamped.
+    std::string promptId;
+    // The reader that raised this prompt. EMBEDDED rather than flattened into
+    // three parallel members: the model, the interface qualifier and the raw
+    // name are one fact, and splitting them would let a caller set the model
+    // while leaving the qualifier unset -- on a dual-interface unit that is
+    // exactly the ambiguity the qualifier exists to remove. The wire carries
+    // three flat keys; flattening is the hosts' marshalling concern.
+    LibreSCRS::Agent::ReaderIdentity reader;
+    // How long the holder gets, from the moment the window is shown. A
+    // DURATION, not an absolute time, so the two processes need no shared
+    // clock. 0 means "no deadline set" -- a prompter must not read that as an
+    // instant expiry.
+    std::uint32_t deadlineMs = 0;
+    // How long the holder gets if they take the switch this prompt offered, as
+    // the same kind of DURATION from the moment the window is shown -- NOT an
+    // increment on deadlineMs. 0 whenever no alternative was offered, or none
+    // of the offered ones has a budget, which is every prompt but a CAN that
+    // opted into the MRZ form.
+    std::uint32_t altDeadlineMs = 0;
 };
 
 enum class PromptStatus : std::uint8_t {
     Ok,
     Cancelled,
     Error,
+    // The prompter closed the window because the holder's entry time ran out.
+    // Distinct from Cancelled deliberately: telling someone they cancelled what
+    // the clock took from them is the confusion this design removes. APPENDED,
+    // never inserted -- the values above are compiled into every consumer.
+    Timeout,
 };
 
 struct PromptResult

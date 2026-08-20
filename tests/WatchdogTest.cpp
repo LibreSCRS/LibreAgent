@@ -13,6 +13,7 @@
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
+#include <cstdint>
 #include <memory>
 #include <mutex>
 #include <string_view>
@@ -103,6 +104,93 @@ protected:
             std::this_thread::yield();
         }
         finish(OperationStatus::Cancelled, ErrorCode::None, "op.cancelled", "cancelled");
+    }
+};
+
+// --- Phase 1: the watchdog covers MACHINE time only ------------------------
+//
+// The watchdog exists because SCardTransmit is issued with no timeout at all:
+// a wedged card would otherwise freeze a reader worker forever and the client
+// would never receive a terminal result. That job is machine time. Human time
+// belongs to the prompt's own deadline, and the three ops below pin the
+// boundary between the two.
+
+// Enters Authenticating (arming the 1 s watchdog), then AwaitingConsent, and
+// stays there far longer than the budget -- the holder typing a CAN. It must
+// reach its own Ok finish, not a WatchdogTimeout.
+class ConsentWaitingOp final : public OperationBase
+{
+public:
+    ConsentWaitingOp(std::unique_ptr<OperationChannel> a, std::shared_ptr<OperationState> s)
+        : OperationBase(std::move(a), std::move(s))
+    {}
+
+protected:
+    void doWork() override
+    {
+        setPhase(static_cast<std::uint32_t>(OperationPhase::Authenticating));
+        setPhase(static_cast<std::uint32_t>(OperationPhase::AwaitingConsent));
+        std::this_thread::sleep_for(2500ms); // the human types
+        finish(OperationStatus::Ok, ErrorCode::None, "op.ok", "ok");
+    }
+};
+
+// Burns most of the budget in Authenticating, spends a long time in
+// AwaitingConsent, then enters Reading and wedges. Records when Reading was
+// entered so the test can prove the re-arm granted a FULL budget rather than
+// the ~200 ms remainder left before consent.
+class ConsentThenWedgedReadOp final : public OperationBase
+{
+public:
+    ConsentThenWedgedReadOp(std::unique_ptr<OperationChannel> a, std::shared_ptr<OperationState> s,
+                            std::atomic<std::int64_t>& readingEnteredMs)
+        : OperationBase(std::move(a), std::move(s)), m_readingEnteredMs(readingEnteredMs)
+    {}
+
+protected:
+    void doWork() override
+    {
+        setPhase(static_cast<std::uint32_t>(OperationPhase::Authenticating));
+        std::this_thread::sleep_for(800ms); // most of the 1 s budget
+        setPhase(static_cast<std::uint32_t>(OperationPhase::AwaitingConsent));
+        std::this_thread::sleep_for(2000ms); // the human types, unmeasured
+        m_readingEnteredMs.store(
+            std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch())
+                .count(),
+            std::memory_order_release);
+        setPhase(static_cast<std::uint32_t>(OperationPhase::Reading));
+        for (int i = 0; i < 500; ++i) { // wedged card: wait to be killed
+            if (isCancelled() || token().isCancelled()) {
+                finish(OperationStatus::Cancelled, ErrorCode::None, "op.cancelled", "cancelled");
+                return;
+            }
+            std::this_thread::sleep_for(10ms);
+        }
+        finish(OperationStatus::Ok, ErrorCode::None, "op.ok", "ok");
+    }
+
+private:
+    std::atomic<std::int64_t>& m_readingEnteredMs;
+};
+
+// Cycles consent five times under a budget long enough that nothing fires, so
+// the arm COUNT is the only thing under test.
+class ConsentCyclingOp final : public OperationBase
+{
+public:
+    ConsentCyclingOp(std::unique_ptr<OperationChannel> a, std::shared_ptr<OperationState> s)
+        : OperationBase(std::move(a), std::move(s))
+    {}
+
+protected:
+    void doWork() override
+    {
+        for (int i = 0; i < 5; ++i) {
+            setPhase(static_cast<std::uint32_t>(OperationPhase::Authenticating));
+            setPhase(static_cast<std::uint32_t>(OperationPhase::AwaitingConsent));
+        }
+        setPhase(static_cast<std::uint32_t>(OperationPhase::Reading));
+        finish(OperationStatus::Ok, ErrorCode::None, "op.ok", "ok");
     }
 };
 
@@ -199,14 +287,14 @@ TEST(Watchdog, AuthenticatingPhaseAlsoArmsWatchdog)
     EXPECT_EQ(slot.errorCode.load(std::memory_order_acquire), static_cast<std::uint32_t>(ErrorCode::WatchdogTimeout));
 }
 
-TEST(Watchdog, HungTimestampAfterAuthenticatingIsBoundedAndTimestampingDoesNotReArm)
+TEST(Watchdog, HungTimestampIsBoundedByTheArmFromItsOneMachinePhaseEntry)
 {
     // A hung TSA: the signer arms the watchdog at Authenticating, emits Signing,
     // then (declaratively) Timestamping, and blocks — modelling a timestamp round
     // -trip that never returns. The whole sign+timestamp runs after the
-    // Authenticating arm, so the EXISTING one-shot watchdog bounds it; entering
-    // Timestamping must NOT re-arm or extend the timer (D-g). The op finishes
-    // WatchdogTimeout within the budget.
+    // Authenticating arm, so the budget that arm started bounds it; entering
+    // Signing or Timestamping must NOT arm or extend the timer (D-g). The op
+    // finishes WatchdogTimeout within that budget.
     CapturedFinish slot;
     auto state = std::make_shared<OperationState>();
     state->watchdogTimeoutSec.store(1u);
@@ -250,13 +338,19 @@ TEST(Watchdog, HungTimestampAfterAuthenticatingIsBoundedAndTimestampingDoesNotRe
     EXPECT_EQ(slot.errorCode.load(std::memory_order_acquire), static_cast<std::uint32_t>(ErrorCode::WatchdogTimeout))
         << "a hung TSA after Authenticating must be bounded by the existing watchdog";
     EXPECT_TRUE(op.isCancelled());
-    // Non-re-arm proof: across AwaitingConsent -> Authenticating -> Signing ->
-    // Timestamping, exactly ONE transition passed the arm-phase filter. This
+    // Arm-count proof, under the contract "one arm per MACHINE-PHASE ENTRY"
+    // (which replaced "exactly once per operation" when entry into
+    // AwaitingConsent became a disarm): this op enters the arm-set exactly once,
+    // at Authenticating, so across AwaitingConsent -> Authenticating -> Signing
+    // -> Timestamping exactly ONE transition passed the arm-phase filter. This
     // exercises the real armWatchdogIfNeeded filter (no logic duplicated in the
-    // test); it WOULD be 2 if Timestamping were added to the arm-set, so the
-    // "does not re-arm" half is now genuinely proven (the CAS-gated single fire
-    // alone could not distinguish that regression).
-    EXPECT_EQ(op.watchdogArmAttempts(), 1u) << "only Authenticating armed; Timestamping must not re-arm";
+    // test); it WOULD be 2 if Signing or Timestamping were added to the arm-set,
+    // so the "these phases do not arm" half stays genuinely proven (the
+    // CAS-gated single fire alone could not distinguish that regression). Ops
+    // that return to a machine phase after each prompt arm once per return —
+    // see EachConsentCycleArmsOnceAndTimersNeverStack.
+    EXPECT_EQ(op.watchdogArmAttempts(), 1u)
+        << "one machine-phase entry (Authenticating); Signing/Timestamping must not arm";
 }
 
 TEST(Watchdog, EarlyFinishCancelsWatchdog)
@@ -413,4 +507,84 @@ TEST(Watchdog, ZeroTimeoutDisablesWatchdog)
     op.runOnWorker();
     EXPECT_EQ(slot.errorCode.load(std::memory_order_acquire), static_cast<std::uint32_t>(ErrorCode::None))
         << "watchdog must not fire when watchdogTimeoutSec is 0";
+}
+
+TEST(Watchdog, AwaitingConsentDisarmsTheTimerSoAHolderIsNeverMeasured)
+{
+    // Before the disarm existed this FAILED: Authenticating armed a one-shot
+    // timer that kept running through consent, so a holder slower than the
+    // budget lost the read -- with one reader and no concurrency involved at
+    // all.
+    CapturedFinish slot;
+    auto state = std::make_shared<OperationState>();
+    state->watchdogTimeoutSec.store(1u, std::memory_order_release);
+
+    ConsentWaitingOp op(std::make_unique<CapturingChannel>(slot), state);
+    std::jthread runner([&op] { op.runOnWorker(); });
+
+    // The op sleeps 2.5 s in consent; wait well past that so a missing finish
+    // is a real failure rather than an impatient deadline.
+    const auto deadline = std::chrono::steady_clock::now() + 6s;
+    while (slot.count.load(std::memory_order_acquire) == 0 && std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::sleep_for(20ms);
+    }
+
+    ASSERT_EQ(slot.count.load(std::memory_order_acquire), 1) << "the op never finished";
+    EXPECT_EQ(slot.status.load(std::memory_order_acquire), static_cast<std::uint32_t>(OperationStatus::Ok));
+    EXPECT_NE(slot.errorCode.load(std::memory_order_acquire), static_cast<std::uint32_t>(ErrorCode::WatchdogTimeout))
+        << "the watchdog fired while the operation was waiting on a human";
+    EXPECT_FALSE(op.isCancelled()) << "a timed-out watchdog trips cancel; the holder must not be cancelled";
+}
+
+TEST(Watchdog, LeavingConsentReArmsWithAFullBudgetNotTheRemainder)
+{
+    CapturedFinish slot;
+    std::atomic<std::int64_t> readingEnteredMs{0};
+    auto state = std::make_shared<OperationState>();
+    state->watchdogTimeoutSec.store(1u, std::memory_order_release);
+
+    ConsentThenWedgedReadOp op(std::make_unique<CapturingChannel>(slot), state, readingEnteredMs);
+    std::jthread runner([&op] { op.runOnWorker(); });
+
+    // 800 ms + 2000 ms of op time before Reading is even entered, then a fresh
+    // 1 s budget on top: poll at 10 ms so the observed finish instant is close
+    // enough to the real one for the margin below to mean something.
+    const auto deadline = std::chrono::steady_clock::now() + 8s;
+    while (slot.count.load(std::memory_order_acquire) == 0 && std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::sleep_for(10ms);
+    }
+    const auto finishedAtMs =
+        std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch())
+            .count();
+
+    ASSERT_EQ(slot.count.load(std::memory_order_acquire), 1) << "the op never finished";
+    // It must still fire -- a wedged card is exactly what it is for.
+    EXPECT_EQ(slot.errorCode.load(std::memory_order_acquire), static_cast<std::uint32_t>(ErrorCode::WatchdogTimeout));
+    // Guard against a vacuous pass: if the timer fired back in consent, Reading
+    // was never reached, the recorded instant is still 0, and the elapsed check
+    // below would compare against the steady_clock epoch and "pass".
+    ASSERT_NE(readingEnteredMs.load(std::memory_order_acquire), 0)
+        << "the watchdog fired before Reading was ever entered -- it was still timing the human";
+    // And it must have measured from the RE-ARM, not carried the ~200 ms left
+    // over from before consent. If the remainder were carried, the card's
+    // allowance would depend on how long the holder took to type -- the failure
+    // mode that made "just enlarge the watchdog" the wrong fix.
+    EXPECT_GE(finishedAtMs - readingEnteredMs.load(std::memory_order_acquire), 900)
+        << "the re-arm carried the remainder instead of a fresh budget";
+}
+
+TEST(Watchdog, EachConsentCycleArmsOnceAndTimersNeverStack)
+{
+    // Six arms: five Authenticating entries from the loop, one final Reading.
+    // A larger count means a disarm returned without joining and timer threads
+    // are stacking -- the hazard the original one-shot comment guarded against.
+    CapturedFinish slot;
+    auto state = std::make_shared<OperationState>();
+    state->watchdogTimeoutSec.store(60u, std::memory_order_release);
+
+    ConsentCyclingOp op(std::make_unique<CapturingChannel>(slot), state);
+    op.runOnWorker(); // nothing blocks: the budget is far longer than the op
+
+    EXPECT_EQ(slot.status.load(std::memory_order_acquire), static_cast<std::uint32_t>(OperationStatus::Ok));
+    EXPECT_EQ(op.watchdogArmAttempts(), 6u);
 }

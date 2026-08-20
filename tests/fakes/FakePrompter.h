@@ -6,6 +6,7 @@
 #include <LibreSCRS/Auth/PaceSecretKind.h>
 #include <LibreSCRS/Secure/String.h>
 
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -26,6 +27,9 @@ struct FakePrompter final : PrompterClientBase
     enum class Kind { Pin, Can, Mrz, PinChange };
     std::vector<Kind> calls;
     int cancels{0};
+    // Which prompt each dismissal named: two dialogs can be on screen, so
+    // "a cancel happened" is not the same claim as "the right one was closed".
+    std::vector<std::string> cancelledIds;
     // Options as received by the change-PIN modal; tests assert the display
     // metadata (card/pin labels, action title, per-role bounds) reached the
     // prompter seam.
@@ -64,9 +68,10 @@ struct FakePrompter final : PrompterClientBase
         lastChangePromptOptions = options;
         return pinChangeResult;
     }
-    void cancel() noexcept override
+    void cancel(const std::string& promptId) noexcept override
     {
         ++cancels;
+        cancelledIds.push_back(promptId);
     }
 };
 

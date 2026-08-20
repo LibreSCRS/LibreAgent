@@ -152,12 +152,14 @@ public:
     }
 
     // Test-only observer: how many phase transitions PASSED the watchdog arm-phase
-    // filter (Authenticating/Reading) — counted before the one-shot CAS, so it
-    // counts *accepted arms*, not *fired timers*. A correct one-shot arm-set is
-    // entered exactly once per op regardless of how many later phases transition;
-    // this makes the "Timestamping does not re-arm" property genuinely testable
-    // (it would increment past 1 if Timestamping were ever added to the filter),
-    // which the CAS-gated single fire alone cannot prove.
+    // filter (Authenticating/Reading) — counted before the arm CAS, so it counts
+    // *accepted arms*, not *fired timers*. The contract is ONE PER MACHINE-PHASE
+    // ENTRY: an op that never prompts arms once, while an op that returns to
+    // Authenticating/Reading after each AwaitingConsent arms once per return (the
+    // consent entry disarms; see disarmWatchdog()). That makes the "a non-arming
+    // phase does not arm" property genuinely testable — the count would exceed
+    // the number of machine-phase entries if, say, Timestamping were ever added
+    // to the filter — which the CAS-gated single fire alone cannot prove.
     [[nodiscard]] unsigned watchdogArmAttempts() const noexcept
     {
         return m_watchdogArmAttempts.load(std::memory_order_acquire);
@@ -240,13 +242,21 @@ protected:
     }
 
 private:
-    // Arms the watchdog timer on the first transition into Authenticating
-    // or Reading. Subsequent transitions inside that phase set are
-    // no-ops (the timer is one-shot per op). Wakes via the per-op
+    // Arms the watchdog timer on a transition into Authenticating or Reading
+    // while no timer is running. Further transitions inside that phase set are
+    // no-ops (only one timer runs at a time). Wakes via the per-op
     // condition_variable + stop_token; the cv is notified by finish() so
     // the timer thread observes the op completing early and exits without
     // firing the timeout finish.
     void armWatchdogIfNeeded(std::uint32_t newPhase);
+
+    // Stop and JOIN the running watchdog, clearing the armed flag so a later
+    // machine phase can arm a fresh one. Joining is not optional: the arm was
+    // one-shot precisely so timer threads could not stack (see the comment on
+    // armWatchdogIfNeeded), and a re-armable watchdog that did not join would
+    // reintroduce that hazard once per retry rather than once per operation.
+    // Called on the worker thread only, from setPhase(AwaitingConsent).
+    void disarmWatchdog() noexcept;
 
     // Shutdown-cancel of THIS op's token only: trip the cancel source + the
     // shared cancelled flag, invoked from the bound shutdown token's callback.
@@ -287,10 +297,12 @@ private:
     // channel has actually emitted Finished.
     std::atomic<bool> m_finished{false};
 
-    // Watchdog: armed on first Authenticating/Reading entry; one-shot.
-    // m_watchdogArmed gates the arm path. m_watchdogCv (condition_variable_any
-    // so it supports stop_token wait) wakes the timer thread early when
-    // finish() runs to completion.
+    // Watchdog: armed on an Authenticating/Reading entry, disarmed on entry to
+    // AwaitingConsent, so it measures MACHINE time only and never the holder.
+    // m_watchdogArmed gates the arm path (one live timer at a time).
+    // m_watchdogCv (condition_variable_any so it supports stop_token wait)
+    // wakes the timer thread early when finish() runs to completion, and when
+    // disarmWatchdog() retires it.
     std::atomic<bool> m_watchdogArmed{false};
     // Latched by finishWatchdogTimeout() BEFORE it trips cancel, and read by
     // finish() to force the terminal outcome. Without it the timeout is a race
@@ -303,7 +315,7 @@ private:
     // thread reaches finish() first.
     std::atomic<bool> m_watchdogFired{false};
     // Test-only: counts phase transitions that passed the arm-phase filter, before
-    // the one-shot CAS (see watchdogArmAttempts()). Not on any wire/ABI surface.
+    // the arm CAS (see watchdogArmAttempts()). Not on any wire/ABI surface.
     std::atomic<unsigned> m_watchdogArmAttempts{0};
     std::mutex m_watchdogMutex;
     std::condition_variable_any m_watchdogCv;

@@ -1,15 +1,29 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 // SPDX-FileCopyrightText: 2026 hirashix0
 #pragma once
+#include <LibreSCRS/Agent/operations/PromptIdMinter.h>
+#include <LibreSCRS/Agent/value/ReaderLabels.h>
 #include <LibreSCRS/CancelToken.h>
 #include <condition_variable>
 #include <cstdint>
 #include <deque>
+#include <functional>
 #include <map>
 #include <mutex>
 #include <string>
+#include <utility>
+#include <vector>
 
 namespace LibreSCRS::Agent::Operations {
+
+/// Which reader holds the card @p cardKey names, as the prompt chrome needs it.
+/// Supplied by the platform backend: the card key is the backend's own
+/// per-insertion identifier and only the backend holds both the reader roster
+/// and that inverse. The DERIVATION stays neutral (readerIdentities); this seam
+/// carries only the lookup.
+///
+/// @since 4.3
+using ReaderIdentityForCard = std::function<LibreSCRS::Agent::ReaderIdentity(const std::string& cardKey)>;
 
 // Gate that admits AT MOST ONE live prompter interaction PER CARD.
 //
@@ -84,7 +98,73 @@ public:
     // every prompting/queued worker JOINS rather than falling to the zombie path.
     [[nodiscard]] bool hasPendingPrompt() const noexcept;
 
+    // The agent's ONE prompt-id minter. It belongs to this gate because the gate
+    // is agent-lifetime (which is what makes the run nonce mean "this run"), is
+    // already injected wherever a prompt can be raised, and its per-card slots
+    // are what those ids address.
+    [[nodiscard]] PromptIdMinter& idMinter() noexcept
+    {
+        return m_idMinter;
+    }
+
+    // Set ONCE by the backend during construction, before any operation can
+    // run: the resolver is read from reader worker threads and never
+    // re-assigned, so no synchronisation is needed on the pointer itself.
+    void setReaderIdentityResolver(ReaderIdentityForCard fn)
+    {
+        m_readerIdentityFor = std::move(fn);
+    }
+
+    // Empty identity when no backend supplied a resolver, or when the card has
+    // gone. A dialog that names no reader is honest; one that names the wrong
+    // reader is the failure this design exists to remove.
+    [[nodiscard]] LibreSCRS::Agent::ReaderIdentity readerIdentityFor(const std::string& cardKey) const
+    {
+        return m_readerIdentityFor ? m_readerIdentityFor(cardKey) : LibreSCRS::Agent::ReaderIdentity{};
+    }
+
+    // Keeps @p promptId listed as raised-and-unanswered for @p cardKey until the
+    // returned guard dies. Move-only: the registration is a resource, and a copy
+    // would leave a phantom id behind once one copy unwound.
+    class LivePromptGuard
+    {
+    public:
+        LivePromptGuard() = default;
+        LivePromptGuard(PromptSerializer* owner, std::string promptId) : m_owner(owner), m_promptId(std::move(promptId))
+        {}
+        LivePromptGuard(LivePromptGuard&& other) noexcept
+            : m_owner(std::exchange(other.m_owner, nullptr)), m_promptId(std::move(other.m_promptId))
+        {}
+        LivePromptGuard& operator=(LivePromptGuard&&) = delete;
+        LivePromptGuard(const LivePromptGuard&) = delete;
+        LivePromptGuard& operator=(const LivePromptGuard&) = delete;
+        ~LivePromptGuard()
+        {
+            if (m_owner != nullptr) {
+                m_owner->forgetLivePrompt(m_promptId);
+            }
+        }
+
+    private:
+        PromptSerializer* m_owner{nullptr};
+        std::string m_promptId;
+    };
+
+    [[nodiscard]] LivePromptGuard registerLivePrompt(const std::string& cardKey, std::string promptId);
+
+    // Ids raised for @p cardKey and not yet answered -- what an operation's
+    // cancel hook addresses. At most one in practice (the gate admits one prompt
+    // per card); a vector so a shutdown race cannot drop one on the floor.
+    [[nodiscard]] std::vector<std::string> liveIdsFor(const std::string& cardKey) const;
+
+    // Every outstanding id, for shutdown: the agent cancels what it actually
+    // raised instead of reading a boolean and then dismissing blind.
+    [[nodiscard]] std::vector<std::string> liveIds() const;
+
 private:
+    // Drop @p promptId from the live set. Called only by LivePromptGuard.
+    void forgetLivePrompt(const std::string& promptId);
+
     // Acquire the single prompt slot, FIFO. Returns true once this caller
     // holds the slot; false if @p token was cancelled while queued (in which
     // case the caller's ticket has already been withdrawn and the slot is
@@ -118,6 +198,11 @@ private:
     std::condition_variable_any m_cv;
     std::uint64_t m_nextTicket{0};
     std::map<std::string, Gate> m_gates;
+    PromptIdMinter m_idMinter;
+    ReaderIdentityForCard m_readerIdentityFor;
+    // promptId -> the card whose slot it was raised under. Keyed by id because
+    // the dismissal arrives with an id and nothing else.
+    std::map<std::string, std::string> m_livePrompts;
 };
 
 template <typename Fn, typename OnCancel>

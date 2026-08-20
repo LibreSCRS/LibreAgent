@@ -67,6 +67,7 @@ LibreSCRS::Agent::Config::ConfigStore::tslCacheDir[abi:cxx11]() const
 LibreSCRS::Agent::Config::ConfigStore::tslSources() const
 LibreSCRS::Agent::CredentialCache::applyRetryContext(std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > const&, LibreSCRS::Agent::PromptOptions&) const
 LibreSCRS::Agent::CredentialCache::clear()
+LibreSCRS::Agent::CredentialCache::failedAttemptsFor(std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > const&) const
 LibreSCRS::Agent::CredentialCache::getCan(std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > const&) const
 LibreSCRS::Agent::CredentialCache::getMrz(std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > const&) const
 LibreSCRS::Agent::CredentialCache::hasCan(std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > const&) const
@@ -133,6 +134,7 @@ LibreSCRS::Agent::Operations::OperationBase::OperationBase(std::unique_ptr<Libre
 LibreSCRS::Agent::Operations::OperationBase::OperationBase(std::unique_ptr<LibreSCRS::Agent::Operations::OperationChannel, std::default_delete<LibreSCRS::Agent::Operations::OperationChannel> >, std::shared_ptr<LibreSCRS::Agent::Operations::OperationState>, std::function<void ()>)
 LibreSCRS::Agent::Operations::OperationBase::armWatchdogIfNeeded(unsigned int)
 LibreSCRS::Agent::Operations::OperationBase::bindShutdownToken(LibreSCRS::CancelToken)
+LibreSCRS::Agent::Operations::OperationBase::disarmWatchdog()
 LibreSCRS::Agent::Operations::OperationBase::finish(LibreSCRS::Agent::Operations::OperationStatus, LibreSCRS::Agent::ErrorCode, std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> >, std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> >)
 LibreSCRS::Agent::Operations::OperationBase::finishCardRemoved()
 LibreSCRS::Agent::Operations::OperationBase::finishWatchdogTimeout()
@@ -170,7 +172,11 @@ LibreSCRS::Agent::Operations::OperationManager::workerFor(LibreSCRS::Agent::Obje
 LibreSCRS::Agent::Operations::OperationManager::workerLoop(LibreSCRS::Agent::Operations::OperationManager::ReaderWorker&, std::stop_token)
 LibreSCRS::Agent::Operations::OperationManager::~OperationManager()
 LibreSCRS::Agent::Operations::PromptSerializer::acquire(std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > const&, LibreSCRS::CancelToken)
+LibreSCRS::Agent::Operations::PromptSerializer::forgetLivePrompt(std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > const&)
 LibreSCRS::Agent::Operations::PromptSerializer::hasPendingPrompt() const
+LibreSCRS::Agent::Operations::PromptSerializer::liveIdsFor(std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > const&) const
+LibreSCRS::Agent::Operations::PromptSerializer::liveIds[abi:cxx11]() const
+LibreSCRS::Agent::Operations::PromptSerializer::registerLivePrompt(std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > const&, std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> >)
 LibreSCRS::Agent::Operations::PromptSerializer::release(std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > const&)
 LibreSCRS::Agent::Operations::PropertyEmissionThrottler::PropertyEmissionThrottler(std::function<void ()>, std::chrono::duration<long, std::ratio<1l, 1000l> >)
 LibreSCRS::Agent::Operations::PropertyEmissionThrottler::dispatchLoop(std::stop_token)
@@ -253,6 +259,7 @@ LibreSCRS::Agent::log::init(std::function<void (LibreSCRS::Agent::log::Level, st
 LibreSCRS::Agent::log::resetForTest()
 LibreSCRS::Agent::log::warn(std::basic_string_view<char, std::char_traits<char> >)
 LibreSCRS::Agent::mutationReachedCard(LibreSCRS::Agent::CredentialOutcome)
+LibreSCRS::Agent::readerIdentities(std::vector<std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> >, std::allocator<std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > > > const&)
 LibreSCRS::Agent::sha256Hex[abi:cxx11](std::span<unsigned char const, 18446744073709551615ul>)
 == libLibreAgentWire.a ==
 LibreSCRS::Agent::Wire::CborValue::asArray() const

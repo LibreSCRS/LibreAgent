@@ -4,7 +4,8 @@
 #include <LibreSCRS/Agent/backend/PrompterWire.h> // shared kind vocabulary (alt_kinds value)
 #include <LibreSCRS/Agent/cache/CredentialCache.h>
 #include <LibreSCRS/Agent/operations/CardSessionHolder.h>
-#include <LibreSCRS/Agent/OperationPhase.h> // OperationPhase enum
+#include <LibreSCRS/Agent/operations/ConsentPhaseScope.h> // consent is a bounded excursion, not a one-way trip
+#include <LibreSCRS/Agent/OperationPhase.h>               // OperationPhase enum
 #include <LibreSCRS/Agent/operations/SerializingPrompter.h>
 #include <LibreSCRS/Agent/value/CredentialRecord.h> // CredentialOutcome
 #include <LibreSCRS/Auth/AuthRequirement.h>
@@ -93,8 +94,16 @@ LibreSCRS::Auth::CredentialProvider makeReadCredentialProvider(
             offerMrzAlternative, mrzChoice = std::move(mrzChoice)](const LibreSCRS::Auth::AuthRequirement& req) {
         try {
             // About to (potentially) block on the prompter for user input —
-            // surface the modal-dialog progress phase.
-            phaseSink.setPhase(static_cast<std::uint32_t>(OperationPhase::AwaitingConsent));
+            // surface the modal-dialog progress phase, and give it back on the
+            // way out. The scope spans the WHOLE body deliberately: the phase
+            // must be handed back on the throwing paths too, and the catch-all
+            // below would otherwise swallow the throw with the operation still
+            // parked in AwaitingConsent — watchdog disarmed — while LM walks on
+            // to its next candidate. Leaving it parked is not cosmetic: this
+            // lambda is invoked from inside the plugin's readCard, so the
+            // activation the collected secret unlocks and every data-group read
+            // after it happen under whatever phase this body leaves behind.
+            const ConsentPhaseScope consent{phaseSink};
             // A2 (sec I3 re-key): evict on the card's REJECTION SIGNAL, never on
             // invocation counting. LM sets reasonForUser == preReadAuthFailed()
             // ONLY on a re-prompt after a wrong-secret rejection in the SAME

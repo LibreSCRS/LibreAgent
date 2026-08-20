@@ -11,6 +11,7 @@
 
 #include <LibreSCRS/Agent/cache/CredentialCache.h>
 #include <LibreSCRS/Agent/backend/PromptTypes.h>
+#include <LibreSCRS/Agent/operations/PromptPolicy.h> // kMaxPaceAttempts
 
 #include <LibreSCRS/Auth/AuthRequirement.h>
 #include <LibreSCRS/Auth/CredentialResult.h>
@@ -28,6 +29,7 @@ using LibreSCRS::Agent::MrzChoiceSink;
 using LibreSCRS::Agent::PromptOptions;
 using LibreSCRS::Agent::PromptResult;
 using LibreSCRS::Agent::PromptStatus;
+using LibreSCRS::Agent::Operations::kMaxPaceAttempts;
 using LibreSCRS::Auth::AuthRequirement;
 using LibreSCRS::Auth::CredentialResult;
 using LibreSCRS::Auth::PaceSecretKind;
@@ -524,4 +526,131 @@ TEST(CredentialCacheRequest, MrzChoiceSinkResetScrubsAnUnconsumedPayload)
     sink.reset();
     EXPECT_FALSE(sink.taken());
     EXPECT_FALSE(sink.take().has_value());
+}
+
+// --- The PACE attempt cap --------------------------------------------------
+//
+// The watchdog no longer bounds the consent -> PACE fails -> consent cycle, so
+// the bound lives where the counter already does. A PIN cannot reach it: only
+// Can and Mrz route through requestCredential, and the card owns that counter.
+
+TEST(CredentialCacheAttemptCap, PromptsUpToTheCapAndThenStopsAsking)
+{
+    CredentialCache cache;
+    FakePrompter prompter;
+    prompter.canResult = PromptResult{PromptStatus::Ok, String{"123456"}, ""};
+    const PromptOptions opts;
+
+    for (std::uint32_t i = 0; i < kMaxPaceAttempts; ++i) {
+        const auto result = cache.requestCredential("card-A", paceReq(PaceSecretKind::Can), prompter, opts);
+        EXPECT_EQ(result.status, CredentialResult::Status::Ok) << "attempt " << i << " should still be allowed to ask";
+        cache.markCredentialWrong("card-A", "librescrs.error.preRead.authFailed");
+    }
+    EXPECT_EQ(prompter.canCalls, static_cast<int>(kMaxPaceAttempts));
+
+    const auto capped = cache.requestCredential("card-A", paceReq(PaceSecretKind::Can), prompter, opts);
+    EXPECT_EQ(capped.status, CredentialResult::Status::Error);
+    // Asserting only on the status would pass even if a dialog had been shown
+    // to the holder and then discarded. The point of the cap is that nobody is
+    // asked for a secret that can no longer be used.
+    EXPECT_EQ(prompter.canCalls, static_cast<int>(kMaxPaceAttempts))
+        << "the capped call raised a dialog the holder can never usefully answer";
+}
+
+TEST(CredentialCacheAttemptCap, TheCapAlsoCoversMrz)
+{
+    // The counter is shared between the two kinds because it bounds attempts on
+    // THIS DOCUMENT's pre-read auth, not on a kind.
+    CredentialCache cache;
+    FakePrompter prompter;
+    prompter.mrzResult = PromptResult{PromptStatus::Ok, String{kTd3MrzPayload}, ""};
+    const PromptOptions opts;
+
+    for (std::uint32_t i = 0; i < kMaxPaceAttempts; ++i) {
+        const auto result = cache.requestCredential("card-A", paceReq(PaceSecretKind::Mrz), prompter, opts);
+        EXPECT_EQ(result.status, CredentialResult::Status::Ok) << "attempt " << i;
+        cache.markCredentialWrong("card-A", "librescrs.error.preRead.authFailed");
+    }
+
+    const auto capped = cache.requestCredential("card-A", paceReq(PaceSecretKind::Mrz), prompter, opts);
+    EXPECT_EQ(capped.status, CredentialResult::Status::Error);
+    EXPECT_EQ(prompter.mrzCalls, static_cast<int>(kMaxPaceAttempts));
+}
+
+TEST(CredentialCacheAttemptCap, ARemovedCardStartsOverBecauseItIsANewInsertion)
+{
+    CredentialCache cache;
+    FakePrompter prompter;
+    prompter.canResult = PromptResult{PromptStatus::Ok, String{"123456"}, ""};
+    const PromptOptions opts;
+
+    for (std::uint32_t i = 0; i < kMaxPaceAttempts; ++i) {
+        (void)cache.requestCredential("card-A", paceReq(PaceSecretKind::Can), prompter, opts);
+        cache.markCredentialWrong("card-A", "librescrs.error.preRead.authFailed");
+    }
+    cache.invalidate("card-A"); // CardRemoved / ReaderRemoved erases the entry
+
+    const auto afterReinsert = cache.requestCredential("card-A", paceReq(PaceSecretKind::Can), prompter, opts);
+    EXPECT_EQ(afterReinsert.status, CredentialResult::Status::Ok);
+    EXPECT_EQ(prompter.canCalls, static_cast<int>(kMaxPaceAttempts) + 1);
+}
+
+TEST(CredentialCacheAttemptCap, TheCapIsPerCardNotGlobal)
+{
+    CredentialCache cache;
+    FakePrompter prompter;
+    prompter.canResult = PromptResult{PromptStatus::Ok, String{"123456"}, ""};
+    const PromptOptions opts;
+
+    for (std::uint32_t i = 0; i < kMaxPaceAttempts; ++i) {
+        (void)cache.requestCredential("card-A", paceReq(PaceSecretKind::Can), prompter, opts);
+        cache.markCredentialWrong("card-A", "librescrs.error.preRead.authFailed");
+    }
+    // A different card in a different reader must be unaffected -- otherwise one
+    // holder's mistyping would lock out every other card in the machine, which
+    // is the starvation this whole redesign exists to end.
+    const auto other = cache.requestCredential("card-B", paceReq(PaceSecretKind::Can), prompter, opts);
+    EXPECT_EQ(other.status, CredentialResult::Status::Ok);
+}
+
+TEST(CredentialCacheAttemptCap, ACachedSecretStillAnswersAfterTheCapIsReached)
+{
+    // The cap refuses to ASK, not to answer. A card whose secret is already
+    // known must keep working -- the cap exists to stop pointless dialogs, not
+    // to disable a card that has one.
+    CredentialCache cache;
+    FakePrompter prompter;
+    const PromptOptions opts;
+
+    for (std::uint32_t i = 0; i < kMaxPaceAttempts; ++i) {
+        cache.markCredentialWrong("card-A", "librescrs.error.preRead.authFailed");
+    }
+    cache.putCan("card-A", String{"123456"});
+
+    const auto result = cache.requestCredential("card-A", paceReq(PaceSecretKind::Can), prompter, opts);
+    EXPECT_EQ(result.status, CredentialResult::Status::Ok);
+    EXPECT_EQ(prompter.canCalls, 0);
+}
+
+TEST(CredentialCacheAttemptCap, APinIsNeverCountedInSoftware)
+{
+    // The card owns the PIN retry counter. A software cap that disagreed with it
+    // would tell the holder "too many attempts" while the card still had tries
+    // left, or the reverse. The placement enforces this -- a PIN is refused at
+    // the kind switch, before the cap or any prompt is reached -- and this pins
+    // that routing so the cap can never migrate above it.
+    CredentialCache cache;
+    FakePrompter prompter;
+    const PromptOptions opts;
+
+    for (std::uint32_t i = 0; i < kMaxPaceAttempts + 2; ++i) {
+        const auto result = cache.requestCredential("card-A", paceReq(PaceSecretKind::Pin), prompter, opts);
+        EXPECT_EQ(result.status, CredentialResult::Status::Error);
+    }
+    EXPECT_EQ(prompter.canCalls, 0);
+    EXPECT_EQ(prompter.mrzCalls, 0);
+    // No PIN attempt was recorded against the card, so a later CAN is unaffected.
+    prompter.canResult = PromptResult{PromptStatus::Ok, String{"123456"}, ""};
+    const auto can = cache.requestCredential("card-A", paceReq(PaceSecretKind::Can), prompter, opts);
+    EXPECT_EQ(can.status, CredentialResult::Status::Ok);
 }

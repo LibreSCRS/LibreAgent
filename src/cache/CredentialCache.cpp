@@ -73,6 +73,13 @@ void CredentialCache::markCredentialWrong(const std::string& cardKey, std::strin
     entry.lastErrorKey = std::move(errorMsgKey);
 }
 
+std::uint32_t CredentialCache::failedAttemptsFor(const std::string& cardKey) const
+{
+    std::lock_guard lock(m_mutex);
+    auto it = m_entries.find(cardKey);
+    return it == m_entries.end() ? 0U : it->second.failedAttempts;
+}
+
 void CredentialCache::applyRetryContext(const std::string& cardKey, PromptOptions& opts) const
 {
     std::lock_guard lock(m_mutex);

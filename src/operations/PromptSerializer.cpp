@@ -116,4 +116,48 @@ bool PromptSerializer::hasPendingPrompt() const noexcept
                        [](const auto& kv) { return kv.second.held || !kv.second.waiters.empty(); });
 }
 
+PromptSerializer::LivePromptGuard PromptSerializer::registerLivePrompt(const std::string& cardKey, std::string promptId)
+{
+    // An empty id means nothing was minted, so there is nothing a dismissal
+    // could name -- registering it would put an unaddressable entry in the set
+    // the shutdown path iterates.
+    if (promptId.empty()) {
+        return {};
+    }
+    {
+        std::lock_guard lock(m_mutex);
+        m_livePrompts[promptId] = cardKey;
+    }
+    return LivePromptGuard{this, std::move(promptId)};
+}
+
+void PromptSerializer::forgetLivePrompt(const std::string& promptId)
+{
+    std::lock_guard lock(m_mutex);
+    m_livePrompts.erase(promptId);
+}
+
+std::vector<std::string> PromptSerializer::liveIdsFor(const std::string& cardKey) const
+{
+    std::lock_guard lock(m_mutex);
+    std::vector<std::string> out;
+    for (const auto& [id, key] : m_livePrompts) {
+        if (key == cardKey) {
+            out.push_back(id);
+        }
+    }
+    return out;
+}
+
+std::vector<std::string> PromptSerializer::liveIds() const
+{
+    std::lock_guard lock(m_mutex);
+    std::vector<std::string> out;
+    out.reserve(m_livePrompts.size());
+    for (const auto& [id, key] : m_livePrompts) {
+        out.push_back(id);
+    }
+    return out;
+}
+
 } // namespace LibreSCRS::Agent::Operations

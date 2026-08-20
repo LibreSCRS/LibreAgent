@@ -158,13 +158,24 @@ void OperationBase::setPhase(std::uint32_t phase) noexcept
             m_channel->emitPropertiesChanged();
         }
     }
-    // Watchdog production: first entry into Authenticating (3) or
-    // Reading (4) arms the per-op timer. The arm is one-shot; later
-    // phase transitions inside the same op (e.g. Reading -> Done) leave
-    // the timer running until it observes finish() via the cv.
+    // Watchdog production: the timer covers MACHINE time only. Entry into
+    // AwaitingConsent (2) stops it -- the holder is not something to time, and
+    // the prompt carries its own visible deadline -- and the next entry into
+    // Authenticating (3) / Reading (4) arms a FRESH full budget. Other phases
+    // (Connecting, Signing, Timestamping, Done) neither arm nor disarm: they run
+    // out whatever budget the last machine-phase entry started.
+    //
+    // Enlarging the budget to cover the human instead was rejected: it would
+    // make the card's allowance depend on typing speed, so a slow MRZ entry
+    // would leave a healthy card almost no time while a fast one would grant a
+    // wedged card minutes of tolerance.
     if (previous != phase) {
         try {
-            armWatchdogIfNeeded(phase);
+            if (phase == static_cast<std::uint32_t>(OperationPhase::AwaitingConsent)) {
+                disarmWatchdog();
+            } else {
+                armWatchdogIfNeeded(phase);
+            }
         } catch (...) {
             // setPhase is noexcept; arm failures (thread creation) are
             // logged but cannot escape — a missing watchdog falls back to
@@ -190,13 +201,16 @@ void OperationBase::armWatchdogIfNeeded(std::uint32_t newPhase)
     if (newPhase != kAuthenticating && newPhase != kReading) {
         return;
     }
-    // Count every transition that PASSED the arm-phase filter, BEFORE the one-shot
-    // CAS below. A correct arm-set is entered exactly once per op; this counter
-    // (test-only, see watchdogArmAttempts()) would exceed 1 if a non-arming phase
-    // such as Timestamping were ever added to the filter above.
+    // Count every transition that PASSED the arm-phase filter, BEFORE the CAS
+    // below. The arm-set is entered once per machine-phase entry; this counter
+    // (test-only, see watchdogArmAttempts()) would exceed that if a non-arming
+    // phase such as Timestamping were ever added to the filter above.
     m_watchdogArmAttempts.fetch_add(1, std::memory_order_acq_rel);
-    // Only the first arm wins: keep the timer one-shot per op so we do
-    // not stack multiple timer threads across phase transitions.
+    // Only one timer runs at a time: the CAS refuses a second arm while one is
+    // live. It is no longer once per OPERATION -- disarmWatchdog() clears the
+    // flag on entry to AwaitingConsent, so an op that prompts more than once
+    // arms once per machine-phase entry. disarmWatchdog() JOINS before
+    // clearing, which is what keeps timer threads from stacking.
     bool expected = false;
     if (!m_watchdogArmed.compare_exchange_strong(expected, true, std::memory_order_acq_rel)) {
         return;
@@ -219,6 +233,30 @@ void OperationBase::armWatchdogIfNeeded(std::uint32_t newPhase)
         // re-locks the mutex to notify the cv.
         finishWatchdogTimeout();
     });
+}
+
+void OperationBase::disarmWatchdog() noexcept
+{
+    if (!m_watchdogArmed.exchange(false, std::memory_order_acq_rel)) {
+        return; // not armed; nothing to stop
+    }
+    if (m_watchdog.joinable()) {
+        m_watchdog.request_stop();
+        {
+            // The timer waits on m_watchdogCv with the stop token; notifying
+            // under the mutex wakes it deterministically rather than leaving
+            // the join to the full budget.
+            std::lock_guard lock(m_watchdogMutex);
+        }
+        m_watchdogCv.notify_all();
+        // Join before returning: once this function has run, no timer of this
+        // op can still be in flight, so the next arm starts from a clean slate
+        // instead of stacking a second thread onto a live one. Safe against
+        // self-join -- only the worker thread reaches here, via
+        // setPhase(AwaitingConsent), and the timer thread's own path into
+        // setPhase (finish() -> Done) never takes this branch.
+        m_watchdog.join();
+    }
 }
 
 void OperationBase::setProgress(double progress) noexcept

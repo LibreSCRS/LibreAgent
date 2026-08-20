@@ -1,13 +1,14 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 // SPDX-FileCopyrightText: 2026 hirashix0
 #pragma once
-#include <LibreSCRS/Agent/backend/PromptTypes.h>  // PromptOptions, PromptResult, PromptStatus
-#include <LibreSCRS/Agent/backend/PrompterWire.h> // shared pin/can/mrz kind vocabulary
-#include <LibreSCRS/Agent/cache/MrzPayload.h>     // parseMrzPayload, MrzParts (A1)
-#include <LibreSCRS/Auth/AuthRequirement.h>       // AuthRequirement
-#include <LibreSCRS/Auth/CredentialResult.h>      // CredentialResult, CredentialEntry
-#include <LibreSCRS/Auth/ErrorKeys.h>             // ErrorKeys::genericComm
-#include <LibreSCRS/Auth/PaceSecretKind.h>        // PaceSecretKind
+#include <LibreSCRS/Agent/backend/PromptTypes.h>     // PromptOptions, PromptResult, PromptStatus
+#include <LibreSCRS/Agent/backend/PrompterWire.h>    // shared pin/can/mrz kind vocabulary
+#include <LibreSCRS/Agent/cache/MrzPayload.h>        // parseMrzPayload, MrzParts (A1)
+#include <LibreSCRS/Agent/operations/PromptPolicy.h> // kMaxPaceAttempts
+#include <LibreSCRS/Auth/AuthRequirement.h>          // AuthRequirement
+#include <LibreSCRS/Auth/CredentialResult.h>         // CredentialResult, CredentialEntry
+#include <LibreSCRS/Auth/ErrorKeys.h>                // ErrorKeys::genericComm
+#include <LibreSCRS/Auth/PaceSecretKind.h>           // PaceSecretKind
 #include <LibreSCRS/Secure/String.h>
 #include <atomic>
 #include <map>
@@ -199,6 +200,10 @@ private:
     mutable std::mutex m_mutex;
     std::map<std::string, Entry> m_entries;
 
+    // Failures recorded for @p cardKey by markCredentialWrong(); 0 for a card
+    // with no history. Locks m_mutex like every other accessor.
+    [[nodiscard]] std::uint32_t failedAttemptsFor(const std::string& cardKey) const;
+
     // Populate @p opts.attempt / @p opts.lastError from @p cardKey's retry
     // context, iff a prior failure was recorded (failedAttempts > 0). Leaves
     // @p opts untouched (defaults: no context) on a card with no recorded
@@ -286,6 +291,16 @@ CredentialCache::requestCredential(const std::string& cardKey, const LibreSCRS::
             // attempt, then surface the error.
             invalidate(cardKey);
             return buildError();
+        }
+        // Retry bound for PACE secrets. A CAN is not counted by the document, and
+        // the watchdog no longer bounds the retry cycle (it is disarmed while the
+        // holder types), so without this the cycle is unlimited. After the cache
+        // hit on purpose: the cap refuses to ASK, never to answer.
+        //
+        // Only Can and Mrz reach here. A PIN must not: the CARD owns that counter
+        // and a software cap disagreeing with it is worse than none.
+        if (failedAttemptsFor(cardKey) >= Operations::kMaxPaceAttempts) {
+            return CredentialResult::error(LibreSCRS::Auth::ErrorKeys::preReadAuthFailed());
         }
         PromptOptions promptOpts = options;
         applyRetryContext(cardKey, promptOpts);

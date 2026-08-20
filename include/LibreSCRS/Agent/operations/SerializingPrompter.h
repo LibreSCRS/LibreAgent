@@ -3,6 +3,7 @@
 #pragma once
 #include <LibreSCRS/Agent/backend/PromptTypes.h>
 #include <LibreSCRS/Agent/operations/PromptSerializer.h>
+#include <LibreSCRS/Agent/operations/PromptContext.h>
 #include <LibreSCRS/Agent/backend/PrompterClientBase.h>
 #include <LibreSCRS/CancelToken.h>
 #include <string>
@@ -39,15 +40,27 @@ public:
 
     [[nodiscard]] PromptResult requestPin(const PromptOptions& options) override
     {
-        return gated([&] { return m_inner.requestPin(options); });
+        return gated([&] {
+            const PromptOptions stamped = stamp(options, PromptKind::Pin);
+            const auto live = m_serializer.registerLivePrompt(m_cardKey, stamped.promptId);
+            return m_inner.requestPin(stamped);
+        });
     }
     [[nodiscard]] PromptResult requestCan(const PromptOptions& options) override
     {
-        return gated([&] { return m_inner.requestCan(options); });
+        return gated([&] {
+            const PromptOptions stamped = stamp(options, PromptKind::Can);
+            const auto live = m_serializer.registerLivePrompt(m_cardKey, stamped.promptId);
+            return m_inner.requestCan(stamped);
+        });
     }
     [[nodiscard]] PromptResult requestMrz(const PromptOptions& options) override
     {
-        return gated([&] { return m_inner.requestMrz(options); });
+        return gated([&] {
+            const PromptOptions stamped = stamp(options, PromptKind::Mrz);
+            const auto live = m_serializer.registerLivePrompt(m_cardKey, stamped.promptId);
+            return m_inner.requestMrz(stamped);
+        });
     }
     // The two-secret change prompt is gated identically: it holds THIS CARD's
     // slot across the one modal, so a change dialog can never stack on top of
@@ -57,7 +70,12 @@ public:
     [[nodiscard]] PinChangePromptResult requestPinChange(const PromptOptions& options) override
     {
         return m_serializer.serialize(
-            m_cardKey, m_token, [&] { return m_inner.requestPinChange(options); },
+            m_cardKey, m_token,
+            [&] {
+                const PromptOptions stamped = stamp(options, PromptKind::ChangePin);
+                const auto live = m_serializer.registerLivePrompt(m_cardKey, stamped.promptId);
+                return m_inner.requestPinChange(stamped);
+            },
             [] {
                 PinChangePromptResult r;
                 r.status = PromptStatus::Cancelled;
@@ -65,16 +83,33 @@ public:
             });
     }
 
-    // The in-dialog dismiss is the inner client's concern (it issues
-    // Prompter1.CancelCurrent for the live modal); forward unchanged. A worker
-    // still QUEUED behind the gate is handled by the cancellation-aware wait
-    // in serialize(), not here.
-    void cancel() noexcept override
+    // The in-dialog dismiss names its prompt; the inner client turns that into
+    // the host's addressed cancel. A worker still QUEUED behind the gate has no
+    // id yet and is handled by the cancellation-aware wait in serialize().
+    void cancel(const std::string& promptId) noexcept override
     {
-        m_inner.cancel();
+        m_inner.cancel(promptId);
     }
 
 private:
+    // The ONE writer of a prompt's id and deadline. Every prompt passes through
+    // this decorator, so the six PromptOptions construction sites cannot forget
+    // -- a site that forgot would ship a dialog that never expires, silently.
+    //
+    // Per RAISED prompt, not per operation: a re-prompt after a wrong CAN needs
+    // its own address, or a cancel meant for it would close the first dialog.
+    // Minted inside the gate, so a worker cancelled while queued burns no id.
+    //
+    // The reader is resolved from THIS decorator's card key, which is the same
+    // key the gate serializes on -- so the dialog names the reader whose slot it
+    // is actually holding.
+    [[nodiscard]] PromptOptions stamp(const PromptOptions& options, PromptKind kind)
+    {
+        PromptOptions out = options;
+        stampPrompt(out, PromptContext{m_serializer.readerIdentityFor(m_cardKey), m_serializer.idMinter()}, kind);
+        return out;
+    }
+
     template <typename Fn>
     PromptResult gated(Fn&& doPrompt)
     {

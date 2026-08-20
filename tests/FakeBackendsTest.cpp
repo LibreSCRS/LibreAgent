@@ -59,8 +59,9 @@ TEST(FakePrompter, ReturnsSeededResultAndRecordsCall)
     EXPECT_EQ(r.status, PromptStatus::Ok);
     ASSERT_EQ(p.calls.size(), 1u);
     EXPECT_EQ(p.calls[0], FakePrompter::Kind::Can);
-    iface.cancel();
+    iface.cancel("nonce:1");
     EXPECT_EQ(p.cancels, 1);
+    EXPECT_EQ(p.cancelledIds.front(), "nonce:1");
 }
 
 // A prompter that honoured an in-dialog switch answers a CAN request with a

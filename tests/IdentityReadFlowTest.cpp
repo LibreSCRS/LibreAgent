@@ -14,6 +14,7 @@
 
 #include <LibreSCRS/Agent/cache/MrzPayload.h>
 #include <LibreSCRS/Agent/operations/CardSessionHolder.h>
+#include <LibreSCRS/Agent/operations/ConsentPhaseScope.h>
 #include <LibreSCRS/Agent/operations/FlowPrelude.h>
 #include <LibreSCRS/Agent/operations/IdentityReadFlow.h>
 #include <LibreSCRS/Agent/operations/LmSeams.h>       // LmCredentialDepositor, resolveDepositTargets
@@ -43,6 +44,7 @@
 #include <optional>
 #include <span>
 #include <sstream>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -161,6 +163,13 @@ public:
     {
         ++canPrompts;
         lastCanOptions = opts;
+        if (throwOnCan) {
+            // A prompter transport that fails mid-dialog. The read provider's
+            // catch-all turns this into an error result, so nothing downstream
+            // ever sees the exception -- which is exactly why the phase must be
+            // handed back by a scope rather than by a call before the return.
+            throw std::runtime_error("prompter transport failed mid-dialog");
+        }
         if (canOverride.has_value()) {
             return *canOverride;
         }
@@ -171,6 +180,8 @@ public:
     }
     // Scripted reply for the CAN prompt, overriding the plain Ok above.
     std::optional<PromptResult> canOverride;
+    // Make the CAN prompt throw instead of replying (see requestCan).
+    bool throwOnCan = false;
     // The prompter honoured the in-dialog switch: an Ok carrying an MRZ
     // payload plus the kind actually collected.
     void answerCanWithMrz(std::string_view payload)
@@ -501,6 +512,76 @@ TEST(IdentityReadFlow, ProviderLambdaRoutesOnRequirementAndFiresAwaitingConsent)
                         static_cast<std::uint32_t>(OperationPhase::AwaitingConsent)),
               h.phaseSink.phases.end())
         << "AwaitingConsent phase must be recorded by the provider lambda";
+}
+
+TEST(ConsentPhaseScope, ReturnsTheOperationToAMachinePhaseSoTheCardIsWatchedAgain)
+{
+    // The class contract in isolation: consent is a bounded excursion, and the
+    // scope is what closes it. Entering disarms the per-op watchdog; leaving
+    // must re-enter an arming phase, or the card I/O after the prompt is
+    // unbounded.
+    RecordingPhaseSink sink;
+    {
+        ConsentPhaseScope consent{sink};
+        EXPECT_EQ(sink.phases.back(), static_cast<std::uint32_t>(OperationPhase::AwaitingConsent));
+    }
+    EXPECT_EQ(sink.phases.back(), static_cast<std::uint32_t>(OperationPhase::Authenticating))
+        << "the card I/O after the prompt would run with no watchdog";
+}
+
+TEST(IdentityReadFlow, ProviderLambdaClosesTheConsentExcursionSoThePostPromptReadIsWatched)
+{
+    // The call site, not the class: the read provider is where the prompt is
+    // actually raised, from INSIDE the plugin's readCard -- so everything the
+    // card does after the holder types (the activation the secret unlocks, then
+    // the data-group reads) happens while this lambda's phase is still current.
+    // Leaving that phase at AwaitingConsent leaves the watchdog disarmed for all
+    // of it, which is an unbounded SCardTransmit away from a frozen worker. The
+    // flow's own Authenticating/Reading pair does not rescue this: it fires
+    // BEFORE the read, and the only pair after it belongs to the MRZ-deposit
+    // branch, which the ordinary CAN path never enters.
+    Harness h;
+    auto prompterFailed = std::make_shared<std::atomic<bool>>(false);
+    auto provider = FlowPrelude::makeReadCredentialProvider(h.cache, h.prompter, h.serializer, h.phaseSink, "card-A",
+                                                            h.requester, h.artifact, h.source.token(), prompterFailed);
+
+    // Empty cache -> the lambda takes the real prompter path.
+    auto cred = provider(paceReq(PaceSecretKind::Can));
+    EXPECT_EQ(cred.status, LibreSCRS::Auth::CredentialResult::Status::Ok);
+
+    const auto& phases = h.phaseSink.phases;
+    ASSERT_FALSE(phases.empty());
+    EXPECT_NE(std::find(phases.begin(), phases.end(), static_cast<std::uint32_t>(OperationPhase::AwaitingConsent)),
+              phases.end())
+        << "the prompt must still surface as AwaitingConsent";
+    EXPECT_EQ(phases.back(), static_cast<std::uint32_t>(OperationPhase::Authenticating))
+        << "the provider returned with the operation still parked in AwaitingConsent: the watchdog is disarmed "
+           "and the card I/O that follows the prompt has no bound at all";
+}
+
+TEST(IdentityReadFlow, ProviderLambdaClosesTheConsentExcursionEvenWhenThePromptThrows)
+{
+    // Why the excursion is a SCOPE and not a call before the return. The prompt
+    // body is wrapped in a catch-all that maps any throw to an error result, so
+    // a hand-back placed on the normal path is simply skipped when the prompter
+    // transport fails mid-dialog -- and LM, which sees only an error result,
+    // walks on to its next candidate and issues more card I/O with the watchdog
+    // still disarmed. The scope's destructor runs on the unwind, so the phase
+    // comes back on this path too.
+    Harness h;
+    h.prompter.throwOnCan = true;
+    auto prompterFailed = std::make_shared<std::atomic<bool>>(false);
+    auto provider = FlowPrelude::makeReadCredentialProvider(h.cache, h.prompter, h.serializer, h.phaseSink, "card-A",
+                                                            h.requester, h.artifact, h.source.token(), prompterFailed);
+
+    auto cred = provider(paceReq(PaceSecretKind::Can));
+    EXPECT_NE(cred.status, LibreSCRS::Auth::CredentialResult::Status::Ok)
+        << "a prompter that threw cannot have produced a usable secret";
+
+    const auto& phases = h.phaseSink.phases;
+    ASSERT_FALSE(phases.empty());
+    EXPECT_EQ(phases.back(), static_cast<std::uint32_t>(OperationPhase::Authenticating))
+        << "the throwing path left the operation parked in AwaitingConsent with the watchdog disarmed";
 }
 
 TEST(IdentityReadFlow, ProviderLambdaPopulatesRequesterAndArtifactOnPrompt)
