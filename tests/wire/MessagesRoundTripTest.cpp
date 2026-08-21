@@ -405,6 +405,55 @@ TEST(MessagesRoundTrip, CardStateEncodesCardTypeAndAtrWhenSet)
     EXPECT_EQ(*card->find("atr")->asText(), "3B7F96000080318065B085040132900085");
 }
 
+// The GetConfig reply exactly as the macOS socket frontend builds it: nine
+// entries, one an array of maps, one an array of text. That reply's encoding
+// faulted on macOS inside this map's copy -- and this case is the measurement
+// that says the encoding is NOT why. It passes under ASan and UBSan on
+// libstdc++ and on libc++ alike, which is what retired the reading that blamed
+// `Map`'s incomplete value type (backlog 154). The fault itself is backlog 155,
+// still open, and needs what this case deliberately does not have: a real config
+// store, a dispatch queue, and Apple's own libc++.
+//
+// It stays because the shape is worth pinning either way -- a nested map inside
+// an array inside a map is the deepest thing the config reply carries.
+TEST(MessagesRoundTrip, ConfigReplyWithEveryEntryKindEncodes)
+{
+    ConfigReply reply;
+    reply.entries.emplace("DefaultLevel", CborValue(std::string("b-b")));
+    {
+        CborValue::Array urls;
+        urls.emplace_back(CborValue(std::string("https://tsa.example.com")));
+        urls.emplace_back(CborValue(std::string("https://tsa.other.com")));
+        reply.entries.emplace("TsaUrls", CborValue(std::move(urls)));
+    }
+    reply.entries.emplace("LastTsaUrl", CborValue(std::string("https://tsa.example.com")));
+    {
+        CborValue::Array sources;
+        for (int i = 0; i < 3; ++i) {
+            CborValue::Map m;
+            m.emplace("url", CborValue(std::string("https://tl.example.com/lotl.xml")));
+            m.emplace("isLotl", CborValue(true));
+            m.emplace("eager", CborValue(false));
+            sources.emplace_back(CborValue(std::move(m)));
+        }
+        reply.entries.emplace("TslSources", CborValue(std::move(sources)));
+    }
+    reply.entries.emplace("TslCacheDir", CborValue(std::string("/var/cache/tsl")));
+    reply.entries.emplace("AiaCacheDir", CborValue(std::string("/var/cache/aia")));
+    reply.entries.emplace("DefaultReason", CborValue(std::string()));
+    reply.entries.emplace("DefaultLocation", CborValue(std::string()));
+    reply.entries.emplace("PluginDir", CborValue(std::string("/usr/lib/librescrs")));
+
+    const CborValue msg = makeReply(7, reply);
+    const auto bytes = msg.encode();
+    EXPECT_FALSE(bytes.empty());
+
+    const CborValue* entries = msg.find("entries");
+    ASSERT_NE(entries, nullptr);
+    ASSERT_NE(entries->asMap(), nullptr);
+    EXPECT_EQ(entries->asMap()->size(), 9u);
+}
+
 TEST(MessagesRoundTrip, EveryEventEncodesWithItsTag)
 {
     EXPECT_EQ(*toCbor(ReaderAdded{ReaderState{"r", "n", false, std::nullopt}}).find("t")->asText(), "ReaderAdded");
