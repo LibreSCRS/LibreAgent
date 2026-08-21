@@ -455,7 +455,8 @@ public:
                   LibreSCRS::AgentClient::CredentialRecordsWire credRecords = {},
                   QByteArray signArtifactBytes = QByteArrayLiteral("FAKE-SIGNED-ARTIFACT"), QVariantMap signMeta = {},
                   bool tokenInfoEmpty = false, QList<FakeIdentityGroup> identityGroupScript = {},
-                  QStringList batchDisplayNames = {}, int batchHaltAtIndex = -1, uint batchHaltErrorCode = 0);
+                  QStringList batchDisplayNames = {}, int batchHaltAtIndex = -1, uint batchHaltErrorCode = 0,
+                  bool marksListingCurrent = false);
     ~FakeOperation() override;
 
     [[nodiscard]] QString path() const;
@@ -528,6 +529,9 @@ private:
     uint m_finalErrorCode;
     bool m_suppressResult; ///< finish Ok WITHOUT emitting the typed Result AND with nothing to recover (total loss)
     bool m_completed = false;
+    /// A ListCredentials operation: the agent's listing cache is populated when
+    /// THIS completes, not when the method that minted it returned.
+    bool m_marksListingCurrent = false;
     bool m_lostSignalRecoverable = false; ///< finish Ok, SUPPRESS the Result signal, but RETAIN the payload so
                                           ///< GetResult recovers it (the deterministic lost-signal race)
     bool m_resultRetained = false;        ///< an Ok result was retained -> GetResult serves it (else NoResult)
@@ -589,6 +593,12 @@ public:
         QString atrHex;
         int operationDelayMs = 5;            ///< delay before an op fires its result/finished
         uint finalStatus = 0;                ///< 0 Ok / 1 Cancelled / 2 Error
+    /// Terminal status for the ListCredentials operation ALONE, scripted apart
+    /// from `finalStatus` above — which usually scripts the MUTATION a test is
+    /// after (a wrong PIN finishes Error). The agent caches a snapshot only for
+    /// a list that succeeded, so a listing dragged into a mutation's Error would
+    /// leave every id unresolvable. Set to 2 to model a listing that itself failed.
+    uint listingFinalStatus = 0;         ///< 0 Ok / 1 Cancelled / 2 Error
         uint finalErrorCode = 0;             ///< Finished errorCode when status==Error
         bool raceResultBeforeReturn = false; ///< fire op synchronously (delay ignored) before method returns
         bool suppressResult = false;         ///< finish Ok WITHOUT emitting the typed Result AND unrecoverable

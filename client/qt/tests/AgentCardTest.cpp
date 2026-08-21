@@ -55,6 +55,16 @@ FdHandle makeDocumentFd(const QByteArray& bytes)
     ::lseek(fd, 0, SEEK_SET);
     return FdHandle{fd};
 }
+
+// Issue a ListCredentials and wait for it to COMPLETE. Completion — not the
+// method returning an operation path — is what makes ids resolvable: the agent
+// writes its snapshot at the end of the read (CredentialListFlow). Every
+// mutation below therefore lists THROUGH this helper.
+[[nodiscard]] bool listAndAwait(AgentCard* card)
+{
+    AgentOperation* op = card->listCredentials();
+    return op != nullptr && waitFor([op]() { return op->isFinished(); });
+}
 } // namespace
 
 TEST(AgentCard, PropertiesReflectFake)
@@ -1139,6 +1149,12 @@ TEST(AgentCard, CredentialsMethodsRequirePinManagementCapability)
 // agent's listing cache — so a second mutate without the mandatory re-list is
 // refused too. The fake enforces both halves so a client that skips the
 // re-list fails the suite.
+//
+// The half that matters most is WHEN a listing starts counting: the agent writes
+// its snapshot at the END of the read (CredentialListFlow), so having merely
+// ISSUED a ListCredentials buys nothing. A client that re-lists and mutates in
+// the same turn — without waiting for the listing to finish — is refused exactly
+// as if it had never listed.
 TEST(AgentCard, ManagePinRequiresCurrentListingAndMutationDropsIt)
 {
     FakeAgent::Config cfg;
@@ -1160,9 +1176,18 @@ TEST(AgentCard, ManagePinRequiresCurrentListingAndMutationDropsIt)
     EXPECT_TRUE(refused1->isFinished());
     EXPECT_EQ(refused1->callError(), CallError::InvalidArguments);
 
-    // List, then mutate: mints a live operation.
+    // Issuing the list is NOT listing: until it completes, the id is still
+    // unresolvable. This is the shape a re-list-and-retry recovery takes when it
+    // fires both calls in one turn.
     AgentOperation* listOp = card->listCredentials();
     ASSERT_NE(listOp, nullptr);
+    AgentOperation* tooEarly = card->managePin(QStringLiteral("user:0x86"), PinVerb::Change);
+    ASSERT_NE(tooEarly, nullptr);
+    EXPECT_TRUE(tooEarly->isFinished()) << "a mutation issued before the listing COMPLETED must be refused";
+    EXPECT_EQ(tooEarly->callError(), CallError::InvalidArguments);
+
+    // Once the read finishes, the same id mints a live operation.
+    ASSERT_TRUE(waitFor([&]() { return listOp->isFinished(); }));
     AgentOperation* mutateOp = card->managePin(QStringLiteral("user:0x86"), PinVerb::Change);
     ASSERT_NE(mutateOp, nullptr);
     EXPECT_FALSE(mutateOp->isFinished());
@@ -1174,10 +1199,10 @@ TEST(AgentCard, ManagePinRequiresCurrentListingAndMutationDropsIt)
     EXPECT_TRUE(refused2->isFinished());
     EXPECT_EQ(refused2->callError(), CallError::InvalidArguments);
 
-    ASSERT_NE(card->listCredentials(), nullptr);
+    ASSERT_TRUE(listAndAwait(card));
     AgentOperation* recovered = card->managePin(QStringLiteral("user:0x86"), PinVerb::Change);
     ASSERT_NE(recovered, nullptr);
-    EXPECT_FALSE(recovered->isFinished()) << "a fresh list restores mutability";
+    EXPECT_FALSE(recovered->isFinished()) << "a fresh COMPLETED list restores mutability";
 }
 
 // An id absent from the CURRENT listing snapshot is refused (InvalidArguments —
@@ -1196,7 +1221,7 @@ TEST(AgentCard, ManagePinRefusesIdOutsideCurrentListing)
     auto client = makeClient(h);
     AgentCard* card = client->card(h.cardPath());
     ASSERT_NE(card, nullptr);
-    ASSERT_NE(card->listCredentials(), nullptr);
+    ASSERT_TRUE(listAndAwait(card));
 
     AgentOperation* refused = card->managePin(QStringLiteral("user:0x99"), PinVerb::Change);
     ASSERT_NE(refused, nullptr) << "an id absent from the current listing cannot be mutated";
@@ -1295,7 +1320,7 @@ TEST(AgentCard, ManagePinEnforcesVerbVocabularyAndKeepsListingOnRefusal)
         {PinVerb::ActivatePin, QStringLiteral("activate_pin")},
     };
     for (const auto& [verb, token] : accepted) {
-        ASSERT_NE(card->listCredentials(), nullptr);
+        ASSERT_TRUE(listAndAwait(card));
         AgentOperation* op = card->managePin(QStringLiteral("user:0x86"), verb);
         ASSERT_NE(op, nullptr);
         EXPECT_FALSE(op->isFinished()) << "a verb inside the agent's closed set must start, not be refused";
@@ -1304,7 +1329,7 @@ TEST(AgentCard, ManagePinEnforcesVerbVocabularyAndKeepsListingOnRefusal)
 
     // A verb outside the three named values maps to the empty token and is
     // refused by the agent's request-side gate.
-    ASSERT_NE(card->listCredentials(), nullptr);
+    ASSERT_TRUE(listAndAwait(card));
     AgentOperation* refused = card->managePin(QStringLiteral("user:0x86"), static_cast<PinVerb>(99));
     ASSERT_NE(refused, nullptr) << "a refused ManagePin mints a FAILED operation, never nullptr";
     EXPECT_TRUE(refused->isFinished());
@@ -1346,7 +1371,7 @@ TEST(AgentCard, ManagePinActivatePinAcceptsActivateKeyOption)
     auto client = makeClient(h);
     AgentCard* card = client->card(h.cardPath());
     ASSERT_NE(card, nullptr);
-    ASSERT_NE(card->listCredentials(), nullptr);
+    ASSERT_TRUE(listAndAwait(card));
 
     // The fake enforces the SAME closed request-side vocabulary the real
     // agent does (CredentialsAdaptor::ManagePin): activateKey is a known,
@@ -1377,7 +1402,7 @@ TEST(AgentCard, ManagePinActivatePinDefaultOptionIsStillLegal)
     auto client = makeClient(h);
     AgentCard* card = client->card(h.cardPath());
     ASSERT_NE(card, nullptr);
-    ASSERT_NE(card->listCredentials(), nullptr);
+    ASSERT_TRUE(listAndAwait(card));
 
     AgentOperation* activated = card->managePin(QStringLiteral("sign:0x87"), PinVerb::ActivatePin);
     ASSERT_NE(activated, nullptr);
@@ -1404,7 +1429,7 @@ TEST(AgentCard, ManagePinIgnoresActivateKeyOptionOutsideActivatePin)
     auto client = makeClient(h);
     AgentCard* card = client->card(h.cardPath());
     ASSERT_NE(card, nullptr);
-    ASSERT_NE(card->listCredentials(), nullptr);
+    ASSERT_TRUE(listAndAwait(card));
 
     AgentOperation* op = card->managePin(QStringLiteral("user:0x86"), PinVerb::Change, ManagePinOptions{true});
     ASSERT_NE(op, nullptr);

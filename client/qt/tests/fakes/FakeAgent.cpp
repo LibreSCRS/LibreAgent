@@ -329,7 +329,8 @@ FakeOperation::FakeOperation(QObject* parent, QDBusConnection connection, QStrin
                              bool lostSignalRecoverable, QVariantMap credResult,
                              LibreSCRS::AgentClient::CredentialRecordsWire credRecords, QByteArray signArtifactBytes,
                              QVariantMap signMeta, bool tokenInfoEmpty, QList<FakeIdentityGroup> identityGroupScript,
-                             QStringList batchDisplayNames, int batchHaltAtIndex, uint batchHaltErrorCode)
+                             QStringList batchDisplayNames, int batchHaltAtIndex, uint batchHaltErrorCode,
+                             bool marksListingCurrent)
     : QObject(parent), m_connection(connection), m_path(std::move(path)), m_kind(kind), m_delayMs(delayMs),
       m_finalStatus(finalStatus), m_finalErrorCode(finalErrorCode), m_suppressResult(suppressResult),
       m_lostSignalRecoverable(lostSignalRecoverable), m_certScript(std::move(certScript)),
@@ -338,7 +339,8 @@ FakeOperation::FakeOperation(QObject* parent, QDBusConnection connection, QStrin
       m_credRecords(std::move(credRecords)), m_signArtifactBytes(std::move(signArtifactBytes)),
       m_signMeta(std::move(signMeta)), m_tokenInfoEmpty(tokenInfoEmpty),
       m_identityGroupScript(std::move(identityGroupScript)), m_batchDisplayNames(std::move(batchDisplayNames)),
-      m_batchHaltAtIndex(batchHaltAtIndex), m_batchHaltErrorCode(batchHaltErrorCode)
+      m_batchHaltAtIndex(batchHaltAtIndex), m_batchHaltErrorCode(batchHaltErrorCode),
+      m_marksListingCurrent(marksListingCurrent)
 {
     m_opAdaptor = std::make_unique<FakeOperationAdaptor>(this);
     if (m_kind == Kind::Sign) {
@@ -508,6 +510,16 @@ void FakeOperation::fire()
     }
 
     m_completed = true;
+
+    // A completed ListCredentials is what makes ids resolvable — and only a
+    // successful one: the real agent caches nothing on an error or cancel.
+    // Before Finished, so a client that retries a mutation from its finished
+    // handler finds the listing current.
+    if (m_marksListingCurrent && m_finalStatus == 0u) {
+        if (auto* agent = qobject_cast<FakeAgent*>(parent())) {
+            agent->noteListingIssued();
+        }
+    }
 
     // Finished.
     QString msgKey = m_finalStatus == 2u ? QStringLiteral("err.key") : QString();
@@ -1370,7 +1382,11 @@ QDBusObjectPath CredentialsAdaptor::ListCredentials()
     // against a specific pinId), so it scopes to the MUTATION methods only —
     // ListCredentials is id-less and cannot draw those, and must stay live so the
     // client's mandatory post-mutation / UnknownCredential recovery re-list works.
-    m_agent->noteListingIssued(); // the agent's listing cache is (re)populated
+    // The listing cache is populated when the minted operation COMPLETES, not
+    // here: the real agent writes the snapshot at the end of the list flow,
+    // after reading the card (CredentialListFlow.cpp). Marking it at method
+    // entry made a mutation issued before the listing finished succeed against
+    // this double and fail against the agent.
     return m_agent->mintOperation(FakeOperation::Kind::Credentials);
 }
 
@@ -1695,12 +1711,18 @@ QDBusObjectPath FakeAgent::mintOperation(FakeOperation::Kind kind, bool withCred
     // records ride ListCredentials results alone, exactly like the real agent.
     const LibreSCRS::AgentClient::CredentialRecordsWire credRecords =
         withCredRecords ? m_config.credRecords : LibreSCRS::AgentClient::CredentialRecordsWire{};
-    auto* op = new FakeOperation(this, m_connection, opPath, kind, delay, m_config.finalStatus, m_config.finalErrorCode,
+    // A ListCredentials is a Credentials op that carries records; a mutation is
+    // the same kind WITHOUT them. Only the former populates the listing cache,
+    // and it scripts its own terminal status (see Config::listingFinalStatus).
+    const bool isCredentialListing = (kind == FakeOperation::Kind::Credentials) && withCredRecords;
+    const uint finalStatus = isCredentialListing ? m_config.listingFinalStatus : m_config.finalStatus;
+    auto* op = new FakeOperation(this, m_connection, opPath, kind, delay, finalStatus, m_config.finalErrorCode,
                                  suppressResult, m_config.certScript, m_config.rawCertResult, m_config.photoBytes,
                                  photoEmptyMap, m_config.announceConsentPhase, m_config.lostSignalRecoverable,
                                  m_config.credResult, credRecords, m_config.signArtifactBytes, m_config.signMeta,
                                  m_config.tokenInfoEmpty, m_config.identityGroupScript, std::move(batchDisplayNames),
-                                 m_config.batchHaltAtIndex, m_config.batchHaltErrorCode);
+                                 m_config.batchHaltAtIndex, m_config.batchHaltErrorCode,
+                                 /*marksListingCurrent=*/isCredentialListing);
     m_operations.append(op);
     // When raceResultBeforeReturn is set, delay is 0 so start() fires Result +
     // Finished synchronously here, BEFORE we return the path — the client

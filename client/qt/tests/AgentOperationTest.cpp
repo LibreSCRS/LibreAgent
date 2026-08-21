@@ -405,6 +405,16 @@ QVariantMap listedUserPinRecord()
                        {QStringLiteral("state"), QStringLiteral("operational")}};
 }
 
+// Issue a ListCredentials and wait for it to COMPLETE. Completion — not the
+// method returning an operation path — is what makes ids resolvable: the agent
+// writes its snapshot at the end of the read (CredentialListFlow), so a client
+// that lists and mutates in the same turn is refused as if it had never listed.
+[[nodiscard]] bool listAndAwait(AgentCard* card)
+{
+    AgentOperation* op = card->listCredentials();
+    return op != nullptr && waitFor([op]() { return op->isFinished(); });
+}
+
 // Divergence (2)+(3): a ManagePin attempt whose Result is {invalidPin, retries_left=2}
 // but whose Finished is Error(CredentialWrong). The per-attempt Result must be
 // delivered, and the REAL terminal (Error/CredentialWrong) preserved — NOT
@@ -425,7 +435,8 @@ TEST(AgentOperation, CredentialsResultDeliveredOnErrorTerminal)
     auto client = makeClient(h);
     AgentCard* card = client->card(h.cardPath());
     ASSERT_NE(card, nullptr);
-    std::ignore = card->listCredentials(); // contract: list-before-mutate (the fake enforces the agent's gate)
+    // Contract: list-before-mutate, and the listing must have FINISHED.
+    ASSERT_TRUE(listAndAwait(card));
     AgentOperation* op = card->managePin(QStringLiteral("user:0x86"), PinVerb::Change);
     ASSERT_NE(op, nullptr);
 
@@ -500,7 +511,8 @@ TEST(AgentOperation, CredentialsLostSignalRecoversViaGetResult)
     auto client = makeClient(h);
     AgentCard* card = client->card(h.cardPath());
     ASSERT_NE(card, nullptr);
-    std::ignore = card->listCredentials(); // contract: list-before-mutate (the fake enforces the agent's gate)
+    // Contract: list-before-mutate, and the listing must have FINISHED.
+    ASSERT_TRUE(listAndAwait(card));
     AgentOperation* op = card->managePin(QStringLiteral("user:0x86"), PinVerb::Change);
     ASSERT_NE(op, nullptr);
 
@@ -533,7 +545,8 @@ TEST(AgentOperation, CredentialsLostSignalCtorPathRecoversViaGetResult)
     auto client = makeClient(h);
     AgentCard* card = client->card(h.cardPath());
     ASSERT_NE(card, nullptr);
-    std::ignore = card->listCredentials(); // contract: list-before-mutate (the fake enforces the agent's gate)
+    // Contract: list-before-mutate, and the listing must have FINISHED.
+    ASSERT_TRUE(listAndAwait(card));
     AgentOperation* op = card->managePin(QStringLiteral("user:0x86"), PinVerb::Change);
     ASSERT_NE(op, nullptr);
 
@@ -563,7 +576,8 @@ TEST(AgentOperation, CredentialsLostResultAndGetResultUnavailableIsLoud)
     auto client = makeClient(h);
     AgentCard* card = client->card(h.cardPath());
     ASSERT_NE(card, nullptr);
-    std::ignore = card->listCredentials(); // contract: list-before-mutate (the fake enforces the agent's gate)
+    // Contract: list-before-mutate, and the listing must have FINISHED.
+    ASSERT_TRUE(listAndAwait(card));
     AgentOperation* op = card->managePin(QStringLiteral("user:0x86"), PinVerb::Change);
     ASSERT_NE(op, nullptr);
 
