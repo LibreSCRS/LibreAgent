@@ -591,14 +591,14 @@ public:
         // "agent predating this surface" absence case.
         QString cardType;
         QString atrHex;
-        int operationDelayMs = 5;            ///< delay before an op fires its result/finished
-        uint finalStatus = 0;                ///< 0 Ok / 1 Cancelled / 2 Error
-    /// Terminal status for the ListCredentials operation ALONE, scripted apart
-    /// from `finalStatus` above — which usually scripts the MUTATION a test is
-    /// after (a wrong PIN finishes Error). The agent caches a snapshot only for
-    /// a list that succeeded, so a listing dragged into a mutation's Error would
-    /// leave every id unresolvable. Set to 2 to model a listing that itself failed.
-    uint listingFinalStatus = 0;         ///< 0 Ok / 1 Cancelled / 2 Error
+        int operationDelayMs = 5; ///< delay before an op fires its result/finished
+        uint finalStatus = 0;     ///< 0 Ok / 1 Cancelled / 2 Error
+        /// Terminal status for the ListCredentials operation ALONE, scripted apart
+        /// from `finalStatus` above — which usually scripts the MUTATION a test is
+        /// after (a wrong PIN finishes Error). The agent caches a snapshot only for
+        /// a list that succeeded, so a listing dragged into a mutation's Error would
+        /// leave every id unresolvable. Set to 2 to model a listing that itself failed.
+        uint listingFinalStatus = 0;         ///< 0 Ok / 1 Cancelled / 2 Error
         uint finalErrorCode = 0;             ///< Finished errorCode when status==Error
         bool raceResultBeforeReturn = false; ///< fire op synchronously (delay ignored) before method returns
         bool suppressResult = false;         ///< finish Ok WITHOUT emitting the typed Result AND unrecoverable
