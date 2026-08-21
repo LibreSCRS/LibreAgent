@@ -343,6 +343,13 @@ CredentialCache::requestCredential(const std::string& cardKey, const LibreSCRS::
             }
             return buildError();
         }
+        // A prompt that ANSWERED clears the expiry signal: the flag means "the
+        // last prompt for this card yielded nothing", and this one did. Without
+        // the clear, a wrong value entered after an earlier expiry would never
+        // be marked wrong (FlowPrelude guards the mark on this flag).
+        if (entryExpired != nullptr) {
+            entryExpired->store(false, std::memory_order_relaxed);
+        }
         // The prompter honoured an in-dialog switch: the secret it collected is
         // NOT of the kind this activation asked for, so it must never be adapted
         // into this kind's entries nor stored in this kind's cache slot. Park it

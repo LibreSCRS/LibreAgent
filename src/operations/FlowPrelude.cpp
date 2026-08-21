@@ -115,9 +115,22 @@ LibreSCRS::Auth::CredentialProvider makeReadCredentialProvider(
             // the re-prompt carries attempt/last_error. A same-kind re-invocation
             // with an EMPTY reason (PACE→BAC fallback, multi-candidate walk) is
             // NOT a rejection and serves the never-rejected value from cache.
+            //
+            // ...but that invariant is weaker than it reads, MEASURED on a live
+            // agent: when the previous prompt EXPIRED, no secret ever reached
+            // LM, LM's activation fails anyway, and it re-invokes with the same
+            // preReadAuthFailed reason. Marking there evicts a value that was
+            // never presented, burns one of the three PACE attempts, and makes
+            // the next dialog say "the value entered was not accepted" to a
+            // holder who entered nothing. So a re-prompt that follows an expiry
+            // is not a rejection: skip the mark and let the retry context stay
+            // clean. The flag is cleared again the moment a prompt DOES yield a
+            // secret, so a wrong value entered after an expiry still marks.
             bool markedNow = false;
+            const bool lastPromptYieldedNothing = entryExpired && entryExpired->load(std::memory_order_relaxed);
             if (const auto& reason = req.message();
-                reason.has_value() && reason->key == LibreSCRS::Auth::ErrorKeys::preReadAuthFailed().key) {
+                reason.has_value() && reason->key == LibreSCRS::Auth::ErrorKeys::preReadAuthFailed().key &&
+                !lastPromptYieldedNothing) {
                 cache.markCredentialWrong(cardKey, LibreSCRS::Auth::ErrorKeys::preReadAuthFailed().key);
                 markedNow = true;
             }
