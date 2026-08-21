@@ -67,6 +67,8 @@ static_assert(std::to_underlying(Wire::CredentialOutcome::KeyActivationFailed) =
               std::to_underlying(AgentOutcome::KeyActivationFailed));
 static_assert(std::to_underlying(Wire::CredentialOutcome::CardRemoved) ==
               std::to_underlying(AgentOutcome::CardRemoved));
+static_assert(std::to_underlying(Wire::CredentialOutcome::EntryExpired) ==
+              std::to_underlying(AgentOutcome::EntryExpired));
 
 // Underlying-type parity too: a value-only check would still pass if one
 // side quietly changed from `int` to e.g. `std::uint8_t` while every

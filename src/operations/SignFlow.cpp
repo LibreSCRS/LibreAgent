@@ -130,10 +130,15 @@ SignFlow::Result SignFlow::run()
     // final ErrorCode to PrompterError below. shared_ptr so the flag outlives the
     // closure if LM defers the provider.
     auto prompterFailed = std::make_shared<std::atomic<bool>>(false);
+    // Set true iff a prompt EXPIRED: the holder's entry window closed. Neither
+    // a cancel nor a card-side rejection, so it carries its own code.
+    auto entryExpired = std::make_shared<std::atomic<bool>>(false);
+    // Set true iff the agent REFUSED to raise the prompt (helper too old).
+    auto helperTooOld = std::make_shared<std::atomic<bool>>(false);
 
     LibreSCRS::Auth::CredentialProvider provider =
-        [&cache, &prompter, &serializer, &phaseSink, cardKey, requester, description, token,
-         prompterFailed](const LibreSCRS::Auth::AuthRequirement& req) -> LibreSCRS::Auth::CredentialResult {
+        [&cache, &prompter, &serializer, &phaseSink, cardKey, requester, description, token, prompterFailed,
+         entryExpired, helperTooOld](const LibreSCRS::Auth::AuthRequirement& req) -> LibreSCRS::Auth::CredentialResult {
         try {
             PromptOptions opts;
             opts.requester = requester;
@@ -160,6 +165,14 @@ SignFlow::Result SignFlow::run()
                     if (prompt.status == PromptStatus::Error) {
                         prompterFailed->store(true, std::memory_order_relaxed);
                     }
+                    // The clock closed the window; nobody cancelled and the
+                    // card rejected nothing.
+                    if (prompt.status == PromptStatus::Timeout) {
+                        entryExpired->store(true, std::memory_order_relaxed);
+                    }
+                    if (prompt.status == PromptStatus::HelperTooOld) {
+                        helperTooOld->store(true, std::memory_order_relaxed);
+                    }
                     return LibreSCRS::Auth::CredentialResult::error(LibreSCRS::LocalizedText{});
                 }
                 // PIN collected: arm the watchdog (Authenticating) and surface
@@ -183,7 +196,8 @@ SignFlow::Result SignFlow::run()
 
             // Channel-establishment secret (CAN/MRZ): cacheable, no sign phases.
             phaseSink.setPhase(static_cast<std::uint32_t>(OperationPhase::AwaitingConsent));
-            return cache.requestCredential(cardKey, req, gated, opts, prompterFailed.get());
+            return cache.requestCredential(cardKey, req, gated, opts, prompterFailed.get(), /*userCancelled=*/nullptr,
+                                           /*mrzChoice=*/nullptr, entryExpired.get(), helperTooOld.get());
         } catch (...) {
             return LibreSCRS::Auth::CredentialResult::error(LibreSCRS::LocalizedText{});
         }
@@ -219,7 +233,20 @@ SignFlow::Result SignFlow::run()
     }
     if (outcome.status != SignOutcome::Status::Ok) {
         // A broken/absent prompter (not the card) prevented PIN/CAN collection:
-        // surface PrompterError so the client knows the UI failed.
+        // surface PrompterError so the client knows the UI failed. An expired
+        // entry window is its own code; a prompter that broke outranks one that
+        // merely ran out of time.
+        if (helperTooOld->load(std::memory_order_relaxed)) {
+            // Refused before any window was raised; the remedy is actionable.
+            return makeError(ErrorCode::CapabilityMissing, FlowPrelude::kHelperTooOldMsgKey,
+                             FlowPrelude::kHelperTooOldMsgFallback);
+        }
+        if (!prompterFailed->load(std::memory_order_relaxed) && entryExpired->load(std::memory_order_relaxed)) {
+            // The message travels with the code; the signer's own fallback
+            // names a failure that never reached the card.
+            return makeError(ErrorCode::EntryExpired, FlowPrelude::kEntryExpiredMsgKey,
+                             FlowPrelude::kEntryExpiredMsgFallback);
+        }
         const ErrorCode code =
             prompterFailed->load(std::memory_order_relaxed) ? ErrorCode::PrompterError : mapSignStatus(outcome.status);
         return makeError(code, "op.sign_failed", std::move(outcome.msgFallback));

@@ -28,7 +28,7 @@ namespace LibreSCRS::Agent::Wire {
 // Mirror of LibreSCRS::Agent::CredentialOutcome. On the wire each member
 // crosses as its camelCase STRING token (see Messages.cpp's
 // credOutcomeToken): unspecified|ok|userCancelled|missingFields|invalidPin|
-// blocked|pluginError|unsupported|keyActivationFailed|cardRemoved.
+// blocked|pluginError|unsupported|keyActivationFailed|cardRemoved|entryExpired.
 enum class CredentialOutcome {
     Unspecified,
     Ok,
@@ -40,6 +40,9 @@ enum class CredentialOutcome {
     Unsupported,
     KeyActivationFailed,
     CardRemoved, // agent-assigned; never produced by LM
+    // The credential window closed because the holder's entry time ran out.
+    // Agent-assigned; never produced by LM.
+    EntryExpired,
 };
 
 // Mirror of LibreSCRS::Agent::CredentialRecord. Field names ARE the wire

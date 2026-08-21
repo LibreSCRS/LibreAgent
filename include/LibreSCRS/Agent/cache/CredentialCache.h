@@ -170,6 +170,20 @@ public:
     // cancelled CAN prompt would be indistinguishable from a live card that
     // advertises no PIN credentials. Left null by callers that do not care.
     //
+    // @p entryExpired, when non-null, is set to true iff the prompt returned
+    // PromptStatus::Timeout (the window closed because the holder's entry time
+    // ran out) — the clock twin of prompterFailed. The caller remaps the final
+    // ErrorCode to EntryExpired, so the holder is not told they cancelled what
+    // the clock took from them, nor that the card rejected something it never
+    // saw. Left null by callers that do not care.
+    //
+    // @p helperTooOld, when non-null, is set to true iff the prompt returned
+    // PromptStatus::HelperTooOld — the agent refused to raise a prompt it could
+    // not later dismiss. The caller remaps the final ErrorCode to
+    // CapabilityMissing, whose client copy names the remedy (restart the
+    // session), rather than to PrompterError, which describes a helper that
+    // broke when this one is running fine.
+    //
     // @p mrzChoice, when non-null, opts the caller into the in-dialog CAN⇄MRZ
     // switch: a prompt that answers with a kind OTHER than the one requested
     // (an MRZ payload on a CAN request) parks its payload in the sink and
@@ -183,7 +197,8 @@ public:
     [[nodiscard]] LibreSCRS::Auth::CredentialResult
     requestCredential(const std::string& cardKey, const LibreSCRS::Auth::AuthRequirement& req, PrompterT& prompter,
                       const PromptOptions& options, std::atomic<bool>* prompterFailed = nullptr,
-                      std::atomic<bool>* userCancelled = nullptr, MrzChoiceSink* mrzChoice = nullptr);
+                      std::atomic<bool>* userCancelled = nullptr, MrzChoiceSink* mrzChoice = nullptr,
+                      std::atomic<bool>* entryExpired = nullptr, std::atomic<bool>* helperTooOld = nullptr);
 
 private:
     struct Entry
@@ -216,7 +231,8 @@ template <typename PrompterT>
 LibreSCRS::Auth::CredentialResult
 CredentialCache::requestCredential(const std::string& cardKey, const LibreSCRS::Auth::AuthRequirement& req,
                                    PrompterT& prompter, const PromptOptions& options, std::atomic<bool>* prompterFailed,
-                                   std::atomic<bool>* userCancelled, MrzChoiceSink* mrzChoice)
+                                   std::atomic<bool>* userCancelled, MrzChoiceSink* mrzChoice,
+                                   std::atomic<bool>* entryExpired, std::atomic<bool>* helperTooOld)
 {
     using LibreSCRS::Auth::CredentialEntry;
     using LibreSCRS::Auth::CredentialResult;
@@ -314,6 +330,16 @@ CredentialCache::requestCredential(const std::string& cardKey, const LibreSCRS::
         if (prompt.status != PromptStatus::Ok || !prompt.secret.has_value()) {
             if (prompterFailed != nullptr && prompt.status == PromptStatus::Error) {
                 prompterFailed->store(true, std::memory_order_relaxed);
+            }
+            // The clock closed the window: nobody cancelled and the card
+            // rejected nothing, so neither of those codes may be reported.
+            if (entryExpired != nullptr && prompt.status == PromptStatus::Timeout) {
+                entryExpired->store(true, std::memory_order_relaxed);
+            }
+            // Refused before the window was ever raised: a capability gap, and
+            // the one outcome here whose remedy the holder can act on.
+            if (helperTooOld != nullptr && prompt.status == PromptStatus::HelperTooOld) {
+                helperTooOld->store(true, std::memory_order_relaxed);
             }
             return buildError();
         }

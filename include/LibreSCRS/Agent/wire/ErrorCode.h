@@ -73,6 +73,12 @@ enum class ErrorCode : std::uint32_t {
     RateLimited = 17,        ///< Too many sign requests from the caller.
     EngineUnavailable = 18,  ///< The signing engine/security module could not load (deployment).
     InvalidDocument = 19,    ///< The document to sign is invalid/unreadable — client input.
+    /// The credential window closed because the holder's entry time ran out.
+    /// Distinct from a cancellation on purpose: nobody cancelled, the clock
+    /// did, and saying otherwise is the confusion this taxonomy exists to
+    /// remove. Distinct from WatchdogTimeout too — that one is the agent's own
+    /// per-operation budget, not the human's time to type.
+    EntryExpired = 20,
 };
 
 } // namespace LibreSCRS::Agent

@@ -134,6 +134,13 @@ CredentialOpResult runKeyActivation(KeyActivationFlowDeps deps)
         if (prompt.status == PromptStatus::Cancelled) {
             return nonSeamResult(CredentialOutcome::UserCancelled, deps.pinActivated);
         }
+        if (prompt.status == PromptStatus::Timeout) {
+            // The clock closed the window: the holder ran out of time to type.
+            // Distinct from MissingFields, which says the prompter answered
+            // without the fields -- here it did not answer at all, and nothing
+            // was presented to the card.
+            return nonSeamResult(CredentialOutcome::EntryExpired, deps.pinActivated);
+        }
         if (prompt.status != PromptStatus::Ok || !prompt.secret.has_value()) {
             // The prompter did not deliver the required secret (UI broke / absent).
             // On the agent path the provider IS the prompter, so this is MissingFields.

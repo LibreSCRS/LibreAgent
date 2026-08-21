@@ -165,6 +165,11 @@ CertReadFlow::Result CertReadFlow::run()
     // prompter UI broke / was absent (NOT cancellation, NOT a wrong secret);
     // remaps the final ErrorCode to PrompterError below.
     auto prompterFailed = std::make_shared<std::atomic<bool>>(false);
+    // Set true iff a prompt expired: the holder's entry window closed. Neither
+    // a cancel nor a card-side rejection, so it gets its own code below.
+    auto entryExpired = std::make_shared<std::atomic<bool>>(false);
+    // Set true iff the agent REFUSED to raise the prompt (helper too old).
+    auto helperTooOld = std::make_shared<std::atomic<bool>>(false);
     // Set true by the credential provider iff, on the card's re-prompt signal,
     // it already marked the now-live rejected secret wrong. The AuthFailed
     // branch below consults it to SKIP its own markCredentialWrong so a rejected
@@ -176,7 +181,8 @@ CertReadFlow::Result CertReadFlow::run()
     // this flow (see FlowPrelude::installScopedReadProvider).
     m_provider = FlowPrelude::makeReadCredentialProvider(
         m_deps.cache, m_deps.prompter, m_deps.serializer, m_deps.phaseSink, m_deps.cardKey, m_deps.requester,
-        m_deps.artifact, m_deps.token, prompterFailed, /*userCancelled=*/{}, providerMarkedWrong);
+        m_deps.artifact, m_deps.token, prompterFailed, /*userCancelled=*/{}, providerMarkedWrong,
+        /*offerMrzAlternative=*/false, /*mrzChoice=*/{}, entryExpired, helperTooOld);
     const FlowPrelude::ProviderResetGuard providerReset{m_provider};
     const auto providerGuard = FlowPrelude::installScopedReadProvider(session, m_provider);
 
@@ -208,6 +214,20 @@ CertReadFlow::Result CertReadFlow::run()
                 m_deps.cache.markCredentialWrong(m_deps.cardKey, LibreSCRS::Auth::ErrorKeys::preReadAuthFailed().key);
             }
             session->clearCachedPaceCredentials();
+        }
+        // Order matters: a prompter that broke outranks one that timed out.
+        if (helperTooOld->load(std::memory_order_relaxed)) {
+            // Refused before any window was raised: the one outcome here whose
+            // remedy the holder can act on, so it must not be buried under a
+            // generic prompter failure.
+            return makeError(ErrorCode::CapabilityMissing, FlowPrelude::kHelperTooOldMsgKey,
+                             FlowPrelude::kHelperTooOldMsgFallback);
+        }
+        if (!prompterFailed->load(std::memory_order_relaxed) && entryExpired->load(std::memory_order_relaxed)) {
+            // The message travels with the code; the read's own fallback names
+            // a card-side failure that never happened.
+            return makeError(ErrorCode::EntryExpired, FlowPrelude::kEntryExpiredMsgKey,
+                             FlowPrelude::kEntryExpiredMsgFallback);
         }
         const ErrorCode code =
             prompterFailed->load(std::memory_order_relaxed) ? ErrorCode::PrompterError : mapCertStatus(outcome.status);

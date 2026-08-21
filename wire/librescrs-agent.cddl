@@ -60,7 +60,8 @@ error-code = &( None: 0, CardRemoved: 1, CredentialWrong: 2, CredentialBlocked: 
   CommunicationError: 4, ParseError: 5, UnsupportedCard: 6, AuthFailed: 7,
   PrompterError: 8, CapabilityMissing: 9, WatchdogTimeout: 10, KeyNotFound: 11,
   KeyAmbiguous: 12, CertExpiredBlocked: 13, ChainIncomplete: 14, TsaUnreachable: 15,
-  SigningEngineError: 16, RateLimited: 17, EngineUnavailable: 18, InvalidDocument: 19 )
+  SigningEngineError: 16, RateLimited: 17, EngineUnavailable: 18, InvalidDocument: 19,
+  EntryExpired: 20 )
 
 ; ---- requests (client -> agent) ----
 request  = { req: uint, req-body }
@@ -493,7 +494,7 @@ cred-result = { outcome: cred-outcome, ? retriesLeft: uint, blocked: bool,
 ; op-result-ready) closed. The original token is not retained.
 cred-outcome = "unspecified" / "ok" / "userCancelled" / "missingFields" /
                "invalidPin" / "blocked" / "pluginError" / "unsupported" /
-               "keyActivationFailed" / "cardRemoved"
+               "keyActivationFailed" / "cardRemoved" / "entryExpired"
 cred-record = { id: tstr, label: tstr, kind: cred-kind, state: cred-state,
                 ? retriesLeft: uint, ? retriesMax: uint, ? usesLeft: uint,
                 ? usesMax: uint, ? unblocksLeft: uint, ? minLength: uint, ? maxLength: uint,

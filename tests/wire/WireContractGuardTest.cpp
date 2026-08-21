@@ -385,6 +385,8 @@ constexpr const char* wireNameFor(ErrorCode code) noexcept
         return "EngineUnavailable";
     case ErrorCode::InvalidDocument:
         return "InvalidDocument";
+    case ErrorCode::EntryExpired:
+        return "EntryExpired";
     }
     return nullptr; // not a taxonomy value (used to probe past the end)
 }
@@ -495,6 +497,8 @@ constexpr const char* credOutcomeToken(CredentialOutcome o) noexcept
         return "keyActivationFailed";
     case CredentialOutcome::CardRemoved:
         return "cardRemoved";
+    case CredentialOutcome::EntryExpired:
+        return "entryExpired";
     }
     return nullptr;
 }
@@ -507,8 +511,8 @@ constexpr std::uint32_t credOutcomeCount() noexcept
     return count;
 }
 static_assert(u(CredentialOutcome::Unspecified) == 0u, "wire contract: CredentialOutcome::Unspecified drifted from 0");
-static_assert(credOutcomeCount() == 10u,
-              "wire contract: cred-outcome has 10 tokens; update the CDDL + this switch together");
+static_assert(credOutcomeCount() == 11u,
+              "wire contract: cred-outcome has 11 tokens; update the CDDL + this switch together");
 
 // --- LM credential-record vocab <-> CDDL record token groups -----------------
 // Local exhaustive switches (append-guarded, no default) for the four enum-

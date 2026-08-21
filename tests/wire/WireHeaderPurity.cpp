@@ -40,6 +40,7 @@ using LibreSCRS::Agent::Wire::SyncError;
 
 static_assert(static_cast<std::uint32_t>(ErrorCode::None) == 0u);
 static_assert(static_cast<std::uint32_t>(ErrorCode::InvalidDocument) == 19u);
+static_assert(static_cast<std::uint32_t>(ErrorCode::EntryExpired) == 20u);
 static_assert(static_cast<std::uint32_t>(OperationStatus::Cancelled) == 1u);
 
 static_assert(static_cast<std::uint8_t>(PreReadAuth::None) == 0u);

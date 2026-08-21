@@ -449,6 +449,8 @@ const char* credOutcomeToken(Wire::CredentialOutcome outcome)
         return "keyActivationFailed";
     case Wire::CredentialOutcome::CardRemoved:
         return "cardRemoved";
+    case Wire::CredentialOutcome::EntryExpired:
+        return "entryExpired";
     }
     return "unspecified";
 }

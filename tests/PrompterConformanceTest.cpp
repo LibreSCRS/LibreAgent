@@ -156,6 +156,11 @@ TEST(PrompterConformance, EntryExpiryIsNotAUserCancellation)
     EXPECT_NE(PromptStatus::Timeout, PromptStatus::Cancelled);
     EXPECT_NE(PromptStatus::Timeout, PromptStatus::Ok);
     EXPECT_NE(PromptStatus::Timeout, PromptStatus::Error);
+    // A refusal to raise the prompt is none of the three above: not a cancel,
+    // not a broken prompter, and not a clock that ran out.
+    EXPECT_NE(PromptStatus::HelperTooOld, PromptStatus::Cancelled);
+    EXPECT_NE(PromptStatus::HelperTooOld, PromptStatus::Error);
+    EXPECT_NE(PromptStatus::HelperTooOld, PromptStatus::Timeout);
 }
 
 // Appended, never inserted: the three values below it are compiled into every
@@ -165,3 +170,4 @@ static_assert(static_cast<std::uint8_t>(PromptStatus::Ok) == 0);
 static_assert(static_cast<std::uint8_t>(PromptStatus::Cancelled) == 1);
 static_assert(static_cast<std::uint8_t>(PromptStatus::Error) == 2);
 static_assert(static_cast<std::uint8_t>(PromptStatus::Timeout) == 3);
+static_assert(static_cast<std::uint8_t>(PromptStatus::HelperTooOld) == 4);

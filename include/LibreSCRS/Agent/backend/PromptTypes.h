@@ -90,6 +90,12 @@ enum class PromptStatus : std::uint8_t {
     // the clock took from them is the confusion this design removes. APPENDED,
     // never inserted -- the values above are compiled into every consumer.
     Timeout,
+    // The prompter is present and serving, but too old to be told WHICH window
+    // to dismiss -- so the agent refuses to raise one it could not close. A
+    // missing capability, not a fault: reporting it as a prompter failure would
+    // describe a helper that broke, when it is running fine and merely predates
+    // the addressed cancel. APPENDED, never inserted.
+    HelperTooOld,
 };
 
 struct PromptResult

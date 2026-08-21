@@ -36,6 +36,7 @@ TEST(ErrorTaxonomy, StableNumericValues)
     EXPECT_EQ(static_cast<std::uint32_t>(ErrorCode::RateLimited), 17u);
     EXPECT_EQ(static_cast<std::uint32_t>(ErrorCode::EngineUnavailable), 18u);
     EXPECT_EQ(static_cast<std::uint32_t>(ErrorCode::InvalidDocument), 19u);
+    EXPECT_EQ(static_cast<std::uint32_t>(ErrorCode::EntryExpired), 20u);
 }
 
 // Exhaustiveness guard. The StableNumericValues test above pins every ErrorCode
@@ -48,7 +49,7 @@ TEST(ErrorTaxonomy, StableNumericValues)
 TEST(ErrorTaxonomy, HighestWireValueIsPinned)
 {
     // The enum is append-only, so the last enumerator is the maximum value.
-    EXPECT_EQ(static_cast<std::uint32_t>(ErrorCode::InvalidDocument), 19u)
+    EXPECT_EQ(static_cast<std::uint32_t>(ErrorCode::EntryExpired), 20u)
         << "ErrorCode enum grew: pin the new value in StableNumericValues, bump "
            "this guard, and update the CDDL / KDE / macOS Swift mirrors.";
 }

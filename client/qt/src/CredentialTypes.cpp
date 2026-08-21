@@ -70,6 +70,8 @@ CredentialOutcome outcomeFrom(const QString& t)
         return CredentialOutcome::KeyActivationFailed;
     if (t == QLatin1String("cardRemoved"))
         return CredentialOutcome::CardRemoved;
+    if (t == QLatin1String("entryExpired"))
+        return CredentialOutcome::EntryExpired;
     return CredentialOutcome::Unspecified;
 }
 // Optional int/string only when the key is present (wire omits absent values).

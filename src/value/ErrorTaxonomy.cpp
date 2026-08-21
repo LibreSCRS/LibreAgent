@@ -111,6 +111,10 @@ CredentialFinish errorCodeFor(CredentialOutcome outcome) noexcept
         return {Status::Error, ErrorCode::CommunicationError};
     case CredentialOutcome::CardRemoved:
         return {Status::Error, ErrorCode::CardRemoved};
+    case CredentialOutcome::EntryExpired:
+        // The clock closed the window. Not a prompter fault (it answered), not
+        // a cancel (nobody dismissed it), and no credential state moved.
+        return {Status::Error, ErrorCode::EntryExpired};
     }
     return {Status::Error, ErrorCode::CommunicationError};
 }

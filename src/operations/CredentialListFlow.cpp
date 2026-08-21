@@ -78,13 +78,22 @@ CredentialListFlow::Result CredentialListFlow::run()
     // the seam swallows a candidate's channel-activation throw, so this flag is
     // the only way to tell a cancelled prompt from a valid empty listing.
     auto promptCancelled = std::make_shared<std::atomic<bool>>(false);
+    // Set true by the provider iff a channel prompt EXPIRED — the clock twin of
+    // the two flags above. Read for the same reason promptCancelled is: an
+    // empty listing is otherwise indistinguishable from a card with no
+    // credentials.
+    auto entryExpired = std::make_shared<std::atomic<bool>>(false);
+    // Set true iff the agent REFUSED to raise the prompt (helper too old).
+    auto helperTooOld = std::make_shared<std::atomic<bool>>(false);
     // Install with a UAF scope guard: the provider captures the per-op phaseSink
     // by reference, but `session` is owned by the CardSessionHolder and outlives
     // this flow (see FlowPrelude::installScopedReadProvider).
     const auto providerGuard = FlowPrelude::installScopedReadProvider(
-        session, FlowPrelude::makeReadCredentialProvider(
-                     m_deps.cache, m_deps.prompter, m_deps.serializer, m_deps.phaseSink, m_deps.cardKey,
-                     m_deps.requester, m_deps.artifact, m_deps.token, prompterFailed, promptCancelled));
+        session, FlowPrelude::makeReadCredentialProvider(m_deps.cache, m_deps.prompter, m_deps.serializer,
+                                                         m_deps.phaseSink, m_deps.cardKey, m_deps.requester,
+                                                         m_deps.artifact, m_deps.token, prompterFailed, promptCancelled,
+                                                         /*providerMarkedWrong=*/{}, /*offerMrzAlternative=*/false,
+                                                         /*mrzChoice=*/{}, entryExpired, helperTooOld));
 
     if (m_deps.token.isCancelled()) {
         return makeCancelled();
@@ -121,8 +130,19 @@ CredentialListFlow::Result CredentialListFlow::run()
         return makeError(errorCodeFor(LibreSCRS::SecureChannel::ChannelActivationError::CardRemoved), "op.read_failed",
                          "Card removed");
     }
+    if (helperTooOld->load(std::memory_order_relaxed)) {
+        // Refused before any window was raised; the remedy is actionable.
+        return makeError(ErrorCode::CapabilityMissing, FlowPrelude::kHelperTooOldMsgKey,
+                         FlowPrelude::kHelperTooOldMsgFallback);
+    }
     if (listing.entries.empty() && prompterFailed->load(std::memory_order_relaxed)) {
         return makeError(ErrorCode::PrompterError, "op.read_failed", "Credential prompt unavailable");
+    }
+    // Same shape as the line above, and for the same reason: an empty listing
+    // after an expired prompt is not a card without credentials.
+    if (listing.entries.empty() && entryExpired->load(std::memory_order_relaxed)) {
+        return makeError(ErrorCode::EntryExpired, FlowPrelude::kEntryExpiredMsgKey,
+                         FlowPrelude::kEntryExpiredMsgFallback);
     }
 
     CredentialSnapshot snapshot;

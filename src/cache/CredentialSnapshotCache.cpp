@@ -144,6 +144,9 @@ bool mutationReachedCard(CredentialOutcome outcome) noexcept
     case CredentialOutcome::MissingFields:
     case CredentialOutcome::Unsupported:
     case CredentialOutcome::CardRemoved:
+    // The window closed on the clock before anything was collected, so nothing
+    // was ever presented to the card and no credential state can have moved.
+    case CredentialOutcome::EntryExpired:
         return false;
     }
     return false;

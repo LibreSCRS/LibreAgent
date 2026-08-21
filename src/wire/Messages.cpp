@@ -353,6 +353,8 @@ const char* credOutcomeToken(CredentialOutcome o) noexcept
         return "keyActivationFailed";
     case CredentialOutcome::CardRemoved:
         return "cardRemoved";
+    case CredentialOutcome::EntryExpired:
+        return "entryExpired";
     }
     return "unspecified"; // unreachable (all enumerators handled)
 }

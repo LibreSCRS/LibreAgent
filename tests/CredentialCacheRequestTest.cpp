@@ -197,6 +197,89 @@ TEST(CredentialCacheRequest, PrompterErrorSetsPrompterFailedFlagOnly)
     EXPECT_FALSE(userCancelled.load()) << "a prompter failure is not a user cancel";
 }
 
+// The third signal, and the one this taxonomy was short of: the window closed
+// because the holder's entry time ran out. Nobody cancelled and no prompter
+// broke, so BOTH sibling flags must stay down — a test that only checked the
+// new flag would pass with all three raised, which is the failure that would
+// put "you cancelled" in front of someone who did not.
+TEST(CredentialCacheRequest, ExpiredCanPromptSetsEntryExpiredFlagOnly)
+{
+    CredentialCache cache;
+    FakePrompter prompter;
+    prompter.canResult = PromptResult{PromptStatus::Timeout, std::nullopt, ""};
+    PromptOptions opts;
+    std::atomic<bool> prompterFailed{false};
+    std::atomic<bool> userCancelled{false};
+    std::atomic<bool> entryExpired{false};
+    auto result = cache.requestCredential("card-A", paceReq(PaceSecretKind::Can), prompter, opts, &prompterFailed,
+                                          &userCancelled, /*mrzChoice=*/nullptr, &entryExpired);
+    EXPECT_EQ(result.status, CredentialResult::Status::Error);
+    EXPECT_TRUE(entryExpired.load()) << "an expired entry window must raise the clock signal";
+    EXPECT_FALSE(userCancelled.load()) << "the clock took it; the holder did not cancel";
+    EXPECT_FALSE(prompterFailed.load()) << "the prompter answered; it did not break";
+    EXPECT_FALSE(cache.hasCan("card-A")) << "an expired prompt must not populate the cache";
+}
+
+TEST(CredentialCacheRequest, ExpiredMrzPromptSetsEntryExpiredFlagOnly)
+{
+    CredentialCache cache;
+    FakePrompter prompter;
+    prompter.mrzResult = PromptResult{PromptStatus::Timeout, std::nullopt, ""};
+    PromptOptions opts;
+    std::atomic<bool> prompterFailed{false};
+    std::atomic<bool> userCancelled{false};
+    std::atomic<bool> entryExpired{false};
+    auto result = cache.requestCredential("card-A", paceReq(PaceSecretKind::Mrz), prompter, opts, &prompterFailed,
+                                          &userCancelled, /*mrzChoice=*/nullptr, &entryExpired);
+    EXPECT_EQ(result.status, CredentialResult::Status::Error);
+    EXPECT_TRUE(entryExpired.load());
+    EXPECT_FALSE(userCancelled.load());
+    EXPECT_FALSE(prompterFailed.load());
+}
+
+// The inverse, so the flag cannot be one that is simply always raised: a
+// prompter that broke must NOT read as an expiry.
+TEST(CredentialCacheRequest, PrompterErrorDoesNotRaiseEntryExpired)
+{
+    CredentialCache cache;
+    FakePrompter prompter;
+    prompter.canResult = PromptResult{PromptStatus::Error, std::nullopt, "prompter gone"};
+    PromptOptions opts;
+    std::atomic<bool> prompterFailed{false};
+    std::atomic<bool> entryExpired{false};
+    auto result = cache.requestCredential("card-A", paceReq(PaceSecretKind::Can), prompter, opts, &prompterFailed,
+                                          /*userCancelled=*/nullptr, /*mrzChoice=*/nullptr, &entryExpired);
+    EXPECT_EQ(result.status, CredentialResult::Status::Error);
+    EXPECT_TRUE(prompterFailed.load());
+    EXPECT_FALSE(entryExpired.load()) << "a broken prompter is not an expired window";
+}
+
+// The fourth signal: the agent REFUSED to raise the prompt because the helper
+// cannot be told which window to dismiss. Distinct from all three siblings —
+// nothing was shown, so nothing was cancelled, nothing expired, and the helper
+// did not break. Reporting it as a prompter failure would describe a broken
+// helper when it is running fine, and would cost the holder the one remedy
+// they can act on.
+TEST(CredentialCacheRequest, RefusedPromptSetsHelperTooOldFlagOnly)
+{
+    CredentialCache cache;
+    FakePrompter prompter;
+    prompter.canResult = PromptResult{PromptStatus::HelperTooOld, std::nullopt, "helper out of date"};
+    PromptOptions opts;
+    std::atomic<bool> prompterFailed{false};
+    std::atomic<bool> userCancelled{false};
+    std::atomic<bool> entryExpired{false};
+    std::atomic<bool> helperTooOld{false};
+    auto result = cache.requestCredential("card-A", paceReq(PaceSecretKind::Can), prompter, opts, &prompterFailed,
+                                          &userCancelled, /*mrzChoice=*/nullptr, &entryExpired, &helperTooOld);
+    EXPECT_EQ(result.status, CredentialResult::Status::Error);
+    EXPECT_TRUE(helperTooOld.load()) << "a refusal must raise the capability signal";
+    EXPECT_FALSE(prompterFailed.load()) << "the helper is running; it did not break";
+    EXPECT_FALSE(entryExpired.load()) << "no window was shown, so no clock ran out";
+    EXPECT_FALSE(userCancelled.load()) << "no window was shown, so nobody cancelled";
+    EXPECT_FALSE(cache.hasCan("card-A"));
+}
+
 TEST(CredentialCacheRequest, PinKindIsNeverCachedAndYieldsError)
 {
     // PIN-as-PACE-password is never cached and never collected by the

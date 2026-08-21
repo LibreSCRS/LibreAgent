@@ -8,4 +8,5 @@ TEST(WireHeaders, WireFrozenPins)
     using LibreSCRS::Agent::ErrorCode;
     EXPECT_EQ(static_cast<std::uint32_t>(ErrorCode::None), 0u);
     EXPECT_EQ(static_cast<std::uint32_t>(ErrorCode::InvalidDocument), 19u);
+    EXPECT_EQ(static_cast<std::uint32_t>(ErrorCode::EntryExpired), 20u);
 }

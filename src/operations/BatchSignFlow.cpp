@@ -219,9 +219,17 @@ BatchSignFlow::Result BatchSignFlow::run()
     // wrong/blocked credential -- retrying the next document against the
     // same broken prompter could only reproduce the same failure.
     auto prompterFailed = std::make_shared<std::atomic<bool>>(false);
+    // Set true iff a prompt EXPIRED: the holder's entry window closed. Halts
+    // the batch for the same reason a broken prompter does -- no PIN was
+    // cached, so every remaining document would raise the same dialog and wait
+    // out the same clock.
+    auto entryExpired = std::make_shared<std::atomic<bool>>(false);
+    // Set true iff the agent REFUSED to raise the prompt (helper too old).
+    auto helperTooOld = std::make_shared<std::atomic<bool>>(false);
 
     LibreSCRS::Auth::CredentialProvider provider =
         [&cache, &prompter, &serializer, &phaseSink, cardKey, requester, artifactNames, summary, token, prompterFailed,
+         entryExpired, helperTooOld,
          &pinHolder](const LibreSCRS::Auth::AuthRequirement& req) -> LibreSCRS::Auth::CredentialResult {
         try {
             SerializingPrompter gated{serializer, prompter, token, cardKey};
@@ -256,6 +264,14 @@ BatchSignFlow::Result BatchSignFlow::run()
                     if (prompt.status == PromptStatus::Error) {
                         prompterFailed->store(true, std::memory_order_relaxed);
                     }
+                    // The clock closed the window; nobody cancelled and the
+                    // card rejected nothing.
+                    if (prompt.status == PromptStatus::Timeout) {
+                        entryExpired->store(true, std::memory_order_relaxed);
+                    }
+                    if (prompt.status == PromptStatus::HelperTooOld) {
+                        helperTooOld->store(true, std::memory_order_relaxed);
+                    }
                     return LibreSCRS::Auth::CredentialResult::error(LibreSCRS::LocalizedText{});
                 }
                 // PIN collected: cache it for the rest of the batch, then
@@ -275,7 +291,9 @@ BatchSignFlow::Result BatchSignFlow::run()
             PromptOptions chanOpts;
             chanOpts.requester = requester;
             chanOpts.artifact = "signature-batch";
-            return cache.requestCredential(cardKey, req, gated, chanOpts, prompterFailed.get());
+            return cache.requestCredential(cardKey, req, gated, chanOpts, prompterFailed.get(),
+                                           /*userCancelled=*/nullptr, /*mrzChoice=*/nullptr, entryExpired.get(),
+                                           helperTooOld.get());
         } catch (...) {
             return LibreSCRS::Auth::CredentialResult::error(LibreSCRS::LocalizedText{});
         }
@@ -355,11 +373,22 @@ BatchSignFlow::Result BatchSignFlow::run()
         // Non-Ok, non-Cancelled: classify into a halting or a row-local code.
         ErrorCode code;
         bool haltsBatch = false;
-        if (prompterFailed->load(std::memory_order_relaxed)) {
+        if (helperTooOld->load(std::memory_order_relaxed)) {
+            // Refused before any window was raised: every remaining document
+            // would be refused the same way, so halt rather than retry per file.
+            code = ErrorCode::CapabilityMissing;
+            haltsBatch = true;
+        } else if (prompterFailed->load(std::memory_order_relaxed)) {
             // A broken/absent prompter prevented PIN collection -- no PIN
             // was ever cached, so every remaining document would hit the
             // same broken prompter. Halt rather than retry per file.
             code = ErrorCode::PrompterError;
+            haltsBatch = true;
+        } else if (entryExpired->load(std::memory_order_relaxed)) {
+            // The entry window expired: no PIN was cached, so every remaining
+            // document would raise the same dialog. Halt, and say the clock
+            // did it rather than blaming the holder or the card.
+            code = ErrorCode::EntryExpired;
             haltsBatch = true;
         } else if (isHaltingStatus(outcome.status)) {
             // A wrong signing PIN must not poison a later read's cached

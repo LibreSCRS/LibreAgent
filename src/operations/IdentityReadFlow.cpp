@@ -128,6 +128,13 @@ IdentityReadFlow::Result IdentityReadFlow::run()
     // wrong-but-collected secret). Used below to remap the final ErrorCode to
     // PrompterError so a broken prompter is distinguishable from generic comms.
     auto prompterFailed = std::make_shared<std::atomic<bool>>(false);
+    // Set true by the credential provider iff a prompt expired: the holder's
+    // entry window closed. Neither a cancel nor a card-side rejection, so it
+    // gets its own code below.
+    auto entryExpired = std::make_shared<std::atomic<bool>>(false);
+    // Set true iff the agent REFUSED to raise the prompt: the helper cannot be
+    // told which window to dismiss, so it must not be asked to show one.
+    auto helperTooOld = std::make_shared<std::atomic<bool>>(false);
     // Set true by the credential provider iff, on the M5′ rejection signal, it
     // already marked the now-live rejected secret wrong (A2, sec I3). The
     // AuthFailed branch below consults it to SKIP its own markCredentialWrong so
@@ -146,7 +153,7 @@ IdentityReadFlow::Result IdentityReadFlow::run()
     m_provider = FlowPrelude::makeReadCredentialProvider(
         m_deps.cache, m_deps.prompter, m_deps.serializer, m_deps.phaseSink, m_deps.cardKey, m_deps.requester,
         m_deps.artifact, m_deps.token, prompterFailed,
-        /*userCancelled=*/{}, providerMarkedWrong, offerMrzAlternative, m_mrzChoice);
+        /*userCancelled=*/{}, providerMarkedWrong, offerMrzAlternative, m_mrzChoice, entryExpired, helperTooOld);
     const FlowPrelude::ProviderResetGuard providerReset{m_provider};
     const auto providerGuard = FlowPrelude::installScopedReadProvider(session, m_provider);
 
@@ -255,7 +262,22 @@ IdentityReadFlow::Result IdentityReadFlow::run()
         }
         // A broken/absent prompter (not the card) caused the secret to be
         // uncollectable: surface PrompterError so the client knows the UI
-        // failed, not that the card or comms did.
+        // failed, not that the card or comms did. An expired entry window is
+        // its own code — the holder ran out of time, nothing failed.
+        // Order matters: a prompter that broke outranks one that timed out.
+        if (helperTooOld->load(std::memory_order_relaxed)) {
+            // Refused before any window was raised: the one outcome here whose
+            // remedy the holder can act on, so it must not be buried under a
+            // generic prompter failure.
+            return makeError(ErrorCode::CapabilityMissing, FlowPrelude::kHelperTooOldMsgKey,
+                             FlowPrelude::kHelperTooOldMsgFallback);
+        }
+        if (!prompterFailed->load(std::memory_order_relaxed) && entryExpired->load(std::memory_order_relaxed)) {
+            // The message travels with the code. The read's own msgFallback
+            // says the card rejected an authentication that never happened.
+            return makeError(ErrorCode::EntryExpired, FlowPrelude::kEntryExpiredMsgKey,
+                             FlowPrelude::kEntryExpiredMsgFallback);
+        }
         const ErrorCode code = prompterFailed->load(std::memory_order_relaxed) ? ErrorCode::PrompterError
                                                                                : mapReadStatus(readOutcome.status);
         return makeError(code, "op.read_failed", std::move(readOutcome.msgFallback));

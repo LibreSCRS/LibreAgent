@@ -76,14 +76,21 @@ TokenInfoReadFlow::Result TokenInfoReadFlow::run()
     // prompter UI broke / was absent (NOT cancellation, NOT a wrong secret);
     // remaps the final ErrorCode to PrompterError below.
     auto prompterFailed = std::make_shared<std::atomic<bool>>(false);
+    // Set true iff a channel prompt EXPIRED — the clock twin of the flag above,
+    // and the second failure this flow can still report post-session-open.
+    auto entryExpired = std::make_shared<std::atomic<bool>>(false);
+    // Set true iff the agent REFUSED to raise the prompt (helper too old).
+    auto helperTooOld = std::make_shared<std::atomic<bool>>(false);
     // Install with a UAF scope guard: the provider captures the per-op
     // phaseSink by reference, but `session` is owned by the
     // CardSessionHolder and outlives this flow (see
     // FlowPrelude::installScopedReadProvider).
     const auto providerGuard = FlowPrelude::installScopedReadProvider(
-        session, FlowPrelude::makeReadCredentialProvider(m_deps.cache, m_deps.prompter, m_deps.serializer,
-                                                         m_deps.phaseSink, m_deps.cardKey, m_deps.requester,
-                                                         m_deps.artifact, m_deps.token, prompterFailed));
+        session, FlowPrelude::makeReadCredentialProvider(
+                     m_deps.cache, m_deps.prompter, m_deps.serializer, m_deps.phaseSink, m_deps.cardKey,
+                     m_deps.requester, m_deps.artifact, m_deps.token, prompterFailed,
+                     /*userCancelled=*/{}, /*providerMarkedWrong=*/{},
+                     /*offerMrzAlternative=*/false, /*mrzChoice=*/{}, entryExpired, helperTooOld));
 
     if (m_deps.token.isCancelled()) {
         return makeCancelled();
@@ -103,10 +110,21 @@ TokenInfoReadFlow::Result TokenInfoReadFlow::run()
     // an empty group by the LM plugin's own defensive contract (see
     // pkcs15_card_plugin.cpp's readTokenInfo doc comment), which is SUCCESS
     // with zero fields here (the spec's empty-group resilience). The only
-    // failure this flow can still report post-session-open is a broken
-    // prompter UI (the CAN/MRZ prompt itself unreachable).
+    // failures this flow can still report post-session-open are a broken
+    // prompter UI (the CAN/MRZ prompt itself unreachable) and an entry window
+    // that expired.
+    if (helperTooOld->load(std::memory_order_relaxed)) {
+        // Refused before any window was raised; the remedy is actionable.
+        return makeError(ErrorCode::CapabilityMissing, FlowPrelude::kHelperTooOldMsgKey,
+                         FlowPrelude::kHelperTooOldMsgFallback);
+    }
     if (prompterFailed->load(std::memory_order_relaxed)) {
         return makeError(ErrorCode::PrompterError, "op.read_failed", "prompter unavailable");
+    }
+    // ...and the prompt that was reachable but ran out of the holder's time.
+    if (entryExpired->load(std::memory_order_relaxed)) {
+        return makeError(ErrorCode::EntryExpired, FlowPrelude::kEntryExpiredMsgKey,
+                         FlowPrelude::kEntryExpiredMsgFallback);
     }
 
     CardReadSnapshot snapshot;

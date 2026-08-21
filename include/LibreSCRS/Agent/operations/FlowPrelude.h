@@ -77,6 +77,32 @@ struct OpenOutcome
 // prompter is distinguishable from a generic comms/auth failure. Shared by value
 // (shared_ptr) so the flag outlives the closure even if LM defers it.
 //
+// The msgKey / msgFallback an expired entry window carries. Defined ONCE: the
+// code is remapped at six decision sites, and a flow that remapped the code but
+// left the underlying failure's message would hand the holder a correct code
+// beside the sentence it exists to replace -- measured on a live agent, where
+// errorCode 20 arrived carrying "Authentication failed." Clients that phrase
+// the code themselves never see this; clients that fall back to the agent's
+// prose see nothing else.
+inline constexpr const char* kEntryExpiredMsgKey = "op.entry_expired";
+inline constexpr const char* kEntryExpiredMsgFallback = "The entry window closed before a code was entered.";
+// The pair a refused prompt carries. The remedy is the point: CapabilityMissing
+// alone tells the holder nothing, and this is a condition they can actually
+// clear.
+inline constexpr const char* kHelperTooOldMsgKey = "op.helper_too_old";
+inline constexpr const char* kHelperTooOldMsgFallback =
+    "The credential window helper is out of date; restart your session.";
+
+// @p entryExpired is the clock twin of prompterFailed (optional, may be null):
+// set to true iff a prompt returned PromptStatus::Timeout. The flow remaps its
+// final ErrorCode to EntryExpired when it is set, so an expired entry window
+// reads as neither a cancel nor a card-side authentication failure.
+//
+// @p helperTooOld (optional, may be null) is set iff the agent REFUSED to raise
+// the prompt because the helper cannot be told which window to dismiss. The
+// flow maps it to CapabilityMissing, above every other remap: a prompt that was
+// never raised cannot also have expired or been cancelled.
+//
 // @p userCancelled is the cancel twin of prompterFailed (optional, may be
 // null): set to true iff a prompt returned PromptStatus::Cancelled. The list
 // flow consults it because the LM seam swallows a candidate's channel-
@@ -129,7 +155,8 @@ struct OpenOutcome
     std::string cardKey, std::string requester, std::string artifact, LibreSCRS::CancelToken token,
     std::shared_ptr<std::atomic<bool>> prompterFailed, std::shared_ptr<std::atomic<bool>> userCancelled = {},
     std::shared_ptr<std::atomic<bool>> providerMarkedWrong = {}, bool offerMrzAlternative = false,
-    std::shared_ptr<MrzChoiceSink> mrzChoice = {});
+    std::shared_ptr<MrzChoiceSink> mrzChoice = {}, std::shared_ptr<std::atomic<bool>> entryExpired = {},
+    std::shared_ptr<std::atomic<bool>> helperTooOld = {});
 
 // Install @p provider on @p session and return a scope guard that, on
 // destruction, replaces it with a stateless no-op provider. Use in EVERY flow

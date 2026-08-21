@@ -48,16 +48,18 @@ CredentialFinish oracle(CredentialOutcome outcome)
         return {OperationStatus::Error, ErrorCode::CommunicationError};
     case CredentialOutcome::CardRemoved:
         return {OperationStatus::Error, ErrorCode::CardRemoved};
+    case CredentialOutcome::EntryExpired:
+        return {OperationStatus::Error, ErrorCode::EntryExpired};
     }
     throw std::logic_error("oracle: unmapped CredentialOutcome (switch is exhaustive)");
 }
 #pragma GCC diagnostic pop
 
-constexpr std::array<CredentialOutcome, 10> kAllOutcomes{
-    CredentialOutcome::Unspecified,   CredentialOutcome::Ok,          CredentialOutcome::UserCancelled,
-    CredentialOutcome::MissingFields, CredentialOutcome::InvalidPin,  CredentialOutcome::Blocked,
-    CredentialOutcome::PluginError,   CredentialOutcome::Unsupported, CredentialOutcome::KeyActivationFailed,
-    CredentialOutcome::CardRemoved,
+constexpr std::array<CredentialOutcome, 11> kAllOutcomes{
+    CredentialOutcome::Unspecified,   CredentialOutcome::Ok,           CredentialOutcome::UserCancelled,
+    CredentialOutcome::MissingFields, CredentialOutcome::InvalidPin,   CredentialOutcome::Blocked,
+    CredentialOutcome::PluginError,   CredentialOutcome::Unsupported,  CredentialOutcome::KeyActivationFailed,
+    CredentialOutcome::CardRemoved,   CredentialOutcome::EntryExpired,
 };
 
 // Assert the whole PAIR, not the code alone: the Cancelled-status / None-code

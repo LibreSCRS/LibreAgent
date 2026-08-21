@@ -70,6 +70,9 @@ enum class CredentialOutcome {
     Unsupported,         ///< The card/plugin does not support this verb.
     KeyActivationFailed, ///< The associated signing-key activation step failed.
     CardRemoved,         ///< The card was removed mid-attempt.
+    /// The credential window closed before anything was entered. Nothing was
+    /// presented to the card, so no retry counter moved.
+    EntryExpired,
 };
 
 /// @brief One ListCredentials record (one wire record-map entry). Optional

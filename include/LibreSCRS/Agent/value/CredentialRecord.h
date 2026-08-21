@@ -25,7 +25,7 @@ namespace LibreSCRS::Agent {
 // ChannelActivationError::CardRemoved onto CredentialOutcome::CardRemoved;
 // LM never produces it. On the wire each member crosses as its camelCase
 // STRING token: unspecified|ok|userCancelled|missingFields|invalidPin|
-// blocked|pluginError|unsupported|keyActivationFailed|cardRemoved.
+// blocked|pluginError|unsupported|keyActivationFailed|cardRemoved|entryExpired.
 enum class CredentialOutcome {
     Unspecified,
     Ok,
@@ -37,6 +37,11 @@ enum class CredentialOutcome {
     Unsupported,
     KeyActivationFailed,
     CardRemoved, // agent-assigned; never produced by LM
+    // The credential window closed because the holder's entry time ran out.
+    // Agent-assigned; never produced by LM. Distinct from MissingFields, which
+    // says the prompter answered without the fields: here it did not answer at
+    // all, and nothing was ever presented to the card.
+    EntryExpired,
 };
 
 // Wire-facing credential record. Field names ARE the wire keys: the D-Bus

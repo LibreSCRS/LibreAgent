@@ -86,12 +86,14 @@ LibreSCRS::Auth::CredentialProvider makeReadCredentialProvider(
     std::string cardKey, std::string requester, std::string artifact, LibreSCRS::CancelToken token,
     std::shared_ptr<std::atomic<bool>> prompterFailed, std::shared_ptr<std::atomic<bool>> userCancelled,
     std::shared_ptr<std::atomic<bool>> providerMarkedWrong, bool offerMrzAlternative,
-    std::shared_ptr<MrzChoiceSink> mrzChoice)
+    std::shared_ptr<MrzChoiceSink> mrzChoice, std::shared_ptr<std::atomic<bool>> entryExpired,
+    std::shared_ptr<std::atomic<bool>> helperTooOld)
 {
     return [&cache, &prompter, &serializer, &phaseSink, cardKey = std::move(cardKey), requester = std::move(requester),
             artifact = std::move(artifact), token = std::move(token), prompterFailed = std::move(prompterFailed),
             userCancelled = std::move(userCancelled), providerMarkedWrong = std::move(providerMarkedWrong),
-            offerMrzAlternative, mrzChoice = std::move(mrzChoice)](const LibreSCRS::Auth::AuthRequirement& req) {
+            offerMrzAlternative, mrzChoice = std::move(mrzChoice), entryExpired = std::move(entryExpired),
+            helperTooOld = std::move(helperTooOld)](const LibreSCRS::Auth::AuthRequirement& req) {
         try {
             // About to (potentially) block on the prompter for user input —
             // surface the modal-dialog progress phase, and give it back on the
@@ -156,7 +158,8 @@ LibreSCRS::Auth::CredentialProvider makeReadCredentialProvider(
                 renegotiated.has_value()
                     ? std::move(*renegotiated)
                     : cache.requestCredential(cardKey, req, gated, opts, prompterFailed.get(), userCancelled.get(),
-                                              offeringAlternative ? mrzChoice.get() : nullptr);
+                                              offeringAlternative ? mrzChoice.get() : nullptr, entryExpired.get(),
+                                              helperTooOld.get());
             if (providerMarkedWrong) {
                 // Double-mark guard. An Ok result means a FRESH value is live
                 // — unmarked, so a later AuthFailed must still mark it. A

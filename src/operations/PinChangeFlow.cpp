@@ -204,6 +204,12 @@ CredentialOpResult runPinManage(PinManageFlowDeps& deps, const PinManageRequest&
             // happened, so no retry counter is at risk.
             return resultWith(CredentialOutcome::UserCancelled);
         }
+        if (prompt.status == PromptStatus::Timeout) {
+            // The clock closed the window. Still no card contact, so no retry
+            // counter moved -- and the holder is told the clock did it rather
+            // than that the prompter broke.
+            return resultWith(CredentialOutcome::EntryExpired);
+        }
         if (prompt.status != PromptStatus::Ok || !prompt.current || !prompt.newPin) {
             // The prompter did not deliver the required secrets (UI broke / absent
             // on the bus, or the reply decoded without both secrets). On the agent

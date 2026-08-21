@@ -514,6 +514,36 @@ TEST(IdentityReadFlow, ProviderLambdaRoutesOnRequirementAndFiresAwaitingConsent)
         << "AwaitingConsent phase must be recorded by the provider lambda";
 }
 
+// An expired entry window must remap the MESSAGE as well as the code. Found on
+// a live agent, not here: errorCode 20 arrived carrying msgFallback
+// "Authentication failed." -- the read's own prose, describing a card-side
+// rejection that never happened, because nothing was ever presented to the
+// card. Clients that phrase the code themselves never saw it; every client
+// that falls back to the agent's prose saw nothing else.
+TEST(IdentityReadFlow, ExpiredEntryRemapsTheMessageAndNotOnlyTheCode)
+{
+    Harness h;
+    auto prompterFailed = std::make_shared<std::atomic<bool>>(false);
+    auto entryExpired = std::make_shared<std::atomic<bool>>(false);
+    auto provider = FlowPrelude::makeReadCredentialProvider(
+        h.cache, h.prompter, h.serializer, h.phaseSink, "card-A", h.requester, h.artifact, h.source.token(),
+        prompterFailed, /*userCancelled=*/{}, /*providerMarkedWrong=*/{}, /*offerMrzAlternative=*/false,
+        /*mrzChoice=*/{}, entryExpired);
+
+    h.prompter.canOverride = PromptResult{PromptStatus::Timeout, std::nullopt, ""};
+    const auto cred = provider(paceReq(PaceSecretKind::Can));
+    EXPECT_NE(cred.status, LibreSCRS::Auth::CredentialResult::Status::Ok);
+    ASSERT_TRUE(entryExpired->load()) << "the clock signal must be raised before the message can follow it";
+    EXPECT_FALSE(prompterFailed->load()) << "an expiry is not a prompter failure";
+
+    // The pair the flows must carry, defined once so six decision sites cannot
+    // drift into three different sentences for one event.
+    EXPECT_STREQ(FlowPrelude::kEntryExpiredMsgKey, "op.entry_expired");
+    EXPECT_EQ(std::string(FlowPrelude::kEntryExpiredMsgFallback), "The entry window closed before a code was entered.");
+    EXPECT_EQ(std::string(FlowPrelude::kEntryExpiredMsgFallback).find("uthentication"), std::string::npos)
+        << "the expiry message must not describe a card-side authentication failure";
+}
+
 TEST(ConsentPhaseScope, ReturnsTheOperationToAMachinePhaseSoTheCardIsWatchedAgain)
 {
     // The class contract in isolation: consent is a bounded excursion, and the
