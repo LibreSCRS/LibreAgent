@@ -73,7 +73,9 @@ LibreSCRS::Agent::CredentialCache::getMrz(std::__cxx11::basic_string<char, std::
 LibreSCRS::Agent::CredentialCache::hasCan(std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > const&) const
 LibreSCRS::Agent::CredentialCache::hasMrz(std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > const&) const
 LibreSCRS::Agent::CredentialCache::invalidate(std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > const&)
+LibreSCRS::Agent::CredentialCache::lastPromptYieldedNothingFor(std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > const&) const
 LibreSCRS::Agent::CredentialCache::markCredentialWrong(std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > const&, std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> >)
+LibreSCRS::Agent::CredentialCache::noteLastPromptYieldedNothing(std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > const&, bool)
 LibreSCRS::Agent::CredentialCache::putCan(std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > const&, LibreSCRS::Secure::String)
 LibreSCRS::Agent::CredentialCache::putMrz(std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > const&, LibreSCRS::Secure::String)
 LibreSCRS::Agent::CredentialSnapshotCache::CredentialSnapshotCache(std::chrono::duration<long, std::ratio<1l, 1000000000l> >, std::function<std::chrono::time_point<std::chrono::_V2::steady_clock, std::chrono::duration<long, std::ratio<1l, 1000000000l> > > ()>)

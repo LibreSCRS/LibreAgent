@@ -142,6 +142,16 @@ public:
     // cycle after a PIN failure has no wrong-CAN history to report.
     void markCredentialWrong(const std::string& cardKey, std::string errorMsgKey);
 
+    // True iff the last prompt raised for @p cardKey closed without collecting
+    // anything. The rejection signal that follows such a prompt describes a
+    // secret that was never presented, so the caller must not treat it as a
+    // rejection: doing so evicts a value nobody supplied, burns a PACE attempt,
+    // and tells the holder their entry was not accepted when they made none.
+    [[nodiscard]] bool lastPromptYieldedNothingFor(const std::string& cardKey) const;
+
+    // Record whether the last prompt for @p cardKey collected anything.
+    void noteLastPromptYieldedNothing(const std::string& cardKey, bool yieldedNothing);
+
     // Cache-or-prompt helper invoked by the agent's credential provider
     // callback. Returns a CredentialResult populated from cache on hit,
     // from the prompter on miss (and stored on prompter success). The
@@ -211,6 +221,13 @@ private:
         // Reset only by a full-entry erase (invalidate() / clear()).
         std::uint32_t failedAttempts = 0;
         std::string lastErrorKey;
+        // True while the most recent prompt for this card produced NO secret --
+        // its window closed on the clock. Per CARD, not per flow run: the run
+        // that raised the window ends with it, and the middleware's re-request
+        // arrives inside the NEXT one, carrying the same rejection reason a
+        // genuinely wrong secret carries. A per-run flag cannot see across that
+        // boundary; this can. Cleared the moment a prompt does yield a secret.
+        bool lastPromptYieldedNothing = false;
     };
     mutable std::mutex m_mutex;
     std::map<std::string, Entry> m_entries;
@@ -333,8 +350,11 @@ CredentialCache::requestCredential(const std::string& cardKey, const LibreSCRS::
             }
             // The clock closed the window: nobody cancelled and the card
             // rejected nothing, so neither of those codes may be reported.
-            if (entryExpired != nullptr && prompt.status == PromptStatus::Timeout) {
-                entryExpired->store(true, std::memory_order_relaxed);
+            if (prompt.status == PromptStatus::Timeout) {
+                if (entryExpired != nullptr) {
+                    entryExpired->store(true, std::memory_order_relaxed);
+                }
+                noteLastPromptYieldedNothing(cardKey, true);
             }
             // Refused before the window was ever raised: a capability gap, and
             // the one outcome here whose remedy the holder can act on.
@@ -343,13 +363,14 @@ CredentialCache::requestCredential(const std::string& cardKey, const LibreSCRS::
             }
             return buildError();
         }
-        // A prompt that ANSWERED clears the expiry signal: the flag means "the
-        // last prompt for this card yielded nothing", and this one did. Without
-        // the clear, a wrong value entered after an earlier expiry would never
-        // be marked wrong (FlowPrelude guards the mark on this flag).
+        // A prompt that ANSWERED clears the signal, per card and per run: it
+        // means "the last prompt for this card yielded nothing", and this one
+        // did not. Without the clear, a wrong value entered after an earlier
+        // expiry would never be marked wrong.
         if (entryExpired != nullptr) {
             entryExpired->store(false, std::memory_order_relaxed);
         }
+        noteLastPromptYieldedNothing(cardKey, false);
         // The prompter honoured an in-dialog switch: the secret it collected is
         // NOT of the kind this activation asked for, so it must never be adapted
         // into this kind's entries nor stored in this kind's cache slot. Park it

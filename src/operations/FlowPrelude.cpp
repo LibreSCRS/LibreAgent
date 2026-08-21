@@ -127,7 +127,10 @@ LibreSCRS::Auth::CredentialProvider makeReadCredentialProvider(
             // clean. The flag is cleared again the moment a prompt DOES yield a
             // secret, so a wrong value entered after an expiry still marks.
             bool markedNow = false;
-            const bool lastPromptYieldedNothing = entryExpired && entryExpired->load(std::memory_order_relaxed);
+            // Asked of the CACHE, not of a per-run flag: the run that raised the
+            // expired window ended with it, and this re-request arrives inside the
+            // NEXT one. A per-run flag reads false here and the mark lands anyway.
+            const bool lastPromptYieldedNothing = cache.lastPromptYieldedNothingFor(cardKey);
             if (const auto& reason = req.message();
                 reason.has_value() && reason->key == LibreSCRS::Auth::ErrorKeys::preReadAuthFailed().key &&
                 !lastPromptYieldedNothing) {

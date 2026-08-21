@@ -280,6 +280,61 @@ TEST(CredentialCacheRequest, RefusedPromptSetsHelperTooOldFlagOnly)
     EXPECT_FALSE(cache.hasCan("card-A"));
 }
 
+// The signal has to outlive the RUN that produced it. The first attempt raises
+// a window, it expires, and that flow ends; the middleware's re-request arrives
+// inside the NEXT flow, carrying the same rejection reason a genuinely wrong
+// secret carries. A per-run flag reads false there and the caller marks a value
+// nobody ever supplied -- which burns a PACE attempt and puts "the value you
+// entered was not accepted" in front of a holder who entered nothing. Measured
+// on a live agent: the first fix was per-run and the second dialog still said
+// it.
+TEST(CredentialCacheRequest, AnExpiryIsRememberedPerCardNotPerRun)
+{
+    CredentialCache cache;
+    FakePrompter prompter;
+    PromptOptions opts;
+
+    EXPECT_FALSE(cache.lastPromptYieldedNothingFor("card-A")) << "a card with no history has nothing to remember";
+
+    prompter.canResult = PromptResult{PromptStatus::Timeout, std::nullopt, ""};
+    EXPECT_EQ(cache.requestCredential("card-A", paceReq(PaceSecretKind::Can), prompter, opts).status,
+              CredentialResult::Status::Error);
+
+    // The run is over; this is what the NEXT one must be able to see.
+    EXPECT_TRUE(cache.lastPromptYieldedNothingFor("card-A"));
+    EXPECT_FALSE(cache.lastPromptYieldedNothingFor("card-B")) << "remembered per card, not globally";
+
+    // A prompt that answers clears it, so a wrong value entered after an expiry
+    // is still marked wrong.
+    prompter.canResult = PromptResult{PromptStatus::Ok, LibreSCRS::Secure::String{"123456"}, ""};
+    EXPECT_EQ(cache.requestCredential("card-A", paceReq(PaceSecretKind::Can), prompter, opts).status,
+              CredentialResult::Status::Ok);
+    EXPECT_FALSE(cache.lastPromptYieldedNothingFor("card-A"));
+}
+
+// An expiry must not cost a PACE attempt: three of them would otherwise leave
+// the card unable to be asked at all, and the cap refuses to ASK, never to
+// answer -- so the failure surfaces far from its cause.
+TEST(CredentialCacheRequest, AnExpiryCostsNoAttempt)
+{
+    CredentialCache cache;
+    FakePrompter prompter;
+    prompter.canResult = PromptResult{PromptStatus::Timeout, std::nullopt, ""};
+    PromptOptions opts;
+    for (int i = 0; i < 3; ++i) {
+        static_cast<void>(cache.requestCredential("card-A", paceReq(PaceSecretKind::Can), prompter, opts));
+    }
+    // Asserted through behaviour rather than the private counter: the cap
+    // refuses to ASK, so a card whose attempts were burned never reaches the
+    // prompter again. This one still does.
+    const int before = prompter.canCalls;
+    prompter.canResult = PromptResult{PromptStatus::Ok, LibreSCRS::Secure::String{"123456"}, ""};
+    EXPECT_EQ(cache.requestCredential("card-A", paceReq(PaceSecretKind::Can), prompter, opts).status,
+              CredentialResult::Status::Ok)
+        << "three expiries must not exhaust the attempt cap";
+    EXPECT_EQ(prompter.canCalls, before + 1) << "the fourth attempt was still allowed to ask";
+}
+
 TEST(CredentialCacheRequest, PinKindIsNeverCachedAndYieldsError)
 {
     // PIN-as-PACE-password is never cached and never collected by the

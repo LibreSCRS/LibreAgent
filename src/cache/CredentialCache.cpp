@@ -73,6 +73,28 @@ void CredentialCache::markCredentialWrong(const std::string& cardKey, std::strin
     entry.lastErrorKey = std::move(errorMsgKey);
 }
 
+bool CredentialCache::lastPromptYieldedNothingFor(const std::string& cardKey) const
+{
+    std::lock_guard lock(m_mutex);
+    auto it = m_entries.find(cardKey);
+    return it != m_entries.end() && it->second.lastPromptYieldedNothing;
+}
+
+void CredentialCache::noteLastPromptYieldedNothing(const std::string& cardKey, bool yieldedNothing)
+{
+    std::lock_guard lock(m_mutex);
+    // Only create an entry to REMEMBER an empty prompt. Clearing a card that
+    // has no entry has nothing to clear, and default-constructing one there
+    // would put every card that ever answered a prompt into the map.
+    if (!yieldedNothing) {
+        if (auto it = m_entries.find(cardKey); it != m_entries.end()) {
+            it->second.lastPromptYieldedNothing = false;
+        }
+        return;
+    }
+    m_entries[cardKey].lastPromptYieldedNothing = true;
+}
+
 std::uint32_t CredentialCache::failedAttemptsFor(const std::string& cardKey) const
 {
     std::lock_guard lock(m_mutex);
