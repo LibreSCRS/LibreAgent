@@ -410,9 +410,9 @@ TEST(MessagesRoundTrip, CardStateEncodesCardTypeAndAtrWhenSet)
 // faulted on macOS inside this map's copy -- and this case is the measurement
 // that says the encoding is NOT why. It passes under ASan and UBSan on
 // libstdc++ and on libc++ alike, which is what retired the reading that blamed
-// `Map`'s incomplete value type (backlog 154). The fault itself is backlog 155,
-// still open, and needs what this case deliberately does not have: a real config
-// store, a dispatch queue, and Apple's own libc++.
+// `Map`'s incomplete value type. The fault itself is still open, and needs what
+// this case deliberately does not have: a real config store, a dispatch queue,
+// and Apple's own libc++.
 //
 // It stays because the shape is worth pinning either way -- a nested map inside
 // an array inside a map is the deepest thing the config reply carries.
