@@ -264,6 +264,8 @@ LibreSCRS::Agent::mutationReachedCard(LibreSCRS::Agent::CredentialOutcome)
 LibreSCRS::Agent::readerIdentities(std::vector<std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> >, std::allocator<std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > > > const&)
 LibreSCRS::Agent::sha256Hex[abi:cxx11](std::span<unsigned char const, 18446744073709551615ul>)
 == libLibreAgentWire.a ==
+LibreSCRS::Agent::Wire::CborValue::CborValue(LibreSCRS::Agent::Wire::CborValue const&)
+LibreSCRS::Agent::Wire::CborValue::CborValue(LibreSCRS::Agent::Wire::CborValue&&)
 LibreSCRS::Agent::Wire::CborValue::asArray() const
 LibreSCRS::Agent::Wire::CborValue::asBool() const
 LibreSCRS::Agent::Wire::CborValue::asBytes() const
@@ -274,7 +276,11 @@ LibreSCRS::Agent::Wire::CborValue::asText[abi:cxx11]() const
 LibreSCRS::Agent::Wire::CborValue::asUInt() const
 LibreSCRS::Agent::Wire::CborValue::encode() const
 LibreSCRS::Agent::Wire::CborValue::find(std::basic_string_view<char, std::char_traits<char> >) const
+LibreSCRS::Agent::Wire::CborValue::operator=(LibreSCRS::Agent::Wire::CborValue const&)
+LibreSCRS::Agent::Wire::CborValue::operator=(LibreSCRS::Agent::Wire::CborValue&&)
+LibreSCRS::Agent::Wire::CborValue::operator==(LibreSCRS::Agent::Wire::CborValue const&) const
 LibreSCRS::Agent::Wire::CborValue::scrub()
+LibreSCRS::Agent::Wire::CborValue::~CborValue()
 LibreSCRS::Agent::Wire::FrameReassembler::extract(LibreSCRS::Agent::Wire::PumpResult&)
 LibreSCRS::Agent::Wire::FrameReassembler::pump(int)
 LibreSCRS::Agent::Wire::decode(std::span<unsigned char const, 18446744073709551615ul>)
