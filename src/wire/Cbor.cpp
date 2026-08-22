@@ -6,6 +6,7 @@
 // lengths, preferred floats) + CanonicalKeyLess map ordering. Decoding is
 // strict + bounded (depth/item caps) with a re-encode-and-compare canonical
 // check that fails closed on any non-canonical input.
+#include <type_traits>
 #include <LibreSCRS/Agent/wire/Cbor.h>
 
 #include <qcbor/qcbor_decode.h>
@@ -18,11 +19,56 @@ namespace LibreSCRS::Agent::Wire {
 // Out-of-line on purpose: see the declarations in Cbor.h. Emitting the special
 // members here means the variant's alternatives -- Array and, critically, Map --
 // are instantiated at a point where CborValue is a complete type.
-CborValue::CborValue(const CborValue&) = default;
+// Copying has to clone the held map rather than the pointer to it; every other
+// alternative copies itself. Defined here, not in the header, because this is
+// where Map is a complete type.
+CborValue::CborValue(const CborValue& other)
+{
+    // Visited rather than assigned: holding the map by unique_ptr deletes the
+    // variant's own copy, so each alternative is rebuilt by hand and the map
+    // alternative is cloned instead of shared.
+    m_v = std::visit(
+        [](const auto& held) -> Storage {
+            using Held = std::decay_t<decltype(held)>;
+            if constexpr (std::is_same_v<Held, MapPtr>) {
+                return held == nullptr ? Storage{MapPtr{}} : Storage{std::make_unique<Map>(*held)};
+            } else {
+                return Storage{held};
+            }
+        },
+        other.m_v);
+}
+
+CborValue& CborValue::operator=(const CborValue& other)
+{
+    if (this != &other) {
+        CborValue copy(other);
+        m_v = std::move(copy.m_v);
+    }
+    return *this;
+}
+
 CborValue::CborValue(CborValue&&) noexcept = default;
-CborValue& CborValue::operator=(const CborValue&) = default;
 CborValue& CborValue::operator=(CborValue&&) noexcept = default;
 CborValue::~CborValue() = default;
+
+// Value equality, not pointer equality: two values are equal when they hold the
+// same alternative and the same contents, which for the map means comparing the
+// maps and not the pointers that carry them.
+bool CborValue::operator==(const CborValue& other) const
+{
+    if (m_v.index() != other.m_v.index()) {
+        return false;
+    }
+    if (const auto* mine = std::get_if<MapPtr>(&m_v)) {
+        const auto* theirs = std::get_if<MapPtr>(&other.m_v);
+        if (*mine == nullptr || *theirs == nullptr) {
+            return *mine == nullptr && *theirs == nullptr;
+        }
+        return **mine == **theirs;
+    }
+    return m_v == other.m_v;
+}
 
 namespace {
 
@@ -236,7 +282,8 @@ const CborValue::Array* CborValue::asArray() const noexcept
 
 const CborValue::Map* CborValue::asMap() const noexcept
 {
-    return std::get_if<Map>(&m_v);
+    const auto* held = std::get_if<MapPtr>(&m_v);
+    return held == nullptr ? nullptr : held->get();
 }
 
 const CborValue* CborValue::find(std::string_view key) const noexcept
@@ -312,8 +359,8 @@ void CborValue::scrub() noexcept
         for (auto& v : *arr) {
             v.scrub();
         }
-    } else if (auto* map = std::get_if<Map>(&m_v)) {
-        for (auto& [key, v] : *map) {
+    } else if (auto* held = std::get_if<MapPtr>(&m_v); held != nullptr && *held != nullptr) {
+        for (auto& [key, v] : **held) {
             v.scrub();
         }
     }

@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <expected>
 #include <map>
+#include <memory>
 #include <optional>
 #include <span>
 #include <string>
@@ -87,7 +88,7 @@ public:
     CborValue(const char* text) : m_v(std::string(text)) {}
     CborValue(Bytes bytes) : m_v(std::move(bytes)) {}
     CborValue(Array arr) : m_v(std::move(arr)) {}
-    CborValue(Map map) : m_v(std::move(map)) {}
+    CborValue(Map map) : m_v(std::make_unique<Map>(std::move(map))) {}
 
     // Explicit small-integer convenience for call sites (avoids ambiguous {}).
     static CborValue uint(std::uint64_t u) noexcept
@@ -130,7 +131,9 @@ public:
     CborValue& operator=(CborValue&&) noexcept;
     ~CborValue();
 
-    bool operator==(const CborValue&) const = default;
+    // Not defaulted: the map alternative is held by pointer, and a defaulted
+    // comparison would compare the pointers rather than the maps.
+    bool operator==(const CborValue&) const;
 
     // Canonical (RFC 8949 §4.2) encoding.
     [[nodiscard]] std::vector<std::uint8_t> encode() const;
@@ -142,7 +145,30 @@ public:
     void scrub() noexcept;
 
 private:
-    std::variant<std::nullptr_t, bool, std::uint64_t, std::int64_t, double, std::string, Bytes, Array, Map> m_v;
+    // The map alternative is held INDIRECTLY, and that indirection is the whole
+    // point of it. Naming Map here instantiates std::map<std::string, CborValue,
+    // CanonicalKeyLess> -- the variant needs its size -- at a point inside
+    // CborValue's own definition, where CborValue is still incomplete. The
+    // standard permits that for std::vector ([vector.overview]), which is why
+    // Array can stay as it is, and permits it for std::map nowhere at all.
+    //
+    // It is not a technicality. On Apple Clang 17 / libc++ 19 the map that comes
+    // out of it keeps its root node addressing an end node inside whatever
+    // buffer it used to live in, so relocating a CborValue -- a vector of them
+    // growing past its capacity, say -- leaves a tree pointing into freed
+    // memory, and the next thing to walk it reads that memory. See
+    // tests/wire/CborRelocationTest.cpp.
+    //
+    // A unique_ptr needs only its own size, so the map is instantiated where
+    // CborValue is complete: in Cbor.cpp and in callers. The pointer is never
+    // null in a live value -- every path that selects this alternative allocates
+    // -- but a moved-from value holds a null one, and the accessors say so
+    // rather than dereferencing it.
+    using MapPtr = std::unique_ptr<Map>;
+    using Storage =
+        std::variant<std::nullptr_t, bool, std::uint64_t, std::int64_t, double, std::string, Bytes, Array, MapPtr>;
+
+    Storage m_v;
 };
 
 // Strict, bounded, canonical-checked decode of one complete top-level item.
