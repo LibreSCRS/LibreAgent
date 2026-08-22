@@ -508,6 +508,45 @@ jobs:
             -DPKGSMOKE_COMPONENTS=ClientQt
           cmake --build build-pkgsmoke-clientqt -j4
 
+  wire-asan-macos:
+    # The wire codec on Apple Clang, under AddressSanitizer. It exists because a
+    # CborValue holding a Map was left addressing a freed buffer when a growing
+    # vector relocated it, and nothing in this repo could see it: every job here
+    # runs on Linux, where the same code is well-behaved, and the failure only
+    # ever surfaced downstream as a bare "Bus error" from a macOS agent test.
+    #
+    # Wire-only on purpose -- no Core, so no LibreMiddleware, so no card stack to
+    # build. That keeps this a couple of minutes rather than half an hour, which
+    # is what makes it usable while working on the codec rather than only after.
+    name: wire-asan (macOS)
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build tools
+        run: brew install ninja
+
+      - name: Configure (wire only, ASan)
+        run: |
+          cmake -B build-wire-asan -G Ninja \
+            -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+            -DLIBREAGENT_BUILD_CORE=OFF \
+            -DLIBREAGENT_BUILD_WIRE=ON \
+            -DLIBREAGENT_BUILD_CLIENT_QT=OFF \
+            -DCMAKE_CXX_FLAGS="-fsanitize=address -fno-omit-frame-pointer -g" \
+            -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=address"
+
+      - name: Build
+        run: cmake --build build-wire-asan -j4
+
+      - name: Test
+        # --no-tests=error: ctest exits 0 when it finds nothing at all, so
+        # without this a configuration that stopped generating these tests would
+        # report success.
+        env:
+          ASAN_OPTIONS: detect_leaks=0
+        run: ctest --test-dir build-wire-asan --output-on-failure --no-tests=error
+
   fuzz-cbor:
     # Untrusted-decoder fuzz gate (moved from LibreDarwin, whose own
     # ci.yml dropped this job once the wire codec/framing/message model

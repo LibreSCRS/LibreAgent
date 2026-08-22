@@ -5,6 +5,7 @@
 // FD_CLOEXEC is set on each received fd via fcntl (no MSG_CMSG_CLOEXEC on
 // macOS). The body length is capped before allocation; the ancillary fd count
 // is capped. Fail-closed on any short/oversize/malformed input.
+#include <algorithm>
 #include <LibreSCRS/Agent/wire/Framing.h>
 
 #include <fcntl.h>
@@ -56,11 +57,36 @@ bool recvExact(int fd, std::uint8_t* dst, std::size_t n, std::vector<UniqueFd>& 
 
         // Harvest any passed fds; set FD_CLOEXEC on each (macOS has no
         // MSG_CMSG_CLOEXEC). Close anything beyond the cap.
+        //
+        // cmsg_len describes what the SENDER attached, and on a truncated
+        // control message it keeps saying so after the kernel has delivered
+        // less. Trusting it walks off the end of `control`, which is on the
+        // stack -- and the descriptors read out of that overrun get an fcntl
+        // each. The MSG_CTRUNC check below is too late to prevent any of it.
+        //
+        // So every count here comes from what was actually delivered: the
+        // recvmsg-updated msg_controllen, clamped, with the subtraction guarded
+        // because cmsg_len is peer-influenced and a value below CMSG_LEN(0)
+        // would wrap to an enormous size_t. Harvesting still happens on a
+        // truncated message rather than being skipped: the descriptors that DID
+        // arrive are open in this process, and putting them in outFds is what
+        // closes them -- UniqueFd owns them, and the caller drops the vector
+        // when this returns false.
+        const auto* const controlEnd = static_cast<const std::uint8_t*>(msg.msg_control) + msg.msg_controllen;
         for (cmsghdr* c = CMSG_FIRSTHDR(&msg); c != nullptr; c = CMSG_NXTHDR(&msg, c)) {
             if (c->cmsg_level != SOL_SOCKET || c->cmsg_type != SCM_RIGHTS) {
                 continue;
             }
-            const std::size_t payload = c->cmsg_len - CMSG_LEN(0);
+            if (c->cmsg_len < CMSG_LEN(0)) {
+                continue; // malformed header: the subtraction below would wrap
+            }
+            const auto* const data = static_cast<const std::uint8_t*>(CMSG_DATA(c));
+            if (data > controlEnd) {
+                continue; // header sits outside what was delivered
+            }
+            const std::size_t claimed = c->cmsg_len - CMSG_LEN(0);
+            const auto delivered = static_cast<std::size_t>(controlEnd - data);
+            const std::size_t payload = std::min(claimed, delivered);
             const std::size_t count = payload / sizeof(int);
             const auto* fds = reinterpret_cast<const int*>(CMSG_DATA(c));
             for (std::size_t i = 0; i < count; ++i) {

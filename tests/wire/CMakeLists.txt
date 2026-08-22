@@ -72,6 +72,17 @@ if(LIBREAGENT_BUILD_WIRE)
         GTest::gtest_main)
     add_test(NAME CborRoundTripTest COMMAND CborRoundTripTest)
 
+    # CborRelocationTest: a CborValue holding a Map must survive being moved out
+    # of a growing vector. Passes trivially where the library is healthy; its
+    # purpose is the ASan run on Apple Clang, where it reports the use-after-free
+    # instead of leaving it to be inferred from a bare "Bus error".
+    add_executable(CborRelocationTest CborRelocationTest.cpp)
+    target_link_libraries(CborRelocationTest PRIVATE
+        LibreAgent::Wire
+        GTest::gtest
+        GTest::gtest_main)
+    add_test(NAME CborRelocationTest COMMAND CborRelocationTest)
+
     # 4. Framing/FrameReassembler: the length-prefixed + SCM_RIGHTS frame codec
     #    and the non-blocking streaming reassembler, both re-based onto this
     #    component (originally LibreDarwin's macOS agent backend) and now
