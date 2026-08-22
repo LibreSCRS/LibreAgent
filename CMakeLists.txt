@@ -24,6 +24,24 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 include(GNUInstallDirs)
 
+# Apple Clang gates std::expected and std::jthread/std::stop_token -- which this
+# repo's public headers use -- behind -fexperimental-library, and the flag also
+# selects a libc++ ABI. That makes it a property of the whole build, not of one
+# target: a single translation unit compiled without it sees a different libc++
+# than everything it links against, and the resulting mismatch is an ODR
+# violation the compiler cannot diagnose.
+#
+# Declared here, once, before any target exists, so every target in this project
+# inherits it -- including the compile-only check targets, which is exactly the
+# kind of target a per-target list forgets. LibreAgentWire additionally carries
+# it as a PUBLIC usage requirement (see LIBREAGENT_BUILD_WIRE below) so that
+# consumers in OTHER directory scopes inherit it too; directory options do not
+# cross that boundary.
+if(CMAKE_CXX_COMPILER_ID STREQUAL "AppleClang")
+    add_compile_options(-fexperimental-library)
+    add_link_options(-fexperimental-library)
+endif()
+
 # Component switches. Core is the platform-neutral agent library this repo
 # has always built; Wire (a shared socket-wire protocol library) and
 # ClientQt (a Qt client consuming it) are later additions, each independently
@@ -102,6 +120,18 @@ if(LIBREAGENT_BUILD_CORE)
         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
         $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>)
     target_compile_features(LibreAgentCore PUBLIC cxx_std_23)
+
+    # Same reason as LibreAgentWire below: Core's public headers use
+    # std::expected and std::jthread/std::stop_token, which Apple Clang gates
+    # behind -fexperimental-library along with a libc++ ABI selection. The
+    # project-wide option compiles Core itself correctly, but consumers live in
+    # another directory scope and do not inherit directory options, so the
+    # requirement has to travel with the target. Previously each consumer
+    # patched this in from its own side, which is a thing to forget.
+    if(CMAKE_CXX_COMPILER_ID STREQUAL "AppleClang")
+        target_compile_options(LibreAgentCore PUBLIC -fexperimental-library)
+        target_link_options(LibreAgentCore PUBLIC -fexperimental-library)
+    endif()
     set_target_properties(LibreAgentCore PROPERTIES POSITION_INDEPENDENT_CODE ON)
     target_link_libraries(LibreAgentCore
         PUBLIC
@@ -232,14 +262,12 @@ if(LIBREAGENT_BUILD_WIRE)
         target_compile_options(LibreAgentWire PRIVATE -Werror)
     endif()
 
-    # AppleClang (Xcode 16/17, the macos-15 CI image) still gates the
-    # std::expected that Cbor.h/.cpp use behind -fexperimental-library.
-    # AppleClang pairs -fexperimental-library with libc++'s experimental ABI
-    # surface (std::expected); the LibreDarwin daemon applies the same flag to
-    # its wire consumers, so Wire must carry it PUBLIC for Darwin builds so
-    # every Darwin consumer inherits it for free with no per-consumer
-    # workaround. Not buildable/testable on this (Linux) machine — verify on
-    # the next macOS session.
+    # Compiling this library with the flag is already handled once for the whole
+    # project (the add_compile_options near the top). What this adds is the
+    # PUBLIC half: a directory-scope option does not cross into a consumer's own
+    # directory, so without it a FetchContent consumer's targets would compile
+    # against these headers with a different libc++ than the library was built
+    # with. PUBLIC leaves the consumer nothing to opt into and nothing to forget.
     if(CMAKE_CXX_COMPILER_ID STREQUAL "AppleClang")
         target_compile_options(LibreAgentWire PUBLIC -fexperimental-library)
         target_link_options(LibreAgentWire PUBLIC -fexperimental-library)
