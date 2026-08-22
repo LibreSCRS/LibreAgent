@@ -14,6 +14,16 @@
 #include <algorithm>
 
 namespace LibreSCRS::Agent::Wire {
+
+// Out-of-line on purpose: see the declarations in Cbor.h. Emitting the special
+// members here means the variant's alternatives -- Array and, critically, Map --
+// are instantiated at a point where CborValue is a complete type.
+CborValue::CborValue(const CborValue&) = default;
+CborValue::CborValue(CborValue&&) noexcept = default;
+CborValue& CborValue::operator=(const CborValue&) = default;
+CborValue& CborValue::operator=(CborValue&&) noexcept = default;
+CborValue::~CborValue() = default;
+
 namespace {
 
 UsefulBufC bufOf(std::string_view s) noexcept

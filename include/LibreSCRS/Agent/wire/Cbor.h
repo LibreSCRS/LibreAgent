@@ -118,6 +118,18 @@ public:
     // Convenience map lookup: nullptr when not a map or key absent.
     [[nodiscard]] const CborValue* find(std::string_view key) const noexcept;
 
+    // Declared here, defined out of line in Cbor.cpp. Map names
+    // std::map<std::string, CborValue, ...> while CborValue is still incomplete,
+    // which std::vector permits for Array ([vector.overview]) but std::map does
+    // not permit at all -- the standard gives no behaviour for a map on an
+    // incomplete value type. Forcing the special members to be emitted where
+    // CborValue IS complete keeps that instantiation out of the class body.
+    CborValue(const CborValue&);
+    CborValue(CborValue&&) noexcept;
+    CborValue& operator=(const CborValue&);
+    CborValue& operator=(CborValue&&) noexcept;
+    ~CborValue();
+
     bool operator==(const CborValue&) const = default;
 
     // Canonical (RFC 8949 §4.2) encoding.
