@@ -552,7 +552,16 @@ jobs:
         # without this a configuration that stopped generating these tests would
         # report success.
         env:
-          ASAN_OPTIONS: detect_leaks=0
+          # detect_container_overflow=0: GTest comes from Homebrew and is not
+          # built with the sanitizer, so a std::vector<std::string> that lives
+          # inside its uninstrumented code and is touched from instrumented code
+          # trips a container-overflow that is not one. The report seen here was
+          # in GTest's own GetTestSuite, at the same address on every run,
+          # including runs of unmodified trunk -- ASan documents disabling this
+          # one check for partially instrumented programs. Every other check
+          # stays on, and the use-after-free this job exists for is found by
+          # them.
+          ASAN_OPTIONS: detect_leaks=0:detect_container_overflow=0
         run: ctest --test-dir build-wire-asan --output-on-failure --no-tests=error
 
   fuzz-cbor:
