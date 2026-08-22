@@ -528,7 +528,11 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Install build tools
-        run: brew install ninja
+        # googletest as well as ninja: this job builds no LibreMiddleware, and
+        # LibreMiddleware is where the other macOS jobs in this stack get their
+        # vendored GTest from. Without it find_package(GTest REQUIRED) stops the
+        # configure before a single test is compiled.
+        run: brew install ninja googletest
 
       - name: Configure (wire only, ASan)
         run: |
