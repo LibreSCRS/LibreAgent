@@ -27,6 +27,10 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  # Manual runs. Without this, a change that only misbehaves on a macOS runner
+  # can be exercised nowhere before it lands: every other job here is Linux, and
+  # a branch that is not a pull request gets no run at all.
+  workflow_dispatch:
 
 jobs:
   format-check:
