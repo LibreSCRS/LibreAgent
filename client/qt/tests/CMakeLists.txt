@@ -205,7 +205,8 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
             Qt6::Test
             GTest::gtest)
         add_test(NAME ${name} COMMAND ${DBUS_RUN_SESSION} -- $<TARGET_FILE:${name}>)
-        set_tests_properties(${name} PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+        # A wedged test under dbus-run-session must fail in minutes, not consume the runner's whole wall.
+        set_tests_properties(${name} PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 120)
     endfunction()
 
     # Adapted from the lifted KDE suites of the same name (see fakes/FakeAgent.h's
@@ -252,7 +253,7 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
         GTest::gtest)
     add_test(NAME ClientQtSharedAgentClientTest
         COMMAND ${DBUS_RUN_SESSION} -- $<TARGET_FILE:ClientQtSharedAgentClientTest>)
-    set_tests_properties(ClientQtSharedAgentClientTest PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+    set_tests_properties(ClientQtSharedAgentClientTest PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 120)
 endif() # CMAKE_SYSTEM_NAME STREQUAL "Linux"
 
 # Socket integration tests: the REAL SocketTransport driven against an
@@ -283,7 +284,8 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
         LibreAgent::Wire
         GTest::gtest)
     add_test(NAME ClientQtSocketIntegrationTest COMMAND ClientQtSocketIntegrationTest)
-    set_tests_properties(ClientQtSocketIntegrationTest PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+    # No bus here, but the real SocketTransport wedges the same way -- same ceiling.
+    set_tests_properties(ClientQtSocketIntegrationTest PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 120)
 endif()
 
 # Transport parity suite: ONE shared gtest-typed-test scenario corpus
@@ -318,7 +320,7 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
         Qt6::DBus
         GTest::gtest)
     add_test(NAME ClientQtTransportParityTest COMMAND ${DBUS_RUN_SESSION} -- $<TARGET_FILE:ClientQtTransportParityTest>)
-    set_tests_properties(ClientQtTransportParityTest PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+    set_tests_properties(ClientQtTransportParityTest PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 120)
 endif()
 
 # The header-self-sufficiency / no-Qt-DBus-KF6-LM-QCBOR-leak acceptance
