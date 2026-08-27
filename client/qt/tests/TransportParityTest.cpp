@@ -1238,6 +1238,13 @@ TYPED_TEST(TransportParity, CertificateFieldsDictSurfacesIdenticallyOnBothWires)
          {{QStringLiteral("policy0"),
            {QStringLiteral("cert.certificatePolicies.policy0"), QStringLiteral("Certificate Policy"),
             QStringLiteral("1.3.6.1.4.1.1.1.1")}}}},
+        {QStringLiteral("eku"),
+         {{QStringLiteral("usage0"),
+           {QStringLiteral("cert.eku.usage0"), QStringLiteral("Extended Key Usage"),
+            QStringLiteral("E-mail Protection")}},
+          {QStringLiteral("usage1"),
+           {QStringLiteral("cert.eku.usage1"), QStringLiteral("Extended Key Usage"),
+            QStringLiteral("1.3.6.1.4.1.99999.1")}}}},
         {QStringLiteral("ext"),
          {{QStringLiteral("2.5.29.9"),
            {QStringLiteral("cert.ext.2.5.29.9"), QStringLiteral("X509v3 Subject Directory Attributes (Critical)"),
@@ -1312,6 +1319,12 @@ TYPED_TEST(TransportParity, CertificateFieldsDictSurfacesIdenticallyOnBothWires)
          QVariantMap{{QStringLiteral("policy0"),
                       cell(QStringLiteral("cert.certificatePolicies.policy0"), QStringLiteral("Certificate Policy"),
                            QStringLiteral("1.3.6.1.4.1.1.1.1"))}}},
+        {QStringLiteral("eku"),
+         QVariantMap{
+             {QStringLiteral("usage0"), cell(QStringLiteral("cert.eku.usage0"), QStringLiteral("Extended Key Usage"),
+                                             QStringLiteral("E-mail Protection"))},
+             {QStringLiteral("usage1"), cell(QStringLiteral("cert.eku.usage1"), QStringLiteral("Extended Key Usage"),
+                                             QStringLiteral("1.3.6.1.4.1.99999.1"))}}},
         {QStringLiteral("ext"),
          QVariantMap{{QStringLiteral("2.5.29.9"), cell(QStringLiteral("cert.ext.2.5.29.9"),
                                                        QStringLiteral("X509v3 Subject Directory Attributes (Critical)"),
@@ -1332,6 +1345,55 @@ TYPED_TEST(TransportParity, CertificateFieldsDictSurfacesIdenticallyOnBothWires)
     EXPECT_EQ(c.subject, QStringLiteral("Ana Anić"));
     EXPECT_EQ(c.issuer, QStringLiteral("Republika Srbija CA"));
     EXPECT_EQ(c.securityStatus, (QStringList{QStringLiteral("expired")}));
+}
+
+// The diagnostic failure channel, one body against both wires. When the agent
+// cannot parse a certificate's DER at all, the wire carries a "diagnostic"
+// group INSTEAD of the certificate vocabulary -- alone, with a single
+// parseError cell -- and the cert stays signing-incapable. A client decodes
+// it through the same generic dict path as every other group, so a transport
+// that special-cased the happy-path groups would pass the scenario above and
+// still lose the one group a broken certificate produces.
+TYPED_TEST(TransportParity, DiagnosticParseFailureSurfacesIdenticallyOnBothWires)
+{
+    using Env = typename TypeParam::Env;
+    ParityConfig cfg;
+    cfg.capabilities = Cap::Pki;
+    ParityCert pc;
+    pc.certId = QStringLiteral("cert-diagnostic-parity");
+    pc.signingCapable = false;
+    pc.extraFields = Fakes::FakeCertFieldGroups{
+        {QStringLiteral("diagnostic"),
+         {{QStringLiteral("parseError"),
+           {QStringLiteral("cert.diagnostic.parseError"), QStringLiteral("Parse error"),
+            QStringLiteral("d2i_X509: header too long")}}}},
+    };
+    cfg.certScript = {pc};
+    Env env(cfg);
+
+    AgentCard* card = env.card();
+    ASSERT_NE(card, nullptr);
+    AgentOperation* op = card->readCertificates();
+    ASSERT_NE(op, nullptr);
+    ASSERT_TRUE(waitFor([&]() { return op->isFinished(); }));
+    EXPECT_EQ(op->status(), OperationStatus::Ok);
+
+    const QList<CertificateInfo> certs = op->certificatesResult();
+    ASSERT_EQ(certs.size(), 1);
+    const CertificateInfo& c = certs.constFirst();
+    EXPECT_FALSE(c.signingCapable);
+
+    const auto cell = [](const QString& labelKey, const QString& labelFallback, const QString& value) {
+        return QVariant(QVariantList{labelKey, labelFallback, value});
+    };
+    ASSERT_TRUE(c.extra.contains(QStringLiteral("fields")));
+    const QVariantMap fields = c.extra.value(QStringLiteral("fields")).toMap();
+    ASSERT_TRUE(fields.contains(QStringLiteral("diagnostic")))
+        << "the failure channel must survive both decodes, not just the one whose transport was edited";
+    EXPECT_EQ(fields.value(QStringLiteral("diagnostic")).toMap(),
+              (QVariantMap{{QStringLiteral("parseError"),
+                            cell(QStringLiteral("cert.diagnostic.parseError"), QStringLiteral("Parse error"),
+                                 QStringLiteral("d2i_X509: header too long"))}}));
 }
 
 // The best-effort warm, one body against both wires. Most of what this verb

@@ -67,8 +67,9 @@ std::vector<std::uint8_t> makeSelfSignedV3Der(const char* commonName, const char
     return out;
 }
 
-// Mint a self-signed v3 RSA cert carrying the V10-audit extension set (SAN,
-// IAN, basicConstraints, SKI, AKI, CRL DPs, AIA, certificate policies) so the
+// Mint a self-signed v3 RSA cert carrying the audited extension set (EKU --
+// one purpose the OID database names and one it cannot, SAN, IAN,
+// basicConstraints, SKI, AKI, CRL DPs, AIA, certificate policies) so the
 // vocabulary-append KAT below can assert each typed group agent-side. A
 // helper local to this TU -- distinct from makeSelfSignedV3Der so the plain
 // keyUsage KATs above stay minimal and unaffected by this richer extension set.
