@@ -107,7 +107,7 @@ protected:
     }
 };
 
-// --- Phase 1: the watchdog covers MACHINE time only ------------------------
+// --- The watchdog covers MACHINE time only ---------------------------------
 //
 // The watchdog exists because SCardTransmit is issued with no timeout at all:
 // a wedged card would otherwise freeze a reader worker forever and the client

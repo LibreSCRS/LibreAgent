@@ -209,7 +209,7 @@ TEST(MrzPayload, WrongDateCheckDigitRejected)
     EXPECT_FALSE(parseMrzPayload(String{"L898902C36\n7408121\n1204159"}).has_value());
 }
 
-// -- Cross-stack literal-parity pin (Task 3 Step 5, FieldKeyParity style) ----
+// -- Cross-stack literal-parity pin (FieldKeyParity style) -------------------
 //
 // The four union entry keys and the mrzInfo construction rule are pinned here,
 // on the consumer, with source citations re-read from the LM trees at

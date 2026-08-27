@@ -273,7 +273,7 @@ TEST(DBusIntegration, SetConfigValueNamesTheRefusal)
         << "a refused write must change nothing";
 }
 
-// The distinction Task 30's retry class keys off: "the agent refused the
+// The distinction the settings-write retry classification keys off: "the agent refused the
 // write" and "the write never arrived" must not look alike. A refusal is the
 // agent's named verdict; an unreachable agent is CommunicationError, and the
 // snapshot goes empty with it rather than serving a dead agent's settings.

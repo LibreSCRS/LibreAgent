@@ -314,7 +314,7 @@ card-state   = { handle: handle, reader: handle, caps: capabilities, preAuth: pr
 ; chainSubjectCns. It is documented here rather than listed above because
 ; it is a failure channel, not part of the certificate vocabulary -- but a
 ; client decodes it through exactly the same generic path.
-; The V10 vocabulary-append groups (basicConstraints/san/ian/
+; The vocabulary-append extension groups (basicConstraints/san/ian/
 ; crlDp/aia/certificatePolicies) mirror LM's typed X.509 extension
 ; accessors (BasicConstraints/SubjectAltName/IssuerAltName/
 ; CRLDistributionPoints/AuthorityInfoAccess/CertificatePolicies); the

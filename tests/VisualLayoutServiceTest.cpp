@@ -8,8 +8,7 @@
 // own LibreSCRS::Signing::layoutVisualSignature / embeddedAppearanceFontData
 // -- both directly, and after a full wire encode/decode round trip through
 // the SAME Messages.h / ClientCodec.h codec a real client uses. This is the
-// "layout via client == direct LM call" cross-check the brief's Step 1
-// (RED-first) calls for; it is core-gated (links LibreAgent::Core, which
+// "layout via client == direct LM call" cross-check; it is core-gated (links LibreAgent::Core, which
 // links LM) rather than living in the client/qt test tree, which never links
 // LM at all -- the client integration/parity suites script FIXED values into
 // their LM-free fakes instead of a real LM call.

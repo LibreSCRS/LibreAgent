@@ -267,7 +267,7 @@ TEST(LmCertReaderKat, GarbageDerYieldsDiagnosticNotCrash)
     EXPECT_TRUE(s.chainSubjectCns.empty()) << "no PKCS#15 label leaks into chainSubjectCns";
 }
 
-// --- V10 vocabulary-append KATs -------------------------------------------
+// --- Extension-group vocabulary-append KATs -------------------------------
 // The audit found these fields available agent-side (LM's ParsedCertificate
 // already exposes them) but not yet on the wire; each assertion below is the
 // regression lock for the append.

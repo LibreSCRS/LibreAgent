@@ -419,8 +419,8 @@ struct FakeCert
     uint trustStatus = 255;                ///< u trustStatus (255 = Unknown; 5 = Revoked, 6 = OfflineUnverified)
     /// Tokens riding the "security" fields-group (dict-key growth), mirroring
     /// trustStatus -- e.g. {"revoked"} for trustStatus=5, {"offline-unverified"}
-    /// for trustStatus=6. Empty by default (matches the pre-Inc-6 wire, where
-    /// no cert carried a "security" group at all).
+    /// for trustStatus=6. Empty by default (matches the wire from before the
+    /// "security" group existed, when no cert carried one at all).
     QStringList securityStatus = {};
     /// Any OTHER field group the real agent emits -- the group vocabulary is
     /// defined by the wire contract (cert-info's `fields` map in

@@ -40,7 +40,7 @@ enum class PromptKind : std::uint8_t { Pin, Can, Mrz, ChangePin };
 /// The longest deadline any kind can ask for. A transport that carries a
 /// prompt must outlive this, or its own call timeout would fire first and
 /// leave a window standing with no consumer -- the defect this design exists
-/// to remove. Phase 2 pins that with a static assertion on the consumer side.
+/// to remove. The consumer side pins that with a static assertion.
 ///
 /// @since 4.3
 inline constexpr std::chrono::milliseconds kLongestDeadline{300'000};

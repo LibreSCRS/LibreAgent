@@ -312,7 +312,7 @@ CredentialCache::requestCredential(const std::string& cardKey, const LibreSCRS::
     // and the per-kind result builder. The CAN and MRZ case labels below differ
     // only in what they bind here, so a future change to the sequence cannot
     // drift between the two branches. Adaptation happens at RESULT-BUILD time on
-    // BOTH paths, so the cache stays a raw-payload cache (Task 12's renegotiation
+    // BOTH paths, so the cache stays a raw-payload cache (the renegotiation
     // deposit shares one stored shape).
     auto cacheOrPrompt = [&](PaceSecretKind requestedKind, auto getter, auto putter, auto promptFn,
                              auto resultBuilder) -> CredentialResult {
