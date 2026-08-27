@@ -59,11 +59,12 @@ struct FakeSocketCert
     /// Tokens riding the "security" fields-group, mirroring trustStatus (e.g.
     /// {"revoked"} for trustStatus=5). Empty by default.
     QStringList securityStatus;
-    /// Any OTHER field group the real agent emits -- publicKey, cert, ext,
-    /// basicConstraints, san, ian, crlDp, aia, certificatePolicies. The five
-    /// cells the members above stand for are derived from those members, so
-    /// scripting the SAME cell here as well is pointless rather than harmful --
-    /// the derived value wins. Twin of FakeCert::extraFields.
+    /// Any OTHER field group the real agent emits -- the group vocabulary is
+    /// defined by the wire contract (cert-info's `fields` map in
+    /// wire/librescrs-agent.cddl), not re-listed here. The five cells the
+    /// members above stand for are derived from those members, so scripting the
+    /// SAME cell here as well is pointless rather than harmful -- the derived
+    /// value wins. Twin of FakeCert::extraFields.
     Fakes::FakeCertFieldGroups extraFields;
 };
 

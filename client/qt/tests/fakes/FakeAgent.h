@@ -422,12 +422,12 @@ struct FakeCert
     /// for trustStatus=6. Empty by default (matches the pre-Inc-6 wire, where
     /// no cert carried a "security" group at all).
     QStringList securityStatus = {};
-    /// Any OTHER field group the real agent emits -- publicKey, cert, ext,
-    /// basicConstraints, san, ian, crlDp, aia, certificatePolicies. The five
-    /// cells the members above stand for (subject/cn, issuer/cn,
-    /// validity/notBefore, validity/notAfter and the security tokens) are
-    /// derived from those members, so scripting the SAME cell here as well is
-    /// pointless rather than harmful -- the derived value wins.
+    /// Any OTHER field group the real agent emits -- the group vocabulary is
+    /// defined by the wire contract (cert-info's `fields` map in
+    /// wire/librescrs-agent.cddl), not re-listed here. The five cells the
+    /// members above stand for are derived from those members, so scripting
+    /// the SAME cell here as well is pointless rather than harmful -- the
+    /// derived value wins. Twin of FakeSocketCert::extraFields.
     Fakes::FakeCertFieldGroups extraFields = {};
 };
 using FakeCertList = QList<FakeCert>;

@@ -120,14 +120,24 @@ struct CertificateInfo
     ///                                                          value } )
     ///
     /// all three cell elements being `QString`. The group keys the agent emits
-    /// today are `subject`, `issuer`, `validity`, `publicKey`, `cert`,
+    /// today are `subject`, `issuer`, `validity`, `publicKey`, `cert`, `ext`,
     /// `basicConstraints`, `san`, `ian`, `crlDp`, `aia`,
-    /// `certificatePolicies`, `ext` and `security` — but that vocabulary is
-    /// APPEND-ONLY on the wire and is forwarded verbatim, so a consumer must
-    /// render the groups it recognises and ignore the rest rather than assume
-    /// the list is closed. `labelKey` is the agent's i18n key for the field's
-    /// label and `labelFallback` its English text; a consumer that has no
-    /// catalogue entry for the key renders the fallback.
+    /// `certificatePolicies`, `eku` and `security` — see
+    /// `librescrs-agent.cddl` (`cert-info`'s `fields` map) for the
+    /// authoritative vocabulary — but that vocabulary is APPEND-ONLY on the
+    /// wire and is forwarded verbatim, so a consumer must render the groups it
+    /// recognises and ignore the rest rather than assume the list is closed.
+    /// The enumeration above documents MEMBERSHIP, not sequence: on the wire
+    /// the `fields` map's entries arrive in the map's key order, not in the
+    /// order listed here.
+    /// One further group, `diagnostic`, is emitted INSTEAD of all of the above
+    /// (and alone) when the agent cannot parse a certificate's DER at all — it
+    /// carries a single `parseError` field with the parser's own message, and
+    /// is a failure channel rather than part of the certificate vocabulary,
+    /// though a client decodes it through this same generic path. `labelKey`
+    /// is the agent's i18n key for the field's label and `labelFallback` its
+    /// English text; a consumer that has no catalogue entry for the key
+    /// renders the fallback.
     ///
     /// The key is ABSENT — not an empty map — when the certificate carried no
     /// field dict at all. The typed members above are extracted FROM this dict

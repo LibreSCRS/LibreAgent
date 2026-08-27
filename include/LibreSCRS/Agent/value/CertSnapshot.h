@@ -55,7 +55,10 @@ struct CertSnapshot
     // the lawful append route on both wires), so this member and that group
     // are always written together from the same call site.
     std::vector<std::string> securityStatus;
-    std::vector<GroupSnapshot> fields; // subject/issuer/validity/publicKey/cert/ext/security groups
+    // Group vocabulary (and the "diagnostic" failure channel emitted instead
+    // of it) is defined by the wire contract: see cert-info's `fields` map in
+    // wire/librescrs-agent.cddl -- the single source of truth, not repeated here.
+    std::vector<GroupSnapshot> fields;
 };
 
 } // namespace LibreSCRS::Agent

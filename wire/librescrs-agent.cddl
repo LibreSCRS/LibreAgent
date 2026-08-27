@@ -50,8 +50,9 @@ pre-read-auth  = &( None: 0, Mrz: 1, Can: 2 )
 op-phase  = &( Created: 0, Connecting: 1, AwaitingConsent: 2, Authenticating: 3,
                Reading: 4, Signing: 5, Timestamping: 6, Done: 7 )
 op-status = &( Ok: 0, Cancelled: 1, Error: 2 )
-; 20 stable, append-only values — MUST match LibreAgent value/ErrorTaxonomy.h.
-; Tolerance (client decode): a value past InvalidDocument=19 -- a code a newer
+; 21 stable, append-only values — MUST match LibreAgent's
+; include/LibreSCRS/Agent/wire/ErrorCode.h.
+; Tolerance (client decode): a value past EntryExpired=20 -- a code a newer
 ; agent appended -- decodes through raw (the ORIGINAL tolerance this wire
 ; shipped with; every other numeric enum above/below now follows the same
 ; rule). The client treats it as opaque display/log data and never branches
@@ -334,8 +335,7 @@ card-state   = { handle: handle, reader: handle, caps: capabilities, preAuth: pr
 ;     marks this cell as group metadata rather than a row to print.
 ;     Absent cell means not critical (or an agent that does not report
 ;     criticality); it is never emitted with a false value.
-; `eku` is
-; the ExtendedKeyUsage purposes rendered by NAME through the OID
+; `eku` is the ExtendedKeyUsage purposes rendered by NAME through the OID
 ; database, ordinal-keyed usage0/usage1/... and falling back to the
 ; dotted OID when the database has no entry; it does NOT replace the
 ; `ekus` member below, which stays the dotted list a caller matches on.

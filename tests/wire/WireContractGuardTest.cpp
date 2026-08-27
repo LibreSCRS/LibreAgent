@@ -653,7 +653,7 @@ static_assert(kCredRecordKeys.size() == 23u, "wire contract: cred-record has 23 
 // --- CDDL message `t:` tags: presence + count drift guard --------------------
 // The socket message vocabulary (request + event `t:` tags) has no upstream enum
 // to anchor to (the tags are CDDL string literals), so this table pins the SET.
-// Adding/removing a message MUST update: the CDDL (agent/wire/librescrs-agent.cddl),
+// Adding/removing a message MUST update: the CDDL (wire/librescrs-agent.cddl),
 // wire/Messages.{h,cpp}, and this table (bump kMessageTagCount). The
 // MessagesRoundTripTest proves each tag actually encodes/decodes; this only pins
 // that the vocabulary did not silently change size.
