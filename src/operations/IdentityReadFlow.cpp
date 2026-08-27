@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 // SPDX-FileCopyrightText: 2026 hirashix0
 #include <LibreSCRS/Agent/operations/IdentityReadFlow.h>
+#include <LibreSCRS/Agent/cache/AttemptContext.h>         // per-operation retry context
 #include <LibreSCRS/Agent/cache/MrzPayload.h>             // parseMrzPayload (the canonical payload contract)
 #include <LibreSCRS/Agent/operations/CardPluginRouting.h> // identityCandidates
 #include <LibreSCRS/Agent/operations/FlowPrelude.h>
 #include <LibreSCRS/Agent/operations/OperationBase.h> // Phase enum
-#include <LibreSCRS/Auth/ErrorKeys.h>                 // ErrorKeys::preReadAuthFailed
 #include <LibreSCRS/Plugin/PluginTypes.h>             // CardCapabilities, hasCapability
 #include <algorithm>
 #include <atomic>
@@ -132,15 +132,35 @@ IdentityReadFlow::Result IdentityReadFlow::run()
     // entry window closed. Neither a cancel nor a card-side rejection, so it
     // gets its own code below.
     auto entryExpired = std::make_shared<std::atomic<bool>>(false);
+    // Set true by the credential provider iff the holder DISMISSED a prompt.
+    // The cancel twin of entryExpired, and needed for the same two reasons: the
+    // LM seam swallows the candidate's channel-activation throw, so a dismissed
+    // window surfaces here as a plain read failure -- reported as "the card
+    // rejected your credential" unless this says otherwise, and charged as a
+    // rejection against the three PACE attempts unless the branch below reads
+    // it.
+    auto userCancelled = std::make_shared<std::atomic<bool>>(false);
     // Set true iff the agent REFUSED to raise the prompt: the helper cannot be
     // told which window to dismiss, so it must not be asked to show one.
     auto helperTooOld = std::make_shared<std::atomic<bool>>(false);
     // Set true by the credential provider iff, on the M5′ rejection signal, it
-    // already marked the now-live rejected secret wrong (A2, sec I3). The
+    // already marked the now-live rejected secret wrong. The
     // AuthFailed branch below consults it to SKIP its own markCredentialWrong so
     // a rejected value is marked EXACTLY once. Run-scoped (fresh per run) so
     // parallel readers never cross-talk.
     auto providerMarkedWrong = std::make_shared<std::atomic<bool>>(false);
+    // Per-operation retry context: the count of CAN/MRZ rejections THIS
+    // operation has recorded, and the msgKey of the most recent one. The
+    // generation is captured HERE and never refreshed, which is what stops the
+    // middleware's re-invocation loop from raising a fresh window every time
+    // an activation fails inside THIS run. It does NOT yet silence a sibling
+    // operation queued behind this one -- see AttemptContext's constructor doc
+    // for why the capture has to move up to where the operation is created for
+    // that, and what it would take. Stored as a member (mirrors m_provider) so
+    // a fresh run() always starts from a clean allowance, discarding whatever a
+    // previous run spent, and so the accessor below can observe it from outside
+    // for tests.
+    m_attempts = std::make_shared<AttemptContext>(m_deps.cache.refusalGenerationFor(m_deps.cardKey));
     // A CAN prompt may be renegotiated into an MRZ read: the offer is derived
     // from THIS card's candidates, and the payload the user chose comes back
     // through the flow-owned sink below (scrubbed at run() exit, consumed at
@@ -152,8 +172,8 @@ IdentityReadFlow::Result IdentityReadFlow::run()
     // this flow (see FlowPrelude::installScopedReadProvider).
     m_provider = FlowPrelude::makeReadCredentialProvider(
         m_deps.cache, m_deps.prompter, m_deps.serializer, m_deps.phaseSink, m_deps.cardKey, m_deps.requester,
-        m_deps.artifact, m_deps.token, prompterFailed,
-        /*userCancelled=*/{}, providerMarkedWrong, offerMrzAlternative, m_mrzChoice, entryExpired, helperTooOld);
+        m_deps.artifact, m_deps.token, m_attempts, prompterFailed, userCancelled, providerMarkedWrong,
+        offerMrzAlternative, m_mrzChoice, entryExpired, helperTooOld);
     const FlowPrelude::ProviderResetGuard providerReset{m_provider};
     const auto providerGuard = FlowPrelude::installScopedReadProvider(session, m_provider);
 
@@ -242,22 +262,36 @@ IdentityReadFlow::Result IdentityReadFlow::run()
         // not be replayed from cache on the next attempt. Evict the agent-side
         // cached secret for this card AND clear LM's per-session PACE cache so a
         // retry re-prompts rather than silently re-using the rejected secret.
-        // markCredentialWrong (not plain invalidate) also remembers WHY, so the
-        // next prompt for this card carries retry context (attempt count +
+        // m_attempts->recordRejection() (below) also remembers WHY, so the next
+        // prompt THIS OPERATION raises carries retry context (attempt count +
         // msgKey) instead of a cold re-prompt. Strictly the auth-failure path:
         // parse/comm errors leave a correct cached secret in place. (The
         // session is closed when run() returns; the LM clear is belt-and-
         // suspenders today and stays correct for a future that holds the
         // session open across retries.)
         if (readOutcome.status == ReadOutcome::Status::AuthFailed) {
-            // Double-mark guard (A2, sec I3): if the provider already marked the
+            // Double-mark guard: if the provider already marked the
             // now-live rejected secret wrong on the card's re-prompt signal, skip
             // the flow's own mark so the rejected value is counted EXACTLY once
             // (truthful attempt numbering). The provider only sets this when the
             // marked value was NOT replaced by a fresh collection.
-            if (!providerMarkedWrong->load(std::memory_order_relaxed)) {
-                m_deps.cache.markCredentialWrong(m_deps.cardKey, LibreSCRS::Auth::ErrorKeys::preReadAuthFailed().key);
+            //
+            // A window that closed WITHOUT a secret collected NOTHING, so the
+            // activation failure that follows is not a rejection: marking here
+            // would evict a value nobody supplied, spend one of the three PACE
+            // attempts, and make the next dialog say "the value entered was not
+            // accepted" to a holder who entered nothing. Both ways of closing
+            // one empty count -- the clock ran out, or the holder dismissed it;
+            // neither put anything in front of the card. The provider already
+            // refuses to mark on this signal (FlowPrelude); this is the same
+            // guard on the flow's own path, which is the one that was missing.
+            const bool holderGaveNothing =
+                entryExpired->load(std::memory_order_relaxed) || userCancelled->load(std::memory_order_relaxed);
+            if (!holderGaveNothing && !providerMarkedWrong->load(std::memory_order_relaxed)) {
+                FlowPrelude::noteRejectedSecret(m_deps.cache, m_deps.cardKey, *m_attempts);
             }
+            // The channel is cleared either way: a half-established PACE state
+            // must not survive into the next attempt, expiry or rejection.
             session->clearCachedPaceCredentials();
         }
         // A broken/absent prompter (not the card) caused the secret to be
@@ -271,6 +305,16 @@ IdentityReadFlow::Result IdentityReadFlow::run()
             // generic prompter failure.
             return makeError(ErrorCode::CapabilityMissing, FlowPrelude::kHelperTooOldMsgKey,
                              FlowPrelude::kHelperTooOldMsgFallback);
+        }
+        if (!prompterFailed->load(std::memory_order_relaxed) && userCancelled->load(std::memory_order_relaxed)) {
+            // The holder said no. The read seam swallows the candidate's
+            // channel-activation throw, so without this the operation reports
+            // AuthFailed and the words "Authentication failed" for an
+            // authentication that was never attempted -- claiming more than
+            // happened, and blaming the card for the holder's own decision.
+            // Ranked above the expiry below because a dismissal is the more
+            // explicit refusal of the two.
+            return makeCancelled("op.cancelled", "Operation cancelled");
         }
         if (!prompterFailed->load(std::memory_order_relaxed) && entryExpired->load(std::memory_order_relaxed)) {
             // The message travels with the code. The read's own msgFallback

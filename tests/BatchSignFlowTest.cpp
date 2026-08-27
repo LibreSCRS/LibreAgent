@@ -16,10 +16,13 @@
 #include <LibreSCRS/Agent/operations/BatchSignFlow.h>
 #include <LibreSCRS/Agent/operations/CardSessionHolder.h>
 #include <LibreSCRS/Agent/operations/OperationBase.h> // Phase enum, OperationPhaseSink
+#include <LibreSCRS/Agent/operations/PromptPolicy.h>  // kMaxPaceAttempts
 #include <LibreSCRS/Agent/operations/PromptSerializer.h>
 
 #include <LibreSCRS/Auth/AuthRequirement.h>
 #include <LibreSCRS/Auth/CredentialResult.h>
+#include <LibreSCRS/Auth/ErrorKeys.h> // ErrorKeys::preReadAuthFailed (the card's re-prompt signal)
+#include <LibreSCRS/Auth/PaceSecretKind.h>
 #include <LibreSCRS/CancelToken.h>
 #include <LibreSCRS/LocalizedText.h>
 #include <LibreSCRS/Plugin/CardPlugin.h>
@@ -103,9 +106,15 @@ public:
         lastOptions = options;
         return pinResult;
     }
+    // Counts real CAN prompts, distinguishing them from a cache replay or a
+    // capped call that never reached here -- the PACE-cap test below needs
+    // this to see whether the fourth request actually raised a dialog.
+    int canCalls = 0;
+    PromptResult canResult{PromptStatus::Error, std::nullopt, "uninitialised"};
     PromptResult requestCan(const PromptOptions&) override
     {
-        return {};
+        ++canCalls;
+        return canResult;
     }
     PromptResult requestMrz(const PromptOptions&) override
     {
@@ -139,6 +148,15 @@ public:
     std::string cardPin = "1234";
     std::map<int, SignOutcome::Status> scriptedStatus;
     std::vector<std::vector<std::uint8_t>> receivedDocs;
+    // When set (consulted only on the FIRST sign() call), drives this many
+    // CAN requirement calls through the installed provider BEFORE requesting
+    // the PIN -- the first cold (empty reason), every subsequent one carrying
+    // the card's rejection signal (reasonForUser == preReadAuthFailed()),
+    // mirroring a real wrong-CAN retry cycle within one activation. Lets a
+    // test drive the channel-establishment path directly and observe whether
+    // the PACE cap actually refuses a request, not just whether it is wired.
+    int canCallsToScript = 0;
+    std::vector<LibreSCRS::Auth::CredentialResult> canResults;
 
     SignOutcome sign(const std::shared_ptr<LibreSCRS::SmartCard::CardSession>&, const SignParams& params,
                      const CandidateList&, LibreSCRS::Auth::CredentialProvider credentials,
@@ -146,6 +164,16 @@ public:
     {
         ++calls;
         receivedDocs.push_back(params.inputDocument);
+
+        if (calls == 1 && canCallsToScript > 0) {
+            using LibreSCRS::Auth::PaceSecretKind;
+            for (int i = 0; i < canCallsToScript; ++i) {
+                const auto canReq = LibreSCRS::Auth::AuthRequirement::forPaceSecret(
+                    LibreSCRS::SmartCard::AppletAid{}, PaceSecretKind::Can, std::nullopt,
+                    i == 0 ? LibreSCRS::LocalizedText{} : LibreSCRS::Auth::ErrorKeys::preReadAuthFailed());
+                canResults.push_back(credentials(canReq));
+            }
+        }
 
         const auto req =
             LibreSCRS::Auth::AuthRequirement::forSigning(LibreSCRS::LocalizedText{"", "PIN", {}}, std::nullopt);
@@ -312,6 +340,31 @@ TEST(BatchSignFlow, PinIsAskedExactlyOnceAcrossEveryDocument)
         EXPECT_EQ(row.code, ErrorCode::None);
         EXPECT_FALSE(row.signedBytes.empty());
     }
+}
+
+// The channel-establishment secret (CAN) now carries its own per-operation
+// AttemptContext (see BatchSignFlow's credential-provider preamble), so it
+// shares the PACE cap with the read flows: three genuine rejections exhaust
+// THIS batch's allowance, and a fourth request must be refused before ever
+// raising a dialog -- not merely wired to a parameter that stays at zero.
+TEST(BatchSignFlow, ThePaceCapBitesOnTheChannelEstablishmentPath)
+{
+    Harness h;
+    h.prompter.canResult = PromptResult{PromptStatus::Ok, LibreSCRS::Secure::String{"123456"}, ""};
+    h.signer.canCallsToScript = static_cast<int>(kMaxPaceAttempts) + 1;
+
+    auto flow = h.make();
+    (void)flow.run();
+
+    ASSERT_EQ(h.signer.canResults.size(), kMaxPaceAttempts + 1);
+    for (std::size_t i = 0; i < kMaxPaceAttempts; ++i) {
+        EXPECT_EQ(h.signer.canResults[i].status, LibreSCRS::Auth::CredentialResult::Status::Ok)
+            << "request " << i << " should still be allowed to ask";
+    }
+    EXPECT_EQ(h.prompter.canCalls, static_cast<int>(kMaxPaceAttempts))
+        << "each of the first three requests raised a real dialog";
+    EXPECT_EQ(h.signer.canResults.back().status, LibreSCRS::Auth::CredentialResult::Status::Error)
+        << "the fourth request must be refused, not prompted -- the whole point of the cap";
 }
 
 TEST(BatchSignFlow, PinHolderIsWipedAfterASuccessfulBatch)

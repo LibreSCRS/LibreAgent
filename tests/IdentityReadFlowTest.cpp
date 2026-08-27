@@ -12,6 +12,7 @@
 
 #include "fakes/FakeCredentialDepositor.h"
 
+#include <LibreSCRS/Agent/cache/AttemptContext.h>
 #include <LibreSCRS/Agent/cache/MrzPayload.h>
 #include <LibreSCRS/Agent/operations/CardSessionHolder.h>
 #include <LibreSCRS/Agent/operations/ConsentPhaseScope.h>
@@ -19,6 +20,7 @@
 #include <LibreSCRS/Agent/operations/IdentityReadFlow.h>
 #include <LibreSCRS/Agent/operations/LmSeams.h>       // LmCredentialDepositor, resolveDepositTargets
 #include <LibreSCRS/Agent/operations/OperationBase.h> // Phase enum, OperationPhaseSink
+#include <LibreSCRS/Agent/operations/PromptPolicy.h>  // kMaxPaceAttempts
 #include <LibreSCRS/Agent/operations/PromptSerializer.h>
 
 #include <LibreSCRS/Auth/AuthRequirement.h>
@@ -498,8 +500,10 @@ TEST(IdentityReadFlow, ProviderLambdaRoutesOnRequirementAndFiresAwaitingConsent)
     // inside readCard on a channel cache miss).
     Harness h;
     auto prompterFailed = std::make_shared<std::atomic<bool>>(false);
-    auto provider = FlowPrelude::makeReadCredentialProvider(h.cache, h.prompter, h.serializer, h.phaseSink, "card-A",
-                                                            h.requester, h.artifact, h.source.token(), prompterFailed);
+    auto attempts = std::make_shared<AttemptContext>();
+    auto provider =
+        FlowPrelude::makeReadCredentialProvider(h.cache, h.prompter, h.serializer, h.phaseSink, "card-A", h.requester,
+                                                h.artifact, h.source.token(), attempts, prompterFailed);
 
     // Seed the cache so the lambda resolves from cache (no prompter needed)
     // and returns a CAN entry keyed off the requirement.
@@ -525,8 +529,9 @@ TEST(IdentityReadFlow, ExpiredEntryRemapsTheMessageAndNotOnlyTheCode)
     Harness h;
     auto prompterFailed = std::make_shared<std::atomic<bool>>(false);
     auto entryExpired = std::make_shared<std::atomic<bool>>(false);
+    auto attempts = std::make_shared<AttemptContext>();
     auto provider = FlowPrelude::makeReadCredentialProvider(
-        h.cache, h.prompter, h.serializer, h.phaseSink, "card-A", h.requester, h.artifact, h.source.token(),
+        h.cache, h.prompter, h.serializer, h.phaseSink, "card-A", h.requester, h.artifact, h.source.token(), attempts,
         prompterFailed, /*userCancelled=*/{}, /*providerMarkedWrong=*/{}, /*offerMrzAlternative=*/false,
         /*mrzChoice=*/{}, entryExpired);
 
@@ -572,8 +577,10 @@ TEST(IdentityReadFlow, ProviderLambdaClosesTheConsentExcursionSoThePostPromptRea
     // branch, which the ordinary CAN path never enters.
     Harness h;
     auto prompterFailed = std::make_shared<std::atomic<bool>>(false);
-    auto provider = FlowPrelude::makeReadCredentialProvider(h.cache, h.prompter, h.serializer, h.phaseSink, "card-A",
-                                                            h.requester, h.artifact, h.source.token(), prompterFailed);
+    auto attempts = std::make_shared<AttemptContext>();
+    auto provider =
+        FlowPrelude::makeReadCredentialProvider(h.cache, h.prompter, h.serializer, h.phaseSink, "card-A", h.requester,
+                                                h.artifact, h.source.token(), attempts, prompterFailed);
 
     // Empty cache -> the lambda takes the real prompter path.
     auto cred = provider(paceReq(PaceSecretKind::Can));
@@ -601,8 +608,10 @@ TEST(IdentityReadFlow, ProviderLambdaClosesTheConsentExcursionEvenWhenThePromptT
     Harness h;
     h.prompter.throwOnCan = true;
     auto prompterFailed = std::make_shared<std::atomic<bool>>(false);
-    auto provider = FlowPrelude::makeReadCredentialProvider(h.cache, h.prompter, h.serializer, h.phaseSink, "card-A",
-                                                            h.requester, h.artifact, h.source.token(), prompterFailed);
+    auto attempts = std::make_shared<AttemptContext>();
+    auto provider =
+        FlowPrelude::makeReadCredentialProvider(h.cache, h.prompter, h.serializer, h.phaseSink, "card-A", h.requester,
+                                                h.artifact, h.source.token(), attempts, prompterFailed);
 
     auto cred = provider(paceReq(PaceSecretKind::Can));
     EXPECT_NE(cred.status, LibreSCRS::Auth::CredentialResult::Status::Ok)
@@ -625,8 +634,10 @@ TEST(IdentityReadFlow, ProviderLambdaPopulatesRequesterAndArtifactOnPrompt)
     h.requester = "Mozilla Firefox";
     h.artifact = "identity";
     auto prompterFailed = std::make_shared<std::atomic<bool>>(false);
-    auto provider = FlowPrelude::makeReadCredentialProvider(h.cache, h.prompter, h.serializer, h.phaseSink, "card-A",
-                                                            h.requester, h.artifact, h.source.token(), prompterFailed);
+    auto attempts = std::make_shared<AttemptContext>();
+    auto provider =
+        FlowPrelude::makeReadCredentialProvider(h.cache, h.prompter, h.serializer, h.phaseSink, "card-A", h.requester,
+                                                h.artifact, h.source.token(), attempts, prompterFailed);
 
     // Empty cache -> the lambda prompts -> FakePrompter records the options.
     auto cred = provider(paceReq(PaceSecretKind::Can));
@@ -644,8 +655,10 @@ TEST(IdentityReadFlow, ProviderLambdaForwardsRequesterToMrzPrompt)
     h.requester = "/usr/bin/seahorse";
     h.artifact = "identity";
     auto prompterFailed = std::make_shared<std::atomic<bool>>(false);
-    auto provider = FlowPrelude::makeReadCredentialProvider(h.cache, h.prompter, h.serializer, h.phaseSink, "card-A",
-                                                            h.requester, h.artifact, h.source.token(), prompterFailed);
+    auto attempts = std::make_shared<AttemptContext>();
+    auto provider =
+        FlowPrelude::makeReadCredentialProvider(h.cache, h.prompter, h.serializer, h.phaseSink, "card-A", h.requester,
+                                                h.artifact, h.source.token(), attempts, prompterFailed);
 
     auto cred = provider(paceReq(PaceSecretKind::Mrz));
     EXPECT_EQ(cred.status, LibreSCRS::Auth::CredentialResult::Status::Ok);
@@ -730,7 +743,7 @@ TEST(IdentityReadFlow, StreamedGroupsAreIgnoredOnAFailedRead)
     EXPECT_EQ(h.groupSink.groups[0].groupKey, "personal");
 }
 
-// --- A2: never replay a rejected pre-read secret (sec I3 re-key) ------------
+// --- never replay a rejected pre-read secret (the re-key path) --------------
 
 TEST(IdentityReadFlow, RejectedRetryPromptEvictsAndRepromptsWithContext)
 {
@@ -742,8 +755,10 @@ TEST(IdentityReadFlow, RejectedRetryPromptEvictsAndRepromptsWithContext)
     // EVICTION).
     Harness h;
     auto prompterFailed = std::make_shared<std::atomic<bool>>(false);
-    auto provider = FlowPrelude::makeReadCredentialProvider(h.cache, h.prompter, h.serializer, h.phaseSink, "card-A",
-                                                            h.requester, h.artifact, h.source.token(), prompterFailed);
+    auto attempts = std::make_shared<AttemptContext>();
+    auto provider =
+        FlowPrelude::makeReadCredentialProvider(h.cache, h.prompter, h.serializer, h.phaseSink, "card-A", h.requester,
+                                                h.artifact, h.source.token(), attempts, prompterFailed);
 
     // First prompt (empty reason) collects and caches a CAN.
     auto first = provider(paceReq(PaceSecretKind::Can));
@@ -764,7 +779,7 @@ TEST(IdentityReadFlow, RejectedRetryPromptEvictsAndRepromptsWithContext)
 
 TEST(IdentityReadFlow, PaceUnsupportedFallbackDoesNotMarkCredentialWrong)
 {
-    // sec I3 pin: a same-kind re-invocation WITHOUT the rejection signal (the
+    // Re-key pin: a same-kind re-invocation WITHOUT the rejection signal (the
     // PACE->BAC fallback / multi-candidate walk -- same kind, EMPTY reason) is
     // NOT a rejection. The provider must serve the NEVER-REJECTED value from
     // cache with no prompt and no eviction (replaying a rejected secret is what
@@ -773,8 +788,10 @@ TEST(IdentityReadFlow, PaceUnsupportedFallbackDoesNotMarkCredentialWrong)
     // vacuously today; reddens only if A2 regresses to invocation-counting.
     Harness h;
     auto prompterFailed = std::make_shared<std::atomic<bool>>(false);
-    auto provider = FlowPrelude::makeReadCredentialProvider(h.cache, h.prompter, h.serializer, h.phaseSink, "card-A",
-                                                            h.requester, h.artifact, h.source.token(), prompterFailed);
+    auto attempts = std::make_shared<AttemptContext>();
+    auto provider =
+        FlowPrelude::makeReadCredentialProvider(h.cache, h.prompter, h.serializer, h.phaseSink, "card-A", h.requester,
+                                                h.artifact, h.source.token(), attempts, prompterFailed);
 
     auto first = provider(paceReq(PaceSecretKind::Mrz));
     ASSERT_EQ(first.status, LibreSCRS::Auth::CredentialResult::Status::Ok);
@@ -788,6 +805,116 @@ TEST(IdentityReadFlow, PaceUnsupportedFallbackDoesNotMarkCredentialWrong)
         << "no eviction: the never-rejected MRZ stays cached (no markCredentialWrong)";
 }
 
+TEST(IdentityReadFlow, ExpiredPromptDoesNotMarkCredentialWrong)
+{
+    // An entry window that closed on the clock collected NOTHING. Treating the
+    // activation failure that follows as a rejection evicts a value nobody
+    // supplied, spends a PACE attempt, and makes the next dialog tell the
+    // holder their entry was not accepted when they made none. Three of those
+    // in a row and the software cap refuses to prompt at all -- a good card
+    // stops being readable until it is re-presented.
+    Harness h;
+    h.prompter.canOverride = PromptResult{PromptStatus::Timeout, std::nullopt, "expired"};
+    h.reader.outcome = ReadOutcome{ReadOutcome::Status::AuthFailed, std::nullopt, "auth failed"};
+    h.candidates = emrtdCandidates();
+
+    // The fake reader models production's on-cache-miss callback into the
+    // flow-installed provider (see the identical wiring on the renegotiation
+    // tests above): without driving the provider, the Timeout the prompter
+    // returns never reaches entryExpired, and this test could not tell a
+    // fixed flow from a broken one.
+    auto flow = h.make();
+    h.reader.onRead = [&flow](int, LibreSCRS::SmartCard::CardSession&) {
+        static_cast<void>(flow.credentialProvider()(paceReq(PaceSecretKind::Can)));
+    };
+    const auto result = flow.run();
+
+    EXPECT_EQ(result.code, ErrorCode::EntryExpired);
+    EXPECT_EQ(flow.attemptContext().attempts(), 0U)
+        << "an expiry collected nothing, so it is not a rejection and must not count";
+}
+
+TEST(IdentityReadFlow, DismissedPromptCancelsAndDoesNotMarkCredentialWrong)
+{
+    // The twin of ExpiredPromptDoesNotMarkCredentialWrong, and reachable with
+    // ONE click. A dismissed window collected nothing either, so the activation
+    // failure that follows is not a rejection -- and the operation must say the
+    // holder cancelled, not that authentication failed. The read seam swallows
+    // the candidate's channel-activation throw, so without the cancel signal
+    // threaded through, a dismissal arrived as AuthFailed carrying
+    // "Authentication failed." for an authentication that was never attempted,
+    // AND spent one of the three PACE attempts on a value nobody entered.
+    Harness h;
+    h.prompter.canOverride = PromptResult{PromptStatus::Cancelled, std::nullopt, "cancelled"};
+    h.reader.outcome = ReadOutcome{ReadOutcome::Status::AuthFailed, std::nullopt, "Authentication failed."};
+    h.candidates = emrtdCandidates();
+
+    // The fake reader models production's on-cache-miss callback into the
+    // flow-installed provider (same wiring as the expiry test above): without
+    // driving the provider, the Cancelled the prompter returns never reaches
+    // the flow and this test could not tell a fixed flow from a broken one.
+    auto flow = h.make();
+    h.reader.onRead = [&flow](int, LibreSCRS::SmartCard::CardSession&) {
+        static_cast<void>(flow.credentialProvider()(paceReq(PaceSecretKind::Can)));
+    };
+    const auto result = flow.run();
+
+    EXPECT_EQ(result.outcome, IdentityReadFlow::Outcome::Cancelled)
+        << "the holder dismissed the window -- that is a cancellation, not a card-side failure";
+    EXPECT_EQ(result.code, ErrorCode::None);
+    EXPECT_EQ(result.msgFallback.find("uthentication"), std::string::npos)
+        << "no message may claim an authentication that was never attempted";
+    EXPECT_EQ(flow.attemptContext().attempts(), 0U)
+        << "a dismissal presented nothing, so it is not a rejection and must not count";
+}
+
+// DISABLED: reproduces the cross-operation case that CredentialCache.h's
+// noteRefusal/requestCredential comments say the gate does not yet cover
+// (see @ref LibreSCRS::Agent::AttemptContext's constructor doc for the
+// mechanism this depends on).
+//
+// Two IdentityReadFlow runs against the SAME card, exactly as the per-reader
+// worker dequeues them: STRICTLY one at a time. Each flow constructs its
+// AttemptContext at the top of its own run() -- i.e. at dequeue time, not at
+// the moment the client asked for it -- so the second flow's context is built
+// only AFTER the first flow's expired window already bumped the card's
+// refusal generation. It therefore captures the ALREADY-BUMPED generation as
+// its own starting point, reads as unrefused, and raises a second window:
+// h.prompter.canPrompts ends at 2, not 1.
+//
+// Enabling this requires moving the generation capture from flow-start to
+// where the operation is CREATED and PUBLISHED -- before it is queued -- so
+// a queued verb captures the generation the card had when it was asked for,
+// not the generation the card has by the time it happens to run. That
+// capture point is above this library's own seam.
+TEST(IdentityReadFlow, DISABLED_ASiblingOperationQueuedBehindAnExpiredWindowRaisesNoSecondWindow)
+{
+    // The measured symptom, at the level LibreAgent can reach it. A client
+    // fires three verbs for one card; the OperationManager runs that reader's
+    // operations STRICTLY ONE AT A TIME, so verb #2 is dequeued only after
+    // verb #1 has finished -- including its window closing on the clock. Verb
+    // #2 was published long before that, so it is not a fresh request and must
+    // not raise a window of its own.
+    Harness h;
+    h.candidates = emrtdCandidates();
+    h.prompter.canOverride = PromptResult{PromptStatus::Timeout, std::nullopt, "expired"};
+    h.reader.outcome = ReadOutcome{ReadOutcome::Status::AuthFailed, std::nullopt, "auth failed"};
+
+    auto first = h.make();
+    h.reader.onRead = [&first](int, LibreSCRS::SmartCard::CardSession&) {
+        static_cast<void>(first.credentialProvider()(paceReq(PaceSecretKind::Can)));
+    };
+    (void)first.run();
+    ASSERT_EQ(h.prompter.canPrompts, 1) << "the verb that actually raised the window";
+
+    auto second = h.make();
+    h.reader.onRead = [&second](int, LibreSCRS::SmartCard::CardSession&) {
+        static_cast<void>(second.credentialProvider()(paceReq(PaceSecretKind::Can)));
+    };
+    (void)second.run();
+    EXPECT_EQ(h.prompter.canPrompts, 1) << "one decline is a decline for every operation already queued";
+}
+
 TEST(IdentityReadFlow, FirstInvocationStillUsesWarmCache)
 {
     // A2 keys on the REJECTION SIGNAL, not on cache age or invocation count: a
@@ -796,8 +923,10 @@ TEST(IdentityReadFlow, FirstInvocationStillUsesWarmCache)
     Harness h;
     h.cache.putCan("card-A", LibreSCRS::Secure::String{"123456"});
     auto prompterFailed = std::make_shared<std::atomic<bool>>(false);
-    auto provider = FlowPrelude::makeReadCredentialProvider(h.cache, h.prompter, h.serializer, h.phaseSink, "card-A",
-                                                            h.requester, h.artifact, h.source.token(), prompterFailed);
+    auto attempts = std::make_shared<AttemptContext>();
+    auto provider =
+        FlowPrelude::makeReadCredentialProvider(h.cache, h.prompter, h.serializer, h.phaseSink, "card-A", h.requester,
+                                                h.artifact, h.source.token(), attempts, prompterFailed);
 
     auto cred = provider(paceReq(PaceSecretKind::Can));
     EXPECT_EQ(cred.status, LibreSCRS::Auth::CredentialResult::Status::Ok);
@@ -807,14 +936,16 @@ TEST(IdentityReadFlow, FirstInvocationStillUsesWarmCache)
 
 TEST(IdentityReadFlow, RejectedSecretIsMarkedWrongExactlyOnce)
 {
-    // Double-mark guard (sec I3): each rejected value is marked EXACTLY once, so
+    // Double-mark guard: each rejected value is marked EXACTLY once, so
     // the retry-context attempt number stays truthful. Two successive rejection
     // signals must bump the attempt by exactly ONE each (2, then 3) -- never
     // double-count a single rejected value.
     Harness h;
     auto prompterFailed = std::make_shared<std::atomic<bool>>(false);
-    auto provider = FlowPrelude::makeReadCredentialProvider(h.cache, h.prompter, h.serializer, h.phaseSink, "card-A",
-                                                            h.requester, h.artifact, h.source.token(), prompterFailed);
+    auto attempts = std::make_shared<AttemptContext>();
+    auto provider =
+        FlowPrelude::makeReadCredentialProvider(h.cache, h.prompter, h.serializer, h.phaseSink, "card-A", h.requester,
+                                                h.artifact, h.source.token(), attempts, prompterFailed);
 
     ASSERT_EQ(provider(paceReq(PaceSecretKind::Can)).status, LibreSCRS::Auth::CredentialResult::Status::Ok);
     EXPECT_EQ(h.prompter.canPrompts, 1);
@@ -829,51 +960,114 @@ TEST(IdentityReadFlow, RejectedSecretIsMarkedWrongExactlyOnce)
         << "two distinct rejections -> third attempt, not inflated (each value marked exactly once)";
 }
 
+TEST(IdentityReadFlow, RejectedSecretsSpendOnlyTheirOwnOperationsAllowance)
+{
+    // The design says three attempts PER OPERATION. Holding the count on the
+    // card made a rejection outlive the read that earned it: a card could run
+    // out across unrelated reads and stop prompting entirely, with the holder
+    // told "not accepted" for a value they never entered in this read.
+    Harness h;
+    h.candidates = emrtdCandidates();
+    h.prompter.canOverride = PromptResult{PromptStatus::Ok, LibreSCRS::Secure::String{"111111"}, ""};
+    h.reader.outcome = ReadOutcome{ReadOutcome::Status::AuthFailed, std::nullopt, "auth failed"};
+
+    // kMaxPaceAttempts + 1 operations, each rejecting once. The old per-card
+    // gate checked failedAttemptsFor(cardKey) >= kMaxPaceAttempts BEFORE the
+    // prompt, so operations 0..kMaxPaceAttempts-1 all still saw a sub-cap
+    // count and prompted -- the old bug bit only the operation ONE PAST the
+    // cap, which needs a 4th iteration to reach, not 3, to actually redden
+    // against the old per-card ownership.
+    for (std::uint32_t i = 0; i < kMaxPaceAttempts + 1; ++i) {
+        h.prompter.canPrompts = 0;
+        auto flow = h.make();
+        // The fake reader models production's on-cache-miss callback into the
+        // flow-installed provider. WITHOUT this, the provider is never invoked,
+        // canPrompts stays 0, and the test fails for a reason that has nothing
+        // to do with what it claims to measure. (Same wiring as
+        // ExpiredPromptDoesNotMarkCredentialWrong and the renegotiation tests.)
+        h.reader.onRead = [&flow](int, LibreSCRS::SmartCard::CardSession&) {
+            static_cast<void>(flow.credentialProvider()(paceReq(PaceSecretKind::Can)));
+        };
+        (void)flow.run();
+        EXPECT_EQ(h.prompter.canPrompts, 1) << "operation " << i << " must get its own cold allowance";
+    }
+}
+
+TEST(IdentityReadFlow, ANewOperationPromptsWithoutTheOldOperationsErrorText)
+{
+    // The count and the message are one concept. Splitting them gave a fresh
+    // operation attempt=0 while it still carried the previous operation's error
+    // text -- a prompt that accuses on its very first showing.
+    Harness h;
+    h.candidates = emrtdCandidates();
+    h.prompter.canOverride = PromptResult{PromptStatus::Ok, LibreSCRS::Secure::String{"111111"}, ""};
+    h.reader.outcome = ReadOutcome{ReadOutcome::Status::AuthFailed, std::nullopt, "auth failed"};
+    auto first = h.make();
+    // See the note above: without this wiring the provider is never invoked and
+    // neither operation ever prompts, so the assertions below measure nothing.
+    h.reader.onRead = [&first](int, LibreSCRS::SmartCard::CardSession&) {
+        static_cast<void>(first.credentialProvider()(paceReq(PaceSecretKind::Can)));
+    };
+    (void)first.run(); // operation 1 rejects once
+
+    h.prompter.lastCanOptions = PromptOptions{};
+    auto second = h.make();
+    h.reader.onRead = [&second](int, LibreSCRS::SmartCard::CardSession&) {
+        static_cast<void>(second.credentialProvider()(paceReq(PaceSecretKind::Can)));
+    };
+    (void)second.run(); // operation 2: a fresh attempt
+
+    EXPECT_EQ(h.prompter.lastCanOptions.attempt, 0U)
+        << "a new operation's first prompt is the first attempt, not the fourth";
+    EXPECT_TRUE(h.prompter.lastCanOptions.lastError.empty()) << "a new operation's first prompt carries no accusation";
+}
+
 // --- M4: structural failures stop punishing the credential -----------------
 
 TEST(IdentityReadFlow, StructuralPaceFailureDoesNotMarkCredentialWrong)
 {
     // A STRUCTURAL pre-read failure (the document does not support PACE)
     // surfaces as UnsupportedCard, NOT AuthFailed -- so the flow's
-    // AuthFailed-only markCredentialWrong branch skips credential punishment for
-    // free. The pre-seeded CAN stays cached (a structural failure is not the
-    // CAN's fault); since markCredentialWrong is the only thing that evicts AND
-    // records retry context, an intact cache proves no retry context was
-    // recorded either.
+    // AuthFailed-only mark branch (cache eviction + m_attempts->recordRejection)
+    // skips credential punishment for free. The pre-seeded CAN stays cached (a
+    // structural failure is not the CAN's fault), and this operation's own
+    // retry context stays at zero -- checked directly, since the cache and the
+    // attempt count are two separate objects now and an intact cache no longer
+    // implies anything about the other.
     Harness h;
     h.cache.putCan("card-A", LibreSCRS::Secure::String{"123456"});
     h.reader.outcome =
         ReadOutcome{ReadOutcome::Status::UnsupportedCard, std::nullopt, "document does not support PACE"};
 
-    auto result = h.make().run();
+    auto flow = h.make();
+    auto result = flow.run();
 
     EXPECT_EQ(result.outcome, IdentityReadFlow::Outcome::Error);
     EXPECT_EQ(result.code, ErrorCode::UnsupportedCard);
     EXPECT_TRUE(h.cache.hasCan("card-A")) << "a structural failure must never evict/punish the credential";
+    EXPECT_EQ(flow.attemptContext().attempts(), 0u) << "and records no retry context";
 }
 
 TEST(IdentityReadFlow, WrongSecretStillMarksCredentialWrong)
 {
     // Regression pin: a genuine wrong pre-read secret (AuthFailed) still evicts
-    // the cached CAN AND records retry context -- A2/M4 must not weaken the real
-    // wrong-credential path.
+    // the cached CAN AND records the rejection on THIS OPERATION's own retry
+    // context -- A2/M4 must not weaken the real wrong-credential path. (Under
+    // per-operation ownership a brand-new probe provider always starts cold,
+    // so the retry context can only be observed through the flow that
+    // recorded it -- see attemptContext().)
     Harness h;
     h.cache.putCan("card-A", LibreSCRS::Secure::String{"000000"});
     h.reader.outcome = ReadOutcome{ReadOutcome::Status::AuthFailed, std::nullopt, "auth rejected"};
 
-    auto result = h.make().run();
+    auto flow = h.make();
+    auto result = flow.run();
 
     EXPECT_EQ(result.outcome, IdentityReadFlow::Outcome::Error);
     EXPECT_EQ(result.code, ErrorCode::AuthFailed);
     EXPECT_FALSE(h.cache.hasCan("card-A")) << "a wrong secret is evicted so a retry re-prompts";
-
-    // The retry context was recorded: the next prompt for this card is numbered 2.
-    auto prompterFailed = std::make_shared<std::atomic<bool>>(false);
-    auto provider = FlowPrelude::makeReadCredentialProvider(h.cache, h.prompter, h.serializer, h.phaseSink, "card-A",
-                                                            h.requester, h.artifact, h.source.token(), prompterFailed);
-    provider(paceReq(PaceSecretKind::Can));
-    EXPECT_EQ(h.prompter.canPrompts, 1);
-    EXPECT_EQ(h.prompter.lastCanOptions.attempt, 2u) << "markCredentialWrong recorded retry context";
+    EXPECT_EQ(flow.attemptContext().attempts(), 1u) << "the rejection is recorded on this operation's own context";
+    EXPECT_EQ(flow.attemptContext().lastErrorKey(), LibreSCRS::Auth::ErrorKeys::preReadAuthFailed().key);
 }
 
 // --- A3: renegotiate a CAN prompt into an MRZ read -------------------------
@@ -972,10 +1166,11 @@ TEST(IdentityReadFlow, CachedMrzShortCircuitsWithoutPrompting)
     Harness h;
     auto sink = std::make_shared<LibreSCRS::Agent::MrzChoiceSink>();
     auto prompterFailed = std::make_shared<std::atomic<bool>>(false);
+    auto attempts = std::make_shared<AttemptContext>();
     h.cache.putMrz("card-A", LibreSCRS::Secure::String{kTd3MrzPayload});
 
     auto provider = FlowPrelude::makeReadCredentialProvider(
-        h.cache, h.prompter, h.serializer, h.phaseSink, "card-A", h.requester, h.artifact, h.source.token(),
+        h.cache, h.prompter, h.serializer, h.phaseSink, "card-A", h.requester, h.artifact, h.source.token(), attempts,
         prompterFailed, /*userCancelled=*/{}, /*providerMarkedWrong=*/{}, /*offerMrzAlternative=*/true, sink);
 
     const auto cred = provider(paceReq(PaceSecretKind::Can));
@@ -1000,9 +1195,10 @@ TEST(IdentityReadFlow, ALaterEmptyReasonInvocationLeavesTheMarkedFlagAlone)
     Harness h;
     auto prompterFailed = std::make_shared<std::atomic<bool>>(false);
     auto marked = std::make_shared<std::atomic<bool>>(false);
+    auto attempts = std::make_shared<AttemptContext>();
     auto provider = FlowPrelude::makeReadCredentialProvider(h.cache, h.prompter, h.serializer, h.phaseSink, "card-A",
-                                                            h.requester, h.artifact, h.source.token(), prompterFailed,
-                                                            /*userCancelled=*/{}, marked);
+                                                            h.requester, h.artifact, h.source.token(), attempts,
+                                                            prompterFailed, /*userCancelled=*/{}, marked);
     h.cache.putCan("card-A", LibreSCRS::Secure::String{"000000"});
     h.prompter.cancelCan();
 
@@ -1120,8 +1316,9 @@ TEST(IdentityReadFlow, AlternativeIsNotAdvertisedWithoutASinkToReceiveTheChoice)
     // closed: no sink, no offer.
     Harness h;
     auto prompterFailed = std::make_shared<std::atomic<bool>>(false);
+    auto attempts = std::make_shared<AttemptContext>();
     auto provider = FlowPrelude::makeReadCredentialProvider(
-        h.cache, h.prompter, h.serializer, h.phaseSink, "card-A", h.requester, h.artifact, h.source.token(),
+        h.cache, h.prompter, h.serializer, h.phaseSink, "card-A", h.requester, h.artifact, h.source.token(), attempts,
         prompterFailed, /*userCancelled=*/{}, /*providerMarkedWrong=*/{}, /*offerMrzAlternative=*/true,
         /*mrzChoice=*/{});
 

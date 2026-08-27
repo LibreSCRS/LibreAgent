@@ -25,7 +25,7 @@ TEST(PromptPolicy, MrzGetsTheMostTimeBecauseItIsEightyEightCharacters)
 
 TEST(PromptPolicy, TheLongestDeadlineConstantActuallyIsTheLongest)
 {
-    // Consumers (Phase 2) static_assert their transport budget against this.
+    // Transport consumers static_assert their call budget against this.
     // If a kind ever outgrows it, that assertion must not silently pass.
     for (auto k : {PromptKind::Pin, PromptKind::Can, PromptKind::Mrz, PromptKind::ChangePin}) {
         EXPECT_LE(deadlineFor(k), kLongestDeadline);

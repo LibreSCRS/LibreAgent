@@ -2,6 +2,8 @@
 // SPDX-FileCopyrightText: 2026 hirashix0
 #include <LibreSCRS/Agent/operations/TokenInfoReadFlow.h>
 #include <LibreSCRS/Agent/backend/Logging.h>
+#include <LibreSCRS/Agent/cache/AttemptContext.h>
+#include <LibreSCRS/Agent/cache/CredentialCache.h>        // refusalGenerationFor
 #include <LibreSCRS/Agent/operations/CardPluginRouting.h> // pkiCandidates
 #include <LibreSCRS/Agent/operations/FlowPrelude.h>
 #include <LibreSCRS/Agent/operations/OperationBase.h> // Phase enum
@@ -79,8 +81,16 @@ TokenInfoReadFlow::Result TokenInfoReadFlow::run()
     // Set true iff a channel prompt EXPIRED — the clock twin of the flag above,
     // and the second failure this flow can still report post-session-open.
     auto entryExpired = std::make_shared<std::atomic<bool>>(false);
+    // Set true iff the holder DISMISSED a channel prompt — the cancel twin of
+    // the flag above. readTokenInfo degrades every failure to an empty group
+    // (see the NOTE further down), so without this a dismissed window is
+    // reported as a SUCCESSFUL read of a card that carries no token info.
+    auto userCancelled = std::make_shared<std::atomic<bool>>(false);
     // Set true iff the agent REFUSED to raise the prompt (helper too old).
     auto helperTooOld = std::make_shared<std::atomic<bool>>(false);
+    // Per-operation retry context, captured HERE at the top of run() -- never
+    // later (see IdentityReadFlow's identical field for the full rationale).
+    auto attempts = std::make_shared<AttemptContext>(m_deps.cache.refusalGenerationFor(m_deps.cardKey));
     // Install with a UAF scope guard: the provider captures the per-op
     // phaseSink by reference, but `session` is owned by the
     // CardSessionHolder and outlives this flow (see
@@ -88,8 +98,8 @@ TokenInfoReadFlow::Result TokenInfoReadFlow::run()
     const auto providerGuard = FlowPrelude::installScopedReadProvider(
         session, FlowPrelude::makeReadCredentialProvider(
                      m_deps.cache, m_deps.prompter, m_deps.serializer, m_deps.phaseSink, m_deps.cardKey,
-                     m_deps.requester, m_deps.artifact, m_deps.token, prompterFailed,
-                     /*userCancelled=*/{}, /*providerMarkedWrong=*/{},
+                     m_deps.requester, m_deps.artifact, m_deps.token, attempts, prompterFailed, userCancelled,
+                     /*providerMarkedWrong=*/{},
                      /*offerMrzAlternative=*/false, /*mrzChoice=*/{}, entryExpired, helperTooOld));
 
     if (m_deps.token.isCancelled()) {
@@ -111,8 +121,8 @@ TokenInfoReadFlow::Result TokenInfoReadFlow::run()
     // pkcs15_card_plugin.cpp's readTokenInfo doc comment), which is SUCCESS
     // with zero fields here (the spec's empty-group resilience). The only
     // failures this flow can still report post-session-open are a broken
-    // prompter UI (the CAN/MRZ prompt itself unreachable) and an entry window
-    // that expired.
+    // prompter UI (the CAN/MRZ prompt itself unreachable), a window the holder
+    // dismissed, and one that expired.
     if (helperTooOld->load(std::memory_order_relaxed)) {
         // Refused before any window was raised; the remedy is actionable.
         return makeError(ErrorCode::CapabilityMissing, FlowPrelude::kHelperTooOldMsgKey,
@@ -120,6 +130,14 @@ TokenInfoReadFlow::Result TokenInfoReadFlow::run()
     }
     if (prompterFailed->load(std::memory_order_relaxed)) {
         return makeError(ErrorCode::PrompterError, "op.read_failed", "prompter unavailable");
+    }
+    // The holder said no. Reported as a cancellation, never as the empty group
+    // the degrade-to-empty contract would otherwise hand back as a success --
+    // and never as a card-side authentication failure, which never happened.
+    // Ranked above the expiry below because a dismissal is the more explicit of
+    // the two.
+    if (userCancelled->load(std::memory_order_relaxed)) {
+        return makeCancelled();
     }
     // ...and the prompt that was reachable but ran out of the holder's time.
     if (entryExpired->load(std::memory_order_relaxed)) {

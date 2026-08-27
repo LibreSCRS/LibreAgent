@@ -6,7 +6,9 @@
 #include <LibreSCRS/Agent/operations/PromptContext.h>
 #include <LibreSCRS/Agent/backend/PrompterClientBase.h>
 #include <LibreSCRS/CancelToken.h>
+#include <functional>
 #include <string>
+#include <utility>
 
 namespace LibreSCRS::Agent::Operations {
 
@@ -33,9 +35,29 @@ public:
     /// @param cardKey Gate key: prompts for DIFFERENT cards run concurrently,
     ///        prompts for the same card serialize. One card per reader slot, so
     ///        this is per-reader independence in practice.
+    /// @param stillWanted Optional check, re-run for requestCan/requestMrz
+    ///        ONLY (never requestPin/requestPinChange) AFTER this decorator
+    ///        has acquired the per-card slot -- i.e. after any FIFO wait
+    ///        behind a same-card sibling -- and BEFORE the inner prompter is
+    ///        ever invoked. Exists because the wait for the slot can itself
+    ///        outlast a sibling's whole prompt: a caller's own pre-dispatch
+    ///        "is this still needed" check cannot see a sibling's window
+    ///        closing WHILE this operation sat queued behind it, only this
+    ///        can, because it runs on the far side of the wait. Returning
+    ///        false skips the inner prompter call entirely and yields a
+    ///        placeholder Cancelled-shaped PromptResult instead -- the
+    ///        caller (CredentialCache::requestCredential) re-derives the
+    ///        actual outcome itself rather than trusting this placeholder's
+    ///        contents, so its shape carries no meaning of its own. Left
+    ///        null (the default): always wanted, i.e. no change from before
+    ///        this parameter existed. Restricted to Can/Mrz because the
+    ///        notion of "generation" this guards belongs to the cacheable
+    ///        pre-read secret, never to the operational PIN, which the CARD's
+    ///        own counter governs.
     SerializingPrompter(PromptSerializer& serializer, PrompterClientBase& inner, LibreSCRS::CancelToken token,
-                        std::string cardKey)
-        : m_serializer(serializer), m_inner(inner), m_token(std::move(token)), m_cardKey(std::move(cardKey))
+                        std::string cardKey, std::function<bool()> stillWanted = nullptr)
+        : m_serializer(serializer), m_inner(inner), m_token(std::move(token)), m_cardKey(std::move(cardKey)),
+          m_stillWanted(std::move(stillWanted))
     {}
 
     [[nodiscard]] PromptResult requestPin(const PromptOptions& options) override
@@ -48,7 +70,7 @@ public:
     }
     [[nodiscard]] PromptResult requestCan(const PromptOptions& options) override
     {
-        return gated([&] {
+        return gatedWithStillWanted([&] {
             const PromptOptions stamped = stamp(options, PromptKind::Can);
             const auto live = m_serializer.registerLivePrompt(m_cardKey, stamped.promptId);
             return m_inner.requestCan(stamped);
@@ -56,7 +78,7 @@ public:
     }
     [[nodiscard]] PromptResult requestMrz(const PromptOptions& options) override
     {
-        return gated([&] {
+        return gatedWithStillWanted([&] {
             const PromptOptions stamped = stamp(options, PromptKind::Mrz);
             const auto live = m_serializer.registerLivePrompt(m_cardKey, stamped.promptId);
             return m_inner.requestMrz(stamped);
@@ -121,10 +143,39 @@ private:
         });
     }
 
+    // Same as gated(), plus the post-acquire m_stillWanted re-check (see the
+    // constructor's doc). Used ONLY by requestCan/requestMrz -- requestPin and
+    // requestPinChange go through the plain gated() above and never consult
+    // m_stillWanted, so installing it never gates an operational PIN prompt.
+    template <typename Fn>
+    PromptResult gatedWithStillWanted(Fn&& doPrompt)
+    {
+        return m_serializer.serialize(
+            m_cardKey, m_token,
+            [this, &doPrompt]() -> PromptResult {
+                // Evaluated AFTER acquire() has returned -- i.e. after any
+                // FIFO wait behind a same-card sibling -- and BEFORE doPrompt
+                // (which is what actually raises the dialog) runs.
+                if (m_stillWanted && !m_stillWanted()) {
+                    // Placeholder only: the caller re-derives the real outcome
+                    // itself (see the constructor's doc) rather than trusting
+                    // this result's status/secret.
+                    return PromptResult{PromptStatus::Cancelled, std::nullopt, ""};
+                }
+                return doPrompt();
+            },
+            [] {
+                // Cancelled while QUEUED (never reached acquire()): the
+                // existing CancelToken path, unrelated to m_stillWanted.
+                return PromptResult{PromptStatus::Cancelled, std::nullopt, ""};
+            });
+    }
+
     PromptSerializer& m_serializer;
     PrompterClientBase& m_inner;
     LibreSCRS::CancelToken m_token;
     std::string m_cardKey;
+    std::function<bool()> m_stillWanted;
 };
 
 } // namespace LibreSCRS::Agent::Operations

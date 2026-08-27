@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 // SPDX-FileCopyrightText: 2026 hirashix0
 #pragma once
+#include <LibreSCRS/Agent/cache/AttemptContext.h>
 #include <LibreSCRS/Agent/cache/CardReadCache.h>
 #include <LibreSCRS/Agent/value/CardReadSnapshot.h>
 #include <LibreSCRS/Agent/cache/CredentialCache.h>
@@ -129,6 +130,18 @@ public:
     {
         return m_mrzChoice;
     }
+    // This operation's own retry context (attempts belong to the operation,
+    // not the card -- see AttemptContext). Bound at the top of run() (unlike
+    // m_provider, it is never emptied at run() exit: it holds no run-scoped
+    // references, so it stays safely observable after the run completes).
+    // Exposed for the same reason credentialProvider() is: without it, moving
+    // the attempt count off the cache and onto a per-run object makes it
+    // unobservable from outside, and a test asserting "this run did not count
+    // as a rejection" would have nothing left to assert against.
+    [[nodiscard]] const AttemptContext& attemptContext() const noexcept
+    {
+        return *m_attempts;
+    }
 
 private:
     IdentityReadFlowDeps m_deps;
@@ -136,6 +149,10 @@ private:
     // at run() exit whether or not it was consumed.
     std::shared_ptr<MrzChoiceSink> m_mrzChoice{std::make_shared<MrzChoiceSink>()};
     LibreSCRS::Auth::CredentialProvider m_provider;
+    // Default-constructed (cold, generation 0) so attemptContext() is safe to
+    // call before run() and on every early-return path; reassigned to a fresh
+    // context seeded from the card's refusal generation at the top of run().
+    std::shared_ptr<AttemptContext> m_attempts{std::make_shared<AttemptContext>()};
 };
 
 } // namespace LibreSCRS::Agent::Operations

@@ -12,6 +12,7 @@
 #include <string>
 
 namespace LibreSCRS::Agent {
+class AttemptContext;
 class CredentialCache;
 class MrzChoiceSink;
 } // namespace LibreSCRS::Agent
@@ -110,14 +111,25 @@ inline constexpr const char* kHelperTooOldMsgFallback =
 // indistinguishable from a live card advertising no PIN credentials (and would
 // be cached as a valid empty snapshot).
 //
-// @p providerMarkedWrong (A2, sec I3, optional/may be null) is the re-key
+// @p attempts is THIS OPERATION's retry context (see @ref AttemptContext),
+// required (no default) so every call site names it explicitly. Forwarded
+// as the last argument to CredentialCache::requestCredential, which reads
+// attempts->attempts() for the PACE cap and applies it to the prompt's
+// attempt/lastError; the provider also calls attempts->recordRejection() on
+// the re-key signal below, alongside the cache's own eviction. Callers
+// construct it fresh at the top of their run(), seeded from
+// CredentialCache::refusalGenerationFor(cardKey) read AT THAT POINT — never
+// later, so a value read lazily at prompt time cannot see a sibling
+// operation's already-advanced generation.
+//
+// @p providerMarkedWrong (optional/may be null) is the re-key
 // signal channel, provider-scoped so parallel readers never cross-talk. When
 // the incoming AuthRequirement's reasonForUser carries preReadAuthFailed().key
 // (LM sets it ONLY on a re-prompt after a wrong-secret rejection in the SAME
-// activation — M5′), the provider FIRST calls
-// cache.markCredentialWrong(cardKey, preReadAuthFailed().key) — evicting the
-// rejected value AND arming applyRetryContext, so the re-prompt carries
-// attempt/last_error instead of replaying the rejected secret. The flag is then
+// activation — M5′), the provider FIRST calls cache.markCredentialWrong(cardKey)
+// (evicting the rejected value) AND attempts->recordRejection(...) (so the
+// re-prompt carries attempt/last_error instead of replaying the rejected
+// secret). The flag is then
 // moved by three cases, and it is STICKY across invocations: an Ok result
 // CLEARS it, because a freshly collected value is live and unmarked and a later
 // AuthFailed must still mark that one; a non-Ok invocation that marked SETS it,
@@ -153,10 +165,50 @@ inline constexpr const char* kHelperTooOldMsgFallback =
 [[nodiscard]] LibreSCRS::Auth::CredentialProvider makeReadCredentialProvider(
     CredentialCache& cache, PrompterClientBase& prompter, PromptSerializer& serializer, OperationPhaseSink& phaseSink,
     std::string cardKey, std::string requester, std::string artifact, LibreSCRS::CancelToken token,
-    std::shared_ptr<std::atomic<bool>> prompterFailed, std::shared_ptr<std::atomic<bool>> userCancelled = {},
-    std::shared_ptr<std::atomic<bool>> providerMarkedWrong = {}, bool offerMrzAlternative = false,
-    std::shared_ptr<MrzChoiceSink> mrzChoice = {}, std::shared_ptr<std::atomic<bool>> entryExpired = {},
-    std::shared_ptr<std::atomic<bool>> helperTooOld = {});
+    std::shared_ptr<AttemptContext> attempts, std::shared_ptr<std::atomic<bool>> prompterFailed,
+    std::shared_ptr<std::atomic<bool>> userCancelled = {}, std::shared_ptr<std::atomic<bool>> providerMarkedWrong = {},
+    bool offerMrzAlternative = false, std::shared_ptr<MrzChoiceSink> mrzChoice = {},
+    std::shared_ptr<std::atomic<bool>> entryExpired = {}, std::shared_ptr<std::atomic<bool>> helperTooOld = {});
+
+// True iff @p req is the CARD saying the CAN/MRZ it was handed was REJECTED,
+// and a secret was genuinely handed to it.
+//
+// Two halves, and neither alone is the signal:
+//   - LM sets the requirement's reasonForUser to preReadAuthFailed() ONLY on a
+//     re-prompt after a wrong-secret rejection in the SAME activation. A
+//     same-kind re-invocation with an EMPTY reason (a PACE->BAC fallback, a
+//     multi-candidate walk) is not a rejection at all.
+//   - ...but that reason arrives just the same when the previous prompt yielded
+//     NOTHING -- the window expired, or the holder dismissed it. No secret ever
+//     reached the card, the activation fails anyway, and LM re-invokes with the
+//     identical reason. Acting on it there evicts a value nobody supplied,
+//     spends one of the three PACE attempts, and makes the next dialog tell a
+//     holder who entered nothing that their entry was not accepted. So the
+//     second half asks @p cache whether the last prompt for @p cardKey came back
+//     empty -- asked of the CACHE, not of a per-run flag: the run that raised
+//     the empty window ended with it, and the re-request arrives inside the NEXT
+//     one, where a per-run flag reads false and the eviction lands anyway.
+//
+// THE single definition of that test. Three credential providers act on it (the
+// shared read provider below, and the hand-rolled ones in SignFlow /
+// BatchSignFlow); a copy of it that fell a term behind would spend a PACE
+// attempt on a secret nobody entered, and nothing would say so.
+[[nodiscard]] bool isCardRejectionSignal(const LibreSCRS::Auth::AuthRequirement& req, const CredentialCache& cache,
+                                         const std::string& cardKey);
+
+// Record that the CAN/MRZ collected for @p cardKey was rejected: evicts the
+// now-known-wrong cached value (CredentialCache::markCredentialWrong) AND
+// records the rejection on @p attempts (AttemptContext::recordRejection) --
+// ONE call for a pairing that must never happen alone. Forgetting the
+// eviction replays a REJECTED secret from cache on the next attempt;
+// forgetting the record undercounts the operation's own PACE allowance.
+// Always records against LibreSCRS::Auth::ErrorKeys::preReadAuthFailed() --
+// every caller of this pairing exists because of that one signal. Every
+// credential provider that routes CAN/MRZ through the cache (the shared read
+// provider above, and the hand-rolled ones in SignFlow / BatchSignFlow) calls
+// this on the card's re-prompt-after-rejection signal, never on invocation
+// counting.
+void noteRejectedSecret(CredentialCache& cache, const std::string& cardKey, AttemptContext& attempts);
 
 // Install @p provider on @p session and return a scope guard that, on
 // destruction, replaces it with a stateless no-op provider. Use in EVERY flow

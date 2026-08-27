@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 // SPDX-FileCopyrightText: 2026 hirashix0
 #include <LibreSCRS/Agent/operations/PinChangeFlow.h>
+#include <LibreSCRS/Agent/cache/AttemptContext.h>
 #include <LibreSCRS/Agent/cache/CardReadCache.h>
 #include <LibreSCRS/Agent/cache/CredentialCache.h>
 #include <LibreSCRS/Agent/cache/CredentialSnapshotCache.h>
@@ -165,10 +166,14 @@ CredentialOpResult runPinManage(PinManageFlowDeps& deps, const PinManageRequest&
         // below and passed as arguments. The scope guard resets the provider to a
         // no-op on exit (the session outlives this flow; see FlowPrelude).
         auto prompterFailed = std::make_shared<std::atomic<bool>>(false);
+        // Per-operation retry context, captured HERE at the top of this change
+        // attempt -- never later (see IdentityReadFlow's identical field for
+        // the full rationale).
+        auto attempts = std::make_shared<AttemptContext>(deps.cache.refusalGenerationFor(deps.cardKey));
         const auto providerGuard = FlowPrelude::installScopedReadProvider(
             session, FlowPrelude::makeReadCredentialProvider(deps.cache, deps.prompter, deps.serializer, deps.phaseSink,
                                                              deps.cardKey, deps.requester, deps.artifact, deps.token,
-                                                             prompterFailed));
+                                                             attempts, prompterFailed));
 
         if (deps.token.isCancelled()) {
             return resultWith(CredentialOutcome::UserCancelled);

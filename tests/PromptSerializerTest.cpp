@@ -423,3 +423,100 @@ TEST(PromptSerializer, PromptsForDifferentCardsRunConcurrently)
     t1.join();
     t2.join();
 }
+
+// -- SerializingPrompter's optional still-wanted re-check (Can/Mrz only) ----
+//
+// CredentialCache::requestCredential silences an operation queued behind a
+// same-card sibling whose window closed WHILE this one waited its turn — a
+// case a check made only before reaching this gate can never see, because the
+// wait for the slot can itself outlast the sibling's whole prompt. The
+// predicate below is what makes that possible: re-evaluated AFTER acquire()
+// returns, BEFORE the inner prompter is ever invoked.
+
+TEST(PromptSerializer, StillWantedPredicateSkipsPromptOnceFalseAfterAcquire)
+{
+    // Deterministic by construction: the predicate is flipped to false by the
+    // TEST thread while the second operation is confirmed still queued (not
+    // yet woken), so there is no dependency on how fast the second thread
+    // wakes relative to anything else -- this isolates the mechanism itself
+    // from any timing question about WHEN a real refusal becomes visible
+    // (that integration is covered by
+    // CredentialCacheRequest.AConcurrentlyQueuedOperationIsNeverPromptedAfterASiblingsRefusal).
+    PromptSerializer serializer;
+    RecordingFakePrompter inner;
+
+    LibreSCRS::CancelSource src1;
+    LibreSCRS::CancelSource src2;
+    SerializingPrompter gated1{serializer, inner, src1.token(), "card-A"};
+    std::atomic<bool> stillWanted{true};
+    SerializingPrompter gated2{serializer, inner, src2.token(), "card-A", [&] { return stillWanted.load(); }};
+
+    PromptOptions opts;
+    std::thread t1([&] {
+        auto r = gated1.requestCan(opts);
+        EXPECT_EQ(r.status, PromptStatus::Ok);
+    });
+
+    {
+        std::unique_lock lock(inner.holdMutex);
+        ASSERT_TRUE(inner.holdCv.wait_for(lock, 2s, [&] { return inner.firstEntered; }))
+            << "first prompt must enter the slot";
+    }
+
+    std::atomic<PromptStatus> secondStatus{PromptStatus::Ok};
+    std::atomic<bool> secondReturned{false};
+    std::thread t2([&] {
+        auto r = gated2.requestCan(opts);
+        secondStatus = r.status;
+        secondReturned = true;
+    });
+
+    // Confirm the second op is genuinely queued (not yet acquired the slot)
+    // before flipping the predicate — this is the "parked in the serializer"
+    // shape a sequential test cannot represent.
+    std::this_thread::sleep_for(150ms);
+    ASSERT_FALSE(secondReturned.load()) << "second op must still be queued behind the live prompt";
+    EXPECT_EQ(inner.totalCalls.load(), 1) << "only the first op has reached the prompter so far";
+
+    // Mirrors a sibling's refusal landing while this op sat queued.
+    stillWanted = false;
+
+    // Release the first; the second wakes, acquires the slot, and must find
+    // itself no longer wanted -- WITHOUT ever reaching the inner prompter.
+    {
+        std::lock_guard lock(inner.holdMutex);
+        inner.releaseHold = true;
+        inner.holdCv.notify_all();
+    }
+    t1.join();
+    t2.join();
+
+    EXPECT_TRUE(secondReturned.load());
+    EXPECT_EQ(inner.totalCalls.load(), 1)
+        << "the second op acquired the slot but must never reach the prompter once no longer wanted";
+    EXPECT_NE(secondStatus.load(), PromptStatus::Ok) << "a skipped prompt cannot report Ok";
+}
+
+TEST(PromptSerializer, StillWantedPredicateNeverConsultedForPin)
+{
+    // The predicate is installed on the SAME decorator instance used for
+    // requestPin below: gated() (used by requestPin/requestPinChange) must
+    // never consult it, or an operational PIN prompt would be silently gated
+    // by a generation concept that belongs to the cacheable CAN/MRZ secret
+    // alone. A predicate that always returns false makes this unambiguous —
+    // if requestPin ever consulted it, the prompt would be skipped and this
+    // test would fail.
+    PromptSerializer serializer;
+    RecordingFakePrompter inner;
+    // The fake's first entrant otherwise parks until released (used elsewhere
+    // to force a queued second waiter); nothing else in THIS test needs that,
+    // so release it up front and call from the test thread directly.
+    inner.releaseHold = true;
+    LibreSCRS::CancelSource src;
+    SerializingPrompter gated{serializer, inner, src.token(), "card-A", [] { return false; }};
+
+    PromptOptions opts;
+    auto r = gated.requestPin(opts);
+    EXPECT_EQ(r.status, PromptStatus::Ok) << "requestPin must never consult the still-wanted predicate";
+    EXPECT_EQ(inner.totalCalls.load(), 1);
+}

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 // SPDX-FileCopyrightText: 2026 hirashix0
 #include <LibreSCRS/Agent/operations/BatchSignFlow.h>
+#include <LibreSCRS/Agent/cache/AttemptContext.h>
 #include <LibreSCRS/Agent/cache/CredentialCache.h>
 #include <LibreSCRS/Agent/operations/CardPluginRouting.h> // signingCandidates
 #include <LibreSCRS/Agent/operations/FlowPrelude.h>
@@ -226,13 +227,28 @@ BatchSignFlow::Result BatchSignFlow::run()
     auto entryExpired = std::make_shared<std::atomic<bool>>(false);
     // Set true iff the agent REFUSED to raise the prompt (helper too old).
     auto helperTooOld = std::make_shared<std::atomic<bool>>(false);
+    // Per-operation retry context for the channel-establishment secret (CAN/
+    // MRZ), captured HERE at the top of run() -- never later (see
+    // IdentityReadFlow's identical field for the full rationale). PIN never
+    // reaches this: it is collected and verified by its own branch below,
+    // before the CAN/MRZ branch that consults this is ever entered.
+    auto attempts = std::make_shared<AttemptContext>(cache.refusalGenerationFor(cardKey));
 
     LibreSCRS::Auth::CredentialProvider provider =
-        [&cache, &prompter, &serializer, &phaseSink, cardKey, requester, artifactNames, summary, token, prompterFailed,
-         entryExpired, helperTooOld,
+        [&cache, &prompter, &serializer, &phaseSink, cardKey, requester, artifactNames, summary, token, attempts,
+         prompterFailed, entryExpired, helperTooOld,
          &pinHolder](const LibreSCRS::Auth::AuthRequirement& req) -> LibreSCRS::Auth::CredentialResult {
         try {
-            SerializingPrompter gated{serializer, prompter, token, cardKey};
+            // The still-wanted check re-runs requestCredential's own
+            // queued-refusal comparison AFTER this operation has waited its
+            // turn for the prompt slot -- a sibling operation for the SAME
+            // card can have its window close WHILE this one sits queued
+            // here. Harmless on the requestPin() branch below: only
+            // requestCan/requestMrz ever consult it (see SerializingPrompter's
+            // constructor doc), and PIN never reaches those.
+            SerializingPrompter gated{serializer, prompter, token, cardKey, [&cache, &cardKey, &attempts] {
+                                          return cache.stillWantedFor(cardKey, attempts.get());
+                                      }};
 
             if (req.purpose() == LibreSCRS::Auth::Purpose::Signing) {
                 if (const auto* cached = pinHolder.get()) {
@@ -291,9 +307,16 @@ BatchSignFlow::Result BatchSignFlow::run()
             PromptOptions chanOpts;
             chanOpts.requester = requester;
             chanOpts.artifact = "signature-batch";
+            // The card's rejection signal: see SignFlow's identical guard, and
+            // FlowPrelude::isCardRejectionSignal for the full rationale (evict +
+            // record on that signal only, never on invocation counting, and
+            // never after a window that came back empty).
+            if (FlowPrelude::isCardRejectionSignal(req, cache, cardKey)) {
+                FlowPrelude::noteRejectedSecret(cache, cardKey, *attempts);
+            }
             return cache.requestCredential(cardKey, req, gated, chanOpts, prompterFailed.get(),
                                            /*userCancelled=*/nullptr, /*mrzChoice=*/nullptr, entryExpired.get(),
-                                           helperTooOld.get());
+                                           helperTooOld.get(), attempts.get());
         } catch (...) {
             return LibreSCRS::Auth::CredentialResult::error(LibreSCRS::LocalizedText{});
         }

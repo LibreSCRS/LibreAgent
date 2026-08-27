@@ -17,8 +17,8 @@ using LibreSCRS::Agent::Operations::stampPrompt;
 
 TEST(PromptStamp, TheNewFieldsAreInertUntilSomethingStampsThem)
 {
-    // Phase 1 adds the fields; Task 9 stamps them and the hosts marshal them in
-    // Phase 2/3. Until then a default-constructed options object must behave
+    // The prompt types carry the fields and the serializing decorator stamps
+    // them; a default-constructed options object must still behave
     // exactly as before, or every existing prompt silently changes shape.
     const PromptOptions opts;
     EXPECT_TRUE(opts.promptId.empty());
