@@ -2,6 +2,7 @@
 // SPDX-FileCopyrightText: 2026 hirashix0
 #include <LibreSCRS/Agent/operations/RawCryptoFlow.h>
 
+#include <LibreSCRS/Agent/cache/AttemptContext.h>
 #include <LibreSCRS/Agent/cache/CredentialCache.h>
 #include <LibreSCRS/Agent/operations/CardPluginRouting.h> // signingCandidates
 #include <LibreSCRS/Agent/operations/FlowPrelude.h>
@@ -107,8 +108,12 @@ RawCryptoFlow::Result RawCryptoFlow::run(Op op, std::span<const std::uint8_t> by
     // failed channel establishment as CardError below (the raw path has no
     // PrompterError outcome — the flag the helper requires is write-only here).
     auto prompterFailed = std::make_shared<std::atomic<bool>>(false);
-    LibreSCRS::Auth::CredentialProvider provider = FlowPrelude::makeReadCredentialProvider(
-        cache, prompter, serializer, phaseSink, cardKey, requester, /*artifact=*/"pkcs11", token, prompterFailed);
+    // Per-operation retry context, captured HERE at the top of run() -- never
+    // later (see IdentityReadFlow's identical field for the full rationale).
+    auto attempts = std::make_shared<AttemptContext>(cache.refusalGenerationFor(cardKey));
+    LibreSCRS::Auth::CredentialProvider provider =
+        FlowPrelude::makeReadCredentialProvider(cache, prompter, serializer, phaseSink, cardKey, requester,
+                                                /*artifact=*/"pkcs11", token, attempts, prompterFailed);
     // Install with a UAF scope guard: the provider captures the per-op phaseSink
     // by reference, but `session` is owned by the CardSessionHolder and outlives
     // this flow, so the guard resets the session's provider to a stateless no-op

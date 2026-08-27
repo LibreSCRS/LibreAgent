@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 // SPDX-FileCopyrightText: 2026 hirashix0
 #include <LibreSCRS/Agent/operations/CredentialListFlow.h>
+#include <LibreSCRS/Agent/cache/AttemptContext.h>
 #include <LibreSCRS/Agent/cache/CredentialCache.h>
 #include <LibreSCRS/Agent/cache/CredentialSnapshotCache.h>
 #include <LibreSCRS/Agent/operations/CardPluginRouting.h> // filterByCapability
@@ -85,15 +86,18 @@ CredentialListFlow::Result CredentialListFlow::run()
     auto entryExpired = std::make_shared<std::atomic<bool>>(false);
     // Set true iff the agent REFUSED to raise the prompt (helper too old).
     auto helperTooOld = std::make_shared<std::atomic<bool>>(false);
+    // Per-operation retry context, captured HERE at the top of run() -- never
+    // later (see IdentityReadFlow's identical field for the full rationale).
+    auto attempts = std::make_shared<AttemptContext>(m_deps.cache.refusalGenerationFor(m_deps.cardKey));
     // Install with a UAF scope guard: the provider captures the per-op phaseSink
     // by reference, but `session` is owned by the CardSessionHolder and outlives
     // this flow (see FlowPrelude::installScopedReadProvider).
     const auto providerGuard = FlowPrelude::installScopedReadProvider(
-        session, FlowPrelude::makeReadCredentialProvider(m_deps.cache, m_deps.prompter, m_deps.serializer,
-                                                         m_deps.phaseSink, m_deps.cardKey, m_deps.requester,
-                                                         m_deps.artifact, m_deps.token, prompterFailed, promptCancelled,
-                                                         /*providerMarkedWrong=*/{}, /*offerMrzAlternative=*/false,
-                                                         /*mrzChoice=*/{}, entryExpired, helperTooOld));
+        session, FlowPrelude::makeReadCredentialProvider(
+                     m_deps.cache, m_deps.prompter, m_deps.serializer, m_deps.phaseSink, m_deps.cardKey,
+                     m_deps.requester, m_deps.artifact, m_deps.token, attempts, prompterFailed, promptCancelled,
+                     /*providerMarkedWrong=*/{}, /*offerMrzAlternative=*/false,
+                     /*mrzChoice=*/{}, entryExpired, helperTooOld));
 
     if (m_deps.token.isCancelled()) {
         return makeCancelled();

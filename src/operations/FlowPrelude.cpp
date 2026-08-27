@@ -2,6 +2,7 @@
 // SPDX-FileCopyrightText: 2026 hirashix0
 #include <LibreSCRS/Agent/operations/FlowPrelude.h>
 #include <LibreSCRS/Agent/backend/PrompterWire.h> // shared kind vocabulary (alt_kinds value)
+#include <LibreSCRS/Agent/cache/AttemptContext.h>
 #include <LibreSCRS/Agent/cache/CredentialCache.h>
 #include <LibreSCRS/Agent/operations/CardSessionHolder.h>
 #include <LibreSCRS/Agent/operations/ConsentPhaseScope.h> // consent is a bounded excursion, not a one-way trip
@@ -10,7 +11,7 @@
 #include <LibreSCRS/Agent/value/CredentialRecord.h> // CredentialOutcome
 #include <LibreSCRS/Auth/AuthRequirement.h>
 #include <LibreSCRS/Auth/CredentialResult.h>
-#include <LibreSCRS/Auth/ErrorKeys.h> // ErrorKeys::preReadAuthFailed (A2 re-key signal)
+#include <LibreSCRS/Auth/ErrorKeys.h> // ErrorKeys::preReadAuthFailed (the re-key signal)
 #include <LibreSCRS/Auth/PaceSecretKind.h>
 #include <atomic>
 #include <cstdint>
@@ -84,15 +85,16 @@ CredentialOutcome openFailureOutcome(ErrorCode code) noexcept
 LibreSCRS::Auth::CredentialProvider makeReadCredentialProvider(
     CredentialCache& cache, PrompterClientBase& prompter, PromptSerializer& serializer, OperationPhaseSink& phaseSink,
     std::string cardKey, std::string requester, std::string artifact, LibreSCRS::CancelToken token,
-    std::shared_ptr<std::atomic<bool>> prompterFailed, std::shared_ptr<std::atomic<bool>> userCancelled,
-    std::shared_ptr<std::atomic<bool>> providerMarkedWrong, bool offerMrzAlternative,
-    std::shared_ptr<MrzChoiceSink> mrzChoice, std::shared_ptr<std::atomic<bool>> entryExpired,
+    std::shared_ptr<AttemptContext> attempts, std::shared_ptr<std::atomic<bool>> prompterFailed,
+    std::shared_ptr<std::atomic<bool>> userCancelled, std::shared_ptr<std::atomic<bool>> providerMarkedWrong,
+    bool offerMrzAlternative, std::shared_ptr<MrzChoiceSink> mrzChoice, std::shared_ptr<std::atomic<bool>> entryExpired,
     std::shared_ptr<std::atomic<bool>> helperTooOld)
 {
     return [&cache, &prompter, &serializer, &phaseSink, cardKey = std::move(cardKey), requester = std::move(requester),
-            artifact = std::move(artifact), token = std::move(token), prompterFailed = std::move(prompterFailed),
-            userCancelled = std::move(userCancelled), providerMarkedWrong = std::move(providerMarkedWrong),
-            offerMrzAlternative, mrzChoice = std::move(mrzChoice), entryExpired = std::move(entryExpired),
+            artifact = std::move(artifact), token = std::move(token), attempts = std::move(attempts),
+            prompterFailed = std::move(prompterFailed), userCancelled = std::move(userCancelled),
+            providerMarkedWrong = std::move(providerMarkedWrong), offerMrzAlternative, mrzChoice = std::move(mrzChoice),
+            entryExpired = std::move(entryExpired),
             helperTooOld = std::move(helperTooOld)](const LibreSCRS::Auth::AuthRequirement& req) {
         try {
             // About to (potentially) block on the prompter for user input —
@@ -106,35 +108,20 @@ LibreSCRS::Auth::CredentialProvider makeReadCredentialProvider(
             // activation the collected secret unlocks and every data-group read
             // after it happen under whatever phase this body leaves behind.
             const ConsentPhaseScope consent{phaseSink};
-            // A2 (sec I3 re-key): evict on the card's REJECTION SIGNAL, never on
-            // invocation counting. LM sets reasonForUser == preReadAuthFailed()
-            // ONLY on a re-prompt after a wrong-secret rejection in the SAME
-            // activation (M5′). On that signal, mark the cached value wrong FIRST
-            // — evicting the rejected secret so the cache-hit branch is bypassed
-            // BY EVICTION (not a parallel path) AND arming applyRetryContext so
-            // the re-prompt carries attempt/last_error. A same-kind re-invocation
-            // with an EMPTY reason (PACE→BAC fallback, multi-candidate walk) is
-            // NOT a rejection and serves the never-rejected value from cache.
-            //
-            // ...but that invariant is weaker than it reads, MEASURED on a live
-            // agent: when the previous prompt EXPIRED, no secret ever reached
-            // LM, LM's activation fails anyway, and it re-invokes with the same
-            // preReadAuthFailed reason. Marking there evicts a value that was
-            // never presented, burns one of the three PACE attempts, and makes
-            // the next dialog say "the value entered was not accepted" to a
-            // holder who entered nothing. So a re-prompt that follows an expiry
-            // is not a rejection: skip the mark and let the retry context stay
-            // clean. The flag is cleared again the moment a prompt DOES yield a
-            // secret, so a wrong value entered after an expiry still marks.
+            // Evict on the card's REJECTION SIGNAL, never on invocation
+            // counting -- see isCardRejectionSignal for what that signal is and
+            // what it deliberately excludes. On it, mark the cached value wrong
+            // FIRST — evicting the rejected secret so the cache-hit branch is
+            // bypassed BY EVICTION (not a parallel path) AND recording the
+            // rejection on THIS OPERATION's attempts context so the re-prompt
+            // carries attempt/last_error.
             bool markedNow = false;
-            // Asked of the CACHE, not of a per-run flag: the run that raised the
-            // expired window ended with it, and this re-request arrives inside the
-            // NEXT one. A per-run flag reads false here and the mark lands anyway.
-            const bool lastPromptYieldedNothing = cache.lastPromptYieldedNothingFor(cardKey);
-            if (const auto& reason = req.message();
-                reason.has_value() && reason->key == LibreSCRS::Auth::ErrorKeys::preReadAuthFailed().key &&
-                !lastPromptYieldedNothing) {
-                cache.markCredentialWrong(cardKey, LibreSCRS::Auth::ErrorKeys::preReadAuthFailed().key);
+            if (isCardRejectionSignal(req, cache, cardKey)) {
+                if (attempts) {
+                    noteRejectedSecret(cache, cardKey, *attempts);
+                } else {
+                    cache.markCredentialWrong(cardKey);
+                }
                 markedNow = true;
             }
             PromptOptions opts;
@@ -165,7 +152,17 @@ LibreSCRS::Auth::CredentialProvider makeReadCredentialProvider(
             // wrapper's request* is reached, so the gate is contended only on a
             // real prompt. The routing keys off the AuthRequirement LM hands the
             // callback (its paceKind selects CAN vs MRZ), not a pre-read guess.
-            SerializingPrompter gated{serializer, prompter, token, cardKey};
+            //
+            // The still-wanted check re-runs requestCredential's own
+            // queued-refusal comparison AFTER this operation has waited its
+            // turn for the slot above -- a sibling operation for the SAME card
+            // dispatched alongside this one can have its window close WHILE
+            // this one sits queued here, which a check made only before
+            // reaching the gate could never see. See SerializingPrompter's
+            // constructor doc.
+            SerializingPrompter gated{serializer, prompter, token, cardKey, [&cache, &cardKey, &attempts] {
+                                          return cache.stillWantedFor(cardKey, attempts.get());
+                                      }};
             // The sink is handed down ONLY on the prompt that actually
             // advertised the alternative, so a chosen-kind reply to a prompt
             // that never offered one fails closed agent-side too, not only at
@@ -175,7 +172,7 @@ LibreSCRS::Auth::CredentialProvider makeReadCredentialProvider(
                     ? std::move(*renegotiated)
                     : cache.requestCredential(cardKey, req, gated, opts, prompterFailed.get(), userCancelled.get(),
                                               offeringAlternative ? mrzChoice.get() : nullptr, entryExpired.get(),
-                                              helperTooOld.get());
+                                              helperTooOld.get(), attempts.get());
             if (providerMarkedWrong) {
                 // Double-mark guard. An Ok result means a FRESH value is live
                 // — unmarked, so a later AuthFailed must still mark it. A
@@ -197,6 +194,20 @@ LibreSCRS::Auth::CredentialProvider makeReadCredentialProvider(
             return LibreSCRS::Auth::CredentialResult::error(LibreSCRS::LocalizedText{});
         }
     };
+}
+
+bool isCardRejectionSignal(const LibreSCRS::Auth::AuthRequirement& req, const CredentialCache& cache,
+                           const std::string& cardKey)
+{
+    const auto& reason = req.message();
+    return reason.has_value() && reason->key == LibreSCRS::Auth::ErrorKeys::preReadAuthFailed().key &&
+           !cache.lastPromptYieldedNothingFor(cardKey);
+}
+
+void noteRejectedSecret(CredentialCache& cache, const std::string& cardKey, AttemptContext& attempts)
+{
+    cache.markCredentialWrong(cardKey);
+    attempts.recordRejection(LibreSCRS::Auth::ErrorKeys::preReadAuthFailed().key);
 }
 
 namespace {

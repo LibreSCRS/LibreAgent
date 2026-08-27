@@ -41,15 +41,15 @@ struct PromptOptions
     // populates today.
     std::vector<std::string> artifacts;
     // Retry context for a CAN/MRZ prompt re-issued after the card rejected
-    // the value collected last time for the SAME card: `attempt` numbers
-    // this prompt (2 = second attempt, ...) and `lastError` carries the
-    // msgKey of the failure that triggered the retry (e.g.
+    // the value collected last time within the SAME OPERATION: `attempt`
+    // numbers this prompt (2 = second attempt, ...) and `lastError` carries
+    // the msgKey of the failure that triggered the retry (e.g.
     // LibreSCRS::Auth::ErrorKeys::preReadAuthFailed().key). Both stay at
-    // their default (0 / empty) on the first-ever prompt for a card --
-    // CredentialCache::requestCredential populates them only on a genuine
-    // re-prompt (see CredentialCache::markCredentialWrong). PIN prompts
-    // never set these; the pre-read PACE secret is the only surface this
-    // seam covers today.
+    // their default (0 / empty) on the first prompt of a fresh operation --
+    // CredentialCache::requestCredential populates them from the operation's
+    // own AttemptContext (see AttemptContext::recordRejection) only on a
+    // genuine re-prompt. PIN prompts never set these; the pre-read PACE
+    // secret is the only surface this seam covers today.
     std::uint32_t attempt = 0;
     std::string lastError;
     // Alternative secret kinds the caller can consume if the user switches

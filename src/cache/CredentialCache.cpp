@@ -54,6 +54,14 @@ bool CredentialCache::hasMrz(const std::string& cardKey) const
 void CredentialCache::invalidate(const std::string& cardKey)
 {
     std::lock_guard lock(m_mutex);
+    // A whole-entry erase, so the refusal generation goes back to 0 along with
+    // the secrets. That is deliberate and it is safe IN ONE DIRECTION ONLY,
+    // which is the direction that matters: an operation still holding a
+    // captured generation of 1 or more now compares against 0 and finds itself
+    // STILL WANTED, so at worst the holder is asked once more. The reverse --
+    // an operation silenced for a refusal that never happened to the card in
+    // front of it -- cannot arise from this, because the counter only ever
+    // restarts BELOW what any live operation captured, never above it.
     m_entries.erase(cardKey);
 }
 
@@ -63,14 +71,15 @@ void CredentialCache::clear()
     m_entries.clear();
 }
 
-void CredentialCache::markCredentialWrong(const std::string& cardKey, std::string errorMsgKey)
+void CredentialCache::markCredentialWrong(const std::string& cardKey)
 {
     std::lock_guard lock(m_mutex);
     auto& entry = m_entries[cardKey]; // default-constructs on first failure for this card
     entry.can.reset();
     entry.mrz.reset();
-    entry.failedAttempts += 1;
-    entry.lastErrorKey = std::move(errorMsgKey);
+    // The count and the message moved to the operation's AttemptContext: they
+    // describe one read attempt, not the card. What stays here is the eviction
+    // -- a rejected secret must never be replayed from cache.
 }
 
 bool CredentialCache::lastPromptYieldedNothingFor(const std::string& cardKey) const
@@ -95,22 +104,42 @@ void CredentialCache::noteLastPromptYieldedNothing(const std::string& cardKey, b
     m_entries[cardKey].lastPromptYieldedNothing = true;
 }
 
-std::uint32_t CredentialCache::failedAttemptsFor(const std::string& cardKey) const
+void CredentialCache::noteRefusal(const std::string& cardKey, RefusalKind kind)
 {
     std::lock_guard lock(m_mutex);
-    auto it = m_entries.find(cardKey);
-    return it == m_entries.end() ? 0U : it->second.failedAttempts;
+    auto& entry = m_entries[cardKey]; // default-constructs on first refusal
+    ++entry.refusalGeneration;
+    entry.refusalKind = kind;
 }
 
-void CredentialCache::applyRetryContext(const std::string& cardKey, PromptOptions& opts) const
+std::uint64_t CredentialCache::refusalGenerationFor(const std::string& cardKey) const
 {
     std::lock_guard lock(m_mutex);
     auto it = m_entries.find(cardKey);
-    if (it == m_entries.end() || it->second.failedAttempts == 0) {
-        return; // no recorded failure -- first-ever prompt for this card
+    return it == m_entries.end() ? 0U : it->second.refusalGeneration;
+}
+
+CredentialCache::RefusalKind CredentialCache::lastRefusalKindFor(const std::string& cardKey) const
+{
+    std::lock_guard lock(m_mutex);
+    auto it = m_entries.find(cardKey);
+    return it == m_entries.end() ? RefusalKind::Timeout : it->second.refusalKind;
+}
+
+bool CredentialCache::stillWantedFor(const std::string& cardKey, const AttemptContext* attempts) const
+{
+    // refusalGenerationFor takes m_mutex itself; nothing here holds it first.
+    return attempts == nullptr || refusalGenerationFor(cardKey) <= attempts->generationAtDispatch();
+}
+
+void CredentialCache::applyRetryContext(const AttemptContext& attempts, PromptOptions& opts)
+{
+    const std::uint32_t recorded = attempts.attempts();
+    if (recorded == 0) {
+        return; // no recorded rejection -- the first prompt of a fresh operation
     }
-    opts.attempt = it->second.failedAttempts + 1;
-    opts.lastError = it->second.lastErrorKey;
+    opts.attempt = recorded + 1;
+    opts.lastError = attempts.lastErrorKey();
 }
 
 } // namespace LibreSCRS::Agent

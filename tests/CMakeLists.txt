@@ -43,6 +43,7 @@ agent_core_test(AgentCoreWiringTest)
 
 # --- platform-neutral unit tests ------------------------------------------
 agent_core_test(AgentShutdownUnderLoadTest)
+agent_core_test(AttemptContextTest)
 agent_core_test(AuthorizerTest)
 agent_core_test(CacheScrubOnRemovalTest)
 agent_core_test(CallerLabelTest)
@@ -91,6 +92,7 @@ agent_core_test(SeamsCompileTest)
 agent_core_test(Sha256HexTest)
 agent_core_test(SignatureParamsTest)
 agent_core_test(SignFlowPhaseTest)
+agent_core_test(SignFlowTest)
 agent_core_test(SignGateTest)
 agent_core_test(SigningEngineProviderTest)
 agent_core_test(TokenInfoReadFlowTest)
@@ -126,6 +128,7 @@ foreach(_internal IN ITEMS
         RawCryptoFlowTest
         BatchSignFlowTest
         SignFlowPhaseTest
+        SignFlowTest
         PrompterKeepAliveDrainTest)
     target_compile_definitions(${_internal} PRIVATE LIBRESCRS_INTERNAL_BUILD)
 endforeach()

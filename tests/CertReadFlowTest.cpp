@@ -7,6 +7,7 @@
 // FakeCertReader returns canned CertSnapshots so the orchestration + the
 // open/classify/install-provider prelude + status mapping are exercised
 // without a real card.
+#include <LibreSCRS/Agent/cache/AttemptContext.h>
 #include <LibreSCRS/Agent/cache/CredentialCache.h>
 #include <LibreSCRS/Agent/operations/CardSessionHolder.h>
 #include <LibreSCRS/Agent/operations/CertReadFlow.h>
@@ -109,6 +110,9 @@ public:
     {
         ++canPrompts;
         lastCanOptions = opts;
+        if (canOverride.has_value()) {
+            return *canOverride;
+        }
         return {};
     }
     PromptResult requestMrz(const PromptOptions&) override
@@ -116,9 +120,11 @@ public:
         return {};
     }
     int canPrompts = 0;
-    // Retry context the cache stamped onto the most recent CAN prompt; the
-    // attempt number is how a test counts markCredentialWrong calls.
+    // Retry context the cache stamped onto the most recent CAN prompt.
     PromptOptions lastCanOptions;
+    // Scripted reply for the CAN prompt, overriding the default (Error) above
+    // -- lets a test simulate e.g. an expired entry window (Timeout).
+    std::optional<PromptResult> canOverride;
 };
 
 class RecordingPhaseSink final : public OperationPhaseSink
@@ -206,22 +212,6 @@ struct Harness
             .artifact = "certificates",
             .token = source.token(),
         }};
-    }
-
-    // Attempt number the NEXT CAN prompt for this card would carry: 0 while no
-    // failure has been recorded, failedAttempts + 1 once markCredentialWrong
-    // ran. Stands up a throwaway provider and drives one prompt — the route
-    // production takes — so a test counts marks through the retry context the
-    // cache stamps onto the prompt. A still-cached secret is served without a
-    // prompt and leaves the answer at 0, which is itself the "nothing was
-    // marked" signal.
-    std::uint32_t probeNextPromptAttempt()
-    {
-        auto prompterFailed = std::make_shared<std::atomic<bool>>(false);
-        auto probe = FlowPrelude::makeReadCredentialProvider(cache, prompter, serializer, phaseSink, "card-A",
-                                                             requester, "certificates", source.token(), prompterFailed);
-        static_cast<void>(probe(paceReq(LibreSCRS::Auth::PaceSecretKind::Can)));
-        return prompter.lastCanOptions.attempt;
     }
 };
 
@@ -417,10 +407,11 @@ TEST(CertReadFlow, OfflinePathYieldsOfflineUnverifiedNotError)
 TEST(CertReadFlow, AuthFailedAfterProviderMarkedCountsOneAttempt)
 {
     // The card rejected the pre-read secret and asked for it again, so the
-    // provider already evicted + counted that value. When the walk then unwinds
-    // as AuthFailed, the flow's own mark must NOT count the SAME rejected value
-    // a second time: the next prompt is attempt 2, not 3. An inflated count
-    // renders a wrong attempt number and can evict one refusal early.
+    // provider already evicted + recorded that value on this operation's own
+    // retry context. When the walk then unwinds as AuthFailed, the flow's own
+    // mark must NOT count the SAME rejected value a second time: the
+    // operation's attempt count is 1, not 2. An inflated count renders a
+    // wrong attempt number and can evict one refusal early.
     Harness h;
     h.certReader.outcome = CertReadOutcome{CertReadOutcome::Status::AuthFailed, {}, "auth rejected"};
 
@@ -433,7 +424,7 @@ TEST(CertReadFlow, AuthFailedAfterProviderMarkedCountsOneAttempt)
     const auto result = flow.run();
 
     EXPECT_EQ(result.outcome, CertReadFlow::Outcome::Error);
-    EXPECT_EQ(h.probeNextPromptAttempt(), 2u)
+    EXPECT_EQ(flow.attemptContext().attempts(), 1u)
         << "one rejected value, one mark: the provider's mark and the flow's must not stack";
 }
 
@@ -448,12 +439,63 @@ TEST(CertReadFlow, AuthFailedWithoutProviderMarkStillMarksCredentialWrong)
     h.cache.putCan("card-A", LibreSCRS::Secure::String{"000000"});
     h.certReader.outcome = CertReadOutcome{CertReadOutcome::Status::AuthFailed, {}, "auth rejected"};
 
-    const auto result = h.make().run();
+    auto flow = h.make();
+    const auto result = flow.run();
 
     EXPECT_EQ(result.outcome, CertReadFlow::Outcome::Error);
     EXPECT_EQ(result.code, ErrorCode::AuthFailed);
     EXPECT_FALSE(h.cache.hasCan("card-A")) << "a wrong secret is evicted so a retry re-prompts";
-    EXPECT_EQ(h.probeNextPromptAttempt(), 2u) << "the flow recorded the retry context";
+    EXPECT_EQ(flow.attemptContext().attempts(), 1u) << "the flow recorded the retry context";
+}
+
+TEST(CertReadFlow, ExpiredPromptDoesNotMarkCredentialWrong)
+{
+    // An entry window that closed on the clock collected NOTHING. Treating the
+    // activation failure that follows as a rejection would evict a value
+    // nobody supplied and spend one of the three PACE attempts for free -- the
+    // same defect fixed on the identity read path (see IdentityReadFlowTest's
+    // test of the same name). The cert flow shares the credential provider
+    // and this AuthFailed branch, so it shared the bug until the same guard
+    // existed here too.
+    Harness h;
+    h.prompter.canOverride = PromptResult{PromptStatus::Timeout, std::nullopt, "expired"};
+    h.certReader.outcome = CertReadOutcome{CertReadOutcome::Status::AuthFailed, {}, "auth failed"};
+
+    auto flow = h.make();
+    h.certReader.onRead = [&flow](int, LibreSCRS::SmartCard::CardSession&) {
+        static_cast<void>(flow.credentialProvider()(paceReq(LibreSCRS::Auth::PaceSecretKind::Can)));
+    };
+    const auto result = flow.run();
+
+    EXPECT_EQ(result.code, ErrorCode::EntryExpired);
+    EXPECT_EQ(flow.attemptContext().attempts(), 0u)
+        << "an expiry collected nothing, so it is not a rejection and must not count";
+}
+
+TEST(CertReadFlow, DismissedPromptCancelsAndDoesNotMarkCredentialWrong)
+{
+    // The cancel twin of the expiry test above, and the same shared provider
+    // and AuthFailed branch, so the same defect: a dismissed window presented
+    // NOTHING to the card, yet the activation failure that follows was charged
+    // as a rejection and reported as AuthFailed -- blaming the card for the
+    // holder's own decision and spending a PACE attempt on it.
+    Harness h;
+    h.prompter.canOverride = PromptResult{PromptStatus::Cancelled, std::nullopt, "cancelled"};
+    h.certReader.outcome = CertReadOutcome{CertReadOutcome::Status::AuthFailed, {}, "Authentication failed."};
+
+    auto flow = h.make();
+    h.certReader.onRead = [&flow](int, LibreSCRS::SmartCard::CardSession&) {
+        static_cast<void>(flow.credentialProvider()(paceReq(LibreSCRS::Auth::PaceSecretKind::Can)));
+    };
+    const auto result = flow.run();
+
+    EXPECT_EQ(result.outcome, CertReadFlow::Outcome::Cancelled)
+        << "the holder dismissed the window -- that is a cancellation, not a card-side failure";
+    EXPECT_EQ(result.code, ErrorCode::None);
+    EXPECT_EQ(result.msgFallback.find("uthentication"), std::string::npos)
+        << "no message may claim an authentication that was never attempted";
+    EXPECT_EQ(flow.attemptContext().attempts(), 0u)
+        << "a dismissal presented nothing, so it is not a rejection and must not count";
 }
 
 TEST(CertReadFlow, CredentialProviderIsClearedAtFlowExit)
@@ -480,12 +522,13 @@ TEST(CertReadFlow, StructuralFailureLeavesTheCredentialAlone)
     h.cache.putCan("card-A", LibreSCRS::Secure::String{"123456"});
     h.certReader.outcome = CertReadOutcome{CertReadOutcome::Status::UnsupportedCard, {}, "no PKI applet"};
 
-    const auto result = h.make().run();
+    auto flow = h.make();
+    const auto result = flow.run();
 
     EXPECT_EQ(result.outcome, CertReadFlow::Outcome::Error);
     EXPECT_EQ(result.code, ErrorCode::UnsupportedCard);
     EXPECT_TRUE(h.cache.hasCan("card-A")) << "a structural failure must never evict/punish the credential";
-    EXPECT_EQ(h.probeNextPromptAttempt(), 0u) << "and records no retry context";
+    EXPECT_EQ(flow.attemptContext().attempts(), 0u) << "and records no retry context";
 }
 
 // A verdict with NO tokens (plain Unknown, never assessed) must not append a

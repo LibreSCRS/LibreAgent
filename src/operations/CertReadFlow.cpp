@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 // SPDX-FileCopyrightText: 2026 hirashix0
 #include <LibreSCRS/Agent/operations/CertReadFlow.h>
+#include <LibreSCRS/Agent/cache/AttemptContext.h>
 #include <LibreSCRS/Agent/cache/CredentialCache.h>
 #include <LibreSCRS/Agent/backend/Logging.h>
 #include <LibreSCRS/Agent/operations/CardPluginRouting.h> // pkiCandidates
 #include <LibreSCRS/Agent/operations/FlowPrelude.h>
 #include <LibreSCRS/Agent/operations/OperationBase.h> // Phase enum
-#include <LibreSCRS/Auth/ErrorKeys.h>                 // ErrorKeys::preReadAuthFailed
 #include <atomic>
 #include <cstdint>
 #include <memory>
@@ -168,6 +168,13 @@ CertReadFlow::Result CertReadFlow::run()
     // Set true iff a prompt expired: the holder's entry window closed. Neither
     // a cancel nor a card-side rejection, so it gets its own code below.
     auto entryExpired = std::make_shared<std::atomic<bool>>(false);
+    // Set true by the credential provider iff the holder DISMISSED a prompt --
+    // the cancel twin of entryExpired. Read for the same two reasons
+    // IdentityReadFlow reads its own: the seam swallows the candidate's
+    // channel-activation throw, so a dismissed window otherwise surfaces as the
+    // card rejecting a credential it never saw, and is charged against the
+    // three PACE attempts as if it had.
+    auto userCancelled = std::make_shared<std::atomic<bool>>(false);
     // Set true iff the agent REFUSED to raise the prompt (helper too old).
     auto helperTooOld = std::make_shared<std::atomic<bool>>(false);
     // Set true by the credential provider iff, on the card's re-prompt signal,
@@ -176,12 +183,17 @@ CertReadFlow::Result CertReadFlow::run()
     // value is marked EXACTLY once. Run-scoped (fresh per run) so parallel
     // readers never cross-talk.
     auto providerMarkedWrong = std::make_shared<std::atomic<bool>>(false);
+    // Per-operation retry context, captured HERE at the top of run() -- never
+    // later (see IdentityReadFlow's identical field for the full rationale).
+    // Stored as a member (mirrors m_provider) so attemptContext() stays
+    // observable after run() returns.
+    m_attempts = std::make_shared<AttemptContext>(m_deps.cache.refusalGenerationFor(m_deps.cardKey));
     // Install with a UAF scope guard: the provider captures the per-op phaseSink
     // by reference, but `session` is owned by the CardSessionHolder and outlives
     // this flow (see FlowPrelude::installScopedReadProvider).
     m_provider = FlowPrelude::makeReadCredentialProvider(
         m_deps.cache, m_deps.prompter, m_deps.serializer, m_deps.phaseSink, m_deps.cardKey, m_deps.requester,
-        m_deps.artifact, m_deps.token, prompterFailed, /*userCancelled=*/{}, providerMarkedWrong,
+        m_deps.artifact, m_deps.token, m_attempts, prompterFailed, userCancelled, providerMarkedWrong,
         /*offerMrzAlternative=*/false, /*mrzChoice=*/{}, entryExpired, helperTooOld);
     const FlowPrelude::ProviderResetGuard providerReset{m_provider};
     const auto providerGuard = FlowPrelude::installScopedReadProvider(session, m_provider);
@@ -203,15 +215,26 @@ CertReadFlow::Result CertReadFlow::run()
         // A wrong pre-read secret must not be replayed on the next attempt.
         // (readCertificates rarely surfaces AuthFailed — see LmCertificateReader
         // — but keep the eviction symmetric with IdentityReadFlow, including the
-        // retry-context bookkeeping markCredentialWrong records.)
+        // retry-context bookkeeping m_attempts->recordRejection() records.)
         if (outcome.status == CertReadOutcome::Status::AuthFailed) {
             // Double-mark guard: if the provider already marked the now-live
             // rejected secret wrong on the card's re-prompt signal, skip the
             // flow's own mark so the rejected value is counted EXACTLY once
             // (truthful attempt numbering). The provider only sets this when the
             // marked value was NOT replaced by a fresh collection.
-            if (!providerMarkedWrong->load(std::memory_order_relaxed)) {
-                m_deps.cache.markCredentialWrong(m_deps.cardKey, LibreSCRS::Auth::ErrorKeys::preReadAuthFailed().key);
+            //
+            // A window that closed WITHOUT a secret collected NOTHING, so the
+            // activation failure that follows is not a rejection: marking here
+            // would evict a value nobody supplied and spend one of the three
+            // PACE attempts for free. Both ways of closing one empty count --
+            // the clock ran out, or the holder dismissed it. Mirrors the
+            // identical guard in IdentityReadFlow -- the two flows share this
+            // credential provider and this branch, so they shared the bug until
+            // this guard existed here too.
+            const bool holderGaveNothing =
+                entryExpired->load(std::memory_order_relaxed) || userCancelled->load(std::memory_order_relaxed);
+            if (!holderGaveNothing && !providerMarkedWrong->load(std::memory_order_relaxed)) {
+                FlowPrelude::noteRejectedSecret(m_deps.cache, m_deps.cardKey, *m_attempts);
             }
             session->clearCachedPaceCredentials();
         }
@@ -222,6 +245,12 @@ CertReadFlow::Result CertReadFlow::run()
             // generic prompter failure.
             return makeError(ErrorCode::CapabilityMissing, FlowPrelude::kHelperTooOldMsgKey,
                              FlowPrelude::kHelperTooOldMsgFallback);
+        }
+        if (!prompterFailed->load(std::memory_order_relaxed) && userCancelled->load(std::memory_order_relaxed)) {
+            // The holder said no: report the cancellation, not a card-side
+            // authentication failure that was never attempted. Ranked above the
+            // expiry below because a dismissal is the more explicit of the two.
+            return makeCancelled();
         }
         if (!prompterFailed->load(std::memory_order_relaxed) && entryExpired->load(std::memory_order_relaxed)) {
             // The message travels with the code; the read's own fallback names

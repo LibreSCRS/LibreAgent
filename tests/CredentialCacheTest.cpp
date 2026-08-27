@@ -126,7 +126,7 @@ TEST(CredentialCache, MarkCredentialWrongEvictsBothCanAndMrz)
     c.putCan(kCardA, Secret{"123456"});
     c.putMrz(kCardA, Secret{"MRZ"});
 
-    c.markCredentialWrong(kCardA, "librescrs.error.preRead.authFailed");
+    c.markCredentialWrong(kCardA);
 
     EXPECT_FALSE(c.hasCan(kCardA));
     EXPECT_FALSE(c.hasMrz(kCardA));
@@ -138,23 +138,21 @@ TEST(CredentialCache, MarkCredentialWrongOnUnknownCardIsNotACrash)
     // default-constructed on demand. Not directly observable via the public
     // getters (they only report can/mrz), but must not misbehave.
     CredentialCache c;
-    c.markCredentialWrong(kCardA, "librescrs.error.preRead.authFailed");
+    c.markCredentialWrong(kCardA);
     EXPECT_FALSE(c.hasCan(kCardA));
     EXPECT_FALSE(c.hasMrz(kCardA));
 }
 
-TEST(CredentialCache, InvalidateAfterMarkCredentialWrongFullyResetsRetryContext)
+TEST(CredentialCache, InvalidateAfterMarkCredentialWrongIsNotACrash)
 {
-    // invalidate() (a full-entry erase) is the ONLY way retry context resets
-    // short of clear(); callers that evict as a side effect of an unrelated
-    // failure (e.g. a wrong signing PIN) rely on this to avoid attaching a
-    // stale "wrong CAN" claim to an unrelated future prompt. Exercised
-    // end-to-end (attempt count observably back at "no context") in
-    // CredentialCacheRequestTest, which can see PromptOptions; here we only
-    // pin that invalidate() does not throw/crash on an entry markCredentialWrong
+    // markCredentialWrong() only evicts now -- the attempt count and its
+    // msgKey moved off the cache entirely, onto the caller's own
+    // AttemptContext (see CredentialCacheRequestTest, which can see
+    // PromptOptions, for that per-operation behavior). This just pins that
+    // invalidate() does not throw/crash on an entry markCredentialWrong
     // touched.
     CredentialCache c;
-    c.markCredentialWrong(kCardA, "librescrs.error.preRead.authFailed");
+    c.markCredentialWrong(kCardA);
     c.invalidate(kCardA);
     EXPECT_FALSE(c.hasCan(kCardA));
     EXPECT_FALSE(c.hasMrz(kCardA));
