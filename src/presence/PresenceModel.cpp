@@ -70,7 +70,13 @@ void PresenceModel::onCardInserted(const std::string& readerName, const std::vec
         const Operations::CandidateList candidates{std::move(plugin)};
         caps = Operations::unionCapabilities(candidates);
     } else {
-        log::infof("no plugin matched for reader {} (ATR fast-path miss)", readerName);
+        // Worded as the normal path it is: only ATR-declaring plugins can match
+        // here, so every healthy card of any other family takes this branch —
+        // "miss" phrasing once sent a whole debugging session after a card that
+        // was fine.
+        log::infof("reader {}: no plugin declares this ATR — normal for most cards; "
+                   "the per-reader worker probes the live card and republishes capabilities",
+                   readerName);
     }
     // Pre-read auth requires a live session (CardPlugin::preReadAuth(session)), so
     // it cannot be resolved here without opening one. Publish the pending None
