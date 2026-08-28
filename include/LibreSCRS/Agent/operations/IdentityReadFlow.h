@@ -52,6 +52,12 @@ struct IdentityReadFlowDeps
     // pass a recording fake to assert order.
     GroupSink& groupSink;
     std::string cardKey;
+    // Human reader name, used only for the per-request audit line run() emits
+    // up front (mirrors TokenInfoReadFlowDeps::readerName): a card with no
+    // pre-read secret (PreReadAuthMethod::None) never reaches the consent
+    // prompt that would otherwise record the requester, so without that line
+    // reading personal data off such a card leaves no journald trace.
+    std::string readerName;
     // Caller-identity chrome surfaced in the consent prompt so the user can
     // attribute the credential request. requester: a human-meaningful label
     // for the client that asked (e.g. its executable basename); artifact:

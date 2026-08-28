@@ -338,6 +338,9 @@ struct Harness
     // that don't care simply leave them at these values.
     std::string requester = "Mozilla Firefox";
     std::string artifact = "identity";
+    // Human reader name threaded into the audit line only (mirrors the
+    // "FakeReader" name the holder itself is constructed with below).
+    std::string readerName = "FakeReader";
 
     IdentityReadFlow make()
     {
@@ -351,6 +354,7 @@ struct Harness
             .phaseSink = phaseSink,
             .groupSink = groupSink,
             .cardKey = "card-A",
+            .readerName = readerName,
             .requester = requester,
             .artifact = artifact,
             .token = source.token(),
@@ -489,6 +493,75 @@ TEST(IdentityReadFlow, CancelTokenPreEmptsAfterOpen)
     auto result = h.make().run();
     EXPECT_EQ(result.outcome, IdentityReadFlow::Outcome::Cancelled);
     EXPECT_EQ(result.code, ErrorCode::None);
+}
+
+// --- audit line: identity was the one read verb with no journald trace -----
+
+TEST(IdentityReadFlow, EmitsAuditLineNamingRequesterReaderAndCard)
+{
+    // A card with no pre-read secret (PreReadAuthMethod::None) never reaches
+    // the consent prompt that would otherwise record the requester, so
+    // without this line reading personal data off such a card leaves no
+    // journald trace at all. The flow must emit one audit line per request
+    // naming requester + reader + card path (mirrors TokenInfoReadFlow's own
+    // audit line).
+    std::stringstream captured;
+    std::streambuf* saved = std::clog.rdbuf(captured.rdbuf());
+
+    Harness h;
+    h.requester = "seahorse";
+    (void)h.make().run();
+
+    std::clog.rdbuf(saved);
+    const std::string out = captured.str();
+    EXPECT_NE(out.find("identity read"), std::string::npos) << out;
+    EXPECT_NE(out.find("requester=seahorse"), std::string::npos) << out;
+    EXPECT_NE(out.find("FakeReader"), std::string::npos) << out;
+    EXPECT_NE(out.find("card-A"), std::string::npos) << out;
+}
+
+TEST(IdentityReadFlow, AuditLineMarksUnknownRequesterWhenEmpty)
+{
+    std::stringstream captured;
+    std::streambuf* saved = std::clog.rdbuf(captured.rdbuf());
+
+    Harness h;
+    h.requester = ""; // best-effort caller-identity resolution failed
+    (void)h.make().run();
+
+    std::clog.rdbuf(saved);
+    const std::string out = captured.str();
+    EXPECT_NE(out.find("requester=unknown"), std::string::npos) << out;
+}
+
+TEST(IdentityReadFlow, AuditLineNeverContainsAnySnapshotFieldData)
+{
+    // CRITICAL: the audit line logs ONLY request metadata (requester/reader/
+    // card) -- never a field the plugin actually read off the card. Stream a
+    // group carrying a recognizable stand-in for a real identity field (name/
+    // JMBG/photo/etc.) and assert it never reaches the captured log output,
+    // even though the read itself succeeds and the field reaches the group
+    // sink normally.
+    std::stringstream captured;
+    std::streambuf* saved = std::clog.rdbuf(captured.rdbuf());
+
+    Harness h;
+    GroupSnapshot g;
+    g.groupKey = "personal";
+    FieldSnapshot f;
+    f.fieldKey = "givenName";
+    f.textValue = "MARIJA-SENTINEL-7f3a";
+    g.fields.push_back(f);
+    h.reader.groupsToStream = {g};
+
+    auto result = h.make().run();
+
+    std::clog.rdbuf(saved);
+    ASSERT_EQ(result.outcome, IdentityReadFlow::Outcome::Ok);
+    ASSERT_EQ(h.groupSink.groups.size(), 1u) << "the field must still reach the group sink normally";
+    const std::string out = captured.str();
+    EXPECT_EQ(out.find("MARIJA-SENTINEL-7f3a"), std::string::npos)
+        << "no snapshot field may ever reach the audit line: " << out;
 }
 
 TEST(IdentityReadFlow, ProviderLambdaRoutesOnRequirementAndFiresAwaitingConsent)

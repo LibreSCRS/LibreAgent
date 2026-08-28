@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 // SPDX-FileCopyrightText: 2026 hirashix0
 #include <LibreSCRS/Agent/operations/IdentityReadFlow.h>
+#include <LibreSCRS/Agent/backend/Logging.h>
 #include <LibreSCRS/Agent/cache/AttemptContext.h>         // per-operation retry context
 #include <LibreSCRS/Agent/cache/MrzPayload.h>             // parseMrzPayload (the canonical payload contract)
 #include <LibreSCRS/Agent/operations/CardPluginRouting.h> // identityCandidates
@@ -107,6 +108,15 @@ IdentityReadFlow::IdentityReadFlow(IdentityReadFlowDeps deps) : m_deps(std::move
 // m_deps.token across the entire run() — including after every seam call.
 IdentityReadFlow::Result IdentityReadFlow::run()
 {
+    // Audit the read up front, once per request. A card with no pre-read
+    // secret (PreReadAuthMethod::None) never reaches the consent prompt that
+    // would otherwise record the requester for this path -- without this
+    // line, reading personal data off such a card leaves no journald trace at
+    // all (mirrors TokenInfoReadFlow's own audit line for the same reason).
+    // Logs ONLY this request's metadata: never a field from the snapshot.
+    log::infof("identity read requested: requester={} reader=\"{}\" card={}",
+               m_deps.requester.empty() ? "unknown" : m_deps.requester, m_deps.readerName, m_deps.cardKey);
+
     // -- Steps 1-2: open the held session + install the read credential provider
     // -- (shared with CertReadFlow/SignFlow via FlowPrelude; the read tail below
     // is identity-specific.)
