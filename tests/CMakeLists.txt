@@ -90,6 +90,7 @@ agent_core_test(RsaPublicKeyTest)
 agent_core_test(SeamsCompileTest)
 agent_core_test(Sha256HexTest)
 agent_core_test(SignatureParamsTest)
+agent_core_test(SignFlowPhaseTest)
 agent_core_test(SignGateTest)
 agent_core_test(SigningEngineProviderTest)
 agent_core_test(TokenInfoReadFlowTest)
@@ -123,6 +124,7 @@ foreach(_internal IN ITEMS
         TokenInfoReadFlowTest
         RawCryptoFlowTest
         BatchSignFlowTest
+        SignFlowPhaseTest
         PrompterKeepAliveDrainTest)
     target_compile_definitions(${_internal} PRIVATE LIBRESCRS_INTERNAL_BUILD)
 endforeach()

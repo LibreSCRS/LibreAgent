@@ -179,14 +179,11 @@ SignFlow::Result SignFlow::run()
                 // the on-card signing phase. Both happen AFTER the human, so the
                 // unbounded consent wait above is never timed.
                 //
-                // The watchdog deliberately arms HERE (post-consent), not before
-                // signer.sign(): arming earlier would time the unbounded human PIN
-                // (and, on PACE cards, CAN) entry, aborting a user who is slow to
-                // find their card. The cost is that the pre-consent on-card I/O
-                // (the anti-TOCTOU re-read / PACE establishment) is not watchdog-
-                // covered — exactly like the read flows' AwaitingConsent window. A
-                // hang there is instead bounded by Cancel / client-disconnect /
-                // reader-removal (the zombie-worker drain), not the per-op timer.
+                // The Reading arm set before signer.sign() bounded the pre-consent
+                // on-card I/O (the anti-TOCTOU re-read / PACE establishment);
+                // entering AwaitingConsent above disarmed it, exactly so this wait
+                // for the human is on no clock. Re-arming here starts a FRESH
+                // budget for the on-card signing that follows.
                 phaseSink.setPhase(static_cast<std::uint32_t>(OperationPhase::Authenticating));
                 phaseSink.setPhase(static_cast<std::uint32_t>(OperationPhase::Signing));
                 std::vector<LibreSCRS::Auth::CredentialEntry> entries;
@@ -212,6 +209,13 @@ SignFlow::Result SignFlow::run()
     if (m_deps.token.isCancelled()) {
         return makeCancelled();
     }
+    // The pre-consent stretch of sign() does real on-card work (the anti-TOCTOU
+    // re-read, PACE establishment) before any prompt, and it runs as Reading so
+    // a client's pre-PIN window names it instead of showing a generic busy
+    // state. Reading is a machine phase, so it also arms the watchdog over that
+    // I/O; entry into AwaitingConsent disarms it before the human is asked (see
+    // OperationBase::setPhase), keeping the consent wait untimed.
+    m_deps.phaseSink.setPhase(static_cast<std::uint32_t>(OperationPhase::Reading));
     // In-process sign: the seam holds the live shared_ptr<CardSession> so the
     // PACE secure-messaging session is adopted (never re-established) and is
     // torn down with the session, not across a process boundary.
