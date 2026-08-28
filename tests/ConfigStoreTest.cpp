@@ -98,8 +98,6 @@ TEST_F(ConfigStoreTest, FirstRunSeedIsWrittenToDiskAndSurvivesReload)
     // exists, so a seed that never reached disk is dropped by the NEXT construction
     // — the first boot looks seeded and every boot after it is silently empty.
     ConfigStore reopened(m_configFile, m_cacheRoot);
-    EXPECT_FALSE(reopened.tsaUrls().empty()) << "the seeded TSA list did not survive a reload";
-    EXPECT_FALSE(reopened.tslSources().empty()) << "the seeded trusted lists did not survive a reload";
     EXPECT_EQ(reopened.tsaUrls(), kSeededTsaUrls);
     EXPECT_EQ(reopened.tslSources(), kSeededTslSources);
     // The eager flag is what routes a source into a startup fetch thread; no

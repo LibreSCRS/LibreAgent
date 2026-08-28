@@ -6,11 +6,15 @@
 // validators; this store used to keep a private copy of it.
 #include <LibreSCRS/Agent/operations/SignatureParams.h>
 #include <array>
+#include <cerrno>
 #include <charconv>
+#include <cstdlib>
+#include <cstring>
 #include <fstream>
 #include <optional>
 #include <sstream>
 #include <system_error>
+#include <unistd.h>
 #include <utility>
 
 namespace LibreSCRS::Agent::Config {
@@ -162,6 +166,12 @@ ConfigStore::ConfigStore(std::filesystem::path configFile, std::filesystem::path
     // them out before the load, which then reads back exactly what was just
     // written. On a failed write the seed still stands for this run (persist() logs
     // and returns) and the next start seeds again -- degraded, never wrong.
+    // Unlike every other call site below, this persist() runs WITHOUT
+    // m_mutex held. That is deliberate, not an oversight: the constructor
+    // has not returned yet, so no other thread holds (or can obtain) a
+    // reference to this object to call a setter/getter concurrently with it
+    // -- there is nothing m_mutex could be excluding here. Taking it would
+    // only add a lock/unlock with no other holder ever contending it.
     if (seedFirstRunDefaults(m_configFile, m_tsaUrls, m_tslSources)) {
         persist();
     }
@@ -282,11 +292,36 @@ void ConfigStore::persist()
         log::warnf("config: cannot create config dir {}: {}", m_configFile.parent_path().string(), ec.message());
         return;
     }
-    const std::filesystem::path tmp = m_configFile.string() + ".tmp";
+    // A unique name in the SAME directory as the target: rename() below is
+    // atomic only within one filesystem, so the temp file must share the
+    // config file's parent. A fixed ".tmp" suffix let two writers collide on
+    // the identical path -- concretely, two processes racing this exact
+    // ctor-time persist() call (see the call above) could truncate or step on
+    // each other's write; mkstemp's O_CREAT|O_EXCL loop guarantees each
+    // caller gets its own file, no matter how many run at once.
+    std::string tmpTemplate = (m_configFile.parent_path() / (m_configFile.filename().string() + ".XXXXXX")).string();
+    const int fd = ::mkstemp(tmpTemplate.data());
+    if (fd < 0) {
+        log::warnf("config: cannot create temp file for {}: {}", m_configFile.string(), std::strerror(errno));
+        return;
+    }
+    ::close(fd);
+    const std::filesystem::path tmp{tmpTemplate};
+    // mkstemp creates the file at 0600 (owner rw only), which is also the
+    // RIGHT mode here, not an accidental narrowing: this config file is
+    // agent-private state that only this process (this user account) ever
+    // opens directly -- every other client reads it over the Config1 D-Bus
+    // interface, never the raw file -- so there is no reader to lock out.
+    // Pin the mode explicitly rather than let a future libc change (or a
+    // stat-preserving rename onto an existing file with a looser mode) leave
+    // it ambiguous which permission regime actually applies.
+    std::filesystem::permissions(tmp, std::filesystem::perms::owner_read | std::filesystem::perms::owner_write,
+                                 std::filesystem::perm_options::replace, ec);
     {
         std::ofstream out(tmp, std::ios::trunc);
         if (!out) {
             log::warnf("config: cannot write {}", tmp.string());
+            std::filesystem::remove(tmp, ec);
             return;
         }
         out << "# LibreSCRS agent signing configuration (auto-managed; Config1)\n";

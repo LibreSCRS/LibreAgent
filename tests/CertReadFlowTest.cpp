@@ -498,6 +498,35 @@ TEST(CertReadFlow, DismissedPromptCancelsAndDoesNotMarkCredentialWrong)
         << "a dismissal presented nothing, so it is not a rejection and must not count";
 }
 
+TEST(CertReadFlow, RefusedPromptSurfacesCapabilityMissingWithRemedyMessage)
+{
+    // The fourth signal, distinct from the three above: the agent REFUSED to
+    // raise the prompt at all, because the helper is too old to be told which
+    // window to dismiss. No discriminating test anywhere pinned the actual
+    // remedy MESSAGE this reports -- only the code -- so a change or
+    // truncation of the string (the one thing here the holder can act on)
+    // would pass unnoticed.
+    Harness h;
+    h.prompter.canOverride = PromptResult{PromptStatus::HelperTooOld, std::nullopt, "helper out of date"};
+    h.certReader.outcome = CertReadOutcome{CertReadOutcome::Status::AuthFailed, {}, "Authentication failed."};
+
+    auto flow = h.make();
+    h.certReader.onRead = [&flow](int, LibreSCRS::SmartCard::CardSession&) {
+        static_cast<void>(flow.credentialProvider()(paceReq(LibreSCRS::Auth::PaceSecretKind::Can)));
+    };
+    const auto result = flow.run();
+
+    EXPECT_EQ(result.outcome, CertReadFlow::Outcome::Error);
+    EXPECT_EQ(result.code, ErrorCode::CapabilityMissing);
+    // Pinned as a LITERAL, not FlowPrelude::kHelperTooOldMsgFallback: comparing
+    // the result against the very same constant the flow copied it from would
+    // pass no matter what that constant said -- it would just be checking the
+    // pass-through, not the text. This is the actual remedy string, spelled out,
+    // so an edit to the constant that changes what the holder is told breaks here.
+    EXPECT_EQ(result.msgFallback, "The credential window helper is out of date; restart your session.")
+        << "the remedy message must survive verbatim -- it is the one thing the holder can act on";
+}
+
 TEST(CertReadFlow, CredentialProviderIsClearedAtFlowExit)
 {
     // The provider captures cache/prompter/serializer/phaseSink BY REFERENCE,
