@@ -10,6 +10,7 @@
 #include <chrono>
 #include <cstdint>
 #include <functional>
+#include <initializer_list>
 #include <memory>
 #include <optional>
 #include <span>
@@ -241,18 +242,21 @@ public:
     void onClientDisconnected(const CallerToken& client);
 
 private:
-    // Shared SignRaw/Decrypt body: FIRST reject any @p mechanism other than the
-    // single wired @p allowedMechanism for this path (fail-closed NotSupported) —
-    // the seam is hard-wired to one primitive (SignRaw -> RsaPkcs1Sign, Decrypt ->
-    // RsaPkcs1Decrypt), so forwarding a non-wired arm (RSA-PSS / ECDSA / OAEP / the
-    // public-key encrypt arms) would silently run it as RSA-PKCS#1 v1.5. Then
-    // lease-gate (touch) synchronously and run the seam on the worker; the
-    // continuation forwards the seam CryptoOutcome to @p reply (bytes on Ok),
-    // revokes the lease on auth-fail, audits, and fulfils @p reply. @p opName is
-    // the audit/log label ("SignRaw"|"Decrypt").
-    void runCrypto(const char* opName, Mechanism allowedMechanism, const CryptoSeam& seam, Mechanism mechanism,
-                   const MechanismParams& params, const std::string& reader, const std::string& certId,
-                   std::span<const std::uint8_t> bytes, const Caller& caller,
+    // Shared SignRaw/Decrypt body: FIRST reject any @p mechanism NOT in the set
+    // this path wires (fail-closed NotSupported). The signRaw seam handles the
+    // RSA (RsaPkcs1Sign) and pre-hashed ECDSA (EcdsaSign) private-key sign
+    // primitives — both ride MechParamsEmpty and the seam picks RSA-vs-ECDSA by
+    // the resolved key's algorithm — so both are wired; the decrypt seam wires
+    // RsaPkcs1Decrypt only. Every other arm (RSA-PSS / OAEP / ECDH / the
+    // public-key encrypt arms) stays rejected here: forwarding one would run it
+    // as the seam's default primitive. Then lease-gate (touch) synchronously and
+    // run the seam on the worker; the continuation forwards the seam
+    // CryptoOutcome to @p reply (bytes on Ok), revokes the lease on auth-fail,
+    // audits, and fulfils @p reply. @p opName is the audit/log label
+    // ("SignRaw"|"Decrypt").
+    void runCrypto(const char* opName, std::initializer_list<Mechanism> allowedMechanisms, const CryptoSeam& seam,
+                   Mechanism mechanism, const MechanismParams& params, const std::string& reader,
+                   const std::string& certId, std::span<const std::uint8_t> bytes, const Caller& caller,
                    Reply<CryptoOutcome, std::vector<std::uint8_t>> reply);
 
     [[nodiscard]] std::chrono::steady_clock::time_point nowOr() const;

@@ -115,6 +115,7 @@ endforeach()
 # LIBRESCRS_INTERNAL_BUILD — the same opt-in LibreMiddleware's own tests use.
 foreach(_internal IN ITEMS
         OperationManagerTest
+        LmRawCryptoTest
         CardSessionHolderTest
         FakeBackendsTest
         FieldKeyParityTest

@@ -538,11 +538,12 @@ TEST(Pkcs11Broker, ForwardsRsaPkcs1MechanismToSeam)
     EXPECT_TRUE(decEmpty);
 }
 
-// Mechanism gate: each crypto path wires exactly ONE primitive (SignRaw ->
-// RsaPkcs1Sign, Decrypt -> RsaPkcs1Decrypt). Any other arm is rejected
-// NotSupported BEFORE the seam runs, so a non-wired mechanism can never be
-// silently executed as RSA-PKCS#1 v1.5. The gate precedes the lease touch, so a
-// live lease does not let a non-wired arm through.
+// Mechanism gate: the SignRaw path wires the RSA and pre-hashed ECDSA sign
+// primitives (RsaPkcs1Sign, EcdsaSign); Decrypt wires RsaPkcs1Decrypt. Any arm
+// outside the wired set is rejected NotSupported BEFORE the seam runs, so a
+// non-wired mechanism can never be silently executed as the seam's default
+// primitive. The gate precedes the lease touch, so a live lease does not let a
+// non-wired arm through.
 TEST(Pkcs11Broker, SignRawRejectsNonWiredMechanismNotSupported)
 {
     Harness h;
@@ -550,12 +551,47 @@ TEST(Pkcs11Broker, SignRawRejectsNonWiredMechanismNotSupported)
     static_cast<void>(callLogin(obj, kReader, appCaller())); // a live lease would otherwise allow the op
     EXPECT_EQ(signRawMechanismOutcome(obj, Mechanism::RsaPssSign, appCaller()),
               Pkcs11Broker::CryptoOutcome::NotSupported);
-    EXPECT_EQ(signRawMechanismOutcome(obj, Mechanism::EcdsaSign, appCaller()),
-              Pkcs11Broker::CryptoOutcome::NotSupported);
     // A public-key / encrypt arm must never ride the lease-gated private-key path.
     EXPECT_EQ(signRawMechanismOutcome(obj, Mechanism::RsaPkcs1Encrypt, appCaller()),
               Pkcs11Broker::CryptoOutcome::NotSupported);
+    // ECDH derive is a private-key op but not a sign primitive — still rejected.
+    EXPECT_EQ(signRawMechanismOutcome(obj, Mechanism::EcdhDerive, appCaller()),
+              Pkcs11Broker::CryptoOutcome::NotSupported);
     EXPECT_EQ(h.signCalls, 0) << "the seam must never run for a non-wired mechanism";
+}
+
+// The EcdsaSign (CKM_ECDSA) arm IS wired end to end: it passes the mechanism
+// gate, rides the lease exactly like the RSA sign, reaches the seam, and
+// returns the seam's bytes — no NotSupported. This pins the broker half of EC
+// signing so a future gate change cannot silently re-close the arm.
+TEST(Pkcs11Broker, SignRawAcceptsEcdsaMechanismEndToEnd)
+{
+    Harness h;
+    Mechanism sawSign{Mechanism::RsaPkcs1Sign}; // sentinel != expected
+    Pkcs11Broker obj{Pkcs11Broker::Deps{
+        .lease = h.lease,
+        .authorizer = h.authz,
+        .certDer = certDerSeam([&](const std::string&, const std::string&) { return h.certDerResult; }),
+        .publicKey = publicKeySeam([&](const std::string&, const std::string&) { return h.publicKeyResult; }),
+        .login = loginSeam([&](const std::string&) { return h.loginOutcome; }),
+        .signRaw =
+            [&](const std::string&, const std::string&, Mechanism m, const MechanismParams&,
+                std::span<const std::uint8_t>, const std::string&, const Pkcs11Broker::LeasePinState&,
+                std::function<void(Pkcs11Broker::CryptoResult)> done) {
+                ++h.signCalls;
+                sawSign = m;
+                done(h.signResult); // Ok / {'S','I','G'}
+            },
+        .decrypt = [&](const std::string&, const std::string&, Mechanism, const MechanismParams&,
+                       std::span<const std::uint8_t>, const std::string&, const Pkcs11Broker::LeasePinState&,
+                       std::function<void(Pkcs11Broker::CryptoResult)> done) { done(h.decryptResult); },
+        .resolveCardKey = [&](const std::string&) { return h.cardKey; },
+        .now = [&]() { return h.clockNow; }}};
+    static_cast<void>(callLogin(obj, kReader, appCaller()));
+
+    EXPECT_EQ(signRawMechanismOutcome(obj, Mechanism::EcdsaSign, appCaller()), Pkcs11Broker::CryptoOutcome::Ok);
+    EXPECT_EQ(h.signCalls, 1) << "the seam must run for the wired ECDSA arm";
+    EXPECT_EQ(sawSign, Mechanism::EcdsaSign) << "the broker forwards CKM_ECDSA to the seam unchanged";
 }
 
 TEST(Pkcs11Broker, DecryptRejectsNonWiredMechanismNotSupported)

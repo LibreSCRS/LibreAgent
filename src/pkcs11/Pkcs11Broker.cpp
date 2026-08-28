@@ -4,6 +4,7 @@
 #include <LibreSCRS/Agent/backend/Authorizer.h>
 #include <LibreSCRS/Agent/backend/Logging.h>
 
+#include <algorithm>
 #include <utility>
 
 namespace LibreSCRS::Agent {
@@ -161,18 +162,18 @@ void Pkcs11Broker::logout(const std::string& reader, const Caller& caller)
     log::infof("pkcs11: Logout card={} caller={}", cardKey->value(), caller.label);
 }
 
-void Pkcs11Broker::runCrypto(const char* opName, Mechanism allowedMechanism, const CryptoSeam& seam,
-                             Mechanism mechanism, const MechanismParams& params, const std::string& reader,
-                             const std::string& certId, std::span<const std::uint8_t> bytes, const Caller& caller,
-                             Reply<CryptoOutcome, std::vector<std::uint8_t>> reply)
+void Pkcs11Broker::runCrypto(const char* opName, std::initializer_list<Mechanism> allowedMechanisms,
+                             const CryptoSeam& seam, Mechanism mechanism, const MechanismParams& params,
+                             const std::string& reader, const std::string& certId, std::span<const std::uint8_t> bytes,
+                             const Caller& caller, Reply<CryptoOutcome, std::vector<std::uint8_t>> reply)
 {
-    // Mechanism gate (fail-closed): the seam wires exactly ONE primitive for this
-    // path. Any other arm is NOT wired end-to-end and would otherwise be run as
-    // RSA-PKCS#1 v1.5 by the seam, so reject it as NotSupported BEFORE resolving
+    // Mechanism gate (fail-closed): this path wires a fixed SET of primitives.
+    // Any arm outside it is NOT wired end-to-end and would otherwise be run as
+    // the seam's default primitive, so reject it as NotSupported BEFORE resolving
     // the card, touching the lease, or handing anything to the worker. Mechanism
     // support is public (PKCS#11 C_GetMechanismList), so surfacing it ahead of the
     // lease gate leaks nothing.
-    if (mechanism != allowedMechanism) {
+    if (std::find(allowedMechanisms.begin(), allowedMechanisms.end(), mechanism) == allowedMechanisms.end()) {
         reply.fail(CryptoOutcome::NotSupported);
         return;
     }
@@ -278,8 +279,11 @@ void Pkcs11Broker::signRaw(const std::string& reader, const std::string& certId,
                            const MechanismParams& params, std::span<const std::uint8_t> input, const Caller& caller,
                            Reply<CryptoOutcome, std::vector<std::uint8_t>> reply)
 {
-    runCrypto("SignRaw", Mechanism::RsaPkcs1Sign, m_deps.signRaw, mechanism, params, reader, certId, input, caller,
-              std::move(reply));
+    // The signRaw seam handles both RSA-PKCS#1 (CKM_RSA_PKCS) and pre-hashed
+    // ECDSA (CKM_ECDSA); it picks the family by the resolved key's algorithm, and
+    // both mechanisms ride MechParamsEmpty.
+    runCrypto("SignRaw", {Mechanism::RsaPkcs1Sign, Mechanism::EcdsaSign}, m_deps.signRaw, mechanism, params, reader,
+              certId, input, caller, std::move(reply));
 }
 
 void Pkcs11Broker::decrypt(const std::string& reader, const std::string& certId, Mechanism mechanism,
@@ -292,7 +296,7 @@ void Pkcs11Broker::decrypt(const std::string& reader, const std::string& certId,
     // confirmation primitive (only RequestSecret), so the knob was a verified
     // no-op — a misleading security toggle. It can return as a real control once
     // the prompter grows a confirm-only method (a 3-component addition).
-    runCrypto("Decrypt", Mechanism::RsaPkcs1Decrypt, m_deps.decrypt, mechanism, params, reader, certId, ciphertext,
+    runCrypto("Decrypt", {Mechanism::RsaPkcs1Decrypt}, m_deps.decrypt, mechanism, params, reader, certId, ciphertext,
               caller, std::move(reply));
 }
 

@@ -3,8 +3,10 @@
 #pragma once
 #include <LibreSCRS/Agent/operations/CardPluginRouting.h> // CandidateList
 #include <LibreSCRS/CancelToken.h>
+#include <LibreSCRS/Plugin/PluginTypes.h> // SignMechanism
 #include <LibreSCRS/Secure/String.h>
 #include <LibreSCRS/SmartCard/CardSession.h>
+#include <cstddef>
 #include <cstdint>
 #include <span>
 #include <string>
@@ -37,13 +39,20 @@ struct RawCryptoResult
     std::vector<std::uint8_t> bytes;                     // signature or plaintext on Ok
 };
 
-// Raw RSA PKCS#1 v1.5 SIGN over @p input. Routes certId -> (plugin, keyFID) off
+// Raw on-card SIGN over @p input. Routes certId -> (plugin, keyFID) off
 // the live @p session via selectSigningCandidate. The caller never supplies the
 // PIN: @p pin is the eSign secret RawCryptoFlow collected from the agent prompter
 // (PIN-as-consent), or null when the held channel is already PIN-verified for
 // this lease.
 //
-// TWO CARD FAMILIES, ONE CONSENT MODEL — self-dispatch on the resolving plugin:
+// MECHANISM FAMILY BY THE RESOLVED KEY'S ALGORITHM: the resolved
+// certificate's public key decides the family. An ECDSA key takes the
+// pre-hashed ECDSA path (@p input is the pre-computed digest; the plugin
+// signs it with no on-card hashing) with the same verify-then-sign
+// PIN-as-consent shape as the DigestInfo family below. Everything else —
+// including an unparseable certificate — keeps the RSA flow.
+//
+// THE RSA FAMILIES, ONE CONSENT MODEL — self-dispatch on the resolving plugin:
 //   * Hash-on-card SSCDs (NAM / IAS-ECC, pkcs15-backed) override doSign for
 //     SignMechanism::RSA_SHA256 over the RAW message and own the atomic
 //     verify + MSE(0x28) + PSO inside PKCS15Card::sign. The PIN is handed to the
@@ -96,5 +105,19 @@ struct RawCryptoResult
 // NotSupported (-> CKR_KEY_FUNCTION_NOT_PERMITTED) instead of a raw CardError.
 // Exposed for unit testing the pure DER predicate.
 [[nodiscard]] bool certKeyUsagePermitsDecrypt(std::span<const std::uint8_t> der);
+
+// True iff the X.509 certificate @p der advertises an ECDSA public key —
+// the signRaw mechanism-family criterion. Unparseable DER and every other
+// algorithm report false: the RSA flow stays the default and the card
+// remains the final authority. Exposed for unit testing the pure DER
+// predicate.
+[[nodiscard]] bool certPublicKeyIsEcdsa(std::span<const std::uint8_t> der);
+
+// The pre-hashed ECDSA sign mechanism whose canonical digest length matches
+// @p digestLength: <=32 -> ECDSA_SHA256, <=48 -> ECDSA_SHA384, longer ->
+// ECDSA_SHA512. The resolving plugin signs the bytes as-given (no on-card
+// hashing), so the value only names the digest family for the transport.
+// Exposed for unit testing the pure mapping.
+[[nodiscard]] LibreSCRS::Plugin::SignMechanism ecdsaMechanismForDigestLength(std::size_t digestLength) noexcept;
 
 } // namespace LibreSCRS::Agent::Operations

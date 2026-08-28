@@ -122,6 +122,27 @@ bool certKeyUsagePermitsDecrypt(std::span<const std::uint8_t> der)
     return false;
 }
 
+bool certPublicKeyIsEcdsa(std::span<const std::uint8_t> der)
+{
+    auto parsed = LibreSCRS::Certificate::ParsedCertificate::fromDer(der);
+    if (!parsed) {
+        return false; // unparseable -> the RSA flow stays the default
+    }
+    return parsed->publicKey().algorithm == LibreSCRS::Certificate::PublicKeyAlgorithm::ECDSA;
+}
+
+LibreSCRS::Plugin::SignMechanism ecdsaMechanismForDigestLength(std::size_t digestLength) noexcept
+{
+    using M = LibreSCRS::Plugin::SignMechanism;
+    if (digestLength <= 32) {
+        return M::ECDSA_SHA256;
+    }
+    if (digestLength <= 48) {
+        return M::ECDSA_SHA384;
+    }
+    return M::ECDSA_SHA512;
+}
+
 RawCryptoResult signRaw(const CandidateList& candidates, const std::string& certId, std::span<const std::uint8_t> input,
                         const LibreSCRS::Secure::String* pin, LibreSCRS::SmartCard::CardSession& session,
                         LibreSCRS::CancelToken token)
@@ -132,8 +153,31 @@ RawCryptoResult signRaw(const CandidateList& candidates, const std::string& cert
     if (!selection || !selection->cert.keyFID.has_value()) {
         return err(RawCryptoStatus::KeyNotFound);
     }
-    // Two card families, one consent model (the caller never supplies a PIN —
-    // it was collected by the agent prompter):
+    // Mechanism family by the RESOLVED KEY'S ALGORITHM (the certificate is
+    // the authority): an EC key takes the pre-hashed ECDSA path — both the
+    // hash-on-card probe and the DigestInfo fallback below are RSA-shaped.
+    // The PKCS#11 module hands the pre-computed digest for CKM_ECDSA, so
+    // @p input IS the hash; verify-then-sign runs back-to-back on the held
+    // channel exactly like the DigestInfo family.
+    if (certPublicKeyIsEcdsa(selection->cert.derBytes)) {
+        if (pin) {
+            if (const auto fail = verifyPinOnCard(*selection->plugin, session, *pin)) {
+                return err(*fail);
+            }
+        }
+        auto sr = selection->plugin->sign(session, *selection->cert.keyFID, input,
+                                          ecdsaMechanismForDigestLength(input.size()), token);
+        RawCryptoResult out;
+        out.status = mapSignOutcome(sr.outcome);
+        if (out.status == RawCryptoStatus::Ok) {
+            out.bytes = sr.signature;
+        } else if (out.status == RawCryptoStatus::NotSupported) {
+            log::warn("rawcrypto: signRaw resolved an EC key but the plugin has no ECDSA primitive");
+        }
+        return out;
+    }
+    // Two RSA card families, one consent model (the caller never supplies a
+    // PIN — it was collected by the agent prompter):
     //   * Hash-on-card SSCDs (NAM / IAS-ECC pkcs15) expose doSign(RSA_SHA256)
     //     over the RAW message and own the atomic verify + MSE(0x28) + PSO
     //     inside PKCS15Card::sign, so we hand them the PIN via the per-session
