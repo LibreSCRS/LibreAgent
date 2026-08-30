@@ -192,12 +192,43 @@ QVariant normalizeTslSources(const QVariant& raw)
     return rows;
 }
 
+/// `CscaSources` the same way — the country-signing twin of the function
+/// above, admitting the same two lawful encodings (an array of TWO-entry
+/// arrays, which is what this client itself emits on SetConfig, and an array
+/// of maps keyed uri/eager) and dropping anything matching neither. Two cells,
+/// not three: a country-signing source names anchors and never other sources,
+/// so there is no isLotl pivot to carry.
+QVariant normalizeCscaSources(const QVariant& raw)
+{
+    QVariantList rows;
+    for (const QVariant& entry : raw.toList()) {
+        if (entry.metaType().id() == QMetaType::QVariantMap) {
+            const QVariantMap fields = entry.toMap();
+            const QVariant uri = fields.value(QStringLiteral("uri"));
+            if (!uri.isValid()) {
+                continue;
+            }
+            rows.append(cscaSourceRow(uri.toString(), fields.value(QStringLiteral("eager")).toBool()));
+            continue;
+        }
+        const QVariantList cells = entry.toList();
+        if (cells.size() != 2) {
+            continue;
+        }
+        rows.append(cscaSourceRow(cells.at(0).toString(), cells.at(1).toBool()));
+    }
+    return rows;
+}
+
 /// One entry of the `config` reply arm in the canonical client vocabulary.
 QVariant configValueToVariant(const QString& key, const Wire::CborValue& value)
 {
     const QVariant generic = cborToVariant(value);
     if (key == kConfigTslSources) {
         return normalizeTslSources(generic);
+    }
+    if (key == kConfigCscaSources) {
+        return normalizeCscaSources(generic);
     }
     if (key == kConfigTsaUrls) {
         return generic.toStringList(); // `as` on the other wire; a CBOR array here
@@ -209,6 +240,11 @@ QVariant configValueToVariant(const QString& key, const Wire::CborValue& value)
 /// `marshalConfigValue`. Only reached for a `settable-config-key` — the
 /// grammar admits nothing else, and setConfig() refuses the rest before
 /// building a frame — so there is no unknown-key fallthrough here.
+///
+/// The trailing fallthrough is a STRINGIFY, not a refusal, so a settable key
+/// whose value is not a string and has no arm above crosses the wire as an
+/// empty text value and the caller is told the write succeeded. Every
+/// structured settable key needs its own arm for that reason.
 Wire::CborValue configValueToCbor(const QString& key, const QVariant& value)
 {
     if (key == kConfigTslSources) {
@@ -221,6 +257,18 @@ Wire::CborValue configValueToCbor(const QString& key, const QVariant& value)
             rows.push_back(Wire::CborValue(Wire::CborValue::Array{Wire::CborValue(cells.at(0).toString().toStdString()),
                                                                   Wire::CborValue(cells.at(1).toBool()),
                                                                   Wire::CborValue(cells.at(2).toBool())}));
+        }
+        return Wire::CborValue(std::move(rows));
+    }
+    if (key == kConfigCscaSources) {
+        Wire::CborValue::Array rows;
+        for (const QVariant& row : value.toList()) {
+            const QVariantList cells = row.toList();
+            if (cells.size() != 2) {
+                continue; // not a [uri, eager] row — see the API doc
+            }
+            rows.push_back(Wire::CborValue(Wire::CborValue::Array{Wire::CborValue(cells.at(0).toString().toStdString()),
+                                                                  Wire::CborValue(cells.at(1).toBool())}));
         }
         return Wire::CborValue(std::move(rows));
     }

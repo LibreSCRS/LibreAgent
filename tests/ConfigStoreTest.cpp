@@ -12,6 +12,7 @@
 #include <vector>
 
 using LibreSCRS::Agent::Config::ConfigStore;
+using LibreSCRS::Agent::Config::CscaSource;
 using LibreSCRS::Agent::Config::Mutability;
 using LibreSCRS::Agent::Config::TslSource;
 
@@ -302,15 +303,76 @@ TEST_F(ConfigStoreTest, TslSourcesRoundTrip)
     EXPECT_FALSE(reopened.tslSources()[1].isLotl);
 }
 
+// The country-signing anchor sources follow TslSource's file grammar exactly:
+// a SINGULAR key repeated once per source, fields pipe-delimited. What differs
+// is the field count -- `uri[|eager]`, with no isLotl equivalent, because
+// nothing in the CSCA world nests one source inside another.
+TEST_F(ConfigStoreTest, CscaSourcesLoadFromFile)
+{
+    writeConfig("CscaSource = https://pkd.example.test/anchors.ldif\n"
+                "CscaSource = https://masterlist.example.test/ml.der|eager\n"
+                "CscaSource = ftp://rejected.example.test/ml.der\n");
+    ConfigStore cfg(m_configFile, m_cacheRoot);
+    ASSERT_EQ(cfg.cscaSources().size(), 2u) << "only http(s) sources survive the load";
+    EXPECT_EQ(cfg.cscaSources()[0].uri, "https://pkd.example.test/anchors.ldif");
+    EXPECT_FALSE(cfg.cscaSources()[0].eager) << "eager is opt-in per source, never the default";
+    EXPECT_EQ(cfg.cscaSources()[1].uri, "https://masterlist.example.test/ml.der");
+    EXPECT_TRUE(cfg.cscaSources()[1].eager);
+}
+
+TEST_F(ConfigStoreTest, CscaSourcesRoundTrip)
+{
+    ConfigStore cfg(m_configFile, m_cacheRoot);
+    // Symmetric to TslSources: a non-http(s) entry rejects the whole write.
+    EXPECT_FALSE(cfg.setCscaSources({CscaSource{"ftp://bad", false}}).ok);
+    EXPECT_TRUE(cfg.cscaSources().empty());
+    EXPECT_TRUE(cfg.setCscaSources({CscaSource{"https://a.example.test/ml.der", true},
+                                    CscaSource{"https://b.example.test/anchors.ldif", false}})
+                    .ok);
+    ConfigStore reopened(m_configFile, m_cacheRoot);
+    ASSERT_EQ(reopened.cscaSources().size(), 2u) << "the write did not survive persist + reload";
+    EXPECT_EQ(reopened.cscaSources()[0].uri, "https://a.example.test/ml.der");
+    EXPECT_TRUE(reopened.cscaSources()[0].eager);
+    EXPECT_EQ(reopened.cscaSources()[1].uri, "https://b.example.test/anchors.ldif");
+    EXPECT_FALSE(reopened.cscaSources()[1].eager);
+}
+
+TEST_F(ConfigStoreTest, CscaCacheDirIsFileOnlyAndDerivedFromTheCacheRoot)
+{
+    ConfigStore cfg(m_configFile, m_cacheRoot);
+    EXPECT_EQ(cfg.cscaCacheDir(), (m_cacheRoot / "csca").string());
+    // Derived, never frozen: the same file under a different cache root derives
+    // that root's path (the rule SeedWritesOnlyTheKeysItOwns pins for the other
+    // two cache dirs).
+    ASSERT_TRUE(cfg.setDefaultReason("force a persist").ok);
+    EXPECT_EQ(readConfig().find("CscaCacheDir"), std::string::npos)
+        << "a derived cache path was frozen into the file:\n"
+        << readConfig();
+
+    // The ONLY way to choose it is the config file itself: it is FileOnly, so
+    // there is no typed setter for it at all and no D-Bus path can reach it.
+    const std::filesystem::path chosen = m_dir / "anchors";
+    writeConfig("CscaCacheDir = " + chosen.string() + "\n");
+    ConfigStore reopened(m_configFile, m_cacheRoot);
+    EXPECT_EQ(reopened.cscaCacheDir(), chosen.string());
+}
+
 TEST_F(ConfigStoreTest, MutabilityMetadata)
 {
     EXPECT_EQ(ConfigStore::mutability("DefaultLevel"), Mutability::DbusMutable);
     EXPECT_EQ(ConfigStore::mutability("DefaultReason"), Mutability::DbusMutable);
     EXPECT_EQ(ConfigStore::mutability("TsaUrls"), Mutability::DbusMutableTrust);
     EXPECT_EQ(ConfigStore::mutability("TslSources"), Mutability::DbusMutableTrust);
+    // The country-signing anchor sources are trust-tier settable, exactly like
+    // the trusted lists: both decide what a signature is validated AGAINST.
+    EXPECT_EQ(ConfigStore::mutability("CscaSources"), Mutability::DbusMutableTrust);
     EXPECT_EQ(ConfigStore::mutability("PluginDir"), Mutability::FileOnly);
     EXPECT_EQ(ConfigStore::mutability("TslCacheDir"), Mutability::FileOnly);
     EXPECT_EQ(ConfigStore::mutability("AiaCacheDir"), Mutability::FileOnly);
+    // The anchor cache is a writable path the agent unpacks downloaded material
+    // into: a wire-settable one would let any authorized client redirect those
+    // writes, so it may only ever be chosen by editing the config file.
+    EXPECT_EQ(ConfigStore::mutability("CscaCacheDir"), Mutability::FileOnly);
     EXPECT_EQ(ConfigStore::mutability("LastTsaUrl"), Mutability::ReadOnly);
     // PKCS#11 lease knobs are FileOnly security policy (not D-Bus mutable).
     EXPECT_EQ(ConfigStore::mutability("Pkcs11IdleTimeoutSecs"), Mutability::FileOnly);
@@ -319,7 +381,7 @@ TEST_F(ConfigStoreTest, MutabilityMetadata)
     // prompter has no confirm-only primitive to back it.
     EXPECT_FALSE(ConfigStore::mutability("Pkcs11DecryptConfirm").has_value());
     EXPECT_FALSE(ConfigStore::mutability("Nope").has_value());
-    EXPECT_EQ(ConfigStore::keys().size(), 11u);
+    EXPECT_EQ(ConfigStore::keys().size(), 13u);
 }
 
 TEST_F(ConfigStoreTest, Pkcs11LeaseKnobsDefaultsAndRoundTrip)

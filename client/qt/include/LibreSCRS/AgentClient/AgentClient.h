@@ -124,14 +124,18 @@ public:
     ///        a PIN/CAN/MRZ is never configuration and never appears here.
     ///
     ///        Keys use the wire spellings: `"DefaultLevel"`, `"TsaUrls"`,
-    ///        `"LastTsaUrl"`, `"TslSources"`, `"TslCacheDir"`,
-    ///        `"AiaCacheDir"`, `"DefaultReason"`, `"DefaultLocation"`,
-    ///        `"PluginDir"`. Values are `QString` except `"TsaUrls"`
-    ///        (`QStringList`) and `"TslSources"`, which is a `QVariantList`
-    ///        of three-entry `QVariantList`s —
-    ///        `[QString url, bool isLotl, bool eager]`. That one shape is a
-    ///        CLIENT guarantee, identical on every transport, even though the
-    ///        wires carry it differently.
+    ///        `"LastTsaUrl"`, `"TslSources"`, `"CscaSources"`,
+    ///        `"TslCacheDir"`, `"AiaCacheDir"`, `"DefaultReason"`,
+    ///        `"DefaultLocation"`, `"PluginDir"`. Values are `QString` except
+    ///        `"TsaUrls"` (`QStringList`) and the two source lists, each a
+    ///        `QVariantList` of fixed-width `QVariantList` rows:
+    ///          - `"TslSources"`  three entries,
+    ///            `[QString url, bool isLotl, bool eager]`;
+    ///          - `"CscaSources"` TWO entries, `[QString uri, bool eager]` —
+    ///            no `isLotl` twin, because a country-signing source names
+    ///            anchors and never further sources.
+    ///        Those shapes are a CLIENT guarantee, identical on every
+    ///        transport, even though the wires carry them differently.
     ///
     ///        Cached per connection and refreshed before `configChanged()`
     ///        announces a key, so reading this from that signal's slot always
@@ -144,12 +148,12 @@ public:
     /// @brief Write one agent setting (`Config1.SetValue` / socket
     ///        `SetConfig`). Synchronous and bounded; disengaged on success.
     ///
-    ///        Only five keys are writable — `"DefaultLevel"`,
+    ///        Only six keys are writable — `"DefaultLevel"`,
     ///        `"DefaultReason"`, `"DefaultLocation"`, `"TsaUrls"`,
-    ///        `"TslSources"`. The rest are read-only by design (a
-    ///        wire-settable `"PluginDir"` would be a code-execution vector,
-    ///        and `"LastTsaUrl"` is agent-internal state), and writing one
-    ///        answers `SyncError::ReadOnlyConfig`.
+    ///        `"TslSources"`, `"CscaSources"`. The rest are read-only by
+    ///        design (a wire-settable `"PluginDir"` would be a code-execution
+    ///        vector, and `"LastTsaUrl"` is agent-internal state), and writing
+    ///        one answers `SyncError::ReadOnlyConfig`.
     ///
     ///        A returned error is always NAMED, so a caller can act on WHICH
     ///        refusal it was:
@@ -158,8 +162,9 @@ public:
     ///          - `InvalidConfigValue` the agent rejected @p value;
     ///          - `NotAuthorized`      the user declined, or policy denied,
     ///                                 the authorization this key needs (the
-    ///                                 trust-tier keys `"TsaUrls"` and
-    ///                                 `"TslSources"` prompt for it);
+    ///                                 trust-tier keys `"TsaUrls"`,
+    ///                                 `"TslSources"` and `"CscaSources"`
+    ///                                 prompt for it);
     ///          - `CommunicationError` the write never REACHED the agent
     ///                                 (unreachable, timed out, no reply) —
     ///                                 the one case worth retrying, and the
@@ -170,11 +175,12 @@ public:
     ///
     /// @param key Wire spelling of the setting, exactly as `configSnapshot()`
     ///        above lists it. A key outside that vocabulary answers
-    ///        `UnknownConfigKey` and one outside the five writable ones
+    ///        `UnknownConfigKey` and one outside the six writable ones
     ///        answers `ReadOnlyConfig`; neither writes anything.
     /// @param value Must match the key's type as documented on
-    ///        `configSnapshot()` above; a `"TslSources"` row that is not a
-    ///        three-entry list is dropped from the write.
+    ///        `configSnapshot()` above; a row of the wrong width is dropped
+    ///        from the write (a `"TslSources"` row that is not three entries,
+    ///        a `"CscaSources"` row that is not two).
     [[nodiscard]] std::optional<SyncError> setConfigValue(const QString& key, const QVariant& value);
 
     /// @brief Restore one setting to the agent's built-in default

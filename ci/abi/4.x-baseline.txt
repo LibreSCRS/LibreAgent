@@ -41,6 +41,8 @@ LibreSCRS::Agent::Config::ConfigStore::ConfigStore(std::filesystem::__cxx11::pat
 LibreSCRS::Agent::Config::ConfigStore::addChangeObserver(std::function<void (std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > const&)>)
 LibreSCRS::Agent::Config::ConfigStore::aiaCacheDir[abi:cxx11]() const
 LibreSCRS::Agent::Config::ConfigStore::applyDefaults()
+LibreSCRS::Agent::Config::ConfigStore::cscaCacheDir[abi:cxx11]() const
+LibreSCRS::Agent::Config::ConfigStore::cscaSources() const
 LibreSCRS::Agent::Config::ConfigStore::defaultLevel[abi:cxx11]() const
 LibreSCRS::Agent::Config::ConfigStore::defaultLocation[abi:cxx11]() const
 LibreSCRS::Agent::Config::ConfigStore::defaultReason[abi:cxx11]() const
@@ -56,6 +58,7 @@ LibreSCRS::Agent::Config::ConfigStore::pluginDir[abi:cxx11]() const
 LibreSCRS::Agent::Config::ConfigStore::recordLastTsaUrl(std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> >)
 LibreSCRS::Agent::Config::ConfigStore::removeChangeObserver(LibreSCRS::Agent::Config::ConfigStore::ObserverId)
 LibreSCRS::Agent::Config::ConfigStore::resetKey(std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > const&, bool)
+LibreSCRS::Agent::Config::ConfigStore::setCscaSources(std::vector<LibreSCRS::Agent::Config::CscaSource, std::allocator<LibreSCRS::Agent::Config::CscaSource> >)
 LibreSCRS::Agent::Config::ConfigStore::setDefaultLevel(std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> >)
 LibreSCRS::Agent::Config::ConfigStore::setDefaultLocation(std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> >)
 LibreSCRS::Agent::Config::ConfigStore::setDefaultReason(std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> >)

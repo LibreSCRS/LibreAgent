@@ -423,9 +423,9 @@ TEST(SocketIntegration, AgentVersionFromHelloAckAndEmptyOnceGone)
 //     `reset-config` is deliberately different: its argument is the FULL
 //     `config-key` set, so a read-only key IS encodable there and the agent
 //     is the one that names the refusal.
-//   * a config value is typed `any`, not D-Bus's declared `a(sbb)`, so the
-//     canonical TslSources row shape is the CLIENT's guarantee rather than
-//     the wire's.
+//   * a config value is typed `any`, not D-Bus's declared `a(sbb)` / `a(sb)`,
+//     so the canonical TslSources / CscaSources row shapes are the CLIENT's
+//     guarantee rather than the wire's.
 
 TEST(SocketIntegration, ConfigSnapshotCarriesTypedEntriesFromGetConfig)
 {
@@ -455,27 +455,37 @@ TEST(SocketIntegration, ConfigSnapshotCarriesTypedEntriesFromGetConfig)
     EXPECT_EQ(h.getConfigCount(), 1);
 }
 
-// The `any`-typed value, served in the OTHER lawful encoding this wire admits
-// (an array of maps rather than of three-entry arrays). The client normalizes
+// The `any`-typed values, served in the OTHER lawful encoding this wire admits
+// (arrays of maps rather than of fixed-width arrays). The client normalizes
 // both onto one shape — the whole reason `configSnapshot()` can promise a
-// consumer anything at all here.
-TEST(SocketIntegration, TslSourcesNormalizeFromTheMapEncodingToo)
+// consumer anything at all here. Both struct-array keys in one case: they are
+// the same claim about the same normalization step, and a case that covered
+// only one would let the other's arm be added without it.
+TEST(SocketIntegration, StructuredSourcesNormalizeFromTheMapEncodingToo)
 {
     FakeSocketAgent::Config cfg;
     cfg.capabilities = Cap::Pki;
-    cfg.tslSourcesAsMaps = true;
+    cfg.structuredSourcesAsMaps = true;
     SocketHarness h(cfg);
 
     auto client = makeClient(h);
     ASSERT_TRUE(client->isAvailable());
+    const QVariantMap config = client->configSnapshot();
 
-    const QVariantList tslSources = client->configSnapshot().value(QStringLiteral("TslSources")).toList();
+    const QVariantList tslSources = config.value(QStringLiteral("TslSources")).toList();
     ASSERT_EQ(tslSources.size(), 1);
-    const QVariantList row = tslSources.first().toList();
-    ASSERT_EQ(row.size(), 3) << "the map encoding must normalize to the SAME three-entry row";
-    EXPECT_EQ(row.at(0).toString(), QStringLiteral("https://example.invalid/tl.xml"));
-    EXPECT_FALSE(row.at(1).toBool());
-    EXPECT_TRUE(row.at(2).toBool());
+    const QVariantList tslRow = tslSources.first().toList();
+    ASSERT_EQ(tslRow.size(), 3) << "the map encoding must normalize to the SAME three-entry row";
+    EXPECT_EQ(tslRow.at(0).toString(), QStringLiteral("https://example.invalid/tl.xml"));
+    EXPECT_FALSE(tslRow.at(1).toBool());
+    EXPECT_TRUE(tslRow.at(2).toBool());
+
+    const QVariantList cscaSources = config.value(QStringLiteral("CscaSources")).toList();
+    ASSERT_EQ(cscaSources.size(), 1);
+    const QVariantList cscaRow = cscaSources.first().toList();
+    ASSERT_EQ(cscaRow.size(), 2) << "the map encoding must normalize to the SAME two-entry row";
+    EXPECT_EQ(cscaRow.at(0).toString(), QStringLiteral("https://example.invalid/csca.ldif"));
+    EXPECT_TRUE(cscaRow.at(1).toBool());
 }
 
 TEST(SocketIntegration, SetConfigRoundTripsAndSignalsConfigChanged)

@@ -44,12 +44,12 @@ Wire::PreReadAuth preAuthFromToken(const QString& token)
 }
 
 /// One scripted config value -> the CBOR the `config` reply arm carries.
-/// `TslSources` is the interesting one: the socket grammar types every config
-/// value as bare `any` (unlike D-Bus's declared `a(sbb)`), so this fake can —
-/// and, under Config::tslSourcesAsMaps, does — serve the SAME rows in two
-/// lawful encodings, which is what makes the client's normalization a real
-/// claim rather than a pass-through.
-Wire::CborValue configValueToCbor(const QString& key, const QVariant& value, bool tslSourcesAsMaps)
+/// The two struct-array keys are the interesting ones: the socket grammar
+/// types every config value as bare `any` (unlike D-Bus's declared `a(sbb)` /
+/// `a(sb)`), so this fake can — and, under Config::structuredSourcesAsMaps,
+/// does — serve the SAME rows in two lawful encodings, which is what makes the
+/// client's normalization a real claim rather than a pass-through.
+Wire::CborValue configValueToCbor(const QString& key, const QVariant& value, bool structuredSourcesAsMaps)
 {
     if (key == kConfigTslSources) {
         Wire::CborValue::Array rows;
@@ -61,7 +61,7 @@ Wire::CborValue configValueToCbor(const QString& key, const QVariant& value, boo
             const std::string url = cells.at(0).toString().toStdString();
             const bool isLotl = cells.at(1).toBool();
             const bool eager = cells.at(2).toBool();
-            if (tslSourcesAsMaps) {
+            if (structuredSourcesAsMaps) {
                 Wire::CborValue::Map entry;
                 entry.emplace("url", Wire::CborValue(url));
                 entry.emplace("lotl", Wire::CborValue(isLotl));
@@ -71,6 +71,26 @@ Wire::CborValue configValueToCbor(const QString& key, const QVariant& value, boo
             }
             rows.push_back(Wire::CborValue(
                 Wire::CborValue::Array{Wire::CborValue(url), Wire::CborValue(isLotl), Wire::CborValue(eager)}));
+        }
+        return Wire::CborValue(std::move(rows));
+    }
+    if (key == kConfigCscaSources) {
+        Wire::CborValue::Array rows;
+        for (const QVariant& row : value.toList()) {
+            const QVariantList cells = row.toList();
+            if (cells.size() != 2) {
+                continue;
+            }
+            const std::string uri = cells.at(0).toString().toStdString();
+            const bool eager = cells.at(1).toBool();
+            if (structuredSourcesAsMaps) {
+                Wire::CborValue::Map entry;
+                entry.emplace("uri", Wire::CborValue(uri));
+                entry.emplace("eager", Wire::CborValue(eager));
+                rows.push_back(Wire::CborValue(std::move(entry)));
+                continue;
+            }
+            rows.push_back(Wire::CborValue(Wire::CborValue::Array{Wire::CborValue(uri), Wire::CborValue(eager)}));
         }
         return Wire::CborValue(std::move(rows));
     }
@@ -99,6 +119,21 @@ QVariant cborConfigValueToVariant(const QString& key, const Wire::CborValue& val
                 const std::string* url = (*cells)[0].asText();
                 rows.append(tslSourceRow(url != nullptr ? QString::fromStdString(*url) : QString(),
                                          (*cells)[1].asBool().value_or(false), (*cells)[2].asBool().value_or(false)));
+            }
+        }
+        return rows;
+    }
+    if (key == kConfigCscaSources) {
+        QVariantList rows;
+        if (const auto* array = value.asArray()) {
+            for (const Wire::CborValue& row : *array) {
+                const auto* cells = row.asArray();
+                if (cells == nullptr || cells->size() != 2) {
+                    continue;
+                }
+                const std::string* uri = (*cells)[0].asText();
+                rows.append(cscaSourceRow(uri != nullptr ? QString::fromStdString(*uri) : QString(),
+                                          (*cells)[1].asBool().value_or(false)));
             }
         }
         return rows;
@@ -954,7 +989,7 @@ void FakeSocketAgent::handleRequest(Connection* connection, Wire::RequestEnvelop
         Wire::ConfigReply reply;
         for (auto it = m_config.config.constBegin(); it != m_config.config.constEnd(); ++it) {
             reply.entries.emplace(it.key().toStdString(),
-                                  configValueToCbor(it.key(), it.value(), m_config.tslSourcesAsMaps));
+                                  configValueToCbor(it.key(), it.value(), m_config.structuredSourcesAsMaps));
         }
         sendCbor(connection, Wire::makeReply(req, reply));
         return;

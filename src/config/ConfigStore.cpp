@@ -29,6 +29,8 @@ constexpr const char* kLastTsaUrl = "LastTsaUrl";
 constexpr const char* kTslSources = "TslSources";
 constexpr const char* kTslCacheDir = "TslCacheDir";
 constexpr const char* kAiaCacheDir = "AiaCacheDir";
+constexpr const char* kCscaSources = "CscaSources";
+constexpr const char* kCscaCacheDir = "CscaCacheDir";
 constexpr const char* kDefaultReason = "DefaultReason";
 constexpr const char* kDefaultLocation = "DefaultLocation";
 constexpr const char* kPluginDir = "PluginDir";
@@ -53,6 +55,9 @@ constexpr const char* kErrInvalidValue = "org.librescrs.Agent.Error.InvalidConfi
 // resetKey() cannot drift.
 constexpr const char* kTslSubdir = "tsl";
 constexpr const char* kAiaSubdir = "aia";
+// "csca" = the ICAO Country Signing CA anchor cache (passport SOD validation),
+// a different trust world from the ETSI lists above and so a different dir.
+constexpr const char* kCscaSubdir = "csca";
 
 // First-run seed (see seedFirstRunDefaults below). Public timestamp authorities
 // an installation can use out of the box; the first entry is the one the engine
@@ -186,6 +191,8 @@ void ConfigStore::applyDefaults()
     m_tslSources.clear();
     m_tslCacheDir = (m_cacheRoot / kTslSubdir).string();
     m_aiaCacheDir = (m_cacheRoot / kAiaSubdir).string();
+    m_cscaSources.clear();
+    m_cscaCacheDir = (m_cacheRoot / kCscaSubdir).string();
     m_defaultReason.clear();
     m_defaultLocation.clear();
     m_pluginDir.clear(); // empty => consumer uses the compiled default plugin dir
@@ -204,11 +211,13 @@ void ConfigStore::loadFromFile()
         log::warnf("config: cannot open {}; using defaults", m_configFile.string());
         return;
     }
-    // List keys (TsaUrl/TslSource) accumulate across repeated lines. Clear them
-    // here so the file fully REPLACES (never appends to) whatever applyDefaults
-    // seeded — correct even if a future default list becomes non-empty.
+    // List keys (TsaUrl/TslSource/CscaSource) accumulate across repeated lines.
+    // Clear them here so the file fully REPLACES (never appends to) whatever
+    // applyDefaults seeded — correct even if a future default list becomes
+    // non-empty.
     m_tsaUrls.clear();
     m_tslSources.clear();
+    m_cscaSources.clear();
     std::string line;
     while (std::getline(in, line)) {
         const std::string trimmed = trim(line);
@@ -252,6 +261,24 @@ void ConfigStore::loadFromFile()
             if (isHttpUrl(src.url)) {
                 m_tslSources.push_back(std::move(src));
             }
+        } else if (key == "CscaSource") { // singular, repeated: uri[|eager]
+            // Two fields, not three: there is no isLotl analogue here, because a
+            // country-signing source names anchors and never other sources.
+            std::stringstream ss(value);
+            std::string field;
+            CscaSource src;
+            bool first = true;
+            while (std::getline(ss, field, '|')) {
+                if (first) {
+                    src.uri = field;
+                    first = false;
+                } else if (field == "eager") {
+                    src.eager = true;
+                }
+            }
+            if (isHttpUrl(src.uri)) {
+                m_cscaSources.push_back(std::move(src));
+            }
         } else if (key == kTslCacheDir) {
             if (!value.empty()) {
                 m_tslCacheDir = value;
@@ -259,6 +286,10 @@ void ConfigStore::loadFromFile()
         } else if (key == kAiaCacheDir) {
             if (!value.empty()) {
                 m_aiaCacheDir = value;
+            }
+        } else if (key == kCscaCacheDir) {
+            if (!value.empty()) {
+                m_cscaCacheDir = value;
             }
         } else if (key == kDefaultReason) {
             m_defaultReason = value;
@@ -351,11 +382,21 @@ void ConfigStore::persist()
             }
             out << '\n';
         }
+        for (const auto& s : m_cscaSources) {
+            out << "CscaSource = " << s.uri;
+            if (s.eager) {
+                out << "|eager";
+            }
+            out << '\n';
+        }
         if (m_tslCacheDir != (m_cacheRoot / kTslSubdir).string()) {
             out << kTslCacheDir << " = " << m_tslCacheDir << '\n';
         }
         if (m_aiaCacheDir != (m_cacheRoot / kAiaSubdir).string()) {
             out << kAiaCacheDir << " = " << m_aiaCacheDir << '\n';
+        }
+        if (m_cscaCacheDir != (m_cacheRoot / kCscaSubdir).string()) {
+            out << kCscaCacheDir << " = " << m_cscaCacheDir << '\n';
         }
         if (!m_defaultReason.empty()) {
             out << kDefaultReason << " = " << m_defaultReason << '\n';
@@ -432,6 +473,16 @@ std::string ConfigStore::aiaCacheDir() const
 {
     std::lock_guard lk(m_mutex);
     return m_aiaCacheDir;
+}
+std::vector<CscaSource> ConfigStore::cscaSources() const
+{
+    std::lock_guard lk(m_mutex);
+    return m_cscaSources;
+}
+std::string ConfigStore::cscaCacheDir() const
+{
+    std::lock_guard lk(m_mutex);
+    return m_cscaCacheDir;
 }
 std::string ConfigStore::defaultReason() const
 {
@@ -510,6 +561,22 @@ ConfigStore::SetResult ConfigStore::setTslSources(std::vector<TslSource> sources
     return SetResult{true, {}, {}};
 }
 
+ConfigStore::SetResult ConfigStore::setCscaSources(std::vector<CscaSource> sources)
+{
+    for (const auto& s : sources) {
+        if (!isHttpUrl(s.uri)) {
+            return SetResult{false, kErrInvalidValue, "CscaSources entries must be http(s) URLs"};
+        }
+    }
+    {
+        std::lock_guard lk(m_mutex);
+        m_cscaSources = std::move(sources);
+        persist();
+    }
+    fireChanged(kCscaSources);
+    return SetResult{true, {}, {}};
+}
+
 ConfigStore::SetResult ConfigStore::setDefaultReason(std::string reason)
 {
     {
@@ -550,6 +617,8 @@ ConfigStore::SetResult ConfigStore::resetKey(const std::string& key, bool fromDb
             m_tsaUrls.clear();
         } else if (key == kTslSources) {
             m_tslSources.clear();
+        } else if (key == kCscaSources) {
+            m_cscaSources.clear();
         } else if (key == kDefaultReason) {
             m_defaultReason.clear();
         } else if (key == kDefaultLocation) {
@@ -558,6 +627,8 @@ ConfigStore::SetResult ConfigStore::resetKey(const std::string& key, bool fromDb
             m_tslCacheDir = (m_cacheRoot / kTslSubdir).string();
         } else if (key == kAiaCacheDir) {
             m_aiaCacheDir = (m_cacheRoot / kAiaSubdir).string();
+        } else if (key == kCscaCacheDir) {
+            m_cscaCacheDir = (m_cacheRoot / kCscaSubdir).string();
         } else if (key == kPluginDir) {
             m_pluginDir.clear();
         } else if (key == kPkcs11IdleTimeoutSecs) {
@@ -591,8 +662,8 @@ void ConfigStore::recordLastTsaUrl(std::string url)
 const std::vector<std::string>& ConfigStore::keys()
 {
     static const std::vector<std::string> k{
-        kDefaultLevel,         kTsaUrls,       kLastTsaUrl,      kTslSources, kTslCacheDir,
-        kAiaCacheDir,          kDefaultReason, kDefaultLocation, kPluginDir,  kPkcs11IdleTimeoutSecs,
+        kDefaultLevel,         kTsaUrls,      kLastTsaUrl,    kTslSources,      kTslCacheDir, kAiaCacheDir,
+        kCscaSources,          kCscaCacheDir, kDefaultReason, kDefaultLocation, kPluginDir,   kPkcs11IdleTimeoutSecs,
         kPkcs11MaxLifetimeSecs};
     return k;
 }
@@ -602,11 +673,11 @@ std::optional<Mutability> ConfigStore::mutability(const std::string& key)
     if (key == kDefaultLevel || key == kDefaultReason || key == kDefaultLocation) {
         return Mutability::DbusMutable;
     }
-    if (key == kTsaUrls || key == kTslSources) {
+    if (key == kTsaUrls || key == kTslSources || key == kCscaSources) {
         return Mutability::DbusMutableTrust;
     }
-    if (key == kTslCacheDir || key == kAiaCacheDir || key == kPluginDir || key == kPkcs11IdleTimeoutSecs ||
-        key == kPkcs11MaxLifetimeSecs) {
+    if (key == kTslCacheDir || key == kAiaCacheDir || key == kCscaCacheDir || key == kPluginDir ||
+        key == kPkcs11IdleTimeoutSecs || key == kPkcs11MaxLifetimeSecs) {
         return Mutability::FileOnly;
     }
     if (key == kLastTsaUrl) {

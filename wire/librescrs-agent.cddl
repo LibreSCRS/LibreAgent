@@ -193,8 +193,13 @@ visual-sig-opts = { page: uint, x: float64, y: float64, width: float64, height: 
 ; Config1 is a TYPED property set. Only a SUBSET is settable over the wire;
 ; TslCacheDir/AiaCacheDir/PluginDir are file-only (a wire-settable PluginDir is a
 ; dlopen code-exec vector) and LastTsaUrl is read-only agent state.
+;
+; The agent's CscaCacheDir is file-only as well, and unlike those three it is not
+; on this wire AT ALL -- no client reads or resets it, so it has no config-key
+; spelling here. The PKCS#11 lease knobs are absent for the same reason: this
+; group is the wire contract, not an inventory of the agent's config file.
 settable-config-key = "DefaultLevel" / "DefaultReason" / "DefaultLocation" /   ; low tier (configure)
-                      "TsaUrls" / "TslSources"                                 ; trust tier (configure.trust)
+                      "TsaUrls" / "TslSources" / "CscaSources"                 ; trust tier (configure.trust)
 config-key = settable-config-key / "LastTsaUrl" / "TslCacheDir" / "AiaCacheDir" / "PluginDir"
 
 ; ---- reply (agent -> client, correlated by req) ----

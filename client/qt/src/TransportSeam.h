@@ -293,8 +293,9 @@ public:
     // ---- agent configuration (Config1) ---------------------------------------
     /// The agent's Config1 property set in the canonical client vocabulary
     /// (see `AgentClient::configSnapshot()` for the key/value contract this
-    /// forwards verbatim, including the `[url, isLotl, eager]` TslSources
-    /// row every implementation must produce out of its own wire shape).
+    /// forwards verbatim, including the two fixed-width source rows every
+    /// implementation must produce out of its own wire shape: TslSources'
+    /// `[url, isLotl, eager]` and CscaSources' `[uri, eager]`).
     ///
     /// NOT const, unlike `features()`/`agentVersion()` above, and for the
     /// same reason `appearanceFont()` is not: this one is fetched LAZILY, on

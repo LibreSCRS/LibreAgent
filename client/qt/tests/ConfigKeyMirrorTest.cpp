@@ -62,18 +62,19 @@ QSet<QString> settableKeysFromManifest()
     return keys;
 }
 
-// Every key spelling this build NAMES: the settable five plus the read-only
+// Every key spelling this build NAMES: the settable six plus the read-only
 // four, referenced by symbol rather than retyped as string literals, so a
 // renamed constant fails this TU to compile instead of silently dropping out
 // of the probe set. isSettableConfigKey() has no key spelling to accept
-// besides these nine, so a surplus can only ever be one of them wrongly
+// besides these ten, so a surplus can only ever be one of them wrongly
 // admitted -- this is the candidate pool the surplus direction probes.
 QSet<QString> allKeysThisBuildNames()
 {
     return {
         QString(kConfigDefaultLevel), QString(kConfigDefaultReason), QString(kConfigDefaultLocation),
-        QString(kConfigTsaUrls),      QString(kConfigTslSources),    QString(kConfigLastTsaUrl),
-        QString(kConfigTslCacheDir),  QString(kConfigAiaCacheDir),   QString(kConfigPluginDir),
+        QString(kConfigTsaUrls),      QString(kConfigTslSources),    QString(kConfigCscaSources),
+        QString(kConfigLastTsaUrl),   QString(kConfigTslCacheDir),   QString(kConfigAiaCacheDir),
+        QString(kConfigPluginDir),
     };
 }
 

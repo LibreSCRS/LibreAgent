@@ -959,10 +959,15 @@ namespace {
 
 /// A SetValue in-arg back into the canonical client-side shape this fake
 /// stores and later re-serves through its typed properties — the inverse of
-/// Config1Adaptor::tslSources() below, and the D-Bus twin of the socket
-/// fake's own cborConfigValueToVariant. Storing the raw `v` payload instead
-/// would keep an a(sbb) QDBusArgument in the map, which the property getter
-/// cannot read back and no test could compare against.
+/// Config1Adaptor::tslSources() / ::cscaSources() below, and the D-Bus twin of
+/// the socket fake's own cborConfigValueToVariant. Storing the raw `v` payload
+/// instead would keep an a(sbb) / a(sb) QDBusArgument in the map, which the
+/// property getter cannot read back and no test could compare against.
+///
+/// Every structured key needs an arm here for the same reason the transport
+/// does: without one the fake stringifies the value, and then the integration
+/// suites measure the client against a fake that cannot round-trip what a real
+/// agent round-trips.
 QVariant configValueFromVariant(const QString& key, const QVariant& value)
 {
     if (key == kConfigTslSources) {
@@ -974,6 +979,18 @@ QVariant configValueFromVariant(const QString& key, const QVariant& value)
         rows.reserve(wire.size());
         for (const LibreSCRS::AgentClient::TslSourceWire& source : std::as_const(wire)) {
             rows.append(tslSourceRow(source.url, source.isLotl, source.eager));
+        }
+        return rows;
+    }
+    if (key == kConfigCscaSources) {
+        LibreSCRS::AgentClient::CscaSourcesWire wire;
+        if (value.metaType().id() == qMetaTypeId<QDBusArgument>()) {
+            value.value<QDBusArgument>() >> wire;
+        }
+        QVariantList rows;
+        rows.reserve(wire.size());
+        for (const LibreSCRS::AgentClient::CscaSourceWire& source : std::as_const(wire)) {
+            rows.append(cscaSourceRow(source.uri, source.eager));
         }
         return rows;
     }
@@ -1015,6 +1032,24 @@ LibreSCRS::AgentClient::TslSourcesWire Config1Adaptor::tslSources() const
         }
         wire.append(
             LibreSCRS::AgentClient::TslSourceWire{cells.at(0).toString(), cells.at(1).toBool(), cells.at(2).toBool()});
+    }
+    return wire;
+}
+LibreSCRS::AgentClient::CscaSourcesWire Config1Adaptor::cscaSources() const
+{
+    // Same round trip as tslSources() above, one cell narrower: the scripted
+    // rows are canonical TWO-entry lists, turned back here into the property's
+    // real (sb) wire struct so the client demarshals the shape a production
+    // agent serves.
+    LibreSCRS::AgentClient::CscaSourcesWire wire;
+    const QVariantList rows = m_agent->configValue(QString(kConfigCscaSources)).toList();
+    wire.reserve(rows.size());
+    for (const QVariant& row : rows) {
+        const QVariantList cells = row.toList();
+        if (cells.size() != 2) {
+            continue;
+        }
+        wire.append(LibreSCRS::AgentClient::CscaSourceWire{cells.at(0).toString(), cells.at(1).toBool()});
     }
     return wire;
 }

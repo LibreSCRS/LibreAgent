@@ -11,9 +11,9 @@
 // shape below IS the client-side promise (`AgentClient::configSnapshot()`
 // hands out one map whichever transport produced it), so a parity scenario
 // scripts this map once and each fake re-encodes it into its own wire form —
-// a typed `a(sbb)` property array on D-Bus, a CBOR value the grammar types as
-// bare `any` on the socket. Two default maps, one per fake, would let the
-// thing under test be scripted differently on each side of the comparison.
+// a typed `a(sbb)` / `a(sb)` property array on D-Bus, a CBOR value the grammar
+// types as bare `any` on the socket. Two default maps, one per fake, would let
+// the thing under test be scripted differently on each side of the comparison.
 #include "ConfigKeys.h"
 
 #include <QString>
@@ -24,9 +24,10 @@
 
 namespace LibreSCRS::AgentClient::Fakes {
 
-/// @brief The nine Config1 properties with plausible values, keyed by the
+/// @brief The ten Config1 properties with plausible values, keyed by the
 ///        wire spellings and valued in the canonical client-side shape
-///        (`TslSources` as three-entry `[url, isLotl, eager]` lists).
+///        (`TslSources` as three-entry `[url, isLotl, eager]` lists,
+///        `CscaSources` as TWO-entry `[uri, eager]` ones).
 [[nodiscard]] inline QVariantMap defaultAgentConfig()
 {
     return QVariantMap{
@@ -35,6 +36,8 @@ namespace LibreSCRS::AgentClient::Fakes {
         {QString(kConfigLastTsaUrl), QStringLiteral("https://tsa.example.invalid/tsr")},
         {QString(kConfigTslSources),
          QVariantList{tslSourceRow(QStringLiteral("https://example.invalid/tl.xml"), false, true)}},
+        {QString(kConfigCscaSources),
+         QVariantList{cscaSourceRow(QStringLiteral("https://example.invalid/csca.ldif"), true)}},
         {QString(kConfigTslCacheDir), QStringLiteral("/var/cache/librescrs/tsl")},
         {QString(kConfigAiaCacheDir), QStringLiteral("/var/cache/librescrs/aia")},
         {QString(kConfigDefaultReason), QStringLiteral("Approval")},

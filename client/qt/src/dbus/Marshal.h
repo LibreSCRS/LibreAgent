@@ -151,10 +151,10 @@ using CredentialRecordsWire = QList<QVariantMap>;
 /// One `Config1.TslSources` entry — the `(sbb)` struct of that property's
 /// `a(sbb)` type: the trusted-list URL, whether it is a List-of-Trusted-Lists
 /// pivot rather than a leaf list, and whether the agent fetches it eagerly at
-/// startup. The ONLY Config1 property whose D-Bus type is not `s` or `as`,
-/// hence the only one needing a registered metatype in both directions (the
-/// property READ demarshals it out of the GetAll variant; SetValue marshals
-/// it back).
+/// startup. One of the two Config1 properties whose D-Bus type is not `s` or
+/// `as` (CscaSources below is the other), hence one of the two needing a
+/// registered metatype in both directions (the property READ demarshals it out
+/// of the GetAll variant; SetValue marshals it back).
 struct TslSourceWire
 {
     QString url;
@@ -165,6 +165,27 @@ using TslSourcesWire = QList<TslSourceWire>;
 
 QDBusArgument& operator<<(QDBusArgument& arg, const TslSourceWire& s);
 const QDBusArgument& operator>>(const QDBusArgument& arg, TslSourceWire& s);
+
+/// One `Config1.CscaSources` entry — the `(sb)` struct of that property's
+/// `a(sb)` type: where a set of country-signing trust anchors is fetched from,
+/// and whether the agent fetches it eagerly at startup rather than lazily at
+/// first use.
+///
+/// TWO fields, deliberately not three. TslSourceWire above carries isLotl
+/// because the trusted-list world has a list-of-lists: one URL can name
+/// further lists to follow. Country-signing anchors have no such indirection —
+/// a source names anchors, never other sources — so there is no third field to
+/// carry, and adding one for symmetry with the struct above would put a cell
+/// on the wire that describes nothing.
+struct CscaSourceWire
+{
+    QString uri;
+    bool eager = false;
+};
+using CscaSourcesWire = QList<CscaSourceWire>;
+
+QDBusArgument& operator<<(QDBusArgument& arg, const CscaSourceWire& s);
+const QDBusArgument& operator>>(const QDBusArgument& arg, CscaSourceWire& s);
 
 /// Register every wire shape above as a D-Bus metatype. Idempotent; MUST run
 /// before any signal connect / demarshal that names them.
@@ -241,3 +262,5 @@ Q_DECLARE_METATYPE(LibreSCRS::AgentClient::SignBatchRowWire)
 Q_DECLARE_METATYPE(LibreSCRS::AgentClient::SignBatchRowsWire)
 Q_DECLARE_METATYPE(LibreSCRS::AgentClient::TslSourceWire)
 Q_DECLARE_METATYPE(LibreSCRS::AgentClient::TslSourcesWire)
+Q_DECLARE_METATYPE(LibreSCRS::AgentClient::CscaSourceWire)
+Q_DECLARE_METATYPE(LibreSCRS::AgentClient::CscaSourcesWire)

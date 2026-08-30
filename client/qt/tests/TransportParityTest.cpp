@@ -76,11 +76,16 @@
 //                         token set surviving a dead agent offers a consumer
 //                         capabilities nothing is behind)
 //   agent config        ConfigSnapshotMatchesAcrossTransports (incl. the
-//                         canonical TslSources row — a typed a(sbb) array on
-//                         one wire, a bare `any` on the other),
+//                         canonical TslSources and CscaSources rows — typed
+//                         a(sbb)/a(sb) arrays on one wire, a bare `any` on the
+//                         other),
 //                         SetConfigValueRoundTripsAndAnnouncesAcrossTransports
 //                         (the write plus the cache-then-announce ordering
-//                         both change notifications owe), and
+//                         both change notifications owe),
+//                         CscaSourcesRoundTripAsRowsAcrossTransports (the
+//                         WRITE direction of the second structured value: a
+//                         settable key with no marshal arm does not fail, it
+//                         degrades to a string and reports success), and
 //                         NonSettableConfigKeyRefusesIdenticallyAcrossTransports
 //                         / UnknownConfigKeyRefusesIdenticallyAcrossTransports
 //                         (an agent-named refusal on D-Bus and a
@@ -2154,6 +2159,14 @@ TYPED_TEST(TransportParity, ConfigSnapshotMatchesAcrossTransports)
     EXPECT_EQ(row.at(0).toString(), QStringLiteral("https://example.invalid/tl.xml"));
     EXPECT_FALSE(row.at(1).toBool());
     EXPECT_TRUE(row.at(2).toBool());
+
+    const QVariantList cscaSources = config.value(QStringLiteral("CscaSources")).toList();
+    ASSERT_EQ(cscaSources.size(), 1) << "the second structured property must survive both decodes too";
+    const QVariantList cscaRow = cscaSources.first().toList();
+    ASSERT_EQ(cscaRow.size(), 2) << "both transports must produce the canonical [uri, eager] row — TWO "
+                                    "cells, not a third copied from the trusted-list row above";
+    EXPECT_EQ(cscaRow.at(0).toString(), QStringLiteral("https://example.invalid/csca.ldif"));
+    EXPECT_TRUE(cscaRow.at(1).toBool());
 }
 
 TYPED_TEST(TransportParity, SetConfigValueRoundTripsAndAnnouncesAcrossTransports)
@@ -2218,6 +2231,58 @@ TYPED_TEST(TransportParity, UnknownConfigKeyRefusesIdenticallyAcrossTransports)
     const std::optional<SyncError> resetRefusal = client->resetConfigValue(QStringLiteral("NoSuchKey"));
     ASSERT_TRUE(resetRefusal.has_value());
     EXPECT_EQ(*resetRefusal, SyncError::UnknownConfigKey);
+}
+
+// `CscaSources` is the SECOND structured Config1 value, and the only other one
+// whose cells are not a string or a list of strings. Its trusted-list twin is
+// covered above by the snapshot scenario; this one covers the direction that
+// scenario cannot — a client WRITE — because a key whose value has no encodable
+// form on a wire does not fail there, it degrades: the row list collapses to a
+// bare string on the way out and the caller is told the write succeeded.
+//
+// One scenario for both wires because the two encode it in genuinely different
+// places (a typed `a(sb)` struct array marshaled by D-Bus, a CBOR array of
+// two-element arrays built by hand on the socket) and both owe the caller the
+// same rows back. Two rows, not one: a single row round-trips even through an
+// encoder that only ever keeps the last entry.
+TYPED_TEST(TransportParity, CscaSourcesRoundTripAsRowsAcrossTransports)
+{
+    using Env = typename TypeParam::Env;
+    ParityConfig cfg;
+    cfg.capabilities = Cap::Pki;
+    Env env(cfg);
+
+    AgentClient* client = env.client();
+    ASSERT_TRUE(client->isAvailable());
+    ASSERT_FALSE(client->configSnapshot().isEmpty());
+
+    QStringList announced;
+    QObject::connect(client, &AgentClient::configChanged, client, [&](const QString& key) { announced.append(key); });
+
+    const QVariantList sources{cscaSourceRow(QStringLiteral("https://pkd.example.invalid/csca.ldif"), true),
+                               cscaSourceRow(QStringLiteral("file:///etc/librescrs/csca-anchors"), false)};
+    EXPECT_EQ(client->setConfigValue(QStringLiteral("CscaSources"), sources), std::nullopt);
+    ASSERT_TRUE(waitFor([&]() { return announced.contains(QStringLiteral("CscaSources")); }));
+
+    const QVariant stored = client->configSnapshot().value(QStringLiteral("CscaSources"));
+    ASSERT_EQ(stored.metaType().id(), QMetaType::QVariantList)
+        << "the value must come back as ROWS on both wires; a transport with no arm for this key "
+           "degrades it to a string instead, and reports the write as a success. Got: "
+        << stored.typeName() << " = " << stored.toString().toStdString();
+
+    const QVariantList rows = stored.toList();
+    ASSERT_EQ(rows.size(), 2) << "both rows must survive the encode/decode round trip";
+
+    const QVariantList first = rows.at(0).toList();
+    ASSERT_EQ(first.size(), 2) << "the canonical row is [uri, eager] — TWO cells, not the trusted "
+                                  "list's three";
+    EXPECT_EQ(first.at(0).toString(), QStringLiteral("https://pkd.example.invalid/csca.ldif"));
+    EXPECT_TRUE(first.at(1).toBool());
+
+    const QVariantList second = rows.at(1).toList();
+    ASSERT_EQ(second.size(), 2);
+    EXPECT_EQ(second.at(0).toString(), QStringLiteral("file:///etc/librescrs/csca-anchors"));
+    EXPECT_FALSE(second.at(1).toBool()) << "the eager flag must survive as a BOOL, per cell, per row";
 }
 
 // ---- feature-gated entry: readTokenInfo() without "token-info" refuses

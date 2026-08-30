@@ -180,7 +180,7 @@ public:
         /// (mirrors the D-Bus fake's own late-subscriber race).
         QList<FakeSocketIdentityGroup> identityGroupScript;
         /// The Config1 property set this fake serves on GetConfig, keyed by
-        /// the nine wire spellings and valued in the canonical client-side
+        /// the ten wire spellings and valued in the canonical client-side
         /// shape — the SAME map FakeAgent::Config::config takes (see
         /// defaultAgentConfig()), so a parity scenario scripts one and hands
         /// it to both fakes. Also the RESET target: the fake snapshots it at
@@ -193,13 +193,14 @@ public:
         /// (default) applies the real policy. Mirrors
         /// FakeAgent::Config::configMutationError.
         std::optional<LibreSCRS::Agent::Wire::SyncError> configMutationError;
-        /// Encode `TslSources` as an array of MAPS ({url, lotl, eager})
-        /// rather than the canonical array of three-entry ARRAYS. Both are
-        /// lawful: the socket grammar types a config value as bare `any`
-        /// (unlike D-Bus's typed `a(sbb)`), so the client — not the wire — is
-        /// what guarantees consumers one shape. This knob is how that
-        /// normalization gets tested against a shape it does not itself emit.
-        bool tslSourcesAsMaps = false;
+        /// Encode the two struct-array keys as arrays of MAPS — `TslSources`
+        /// as {url, lotl, eager}, `CscaSources` as {uri, eager} — rather than
+        /// the canonical arrays of fixed-width ARRAYS. Both are lawful: the
+        /// socket grammar types a config value as bare `any` (unlike D-Bus's
+        /// typed `a(sbb)` / `a(sb)`), so the client — not the wire — is what
+        /// guarantees consumers one shape. This knob is how that normalization
+        /// gets tested against a shape it does not itself emit.
+        bool structuredSourcesAsMaps = false;
     };
 
     explicit FakeSocketAgent(Config config, QObject* parent = nullptr);

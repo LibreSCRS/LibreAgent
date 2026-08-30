@@ -23,6 +23,23 @@ struct TslSource
     bool operator==(const TslSource&) const = default;
 };
 
+// One country-signing trust-anchor source: where a set of CSCA certificates is
+// fetched from, and whether to fetch it at startup.
+//
+// Two fields, NOT three. TslSource carries an isLotl pivot flag because the
+// trusted-list world has a list-of-lists: one URL can name further lists to
+// follow. Country-signing anchors have no such indirection -- a source names
+// anchors, never other sources -- so there is no third field to carry, and
+// inventing one for symmetry with TslSource would describe a structure that
+// does not exist.
+struct CscaSource
+{
+    std::string uri;
+    bool eager{false}; // fetch at startup rather than lazily at first use
+
+    bool operator==(const CscaSource&) const = default;
+};
+
 // How a key may be changed. The authoritative human-consent gate for signing
 // is the PIN; this is the authorization-of-the-CLIENT policy surface only.
 enum class Mutability {
@@ -72,6 +89,8 @@ public:
     [[nodiscard]] std::vector<TslSource> tslSources() const;
     [[nodiscard]] std::string tslCacheDir() const; // FileOnly; defaults under cacheRoot
     [[nodiscard]] std::string aiaCacheDir() const; // FileOnly; defaults under cacheRoot
+    [[nodiscard]] std::vector<CscaSource> cscaSources() const;
+    [[nodiscard]] std::string cscaCacheDir() const; // FileOnly; defaults under cacheRoot
     [[nodiscard]] std::string defaultReason() const;
     [[nodiscard]] std::string defaultLocation() const;
     [[nodiscard]] std::string pluginDir() const; // FileOnly: dlopen vector
@@ -87,7 +106,7 @@ public:
     // Mutability + authorization enforcement happens at the Config1 adaptor
     // (the backend Config1 SetValue / Reset path), NOT here: those check
     // mutability(key) and reject FileOnly/ReadOnly keys, then authorize the
-    // caller before delegating to these setters. The five typed setters below
+    // caller before delegating to these setters. The six typed setters below
     // therefore take no `fromDbus` parameter (they never consult it); only
     // resetKey actually consults it. The file-load path (loadFromFile) bypasses
     // these setters entirely.
@@ -100,6 +119,7 @@ public:
     SetResult setDefaultLevel(std::string level);
     SetResult setTsaUrls(std::vector<std::string> urls);
     SetResult setTslSources(std::vector<TslSource> sources);
+    SetResult setCscaSources(std::vector<CscaSource> sources);
     SetResult setDefaultReason(std::string reason);
     SetResult setDefaultLocation(std::string location);
     // Reset a single key to its built-in default (Config1.Reset). Honors
@@ -192,6 +212,8 @@ private:
     std::vector<TslSource> m_tslSources;
     std::string m_tslCacheDir;
     std::string m_aiaCacheDir;
+    std::vector<CscaSource> m_cscaSources;
+    std::string m_cscaCacheDir;
     std::string m_defaultReason;
     std::string m_defaultLocation;
     std::string m_pluginDir;

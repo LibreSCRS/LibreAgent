@@ -57,19 +57,51 @@ QVariant demarshalTslSources(const QVariant& raw)
     return rows;
 }
 
+/// The `a(sb) CscaSources` property value, the same way — the country-signing
+/// twin of the function above, and the same all-or-nothing posture. Rows are
+/// TWO cells here, not three: there is no isLotl to carry (see Marshal.h's
+/// CscaSourceWire).
+QVariant demarshalCscaSources(const QVariant& raw)
+{
+    if (raw.metaType().id() != qMetaTypeId<QDBusArgument>()) {
+        return QVariantList();
+    }
+    CscaSourcesWire wire;
+    raw.value<QDBusArgument>() >> wire;
+    QVariantList rows;
+    rows.reserve(wire.size());
+    for (const CscaSourceWire& source : std::as_const(wire)) {
+        rows.append(cscaSourceRow(source.uri, source.eager));
+    }
+    return rows;
+}
+
 /// One Config1 property value, out of the `v` it arrived in and into the
-/// canonical client vocabulary. Only TslSources needs work: every other key
-/// is `s` or `as`, which QtDBus has already demarshaled into a QString /
-/// QStringList by the time it reaches here.
+/// canonical client vocabulary. Only the two struct-array properties need
+/// work: every other key is `s` or `as`, which QtDBus has already demarshaled
+/// into a QString / QStringList by the time it reaches here.
 QVariant demarshalConfigValue(const QString& key, const QVariant& raw)
 {
-    return key == kConfigTslSources ? demarshalTslSources(raw) : raw;
+    if (key == kConfigTslSources) {
+        return demarshalTslSources(raw);
+    }
+    if (key == kConfigCscaSources) {
+        return demarshalCscaSources(raw);
+    }
+    return raw;
 }
 
 /// The per-key marshal table for `Config1.SetValue`: the property's declared
 /// D-Bus type, spelled here because the caller hands us a QVariant and the
 /// agent type-checks what arrives. `s` for the three plain-text settings and
-/// the read-only paths, `as` for TsaUrls, `a(sbb)` for TslSources.
+/// the read-only paths, `as` for TsaUrls, `a(sbb)` for TslSources, `a(sb)` for
+/// CscaSources.
+///
+/// A KNOWN key with no arm of its own does not fail, it DEGRADES: the
+/// `isKnownConfigKey` fallthrough stringifies whatever arrived, so a
+/// list-valued setting would cross the wire as an empty `s` and the caller
+/// would be told the write succeeded. Every settable key whose value is not a
+/// string needs its own arm above for that reason.
 ///
 /// An UNKNOWN key falls through with the caller's value wrapped as-is. That
 /// is deliberate rather than a local refusal: on this wire every key
@@ -91,6 +123,19 @@ QDBusVariant marshalConfigValue(const QString& key, const QVariant& value)
                 continue; // not a [url, isLotl, eager] row — see the API doc
             }
             wire.append(TslSourceWire{cells.at(0).toString(), cells.at(1).toBool(), cells.at(2).toBool()});
+        }
+        return QDBusVariant(QVariant::fromValue(wire));
+    }
+    if (key == kConfigCscaSources) {
+        CscaSourcesWire wire;
+        const QVariantList rows = value.toList();
+        wire.reserve(rows.size());
+        for (const QVariant& row : rows) {
+            const QVariantList cells = row.toList();
+            if (cells.size() != 2) {
+                continue; // not a [uri, eager] row — see the API doc
+            }
+            wire.append(CscaSourceWire{cells.at(0).toString(), cells.at(1).toBool()});
         }
         return QDBusVariant(QVariant::fromValue(wire));
     }

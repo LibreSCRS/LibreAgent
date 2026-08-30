@@ -188,6 +188,24 @@ const QDBusArgument& operator>>(const QDBusArgument& arg, TslSourceWire& s)
     return arg;
 }
 
+// (sb) struct marshalling for Config1's `a(sb) CscaSources` property. TWO
+// fields: country signing has no list-of-lists, so there is no isLotl twin to
+// the struct above (see Marshal.h).
+QDBusArgument& operator<<(QDBusArgument& arg, const CscaSourceWire& s)
+{
+    arg.beginStructure();
+    arg << s.uri << s.eager;
+    arg.endStructure();
+    return arg;
+}
+const QDBusArgument& operator>>(const QDBusArgument& arg, CscaSourceWire& s)
+{
+    arg.beginStructure();
+    arg >> s.uri >> s.eager;
+    arg.endStructure();
+    return arg;
+}
+
 void ensureDBusMetatypes()
 {
     static const bool done = [] {
@@ -209,6 +227,8 @@ void ensureDBusMetatypes()
         qDBusRegisterMetaType<SignBatchRowsWire>();
         qDBusRegisterMetaType<TslSourceWire>();
         qDBusRegisterMetaType<TslSourcesWire>();
+        qDBusRegisterMetaType<CscaSourceWire>();
+        qDBusRegisterMetaType<CscaSourcesWire>();
         return true;
     }();
     Q_UNUSED(done)

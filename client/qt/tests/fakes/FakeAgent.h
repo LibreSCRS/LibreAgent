@@ -191,6 +191,7 @@ class Config1Adaptor : public QDBusAbstractAdaptor
     Q_PROPERTY(QStringList TsaUrls READ tsaUrls)
     Q_PROPERTY(QString LastTsaUrl READ lastTsaUrl)
     Q_PROPERTY(LibreSCRS::AgentClient::TslSourcesWire TslSources READ tslSources)
+    Q_PROPERTY(LibreSCRS::AgentClient::CscaSourcesWire CscaSources READ cscaSources)
     Q_PROPERTY(QString TslCacheDir READ tslCacheDir)
     Q_PROPERTY(QString AiaCacheDir READ aiaCacheDir)
     Q_PROPERTY(QString DefaultReason READ defaultReason)
@@ -203,6 +204,7 @@ public:
     [[nodiscard]] QStringList tsaUrls() const;
     [[nodiscard]] QString lastTsaUrl() const;
     [[nodiscard]] LibreSCRS::AgentClient::TslSourcesWire tslSources() const;
+    [[nodiscard]] LibreSCRS::AgentClient::CscaSourcesWire cscaSources() const;
     [[nodiscard]] QString tslCacheDir() const;
     [[nodiscard]] QString aiaCacheDir() const;
     [[nodiscard]] QString defaultReason() const;
@@ -687,7 +689,7 @@ public:
         /// Properties.GetAll("...Manager1") on the root object fails closed,
         /// and features() must degrade to an empty list, never an error.
         bool exportManager1 = true;
-        /// The Config1 property set this fake serves, keyed by the nine wire
+        /// The Config1 property set this fake serves, keyed by the ten wire
         /// spellings and valued in the canonical client-side shape (see
         /// defaultAgentConfig()). Also the RESET target: the fake snapshots
         /// this map at construction and Reset(key) restores that entry, which
