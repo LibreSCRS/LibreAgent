@@ -25,10 +25,13 @@
 
 namespace LibreSCRS::AgentClient::Fakes {
 
-/// @brief The ten Config1 properties with plausible values, keyed by the
+[[nodiscard]] inline QVariantMap defaultCscaAnchorState();
+
+/// @brief The eleven Config1 properties with plausible values, keyed by the
 ///        wire spellings and valued in the canonical client-side shape
 ///        (`TslSources` as three-entry `[url, isLotl, eager]` lists,
-///        `CscaSources` as TWO-entry `[uri, eager]` ones).
+///        `CscaSources` as TWO-entry `[uri, eager]` ones, `CscaAnchorState`
+///        as the anchor-state dict below).
 [[nodiscard]] inline QVariantMap defaultAgentConfig()
 {
     return QVariantMap{
@@ -44,6 +47,11 @@ namespace LibreSCRS::AgentClient::Fakes {
         {QString(kConfigDefaultReason), QStringLiteral("Approval")},
         {QString(kConfigDefaultLocation), QStringLiteral("Belgrade")},
         {QString(kConfigPluginDir), QStringLiteral("/usr/lib/librescrs/plugins")},
+        // The read-only dictionary key. Valued from the SAME function the
+        // import reply is scripted with: the property and the reply are one
+        // dict on both wires, so scripting them from two tables here would let
+        // a client read one shape after a restart and another after an import.
+        {QString(kConfigCscaAnchorState), defaultCscaAnchorState()},
     };
 }
 

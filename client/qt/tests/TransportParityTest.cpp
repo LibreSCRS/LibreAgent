@@ -79,6 +79,13 @@
 //                         canonical TslSources and CscaSources rows — typed
 //                         a(sbb)/a(sb) arrays on one wire, a bare `any` on the
 //                         other),
+//                         CscaAnchorStateIsReadableFromTheConfigSnapshotAcrossTransports
+//                         (the READ-ONLY dictionary key a just-started client
+//                         has to read to say anything at all about the anchors
+//                         it holds — value TYPES asserted, not just numbers)
+//                         and CscaAnchorStateUndatedListOmitsSignedAtAcrossTransports
+//                         (an undated list leaves `signedAt` absent on both
+//                         wires; a 0 would make it read as signed at the epoch),
 //                         SetConfigValueRoundTripsAndAnnouncesAcrossTransports
 //                         (the write plus the cache-then-announce ordering
 //                         both change notifications owe),
@@ -2219,6 +2226,75 @@ TYPED_TEST(TransportParity, ConfigSnapshotMatchesAcrossTransports)
                                     "cells, not a third copied from the trusted-list row above";
     EXPECT_EQ(cscaRow.at(0).toString(), QStringLiteral("https://example.invalid/csca.ldif"));
     EXPECT_TRUE(cscaRow.at(1).toBool());
+}
+
+TYPED_TEST(TransportParity, CscaAnchorStateIsReadableFromTheConfigSnapshotAcrossTransports)
+{
+    // The reason this key exists. A client that IMPORTED a master list learns
+    // the resulting state from the import's own reply; a client that has just
+    // STARTED has no reply to read, and before this key its settings surface
+    // could only say that what is installed cannot be known from here.
+    using Env = typename TypeParam::Env;
+    ParityConfig cfg;
+    cfg.capabilities = Cap::Pki;
+    Env env(cfg);
+
+    AgentClient* client = env.client();
+    ASSERT_TRUE(client->isAvailable());
+
+    const QVariantMap state = client->configSnapshot().value(QStringLiteral("CscaAnchorState")).toMap();
+    ASSERT_FALSE(state.isEmpty()) << "the anchor state must survive BOTH decodes — an untyped a{sv} property "
+                                     "on one wire, a config value the grammar types as bare `any` on the other";
+
+    // The value types are asserted, not just the numbers: the two wires carry
+    // these as genuinely different CBOR/D-Bus types, and `configSnapshot()`
+    // promises consumers ONE shape whichever transport produced it. A test
+    // that only read them back through toUInt()/toLongLong() would pass on a
+    // transport that handed the caller whatever its wire happened to decode.
+    EXPECT_EQ(state.value(QStringLiteral("anchors")).metaType().id(), QMetaType::UInt);
+    EXPECT_EQ(state.value(QStringLiteral("anchors")).toUInt(), 212U);
+    EXPECT_EQ(state.value(QStringLiteral("issuers")).metaType().id(), QMetaType::UInt);
+    EXPECT_EQ(state.value(QStringLiteral("issuers")).toUInt(), 47U);
+    EXPECT_EQ(state.value(QStringLiteral("replayRefusalActive")).metaType().id(), QMetaType::Bool);
+    EXPECT_TRUE(state.value(QStringLiteral("replayRefusalActive")).toBool());
+    EXPECT_EQ(state.value(QStringLiteral("signer")).toString(),
+              QStringLiteral("9c1f5c7b2f4b4d6f8a0e3d5c7b9a1f3e5d7c9b1a3f5e7d9c1b3a5f7e9d1c3b5a"));
+    EXPECT_EQ(state.value(QStringLiteral("signerPinned")).metaType().id(), QMetaType::Bool);
+    EXPECT_TRUE(state.value(QStringLiteral("signerPinned")).toBool());
+    EXPECT_EQ(state.value(QStringLiteral("acceptedAt")).metaType().id(), QMetaType::LongLong);
+    EXPECT_EQ(state.value(QStringLiteral("acceptedAt")).toLongLong(), 1756000000LL);
+    EXPECT_EQ(state.value(QStringLiteral("signedAt")).metaType().id(), QMetaType::LongLong);
+    EXPECT_EQ(state.value(QStringLiteral("signedAt")).toLongLong(), 1755000000LL);
+    EXPECT_EQ(state.value(QStringLiteral("origin")).toString(), QStringLiteral("import"));
+}
+
+TYPED_TEST(TransportParity, CscaAnchorStateUndatedListOmitsSignedAtAcrossTransports)
+{
+    // ABSENCE IS NOT ZERO, on the readable key as much as on the import reply.
+    // A master list carrying no CMS signingTime leaves `signedAt` off the wire
+    // entirely; a transport that materialised a 0 there would make an undated
+    // list read exactly like one signed on 1970-01-01, and `replayRefusalActive`
+    // exists precisely to tell a person those apart.
+    using Env = typename TypeParam::Env;
+    ParityConfig cfg;
+    cfg.capabilities = Cap::Pki;
+    QVariantMap undated = Fakes::defaultCscaAnchorState();
+    undated.remove(QStringLiteral("signedAt"));
+    undated.insert(QStringLiteral("replayRefusalActive"), false);
+    cfg.agentConfig.insert(QStringLiteral("CscaAnchorState"), undated);
+    Env env(cfg);
+
+    AgentClient* client = env.client();
+    ASSERT_TRUE(client->isAvailable());
+
+    const QVariantMap state = client->configSnapshot().value(QStringLiteral("CscaAnchorState")).toMap();
+    ASSERT_FALSE(state.isEmpty());
+    EXPECT_FALSE(state.contains(QStringLiteral("signedAt")))
+        << "an undated list must leave the key ABSENT on both wires, never zero-valued";
+    EXPECT_TRUE(state.contains(QStringLiteral("replayRefusalActive")))
+        << "the one member whose FALSE is the value worth knowing must never be the one that goes missing";
+    EXPECT_FALSE(state.value(QStringLiteral("replayRefusalActive")).toBool());
+    EXPECT_EQ(state.value(QStringLiteral("acceptedAt")).toLongLong(), 1756000000LL);
 }
 
 TYPED_TEST(TransportParity, SetConfigValueRoundTripsAndAnnouncesAcrossTransports)

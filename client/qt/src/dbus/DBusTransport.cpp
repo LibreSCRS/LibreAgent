@@ -78,9 +78,10 @@ QVariant demarshalCscaSources(const QVariant& raw)
 }
 
 /// One Config1 property value, out of the `v` it arrived in and into the
-/// canonical client vocabulary. Only the two struct-array properties need
-/// work: every other key is `s` or `as`, which QtDBus has already demarshaled
-/// into a QString / QStringList by the time it reaches here.
+/// canonical client vocabulary. Three properties need work — the two
+/// struct-array source lists above and the `a{sv}` anchor-state dict below;
+/// every other key is `s` or `as`, which QtDBus has already demarshaled into
+/// a QString / QStringList by the time it reaches here.
 QVariant demarshalConfigValue(const QString& key, const QVariant& raw)
 {
     if (key == kConfigTslSources) {
@@ -88,6 +89,14 @@ QVariant demarshalConfigValue(const QString& key, const QVariant& raw)
     }
     if (key == kConfigCscaSources) {
         return demarshalCscaSources(raw);
+    }
+    if (key == kConfigCscaAnchorState) {
+        // Read-only, and a DICTIONARY rather than a string: `a{sv}` inside the
+        // `v`, so it arrives as a QDBusArgument that demarshalVariantMap
+        // unpacks. Normalized afterwards through the one shared conversion so
+        // this snapshot and the socket's carry identical value types — see
+        // normalizeCscaAnchorState for why the raw types genuinely differ.
+        return normalizeCscaAnchorState(demarshalVariantMap(raw));
     }
     return raw;
 }

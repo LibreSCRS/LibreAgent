@@ -12,6 +12,7 @@
 #include <vector>
 
 using LibreSCRS::Agent::Config::ConfigStore;
+using LibreSCRS::Agent::Config::CscaAnchorState;
 using LibreSCRS::Agent::Config::CscaSource;
 using LibreSCRS::Agent::Config::Mutability;
 using LibreSCRS::Agent::Config::TslSource;
@@ -374,6 +375,11 @@ TEST_F(ConfigStoreTest, MutabilityMetadata)
     // writes, so it may only ever be chosen by editing the config file.
     EXPECT_EQ(ConfigStore::mutability("CscaCacheDir"), Mutability::FileOnly);
     EXPECT_EQ(ConfigStore::mutability("LastTsaUrl"), Mutability::ReadOnly);
+    // What the agent HOLDS in country-signing anchors is a report, not a
+    // setting: read-only for the same reason LastTsaUrl is, and for a stronger
+    // one — a client that could write it would be claiming what the agent
+    // trusts without installing a single anchor.
+    EXPECT_EQ(ConfigStore::mutability("CscaAnchorState"), Mutability::ReadOnly);
     // PKCS#11 lease knobs are FileOnly security policy (not D-Bus mutable).
     EXPECT_EQ(ConfigStore::mutability("Pkcs11IdleTimeoutSecs"), Mutability::FileOnly);
     EXPECT_EQ(ConfigStore::mutability("Pkcs11MaxLifetimeSecs"), Mutability::FileOnly);
@@ -381,7 +387,7 @@ TEST_F(ConfigStoreTest, MutabilityMetadata)
     // prompter has no confirm-only primitive to back it.
     EXPECT_FALSE(ConfigStore::mutability("Pkcs11DecryptConfirm").has_value());
     EXPECT_FALSE(ConfigStore::mutability("Nope").has_value());
-    EXPECT_EQ(ConfigStore::keys().size(), 13u);
+    EXPECT_EQ(ConfigStore::keys().size(), 14u);
 }
 
 TEST_F(ConfigStoreTest, Pkcs11LeaseKnobsDefaultsAndRoundTrip)
@@ -427,6 +433,101 @@ TEST_F(ConfigStoreTest, RecordLastTsaUrlIsReadOnlyButAgentSettable)
     EXPECT_EQ(cfg.lastTsaUrl(), "https://tsa.example/used");
     ConfigStore reopened(m_configFile, m_cacheRoot);
     EXPECT_EQ(reopened.lastTsaUrl(), "https://tsa.example/used");
+}
+
+TEST_F(ConfigStoreTest, CscaAnchorStateStartsAbsentAndIsAgentRecorded)
+{
+    ConfigStore cfg(m_configFile, m_cacheRoot);
+    // Never imported: ABSENT, not a zero-valued report. A store that answered
+    // "0 anchors, refusal inactive" would be indistinguishable from one that
+    // had accepted an empty list, and the two mean opposite things.
+    EXPECT_FALSE(cfg.cscaAnchorState().has_value());
+
+    CscaAnchorState state;
+    state.anchors = 212;
+    state.issuers = 47;
+    state.replayRefusalActive = true;
+    state.signer = "9c1f5c7b2f4b4d6f8a0e3d5c7b9a1f3e5d7c9b1a3f5e7d9c1b3a5f7e9d1c3b5a";
+    state.signerPinned = true;
+    state.acceptedAt = 1756000000;
+    state.signedAt = 1755000000;
+    state.origin = "import";
+    cfg.recordCscaAnchorState(state);
+    ASSERT_TRUE(cfg.cscaAnchorState().has_value());
+    EXPECT_EQ(*cfg.cscaAnchorState(), state);
+
+    // Survives a restart: a client that has just STARTED is exactly the caller
+    // this key exists for, and it reads the store the agent reopened.
+    ConfigStore reopened(m_configFile, m_cacheRoot);
+    ASSERT_TRUE(reopened.cscaAnchorState().has_value());
+    EXPECT_EQ(*reopened.cscaAnchorState(), state);
+}
+
+TEST_F(ConfigStoreTest, CscaAnchorStateAbsentSignedAtIsNeverPersistedAsZero)
+{
+    // The whole reason signedAt is optional: a list signed at the epoch and a
+    // list carrying no CMS signingTime at all must not read alike. A zero
+    // stand-in on disk would erase that on the very next start, and
+    // replayRefusalActive's false is what a person is shown because of it.
+    CscaAnchorState undated;
+    undated.anchors = 3;
+    undated.issuers = 1;
+    undated.replayRefusalActive = false;
+    undated.acceptedAt = 1756000001;
+    undated.origin = "import";
+
+    {
+        ConfigStore cfg(m_configFile, m_cacheRoot);
+        cfg.recordCscaAnchorState(undated);
+    }
+    EXPECT_EQ(readConfig().find("signedAt"), std::string::npos) << readConfig();
+
+    ConfigStore reopened(m_configFile, m_cacheRoot);
+    ASSERT_TRUE(reopened.cscaAnchorState().has_value());
+    EXPECT_FALSE(reopened.cscaAnchorState()->signedAt.has_value());
+    EXPECT_EQ(reopened.cscaAnchorState()->acceptedAt, 1756000001);
+    EXPECT_FALSE(reopened.cscaAnchorState()->replayRefusalActive);
+
+    // An epoch-dated list is a DIFFERENT report, and reads back as one.
+    CscaAnchorState epochDated = undated;
+    epochDated.signedAt = 0;
+    reopened.recordCscaAnchorState(epochDated);
+    ConfigStore again(m_configFile, m_cacheRoot);
+    ASSERT_TRUE(again.cscaAnchorState().has_value());
+    ASSERT_TRUE(again.cscaAnchorState()->signedAt.has_value());
+    EXPECT_EQ(*again.cscaAnchorState()->signedAt, 0);
+}
+
+TEST_F(ConfigStoreTest, CscaAnchorStateIsNotResettableOverDbus)
+{
+    ConfigStore cfg(m_configFile, m_cacheRoot);
+    CscaAnchorState state;
+    state.anchors = 1;
+    cfg.recordCscaAnchorState(state);
+    EXPECT_EQ(cfg.resetKey("CscaAnchorState", /*fromDbus=*/true).errorName, "org.librescrs.Agent.Error.ReadOnlyConfig");
+    EXPECT_TRUE(cfg.cscaAnchorState().has_value()) << "a refused reset must change nothing";
+    // The file-load path may reset it, exactly as it may reset LastTsaUrl.
+    EXPECT_TRUE(cfg.resetKey("CscaAnchorState", /*fromDbus=*/false).ok);
+    EXPECT_FALSE(cfg.cscaAnchorState().has_value());
+}
+
+TEST_F(ConfigStoreTest, RecordCscaAnchorStateFiresOnceAndNoOpsOnAnIdenticalReport)
+{
+    ConfigStore cfg(m_configFile, m_cacheRoot);
+    std::string changed;
+    int hits = 0;
+    cfg.setOnChanged([&](const std::string& k) {
+        changed = k;
+        ++hits;
+    });
+    CscaAnchorState state;
+    state.anchors = 9;
+    state.issuers = 4;
+    cfg.recordCscaAnchorState(state);
+    EXPECT_EQ(changed, "CscaAnchorState");
+    EXPECT_EQ(hits, 1);
+    cfg.recordCscaAnchorState(state); // same report -> no persist, no Changed
+    EXPECT_EQ(hits, 1);
 }
 
 TEST_F(ConfigStoreTest, OnChangedFiresWithKey)

@@ -161,7 +161,7 @@ private:
     int m_appearanceFontCalls = 0;
 };
 
-/// @brief Config1 adaptor (root path): the nine agent-owned settings, all
+/// @brief Config1 adaptor (root path): the eleven agent-owned settings, all
 ///        read-only as PROPERTIES, mutated through SetValue/Reset so each
 ///        change is gated per key — faithful to
 ///        `org.librescrs.Agent.Config1`, including its four documented
@@ -169,7 +169,7 @@ private:
 ///          - `UnknownConfigKey`   no such key;
 ///          - `ReadOnlyConfig`     a file-only / agent-internal key
 ///                                 (TslCacheDir / AiaCacheDir / PluginDir /
-///                                 LastTsaUrl);
+///                                 LastTsaUrl / CscaAnchorState);
 ///          - `NotAuthorized`      polkit denied;
 ///          - `InvalidConfigValue` wrong variant type for the key.
 ///
@@ -192,6 +192,11 @@ class Config1Adaptor : public QDBusAbstractAdaptor
     Q_PROPERTY(QString LastTsaUrl READ lastTsaUrl)
     Q_PROPERTY(LibreSCRS::AgentClient::TslSourcesWire TslSources READ tslSources)
     Q_PROPERTY(LibreSCRS::AgentClient::CscaSourcesWire CscaSources READ cscaSources)
+    // `a{sv}` — the one property whose value is a DICTIONARY. QVariantMap is
+    // what QtDBus marshals as that signature, and the scripted map's members
+    // are typed (quint32 / qint64) so the property carries the interface's
+    // real `u` / `x` rather than whatever a bare int would have guessed.
+    Q_PROPERTY(QVariantMap CscaAnchorState READ cscaAnchorState)
     Q_PROPERTY(QString TslCacheDir READ tslCacheDir)
     Q_PROPERTY(QString AiaCacheDir READ aiaCacheDir)
     Q_PROPERTY(QString DefaultReason READ defaultReason)
@@ -205,6 +210,7 @@ public:
     [[nodiscard]] QString lastTsaUrl() const;
     [[nodiscard]] LibreSCRS::AgentClient::TslSourcesWire tslSources() const;
     [[nodiscard]] LibreSCRS::AgentClient::CscaSourcesWire cscaSources() const;
+    [[nodiscard]] QVariantMap cscaAnchorState() const;
     [[nodiscard]] QString tslCacheDir() const;
     [[nodiscard]] QString aiaCacheDir() const;
     [[nodiscard]] QString defaultReason() const;
@@ -698,7 +704,7 @@ public:
         /// Properties.GetAll("...Manager1") on the root object fails closed,
         /// and features() must degrade to an empty list, never an error.
         bool exportManager1 = true;
-        /// The Config1 property set this fake serves, keyed by the ten wire
+        /// The Config1 property set this fake serves, keyed by the eleven wire
         /// spellings and valued in the canonical client-side shape (see
         /// defaultAgentConfig()). Also the RESET target: the fake snapshots
         /// this map at construction and Reset(key) restores that entry, which

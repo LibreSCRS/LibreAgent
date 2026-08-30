@@ -41,6 +41,7 @@ LibreSCRS::Agent::Config::ConfigStore::ConfigStore(std::filesystem::__cxx11::pat
 LibreSCRS::Agent::Config::ConfigStore::addChangeObserver(std::function<void (std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > const&)>)
 LibreSCRS::Agent::Config::ConfigStore::aiaCacheDir[abi:cxx11]() const
 LibreSCRS::Agent::Config::ConfigStore::applyDefaults()
+LibreSCRS::Agent::Config::ConfigStore::cscaAnchorState() const
 LibreSCRS::Agent::Config::ConfigStore::cscaCacheDir[abi:cxx11]() const
 LibreSCRS::Agent::Config::ConfigStore::cscaSources() const
 LibreSCRS::Agent::Config::ConfigStore::defaultLevel[abi:cxx11]() const
@@ -55,6 +56,7 @@ LibreSCRS::Agent::Config::ConfigStore::persist()
 LibreSCRS::Agent::Config::ConfigStore::pkcs11IdleTimeoutSecs() const
 LibreSCRS::Agent::Config::ConfigStore::pkcs11MaxLifetimeSecs() const
 LibreSCRS::Agent::Config::ConfigStore::pluginDir[abi:cxx11]() const
+LibreSCRS::Agent::Config::ConfigStore::recordCscaAnchorState(LibreSCRS::Agent::Config::CscaAnchorState)
 LibreSCRS::Agent::Config::ConfigStore::recordLastTsaUrl(std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> >)
 LibreSCRS::Agent::Config::ConfigStore::removeChangeObserver(LibreSCRS::Agent::Config::ConfigStore::ObserverId)
 LibreSCRS::Agent::Config::ConfigStore::resetKey(std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > const&, bool)

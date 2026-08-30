@@ -8,8 +8,8 @@
 //
 // The vocabulary is the wire's, mirrored here rather than invented: the CDDL's
 // `settable-config-key` / `config-key` groups (wire/librescrs-agent.cddl) and
-// the D-Bus `org.librescrs.Agent.Config1` interface are the same ten
-// properties under the same ten spellings. The SPLIT between them is what
+// the D-Bus `org.librescrs.Agent.Config1` interface are the same eleven
+// properties under the same eleven spellings. The SPLIT between them is what
 // this header exists for — it is load-bearing on the socket wire, where
 // `set-config`'s grammar admits a `settable-config-key` ONLY, so a
 // non-settable key cannot be encoded at all and the transport has to refuse
@@ -43,10 +43,19 @@ inline constexpr QLatin1StringView kConfigTsaUrls{"TsaUrls"};
 inline constexpr QLatin1StringView kConfigTslSources{"TslSources"};
 inline constexpr QLatin1StringView kConfigCscaSources{"CscaSources"};
 
-// The four READ-ONLY keys (CDDL `config-key` minus the settable set): three
+// The five READ-ONLY keys (CDDL `config-key` minus the settable set): three
 // file-only paths — a wire-settable PluginDir is a dlopen code-exec vector —
-// plus one piece of agent-internal state.
+// plus two pieces of agent-internal state.
+//
+// CscaAnchorState is the one whose value is a DICTIONARY rather than a string
+// (`CscaAnchorKeys.h` names its members), and the one that is read-only for
+// more than a housekeeping reason: it reports what country-signing anchors the
+// agent HOLDS, so a client able to write it could claim what passports are
+// checked against without installing a single anchor. It exists so a client
+// that has just STARTED — with no ImportCscaMasterList reply to read — can say
+// what is installed rather than that it cannot be known from here.
 inline constexpr QLatin1StringView kConfigLastTsaUrl{"LastTsaUrl"};
+inline constexpr QLatin1StringView kConfigCscaAnchorState{"CscaAnchorState"};
 inline constexpr QLatin1StringView kConfigTslCacheDir{"TslCacheDir"};
 inline constexpr QLatin1StringView kConfigAiaCacheDir{"AiaCacheDir"};
 inline constexpr QLatin1StringView kConfigPluginDir{"PluginDir"};
@@ -62,8 +71,8 @@ inline constexpr QLatin1StringView kConfigPluginDir{"PluginDir"};
 /// the CDDL's `config-key`, which is also `Config1.Reset`'s argument set.
 [[nodiscard]] inline bool isKnownConfigKey(QStringView key)
 {
-    return isSettableConfigKey(key) || key == kConfigLastTsaUrl || key == kConfigTslCacheDir ||
-           key == kConfigAiaCacheDir || key == kConfigPluginDir;
+    return isSettableConfigKey(key) || key == kConfigLastTsaUrl || key == kConfigCscaAnchorState ||
+           key == kConfigTslCacheDir || key == kConfigAiaCacheDir || key == kConfigPluginDir;
 }
 
 /// ONE `TslSources` row in the canonical client-side shape: a three-entry

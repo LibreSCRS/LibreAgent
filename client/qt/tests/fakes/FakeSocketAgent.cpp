@@ -95,6 +95,33 @@ Wire::CborValue configValueToCbor(const QString& key, const QVariant& value, boo
         }
         return Wire::CborValue(std::move(rows));
     }
+    if (key == kConfigCscaAnchorState) {
+        // The read-only DICTIONARY key. This wire types every config value as
+        // bare `any`, so the dict crosses as a plain CBOR map — with each
+        // member encoded in its own CBOR type, never stringified, because the
+        // client's normalization has to be given something real to normalize.
+        //
+        // A key ABSENT from the scripted map stays absent on the wire, the
+        // same rule cscaAnchorStateReply() below follows and for the same
+        // reason: `signedAt` has no zero sentinel, and a fake that supplied
+        // one could never script an undated master list at all.
+        Wire::CborValue::Map members;
+        const QVariantMap state = value.toMap();
+        for (auto it = state.constBegin(); it != state.constEnd(); ++it) {
+            const QString& member = it.key();
+            if (member == kCscaAnchorAnchors || member == kCscaAnchorIssuers) {
+                members.emplace(member.toStdString(), Wire::CborValue::uint(it.value().toULongLong()));
+            } else if (member == kCscaAnchorReplayRefusalActive || member == kCscaAnchorSignerPinned) {
+                members.emplace(member.toStdString(), Wire::CborValue(it.value().toBool()));
+            } else if (member == kCscaAnchorAcceptedAt || member == kCscaAnchorSignedAt) {
+                members.emplace(member.toStdString(),
+                                Wire::CborValue(static_cast<std::int64_t>(it.value().toLongLong())));
+            } else {
+                members.emplace(member.toStdString(), Wire::CborValue(it.value().toString().toStdString()));
+            }
+        }
+        return Wire::CborValue(std::move(members));
+    }
     if (value.metaType().id() == QMetaType::QStringList) {
         Wire::CborValue::Array items;
         for (const QString& item : value.toStringList()) {

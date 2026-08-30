@@ -31,6 +31,7 @@ constexpr const char* kTslCacheDir = "TslCacheDir";
 constexpr const char* kAiaCacheDir = "AiaCacheDir";
 constexpr const char* kCscaSources = "CscaSources";
 constexpr const char* kCscaCacheDir = "CscaCacheDir";
+constexpr const char* kCscaAnchorState = "CscaAnchorState";
 constexpr const char* kDefaultReason = "DefaultReason";
 constexpr const char* kDefaultLocation = "DefaultLocation";
 constexpr const char* kPluginDir = "PluginDir";
@@ -161,6 +162,121 @@ bool isHttpUrl(std::string_view url)
     return !authority.empty() && authority.front() != '/';
 }
 
+std::optional<std::int64_t> parseI64(std::string_view s)
+{
+    std::int64_t out{};
+    const auto* begin = s.data();
+    const auto* end = s.data() + s.size();
+    const auto [ptr, ec] = std::from_chars(begin, end, out);
+    if (ec != std::errc{} || ptr != end) {
+        return std::nullopt;
+    }
+    return out;
+}
+
+// The CscaAnchorState subfield names. These are the WIRE dict keys verbatim
+// (the D-Bus `Config1.CscaAnchorState` property and the socket
+// `csca-anchor-state` reply arm carry the same eight spellings), mirrored here
+// rather than invented: one vocabulary read by the file, the bus and the
+// socket cannot fork into three.
+constexpr const char* kAnchorAnchors = "anchors";
+constexpr const char* kAnchorIssuers = "issuers";
+constexpr const char* kAnchorReplayRefusalActive = "replayRefusalActive";
+constexpr const char* kAnchorSigner = "signer";
+constexpr const char* kAnchorSignerPinned = "signerPinned";
+constexpr const char* kAnchorAcceptedAt = "acceptedAt";
+constexpr const char* kAnchorSignedAt = "signedAt";
+constexpr const char* kAnchorOrigin = "origin";
+
+// One CscaAnchorState as a single config-file value: `name=value` subfields
+// joined by '|', the same separator the TslSource/CscaSource list lines use.
+//
+// A subfield that is ABSENT is simply not written, and that is load-bearing
+// rather than a size optimisation: `signedAt` has no zero sentinel (see the
+// struct's own comment), so writing a 0 for an undated list would erase the
+// distinction on the very next start. `anchors`, `issuers` and
+// `replayRefusalActive` are always written -- they are the three the wire
+// requires, and their presence is also what tells a parsed line from garble.
+std::string encodeCscaAnchorState(const CscaAnchorState& state)
+{
+    std::string out;
+    out += std::string(kAnchorAnchors) + "=" + std::to_string(state.anchors);
+    out += std::string("|") + kAnchorIssuers + "=" + std::to_string(state.issuers);
+    out += std::string("|") + kAnchorReplayRefusalActive + "=" + (state.replayRefusalActive ? "true" : "false");
+    if (!state.signer.empty()) {
+        out += std::string("|") + kAnchorSigner + "=" + state.signer;
+    }
+    out += std::string("|") + kAnchorSignerPinned + "=" + (state.signerPinned ? "true" : "false");
+    if (state.acceptedAt) {
+        out += std::string("|") + kAnchorAcceptedAt + "=" + std::to_string(*state.acceptedAt);
+    }
+    if (state.signedAt) {
+        out += std::string("|") + kAnchorSignedAt + "=" + std::to_string(*state.signedAt);
+    }
+    if (!state.origin.empty()) {
+        out += std::string("|") + kAnchorOrigin + "=" + state.origin;
+    }
+    return out;
+}
+
+// The inverse. std::nullopt when the line carries no subfield this build
+// knows, which is how a truncated or garbled value stays "nothing imported"
+// instead of decoding into a zeroed report that claims an empty master list
+// was accepted. An UNKNOWN subfield is skipped rather than fatal: a file
+// written by a newer agent must still tell this one what it can read.
+std::optional<CscaAnchorState> parseCscaAnchorState(const std::string& value)
+{
+    CscaAnchorState state;
+    bool sawKnownField = false;
+    std::stringstream fields(value);
+    std::string field;
+    while (std::getline(fields, field, '|')) {
+        const auto eq = field.find('=');
+        if (eq == std::string::npos) {
+            continue;
+        }
+        const std::string name = trim(field.substr(0, eq));
+        const std::string raw = trim(field.substr(eq + 1));
+        if (name == kAnchorAnchors) {
+            if (const auto n = parseU32(raw)) {
+                state.anchors = *n;
+                sawKnownField = true;
+            }
+        } else if (name == kAnchorIssuers) {
+            if (const auto n = parseU32(raw)) {
+                state.issuers = *n;
+                sawKnownField = true;
+            }
+        } else if (name == kAnchorReplayRefusalActive) {
+            state.replayRefusalActive = (raw == "true");
+            sawKnownField = true;
+        } else if (name == kAnchorSigner) {
+            state.signer = raw;
+            sawKnownField = true;
+        } else if (name == kAnchorSignerPinned) {
+            state.signerPinned = (raw == "true");
+            sawKnownField = true;
+        } else if (name == kAnchorAcceptedAt) {
+            if (const auto n = parseI64(raw)) {
+                state.acceptedAt = *n;
+                sawKnownField = true;
+            }
+        } else if (name == kAnchorSignedAt) {
+            if (const auto n = parseI64(raw)) {
+                state.signedAt = *n;
+                sawKnownField = true;
+            }
+        } else if (name == kAnchorOrigin) {
+            state.origin = raw;
+            sawKnownField = true;
+        }
+    }
+    if (!sawKnownField) {
+        return std::nullopt;
+    }
+    return state;
+}
+
 } // namespace
 
 ConfigStore::ConfigStore(std::filesystem::path configFile, std::filesystem::path cacheRoot)
@@ -193,6 +309,7 @@ void ConfigStore::applyDefaults()
     m_aiaCacheDir = (m_cacheRoot / kAiaSubdir).string();
     m_cscaSources.clear();
     m_cscaCacheDir = (m_cacheRoot / kCscaSubdir).string();
+    m_cscaAnchorState.reset();
     m_defaultReason.clear();
     m_defaultLocation.clear();
     m_pluginDir.clear(); // empty => consumer uses the compiled default plugin dir
@@ -291,6 +408,11 @@ void ConfigStore::loadFromFile()
             if (!value.empty()) {
                 m_cscaCacheDir = value;
             }
+        } else if (key == kCscaAnchorState) {
+            // A garbled value parses to nullopt and leaves the key ABSENT
+            // rather than zeroed -- "nothing imported" is the safe reading,
+            // "an empty master list was accepted" is not.
+            m_cscaAnchorState = parseCscaAnchorState(value);
         } else if (key == kDefaultReason) {
             m_defaultReason = value;
         } else if (key == kDefaultLocation) {
@@ -398,6 +520,9 @@ void ConfigStore::persist()
         if (m_cscaCacheDir != (m_cacheRoot / kCscaSubdir).string()) {
             out << kCscaCacheDir << " = " << m_cscaCacheDir << '\n';
         }
+        if (m_cscaAnchorState) {
+            out << kCscaAnchorState << " = " << encodeCscaAnchorState(*m_cscaAnchorState) << '\n';
+        }
         if (!m_defaultReason.empty()) {
             out << kDefaultReason << " = " << m_defaultReason << '\n';
         }
@@ -483,6 +608,11 @@ std::string ConfigStore::cscaCacheDir() const
 {
     std::lock_guard lk(m_mutex);
     return m_cscaCacheDir;
+}
+std::optional<CscaAnchorState> ConfigStore::cscaAnchorState() const
+{
+    std::lock_guard lk(m_mutex);
+    return m_cscaAnchorState;
 }
 std::string ConfigStore::defaultReason() const
 {
@@ -637,6 +767,8 @@ ConfigStore::SetResult ConfigStore::resetKey(const std::string& key, bool fromDb
             m_pkcs11MaxLifetimeSecs = kPkcs11MaxLifetimeDefault;
         } else if (key == kLastTsaUrl) {
             m_lastTsaUrl.clear();
+        } else if (key == kCscaAnchorState) {
+            m_cscaAnchorState.reset();
         }
         persist();
     }
@@ -657,14 +789,37 @@ void ConfigStore::recordLastTsaUrl(std::string url)
     fireChanged(kLastTsaUrl);
 }
 
+void ConfigStore::recordCscaAnchorState(CscaAnchorState state)
+{
+    {
+        std::lock_guard lk(m_mutex);
+        if (m_cscaAnchorState == state) {
+            return; // the same report; avoid a spurious persist + Changed
+        }
+        m_cscaAnchorState = std::move(state);
+        persist();
+    }
+    fireChanged(kCscaAnchorState);
+}
+
 // --- key metadata ---------------------------------------------------------
 
 const std::vector<std::string>& ConfigStore::keys()
 {
-    static const std::vector<std::string> k{
-        kDefaultLevel,         kTsaUrls,      kLastTsaUrl,    kTslSources,      kTslCacheDir, kAiaCacheDir,
-        kCscaSources,          kCscaCacheDir, kDefaultReason, kDefaultLocation, kPluginDir,   kPkcs11IdleTimeoutSecs,
-        kPkcs11MaxLifetimeSecs};
+    static const std::vector<std::string> k{kDefaultLevel,
+                                            kTsaUrls,
+                                            kLastTsaUrl,
+                                            kTslSources,
+                                            kTslCacheDir,
+                                            kAiaCacheDir,
+                                            kCscaSources,
+                                            kCscaCacheDir,
+                                            kCscaAnchorState,
+                                            kDefaultReason,
+                                            kDefaultLocation,
+                                            kPluginDir,
+                                            kPkcs11IdleTimeoutSecs,
+                                            kPkcs11MaxLifetimeSecs};
     return k;
 }
 
@@ -680,7 +835,7 @@ std::optional<Mutability> ConfigStore::mutability(const std::string& key)
         key == kPkcs11IdleTimeoutSecs || key == kPkcs11MaxLifetimeSecs) {
         return Mutability::FileOnly;
     }
-    if (key == kLastTsaUrl) {
+    if (key == kLastTsaUrl || key == kCscaAnchorState) {
         return Mutability::ReadOnly;
     }
     return std::nullopt;

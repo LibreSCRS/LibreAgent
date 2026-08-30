@@ -40,13 +40,49 @@ struct CscaSource
     bool operator==(const CscaSource&) const = default;
 };
 
+// What the agent currently holds in country-signing trust anchors: a REPORT
+// it publishes, never a setting a client hands it. Read-only for the reason
+// LastTsaUrl is (it is agent-internal state, not a preference) and for a
+// stronger one — a client that could write this would be CLAIMING what
+// passports are checked against without installing a single anchor.
+//
+// Kept in the store, and on disk, so it survives a restart. That is the whole
+// point: a client that imported a master list learns the resulting state from
+// the import's own reply, but a client that has just STARTED has no reply to
+// read, and until this key existed its settings surface could only say that
+// what is installed cannot be known from here.
+//
+// ABSENCE IS NOT ZERO, twice over:
+//   - the whole state is absent (std::nullopt) until something has been
+//     imported. A zero-valued report would be indistinguishable from an
+//     accepted list that vouched for nothing, and the two mean opposite
+//     things;
+//   - `signedAt` is absent whenever the accepted list carried no CMS
+//     signingTime, which CMS permits. There is no epoch sentinel, because a
+//     list signed at the epoch and a list carrying no date at all must never
+//     read alike -- that distinction is exactly what replayRefusalActive
+//     reports, and a zero stand-in would retire it silently.
+struct CscaAnchorState
+{
+    std::uint32_t anchors{0};               // anchors held, INCLUDING CSCA link certificates (not a root count)
+    std::uint32_t issuers{0};               // distinct issuing countries among them
+    bool replayRefusalActive{false};        // whether a rollback CAN be refused at all
+    std::string signer;                     // lowercase hex SHA-256 over the publisher's SubjectPublicKeyInfo
+    bool signerPinned{false};               // the publisher was ESTABLISHED, not merely observed
+    std::optional<std::int64_t> acceptedAt; // epoch seconds; when the AGENT accepted the list
+    std::optional<std::int64_t> signedAt;   // epoch seconds from CMS signingTime; ABSENT when undated
+    std::string origin;                     // where the anchors came from ("import")
+
+    bool operator==(const CscaAnchorState&) const = default;
+};
+
 // How a key may be changed. The authoritative human-consent gate for signing
 // is the PIN; this is the authorization-of-the-CLIENT policy surface only.
 enum class Mutability {
     DbusMutable,      // Config1.SetValue under org.librescrs.agent.configure (default allow)
     DbusMutableTrust, // Config1.SetValue under org.librescrs.agent.configure.trust (auth_self)
     FileOnly,         // settable only by editing the on-disk config (e.g. PluginDir: dlopen vector)
-    ReadOnly,         // agent-internal state, never client-settable (e.g. LastTsaUrl)
+    ReadOnly,         // agent-internal state, never client-settable (LastTsaUrl, CscaAnchorState)
 };
 
 // Agent-owned signing configuration: the single source of truth for the
@@ -91,6 +127,9 @@ public:
     [[nodiscard]] std::string aiaCacheDir() const; // FileOnly; defaults under cacheRoot
     [[nodiscard]] std::vector<CscaSource> cscaSources() const;
     [[nodiscard]] std::string cscaCacheDir() const; // FileOnly; defaults under cacheRoot
+    // ReadOnly. std::nullopt until a master list has been accepted — see
+    // CscaAnchorState's own comment for why that is not a zeroed report.
+    [[nodiscard]] std::optional<CscaAnchorState> cscaAnchorState() const;
     [[nodiscard]] std::string defaultReason() const;
     [[nodiscard]] std::string defaultLocation() const;
     [[nodiscard]] std::string pluginDir() const; // FileOnly: dlopen vector
@@ -130,6 +169,13 @@ public:
     // timestamped sign. Bypasses the D-Bus mutability gate by design (ReadOnly
     // on the wire). Persists + fires onChanged("LastTsaUrl").
     void recordLastTsaUrl(std::string url);
+
+    // Agent-internal: record what the agent now holds in country-signing
+    // anchors, after an accepted master-list import. Bypasses the D-Bus
+    // mutability gate by design (ReadOnly on the wire), exactly like
+    // recordLastTsaUrl above. Persists + fires onChanged("CscaAnchorState");
+    // an identical report is a no-op (no write, no notification).
+    void recordCscaAnchorState(CscaAnchorState state);
 
     // --- key metadata (single source of truth for the Config1 adaptor) ------
     [[nodiscard]] static const std::vector<std::string>& keys();
@@ -214,6 +260,7 @@ private:
     std::string m_aiaCacheDir;
     std::vector<CscaSource> m_cscaSources;
     std::string m_cscaCacheDir;
+    std::optional<CscaAnchorState> m_cscaAnchorState;
     std::string m_defaultReason;
     std::string m_defaultLocation;
     std::string m_pluginDir;

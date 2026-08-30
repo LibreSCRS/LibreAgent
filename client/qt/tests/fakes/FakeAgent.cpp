@@ -997,6 +997,9 @@ QVariant configValueFromVariant(const QString& key, const QVariant& value)
     if (key == kConfigTsaUrls) {
         return value.toStringList();
     }
+    // No CscaAnchorState arm, and none is missing: this function is reached
+    // only from SetValue, which refuses every non-settable key before it gets
+    // here. An arm for a key that cannot arrive would claim a path exists.
     return value.toString();
 }
 
@@ -1052,6 +1055,17 @@ LibreSCRS::AgentClient::CscaSourcesWire Config1Adaptor::cscaSources() const
         wire.append(LibreSCRS::AgentClient::CscaSourceWire{cells.at(0).toString(), cells.at(1).toBool()});
     }
     return wire;
+}
+QVariantMap Config1Adaptor::cscaAnchorState() const
+{
+    // Served straight from the scripted map: QtDBus marshals a QVariantMap as
+    // the property's declared `a{sv}`, and the scripted members already carry
+    // the interface's real types (quint32 counts, qint64 dates — see
+    // defaultCscaAnchorState). A key the scenario REMOVED stays removed, which
+    // is how an undated master list is scripted: `signedAt` has no zero
+    // sentinel, so a fake that filled one in would hide the very distinction
+    // the client's decode has to preserve.
+    return m_agent->configValue(QString(kConfigCscaAnchorState)).toMap();
 }
 QString Config1Adaptor::tslCacheDir() const
 {

@@ -126,15 +126,47 @@ public:
     ///
     ///        Keys use the wire spellings: `"DefaultLevel"`, `"TsaUrls"`,
     ///        `"LastTsaUrl"`, `"TslSources"`, `"CscaSources"`,
-    ///        `"TslCacheDir"`, `"AiaCacheDir"`, `"DefaultReason"`,
-    ///        `"DefaultLocation"`, `"PluginDir"`. Values are `QString` except
-    ///        `"TsaUrls"` (`QStringList`) and the two source lists, each a
-    ///        `QVariantList` of fixed-width `QVariantList` rows:
+    ///        `"CscaAnchorState"`, `"TslCacheDir"`, `"AiaCacheDir"`,
+    ///        `"DefaultReason"`, `"DefaultLocation"`, `"PluginDir"`. Values
+    ///        are `QString` except `"TsaUrls"` (`QStringList`), the two source
+    ///        lists (each a `QVariantList` of fixed-width `QVariantList`
+    ///        rows) and `"CscaAnchorState"` (a `QVariantMap`):
     ///          - `"TslSources"`  three entries,
     ///            `[QString url, bool isLotl, bool eager]`;
     ///          - `"CscaSources"` TWO entries, `[QString uri, bool eager]` —
     ///            no `isLotl` twin, because a country-signing source names
-    ///            anchors and never further sources.
+    ///            anchors and never further sources;
+    ///          - `"CscaAnchorState"` what the agent currently HOLDS in
+    ///            country-signing trust anchors — the same report
+    ///            `importCscaMasterList()` returns, readable without having
+    ///            performed an import, which is what lets a just-started
+    ///            client say what is installed instead of that it cannot be
+    ///            known. Members, all optional and ABSENT (never zeroed) when
+    ///            the agent did not send them:
+    ///              * `"anchors"`             `quint32` — anchors held,
+    ///                INCLUDING CSCA link certificates, so not a root count;
+    ///              * `"issuers"`             `quint32` — distinct issuing
+    ///                countries among them;
+    ///              * `"replayRefusalActive"` `bool` — whether a rollback can
+    ///                be refused at all. Its FALSE is the value worth showing:
+    ///                it means the accepted list carried no signing time, so
+    ///                "is this older than what I have" cannot be answered;
+    ///              * `"signer"`              `QString` — lowercase hex
+    ///                SHA-256 over the publisher's SubjectPublicKeyInfo;
+    ///              * `"signerPinned"`        `bool` — the publisher was
+    ///                ESTABLISHED, not merely observed. Rendering
+    ///                "authenticity verified" over a false claims more than
+    ///                was measured;
+    ///              * `"acceptedAt"`          `qint64` epoch seconds — when
+    ///                the AGENT accepted the list;
+    ///              * `"signedAt"`            `qint64` epoch seconds — when
+    ///                the list says it was signed. ABSENT when it carried no
+    ///                CMS signingTime; there is no epoch sentinel, so an
+    ///                undated list never reads as one signed in 1970;
+    ///              * `"origin"`              `QString` — where the anchors
+    ///                came from (`"import"`).
+    ///            An EMPTY map means nothing has been imported. A member this
+    ///            build does not name is passed through verbatim.
     ///        Those shapes are a CLIENT guarantee, identical on every
     ///        transport, even though the wires carry them differently.
     ///
@@ -153,8 +185,10 @@ public:
     ///        `"DefaultReason"`, `"DefaultLocation"`, `"TsaUrls"`,
     ///        `"TslSources"`, `"CscaSources"`. The rest are read-only by
     ///        design (a wire-settable `"PluginDir"` would be a code-execution
-    ///        vector, and `"LastTsaUrl"` is agent-internal state), and writing
-    ///        one answers `SyncError::ReadOnlyConfig`.
+    ///        vector, `"LastTsaUrl"` is agent-internal state, and a writable
+    ///        `"CscaAnchorState"` would let a client CLAIM what passports are
+    ///        checked against without installing an anchor), and writing one
+    ///        answers `SyncError::ReadOnlyConfig`.
     ///
     ///        A returned error is always NAMED, so a caller can act on WHICH
     ///        refusal it was:

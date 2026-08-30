@@ -12,6 +12,12 @@
 // dict `ImportCscaMasterList` replies with) and the CDDL's `csca-anchor-state`
 // arm are the same eight keys under the same eight spellings.
 //
+// The property and the reply are the SAME dict, so both entry points converge
+// here: `importCscaMasterList()` returns the typed value straight away, and
+// `configSnapshot()["CscaAnchorState"]` carries the normalized dict a client
+// that has just STARTED reads instead — the case that has no import reply to
+// learn from.
+//
 // Why the conversion lives here and not in either transport: the two wires
 // arrive at this value from genuinely different places — D-Bus demarshals an
 // untyped `a{sv}` in which every value is whatever the agent put there, while
@@ -77,6 +83,47 @@ inline constexpr QLatin1StringView kCscaAnchorOrigin{"origin"};
         return {};
     }
     return QDateTime::fromSecsSinceEpoch(it.value().toLongLong());
+}
+
+/// The agent's state dict in the ONE canonical client-side shape
+/// `configSnapshot()["CscaAnchorState"]` promises, whichever transport
+/// produced it.
+///
+/// Needed because the two wires carry these members as genuinely different
+/// types and neither is wrong: D-Bus declares `anchors`/`issuers` as `u` and
+/// the two dates as `x`, so QtDBus hands back `uint`/`qlonglong`, while the
+/// socket's CBOR types every small non-negative integer as a signed one, so
+/// the same four arrive as `qlonglong` there. A consumer that read them with
+/// `toUInt()`/`toLongLong()` would not notice — but one that compared the two
+/// snapshots, or switched on `metaType()`, would, and the public contract is
+/// that the shape does not depend on the transport.
+///
+/// PRESENCE IS PRESERVED, never manufactured: a key the agent did not send
+/// stays absent from the result. `signedAt` is the member that makes this
+/// load-bearing (an undated master list carries none, and a 0 would read as
+/// signed at the epoch), but the rule applies to every member — including
+/// `replayRefusalActive`, whose absence means "this agent said nothing" and
+/// is not the same statement as its false. A key this build does not name is
+/// passed through VERBATIM rather than dropped, so a newer agent's addition
+/// reaches a consumer that knows what to do with it.
+[[nodiscard]] inline QVariantMap normalizeCscaAnchorState(const QVariantMap& raw)
+{
+    QVariantMap out;
+    for (auto it = raw.constBegin(); it != raw.constEnd(); ++it) {
+        const QString& key = it.key();
+        if (key == kCscaAnchorAnchors || key == kCscaAnchorIssuers) {
+            out.insert(key, QVariant::fromValue<quint32>(it.value().toUInt()));
+        } else if (key == kCscaAnchorReplayRefusalActive || key == kCscaAnchorSignerPinned) {
+            out.insert(key, it.value().toBool());
+        } else if (key == kCscaAnchorAcceptedAt || key == kCscaAnchorSignedAt) {
+            out.insert(key, QVariant::fromValue<qint64>(it.value().toLongLong()));
+        } else if (key == kCscaAnchorSigner || key == kCscaAnchorOrigin) {
+            out.insert(key, it.value().toString());
+        } else {
+            out.insert(key, it.value());
+        }
+    }
+    return out;
 }
 
 /// The agent's state dict as the public value type. Tolerant by design: a key

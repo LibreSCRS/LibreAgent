@@ -229,15 +229,34 @@ visual-sig-opts = { page: uint, x: float64, y: float64, width: float64, height: 
 
 ; Config1 is a TYPED property set. Only a SUBSET is settable over the wire;
 ; TslCacheDir/AiaCacheDir/PluginDir are file-only (a wire-settable PluginDir is a
-; dlopen code-exec vector) and LastTsaUrl is read-only agent state.
+; dlopen code-exec vector) and LastTsaUrl/CscaAnchorState are read-only agent
+; state.
+;
+; CscaAnchorState is read-only for a stronger reason than LastTsaUrl's: it
+; reports what country-signing anchors the agent HOLDS, so a client that could
+; write it would be claiming what passports are checked against without
+; installing a single anchor. Its value is the same dict ImportCscaMasterList
+; replies with (csca-anchor-state below, minus the `kind` discriminator that
+; only a reply arm needs), and it exists so a client that has just STARTED --
+; one with no import reply to read -- can say what is installed instead of
+; saying that it cannot be known. An EMPTY map means nothing has been
+; imported; there is no "unconfigured" sentinel to misread.
 ;
 ; The agent's CscaCacheDir is file-only as well, and unlike those three it is not
 ; on this wire AT ALL -- no client reads or resets it, so it has no config-key
 ; spelling here. The PKCS#11 lease knobs are absent for the same reason: this
 ; group is the wire contract, not an inventory of the agent's config file.
+;
+; NOTE for the vocabulary manifest: settable-config-key is a CLOSED token
+; alternation and is therefore published in wire/wire-vocabulary.json and
+; guarded against the clients' mirrors. config-key is NOT -- its right-hand
+; side names another rule, which the manifest reader deliberately reports as
+; open -- so appending a read-only key here moves no manifest entry, and the
+; drift guard that watches it is ConfigKeyMirrorTest's own probe list instead.
 settable-config-key = "DefaultLevel" / "DefaultReason" / "DefaultLocation" /   ; low tier (configure)
                       "TsaUrls" / "TslSources" / "CscaSources"                 ; trust tier (configure.trust)
-config-key = settable-config-key / "LastTsaUrl" / "TslCacheDir" / "AiaCacheDir" / "PluginDir"
+config-key = settable-config-key / "LastTsaUrl" / "CscaAnchorState" /
+             "TslCacheDir" / "AiaCacheDir" / "PluginDir"
 
 ; ---- reply (agent -> client, correlated by req) ----
 ; A map member value must be a TYPE, not a group (RFC 8610 §3.5); the success

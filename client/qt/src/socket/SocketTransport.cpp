@@ -231,6 +231,15 @@ QVariant configValueToVariant(const QString& key, const Wire::CborValue& value)
     if (key == kConfigCscaSources) {
         return normalizeCscaSources(generic);
     }
+    if (key == kConfigCscaAnchorState) {
+        // Read-only, and a DICTIONARY rather than a string. The grammar types
+        // this value as bare `any` like every other config entry, so what
+        // arrives is a plain CBOR map; the shared conversion is what makes it
+        // the SAME shape the `a{sv}` property produces on the other wire —
+        // this CBOR encodes every small non-negative integer as a signed one,
+        // where D-Bus declares `u` for the counts and `x` for the dates.
+        return normalizeCscaAnchorState(generic.toMap());
+    }
     if (key == kConfigTsaUrls) {
         return generic.toStringList(); // `as` on the other wire; a CBOR array here
     }
