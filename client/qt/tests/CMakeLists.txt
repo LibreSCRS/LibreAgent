@@ -58,6 +58,29 @@ target_link_libraries(ClientQtIdentityRowsTest PRIVATE
     GTest::gtest_main)
 add_test(NAME ClientQtIdentityRowsTest COMMAND ClientQtIdentityRowsTest)
 
+# ConfigKeys.h's isSettableConfigKey() mirror, checked in both directions
+# against the published `settable-config-key` vocabulary in
+# wire/wire-vocabulary.json -- see ConfigKeyMirrorTest.cpp for why neither
+# direction alone is sufficient. ConfigKeys.h is INTERNAL (src/, never
+# installed), so this needs the -I src include path like the other
+# internal-header suites in this file; it is header-only (inline functions),
+# so no extra TU has to be compiled in alongside it. The manifest path is
+# handed in as a compile definition rather than copied into the test tree, so
+# this reads the one committed copy of the file.
+add_executable(ClientQtConfigKeyMirrorTest ConfigKeyMirrorTest.cpp)
+target_include_directories(ClientQtConfigKeyMirrorTest PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+target_link_libraries(ClientQtConfigKeyMirrorTest PRIVATE
+    LibreAgent::ClientQt
+    GTest::gtest
+    GTest::gtest_main)
+target_compile_definitions(ClientQtConfigKeyMirrorTest PRIVATE
+    LIBRESCRS_AGENT_WIRE_VOCABULARY_JSON="${CMAKE_SOURCE_DIR}/wire/wire-vocabulary.json"
+    # The header itself, so the probe list below can be checked for completeness
+    # rather than trusted. A probe list that silently misses a constant would
+    # reintroduce, one level down, the drift this whole test exists to catch.
+    LIBRESCRS_AGENT_CONFIG_KEYS_HEADER="${CMAKE_CURRENT_SOURCE_DIR}/../src/ConfigKeys.h")
+add_test(NAME ClientQtConfigKeyMirrorTest COMMAND ClientQtConfigKeyMirrorTest)
+
 # The bounded fd-payload reader (public, exported -- so this links the shared
 # library rather than recompiling the TU, unlike the internal-TU suites above
 # and below). Covers the three-state descriptor contract, the byte cap and its
