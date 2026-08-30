@@ -58,6 +58,18 @@ target_link_libraries(ClientQtIdentityRowsTest PRIVATE
     GTest::gtest_main)
 add_test(NAME ClientQtIdentityRowsTest COMMAND ClientQtIdentityRowsTest)
 
+# The verdict-group reader (public, exported): one entry per security check,
+# both wire spellings of a check, and the aggregate verdicts carried through
+# untouched. Owned here because BOTH desktop clients render this group -- a
+# private reader in each is how three incompatible understandings of the same
+# fields came to be live at once, each with its own passing test.
+add_executable(ClientQtSecurityChecksTest SecurityChecksTest.cpp)
+target_link_libraries(ClientQtSecurityChecksTest PRIVATE
+    LibreAgent::ClientQt
+    GTest::gtest
+    GTest::gtest_main)
+add_test(NAME ClientQtSecurityChecksTest COMMAND ClientQtSecurityChecksTest)
+
 # ConfigKeys.h's isSettableConfigKey() mirror, checked in both directions
 # against the published `settable-config-key` vocabulary in
 # wire/wire-vocabulary.json -- see ConfigKeyMirrorTest.cpp for why neither

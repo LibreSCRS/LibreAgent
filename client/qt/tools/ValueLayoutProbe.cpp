@@ -42,6 +42,7 @@
 #include <LibreSCRS/AgentClient/CredentialTypes.h>
 #include <LibreSCRS/AgentClient/FdHandle.h>
 #include <LibreSCRS/AgentClient/IdentityRows.h>
+#include <LibreSCRS/AgentClient/SecurityChecks.h>
 #include <LibreSCRS/AgentClient/SignOptions.h>
 #include <LibreSCRS/AgentClient/Types.h>
 
@@ -245,6 +246,22 @@ int main()
     LAYOUT_MEMBER(pinActivated)
     LAYOUT_MEMBER(keyActivated)
     LAYOUT_MEMBER(extra)
+    LAYOUT_END()
+
+    LAYOUT_BEGIN(SecurityCheckEntry)
+    LAYOUT_MEMBER(ordinal)
+    LAYOUT_MEMBER(id)
+    LAYOUT_MEMBER(category)
+    LAYOUT_MEMBER(status)
+    LAYOUT_MEMBER(label)
+    LAYOUT_MEMBER(detail)
+    LAYOUT_MEMBER(error)
+    LAYOUT_MEMBER(reason)
+    LAYOUT_END()
+
+    LAYOUT_BEGIN(SecurityVerdict)
+    LAYOUT_MEMBER(checks)
+    LAYOUT_MEMBER(aggregates)
     LAYOUT_END()
 
     LAYOUT_BEGIN(SignOptions)

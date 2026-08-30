@@ -54,6 +54,7 @@ set(_agentclient_public_headers
     IdentityRows.h
     OperationPhase.h
     SealedPayload.h
+    SecurityChecks.h
     SharedAgentClient.h
     SignOptions.h
     SyncError.h
