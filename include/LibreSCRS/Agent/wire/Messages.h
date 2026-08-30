@@ -235,6 +235,18 @@ struct ResetConfig
     std::string key; // a config-key
     bool operator==(const ResetConfig&) const = default;
 };
+// Config1.ImportCscaMasterList: install country-signing trust anchors from a
+// signed ICAO master list whose bytes ride SCM_RIGHTS, referenced by `list`
+// exactly like Sign's `inFd`. A PLAIN descriptor, never a sealed memfd:
+// master-list data is public, and sealing is this wire's vocabulary for
+// secrets. Part of the Config1 family, so — like GetConfig/SetConfig/
+// ResetConfig — it carries no HelloAck feature gate; see the CDDL's
+// `import-csca-master-list` comment for why a token would be worse than none.
+struct ImportCscaMasterList
+{
+    std::uint64_t list{0}; // fd-index into the frame's SCM_RIGHTS vector
+    bool operator==(const ImportCscaMasterList&) const = default;
+};
 struct CancelOp
 {
     std::uint64_t op{0};
@@ -318,10 +330,10 @@ struct GetAppearanceFont
     bool operator==(const GetAppearanceFont&) const = default;
 };
 
-using Request =
-    std::variant<Hello, GetState, ReadIdentity, GetPhoto, ReadCertificates, ReadTokenInfo, Sign, SignBatch, GetCertDer,
-                 GetConfig, SetConfig, ResetConfig, CancelOp, GetSignResult, PkLogin, PkLogout, PkPublicKey, PkSignRaw,
-                 PkDecrypt, ListCredentials, ManagePin, ActivateSigningKey, LayoutVisual, GetAppearanceFont>;
+using Request = std::variant<Hello, GetState, ReadIdentity, GetPhoto, ReadCertificates, ReadTokenInfo, Sign, SignBatch,
+                             GetCertDer, GetConfig, SetConfig, ResetConfig, CancelOp, GetSignResult, PkLogin, PkLogout,
+                             PkPublicKey, PkSignRaw, PkDecrypt, ListCredentials, ManagePin, ActivateSigningKey,
+                             LayoutVisual, GetAppearanceFont, ImportCscaMasterList>;
 
 struct RequestEnvelope
 {
@@ -412,6 +424,34 @@ struct AppearanceFontReply
 {
     std::uint64_t fd{0};
     bool operator==(const AppearanceFontReply&) const = default;
+};
+// ImportCscaMasterList's reply: what the agent now believes about its
+// country-signing anchors, mirroring the D-Bus `Config1.CscaAnchorState`
+// property field-for-field.
+//
+// Three members are REQUIRED on the wire and the rest optional, which is a
+// contract decision rather than a convenience: `anchors`/`issuers` are what
+// the reply exists to report, and `replayRefusalActive` is the one whose FALSE
+// a surface must not swallow (it means the accepted list carried no signing
+// time, so "is this older than what I already have" cannot be answered at
+// all). The five `std::optional` members are optional because the twin D-Bus
+// property is an untyped `a{sv}` with no schema to enforce them, and failing a
+// whole frame closed over a display-only field would make this half strictly
+// less robust than that one for no gain. `signedAt` is genuinely absent-able
+// at the source: CMS makes signingTime optional, and there is no zero
+// sentinel, because a list signed at the epoch and a list with no date must
+// not read alike.
+struct CscaAnchorStateReply
+{
+    std::uint64_t anchors{0};
+    std::uint64_t issuers{0};
+    bool replayRefusalActive{false};
+    std::optional<std::string> signer;
+    std::optional<bool> signerPinned;
+    std::optional<std::int64_t> acceptedAt; // seconds since the epoch
+    std::optional<std::int64_t> signedAt;   // seconds since the epoch; absent == the list carried none
+    std::optional<std::string> origin;
+    bool operator==(const CscaAnchorStateReply&) const = default;
 };
 
 struct ErrInfo
@@ -505,6 +545,7 @@ using OpResult =
 [[nodiscard]] CborValue makeReply(std::uint64_t req, const RawSignatureReply&);
 [[nodiscard]] CborValue makeReply(std::uint64_t req, const LayoutReply&);
 [[nodiscard]] CborValue makeReply(std::uint64_t req, const AppearanceFontReply&);
+[[nodiscard]] CborValue makeReply(std::uint64_t req, const CscaAnchorStateReply&);
 [[nodiscard]] CborValue makeSignRecoveryReply(std::uint64_t req, const SignResult&); // sign-recovery arm
 [[nodiscard]] CborValue makeErrorReply(std::uint64_t req, const ErrInfo&);
 

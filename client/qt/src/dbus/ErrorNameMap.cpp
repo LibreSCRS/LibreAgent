@@ -102,10 +102,15 @@ SeamError classifyAgentErrorShortName(QStringView shortName, const QString& mess
     // Pre-operation rejections outside the taxonomy: the request itself was
     // unacceptable (fix the request / re-list and retry), or the caller was
     // not allowed to make it.
+    // MasterListReplayed sits in this bucket rather than a taxonomy one for
+    // the same reason InvalidRequest does: the INPUT was unacceptable and the
+    // fix is a different input (a newer list), not a retry of this one. The
+    // bucket cannot say which of the six it was -- which is precisely why the
+    // sync-error axis carries the name alongside it.
     if (shortName == QLatin1StringView("InvalidRequest") || shortName == QLatin1StringView("UnknownCredential") ||
         shortName == QLatin1StringView("UnsupportedSignatureParameter") ||
         shortName == QLatin1StringView("UnknownConfigKey") || shortName == QLatin1StringView("ReadOnlyConfig") ||
-        shortName == QLatin1StringView("InvalidConfigValue")) {
+        shortName == QLatin1StringView("InvalidConfigValue") || shortName == QLatin1StringView("MasterListReplayed")) {
         return make(CallError::InvalidArguments, ErrorCode::None, shortName, message);
     }
     if (shortName == QLatin1StringView("NotAuthorized") || shortName == QLatin1StringView("UserNotLoggedIn")) {

@@ -69,7 +69,8 @@ request  = { req: uint, req-body }
 req-body = ( hello // get-state // read-identity // get-photo //
   read-certificates // read-token-info // sign // sign-batch // get-cert-der // get-config // set-config // reset-config //
   cancel-op // get-sign-result // pk-login // pk-logout // pk-public-key // pk-sign-raw // pk-decrypt //
-  list-credentials // manage-pin // activate-signing-key // layout-visual // get-appearance-font )
+  list-credentials // manage-pin // activate-signing-key // layout-visual // get-appearance-font //
+  import-csca-master-list )
 
 hello             = ( t: "Hello", proto: uint, ? client: tstr )
 get-state         = ( t: "GetState" )
@@ -107,6 +108,42 @@ batch-document    = { name: tstr, fdIndex: fd-index }
 ; Login raises the agent prompter on the first cold-lease SignRaw/Decrypt.
 get-cert-der      = ( t: "GetCertDer", reader: handle, cert: cert-id )   ; public, no consent/lease
 get-config        = ( t: "GetConfig" )                                  ; -> config (typed entries)
+; Config1.ImportCscaMasterList: install country-signing trust anchors from a
+; signed ICAO master list. The list rides SCM_RIGHTS (referenced by `list`)
+; exactly like sign's `in` — a PLAIN descriptor, never a sealed memfd:
+; master-list data is public, and sealing is this wire's vocabulary for
+; secrets, so using it here would say something untrue about what is being
+; handed over. It MUST be a regular file (or memfd); a pipe or socket is
+; refused, because the agent reads it synchronously and an unbounded source
+; would stall every other client.
+;
+; An import is a one-shot INPUT, not a source: nothing about the file is
+; remembered as a place to fetch from, and the accepted anchors REPLACE the
+; cached set (a master list is a complete statement of what its publisher
+; vouches for, so merging would keep anchors it has withdrawn).
+;
+; Part of the Config1 family, and like get-config/set-config/reset-config it
+; carries NO hello-ack feature gate. That is deliberate rather than an
+; omission: the feature catalog (LibreSCRS::Agent::kAgentFeatures) is served
+; VERBATIM by both hosts, so it cannot express "the bus host serves this and
+; the socket host does not yet" — a token added for this family would make the
+; socket host advertise a request it would then not answer, which is worse than
+; the alternative. A socket host built against THIS contract but not yet
+; implementing the family leaves the request unanswered and the client's
+; bounded call reports the unreachable-agent class; a host predating the
+; contract does not know the `t` tag at all and fails the frame closed, which
+; is the same forward-compatibility cost every request family here carries and
+; the reason a client and its socket host ship from one pin.
+;
+; Rejections (all named, err-info's `name`): NotAuthorized, RateLimited,
+; InvalidRequest (not a regular file, or unreadable), InputTooLarge,
+; NotAMasterList, EmptyMasterList, MalformedMasterList, BadMasterListSignature,
+; MasterListSignerChanged, MasterListReplayed, AnchorCacheNotWritable. Only
+; MasterListReplayed is in this wire's own `sync-error` group today (see its
+; comment for why that one and not the rest); the others are agent-namespace
+; names a client build that does not know them degrades to CommunicationError,
+; under the same tolerance rule.
+import-csca-master-list = ( t: "ImportCscaMasterList", list: fd-index )
 set-config        = ( t: "SetConfig", key: settable-config-key, value: any )  ; Config1.SetValue; low vs trust tier
 reset-config      = ( t: "ResetConfig", key: config-key )               ; Config1.Reset(key)
 cancel-op         = ( t: "CancelOp", op: uint )
@@ -231,13 +268,22 @@ err-info = { ( code: error-code // name: sync-error ), ? msgKey: tstr, ? msgFall
 ; build, pre-degrade) converge on the SAME CommunicationError outcome (see
 ; ErrorNameMap.cpp's mapAgentErrorShortName), so an older client cannot
 ; distinguish the two paths behaviourally either way.
+; "MasterListReplayed" is ImportCscaMasterList's own refusal: the list is
+; authentic and is NOT newer than the one already installed -- older, dated the
+; same, or carrying no signing time while the installed one does. It is named
+; rather than folded into InvalidRequest because it is the one import failure a
+; person can act on directly ("you already have this list", "this one is older
+; than what is installed"), and a caller that cannot tell it from a malformed
+; file has to say nothing useful at the only moment saying something helps.
 sync-error = "UnknownCard" / "KeyNotFound" / "NotAuthorized" / "UserNotLoggedIn" /
              "UnknownConfigKey" / "ReadOnlyConfig" / "InvalidConfigValue" / "UnsupportedProtocol" /
              "AuthFailed" / "CommunicationError" / "NotSupported" /
              "UnsupportedOnThisCard" / "UnsupportedSignatureParameter" /
-             "InputTooLarge" / "RateLimited" / "UnknownCredential" / "InvalidRequest" / "NoResult"
+             "InputTooLarge" / "RateLimited" / "UnknownCredential" / "InvalidRequest" / "NoResult" /
+             "MasterListReplayed"
 reply-ok = ( hello-ack // op-started // state // cert-list // cert-der // public-key //
-             config // ack // raw-signature // sign-recovery // layout // appearance-font )
+             config // ack // raw-signature // sign-recovery // layout // appearance-font //
+             csca-anchor-state )
 ; `features` advertises optional request families this agent understands; the
 ; client MUST gate the credential requests (ListCredentials / ManagePin /
 ; ActivateSigningKey) on the "credentials" token and fall back to read-only when
@@ -291,6 +337,48 @@ layout          = ( kind: "Layout", fontSize: float64, lineHeight: float64, line
 ; bytes, ridden as an fd exactly like sign-result's `artifact` / photo-result's
 ; `fd` (never inlined as `bstr`).
 appearance-font = ( fd: fd-index )
+; ImportCscaMasterList's reply: what the agent now believes about its
+; country-signing anchors. Mirrors the D-Bus `Config1.CscaAnchorState`
+; property field-for-field — that interface is the canonical semantic source
+; and this schema does not fork it. Discriminated by `kind`, like hello-ack and
+; layout: this arm carries no key unique enough that a future arm could not
+; also want it.
+;
+;   anchors              anchors held. INCLUDES CSCA link certificates, which
+;                        are anchors like any other, so this is not a count of
+;                        self-signed roots.
+;   issuers              distinct issuing countries among those anchors.
+;   replayRefusalActive  whether a later import can be refused for rolling the
+;                        anchors back. Its FALSE is the value worth knowing: it
+;                        means the accepted list carried no signing time, so
+;                        "is this older than what I have" cannot be answered at
+;                        all. REQUIRED for exactly that reason — a surface that
+;                        stays silent leaves a person unable to tell "this is
+;                        safe" from "this cannot be checked".
+;   signer               lowercase hex SHA-256 over the publisher's
+;                        SubjectPublicKeyInfo — the fingerprint a person is
+;                        shown, and the value the next import is pinned to.
+;   signerPinned         whether the import ESTABLISHED that publisher's
+;                        identity (matched the fingerprint, or built a path to
+;                        an anchor already held) rather than merely observing
+;                        it. FALSE after a trust-on-first-import.
+;   acceptedAt           seconds since the epoch when the AGENT accepted the
+;                        list. Under no publisher's control.
+;   signedAt             seconds since the epoch the list says it was SIGNED
+;                        (the CMS signingTime attribute). ABSENT when the list
+;                        carries none, which CMS permits; there is no zero
+;                        sentinel, because a list signed at the epoch and a
+;                        list with no date must not read alike.
+;   origin               where the anchors came from ("import").
+;
+; The five optional members are optional HERE, not merely on the bus: the twin
+; property is an untyped `a{sv}` with no schema to enforce them, and a client
+; that failed a whole frame closed over a display-only field would be strictly
+; less robust than its own D-Bus half, for no gain.
+csca-anchor-state = ( kind: "CscaAnchorState", anchors: uint, issuers: uint,
+                      replayRefusalActive: bool,
+                      ? signer: tstr, ? signerPinned: bool,
+                      ? acceptedAt: int, ? signedAt: int, ? origin: tstr )
 
 reader-state = { handle: handle, name: tstr, hasCard: bool, ? card: handle }
 ; cardType/atr are appended (feature-gated "card-type"): cardType is

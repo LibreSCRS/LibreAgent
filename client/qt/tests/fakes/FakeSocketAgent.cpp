@@ -4,6 +4,7 @@
 #include "FakeSocketAgent.h"
 
 #include "ConfigKeys.h"         // the Config1 key vocabulary + the canonical TslSources row shape
+#include "CscaAnchorKeys.h"     // the CscaAnchorState key vocabulary, shared with the other fake
 #include "dbus/AgentDBus.h"     // the shared object/interface name spellings (constants only)
 #include "socket/MemfdSource.h" // memfd document/artifact source + readFdAll (Linux test helper)
 
@@ -149,6 +150,56 @@ QVariant cborConfigValueToVariant(const QString& key, const Wire::CborValue& val
     }
     const std::string* text = value.asText();
     return text != nullptr ? QString::fromStdString(*text) : QString();
+}
+
+/// The scripted anchor-state dict, in the canonical client-side shape both
+/// fakes take, re-encoded into this wire's TYPED reply arm.
+///
+/// A key ABSENT from the map stays absent on the wire — that is not an
+/// oversight, it is how an undated master list gets scripted: `signedAt` has
+/// no zero sentinel, because a list signed at the epoch and a list carrying no
+/// signingTime at all must not decode alike. Writing a 0 for a missing key
+/// here would give the client a value the agent never sent and quietly retire
+/// the distinction the whole `replayRefusalActive` surface rests on.
+Wire::CscaAnchorStateReply cscaAnchorStateReply(const QVariantMap& state)
+{
+    Wire::CscaAnchorStateReply out;
+    out.anchors = state.value(QString(kCscaAnchorAnchors)).toULongLong();
+    out.issuers = state.value(QString(kCscaAnchorIssuers)).toULongLong();
+    out.replayRefusalActive = state.value(QString(kCscaAnchorReplayRefusalActive)).toBool();
+    if (state.contains(QString(kCscaAnchorSigner))) {
+        out.signer = state.value(QString(kCscaAnchorSigner)).toString().toStdString();
+    }
+    if (state.contains(QString(kCscaAnchorSignerPinned))) {
+        out.signerPinned = state.value(QString(kCscaAnchorSignerPinned)).toBool();
+    }
+    if (state.contains(QString(kCscaAnchorAcceptedAt))) {
+        out.acceptedAt = state.value(QString(kCscaAnchorAcceptedAt)).toLongLong();
+    }
+    if (state.contains(QString(kCscaAnchorSignedAt))) {
+        out.signedAt = state.value(QString(kCscaAnchorSignedAt)).toLongLong();
+    }
+    if (state.contains(QString(kCscaAnchorOrigin))) {
+        out.origin = state.value(QString(kCscaAnchorOrigin)).toString().toStdString();
+    }
+    return out;
+}
+
+/// Read a descriptor to EOF SEQUENTIALLY, from its CURRENT position — read(2),
+/// never MemfdSource.h's pread-based readFdAll(), and no rewind first. See the
+/// import handler's own comment for why that is load-bearing rather than a
+/// stylistic choice; the D-Bus fake carries an identical helper for the same
+/// reason (it cannot share this one — that fake's suites do not compile this
+/// translation unit, nor MemfdSource's).
+QByteArray readFdSequential(int fd)
+{
+    QByteArray out;
+    char buf[4096];
+    ssize_t n = 0;
+    while ((n = ::read(fd, buf, sizeof(buf))) > 0) {
+        out.append(buf, static_cast<qsizetype>(n));
+    }
+    return out;
 }
 
 void setNonBlockingCloexec(int fd)
@@ -596,6 +647,16 @@ QVariant FakeSocketAgent::configValue(const QString& key) const
 QString FakeSocketAgent::lastSignCertId() const
 {
     return m_lastSignCertId;
+}
+
+int FakeSocketAgent::cscaImportCallCount() const
+{
+    return m_cscaImportCalls;
+}
+
+QByteArray FakeSocketAgent::lastImportedMasterList() const
+{
+    return m_lastImportedMasterList;
 }
 
 QByteArray FakeSocketAgent::lastSignInputBytes() const
@@ -1077,6 +1138,27 @@ void FakeSocketAgent::handleRequest(Connection* connection, Wire::RequestEnvelop
         }
         reply.clipped = m_config.layoutClipped;
         sendCbor(connection, Wire::makeReply(req, reply));
+        return;
+    }
+    if (const auto* import = std::get_if<Wire::ImportCscaMasterList>(&body)) {
+        ++m_cscaImportCalls;
+        if (import->list >= fds.size()) {
+            sendEntryError(connection, req, Wire::SyncError::InvalidRequest);
+            return; // fd index outside this frame's SCM_RIGHTS vector
+        }
+        // SEQUENTIAL read from the descriptor's CURRENT position -- read(2),
+        // not readFdAll()'s pread(2), and no rewind first. The received
+        // descriptor shares ONE open file description with the client's, so
+        // this is what advances the CLIENT's file offset, and that offset is
+        // the only observable separating "a descriptor crossed the wire" from
+        // "a name did". The D-Bus fake's own import arm reads it the same way
+        // and carries the same note.
+        m_lastImportedMasterList = readFdSequential(fds[static_cast<std::size_t>(import->list)].get());
+        if (m_config.cscaImportError) {
+            sendEntryError(connection, req, *m_config.cscaImportError);
+            return;
+        }
+        sendCbor(connection, Wire::makeReply(req, cscaAnchorStateReply(m_config.cscaAnchorState)));
         return;
     }
     if (std::get_if<Wire::GetAppearanceFont>(&body) != nullptr) {

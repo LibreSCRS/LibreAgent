@@ -22,8 +22,11 @@
 #include <QVariantMap>
 
 #include <fcntl.h>
+#include <unistd.h>
+
 #include <functional>
 #include <gtest/gtest.h>
+#include <expected>
 #include <memory>
 #include <optional>
 #include <type_traits>
@@ -57,6 +60,10 @@ public:
     /// Engaged -> every setConfig/resetConfig answers this instead of
     /// applying (the named-refusal pass-through).
     std::optional<SyncError> configRefusal;
+    /// Engaged -> importCscaMasterList answers this instead of importState.
+    std::optional<SyncError> importRefusal;
+    CscaAnchorState importState;
+    std::vector<int> importedFds;
     QString nextOperationId; // empty -> refuse entry with entryError
     SeamError entryError;
     std::optional<TerminalSnapshot> terminal;                 // ctor lost-Finished recovery read
@@ -146,6 +153,18 @@ public:
     {
         configResets.push_back(key);
         return configRefusal;
+    }
+    /// Records the descriptor it was handed and answers the scripted state (or
+    /// the scripted refusal). Enough to pin AgentClient's forwarding; whether
+    /// a descriptor really crosses a wire is a TRANSPORT claim, and belongs
+    /// where a real wire is involved (TransportParityTest).
+    [[nodiscard]] std::expected<CscaAnchorState, SyncError> importCscaMasterList(int masterListFd) override
+    {
+        importedFds.push_back(masterListFd);
+        if (importRefusal) {
+            return std::unexpected(*importRefusal);
+        }
+        return importState;
     }
     // Not exercised by this seam-mapping corpus (no scenario here scripts
     // "layout-preview" or calls these); trivial stubs only to satisfy the
@@ -392,6 +411,41 @@ TEST(SeamConfig, TransportLessClientReportsTheNeverArrivedClass)
     const std::optional<SyncError> reset = client->resetConfigValue(QStringLiteral("DefaultReason"));
     ASSERT_TRUE(reset.has_value());
     EXPECT_EQ(*reset, SyncError::CommunicationError);
+
+    const auto imported = client->importCscaMasterList(0);
+    ASSERT_FALSE(imported.has_value());
+    EXPECT_EQ(imported.error(), SyncError::CommunicationError)
+        << "an import with nowhere to go is the never-arrived class too — never a refusal the "
+           "agent did not make";
+}
+
+// The import's forwarding, at the one layer where it is a forward and nothing
+// else: the descriptor reaches the seam unmodified, an accepted state comes
+// back verbatim, and a named refusal passes through as itself. Whether a
+// descriptor really crosses a wire — and whether the two wires agree — is a
+// TRANSPORT claim, and lives in TransportParityTest against both real ones.
+TEST(SeamConfig, ImportForwardsTheDescriptorAndPassesBothOutcomesBack)
+{
+    ClientOnFake h;
+    h.fake->importState.anchors = 212;
+    h.fake->importState.issuers = 47;
+    h.fake->importState.replayRefusalActive = true;
+
+    const int fd = ::open("/dev/null", O_RDONLY | O_CLOEXEC);
+    ASSERT_GE(fd, 0);
+    const auto accepted = h.client->importCscaMasterList(fd);
+    ASSERT_TRUE(accepted.has_value());
+    EXPECT_EQ(accepted->anchors, 212u);
+    EXPECT_EQ(accepted->issuers, 47u);
+    EXPECT_TRUE(accepted->replayRefusalActive);
+    ASSERT_EQ(h.fake->importedFds.size(), 1U);
+    EXPECT_EQ(h.fake->importedFds.front(), fd) << "the caller's descriptor reaches the seam unchanged";
+
+    h.fake->importRefusal = SyncError::MasterListReplayed;
+    const auto refused = h.client->importCscaMasterList(fd);
+    ASSERT_FALSE(refused.has_value());
+    EXPECT_EQ(refused.error(), SyncError::MasterListReplayed);
+    ::close(fd);
 }
 
 // ---- SignOptions / PinVerb -> request mapping -----------------------------------

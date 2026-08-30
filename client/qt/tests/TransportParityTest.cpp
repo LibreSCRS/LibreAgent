@@ -216,6 +216,7 @@
 #include <LibreSCRS/AgentClient/IdentityRows.h>
 
 #include "ClientTestAccess.h"
+#include "CscaAnchorKeys.h"
 #include "fakes/ClientOnHarness.h"
 #include "fakes/FakeSocketAgent.h"
 #include "fakes/TestBus.h"
@@ -225,6 +226,8 @@
 #include <QByteArray>
 #include <QCoreApplication>
 #include <QCryptographicHash>
+#include <QDateTime>
+#include <QFile>
 #include <QMetaObject>
 #include <QObject>
 #include <QRectF>
@@ -241,6 +244,13 @@
 #include <optional>
 #include <string>
 #include <type_traits>
+
+// The import scenarios below hand over a real descriptor and then read the
+// SENDER's own file position back, which is the only thing that tells a
+// descriptor from a name (see that scenario's comment).
+#include <fcntl.h>
+#include <sys/mman.h>
+#include <unistd.h>
 
 using namespace LibreSCRS::AgentClient;
 using namespace LibreSCRS::AgentClient::Fakes;
@@ -324,6 +334,17 @@ struct ParityConfig
     // each fake into its own wire form — a typed a(sbb) property array on
     // D-Bus, a CBOR value the grammar types as bare `any` on the socket.
     QVariantMap agentConfig = Fakes::defaultAgentConfig();
+    // The anchor-state dict an ACCEPTED Config1.ImportCscaMasterList answers
+    // with, scripted ONCE here in the canonical client-side shape (see
+    // fakes/FakeConfig.h) and re-encoded by each fake into its own wire form
+    // — a plain `a{sv}` out-arg on D-Bus, a typed CBOR reply arm on the
+    // socket. Same reason `agentConfig` above is scripted once: two default
+    // dicts, one per fake, would let the thing under test be scripted
+    // differently on each side of the comparison.
+    QVariantMap cscaAnchorState = Fakes::defaultCscaAnchorState();
+    // Engaged -> every import is REFUSED with this named error and installs
+    // nothing, on whichever wire the fake speaks.
+    std::optional<SyncError> cscaImportError;
     bool failMethodEntry = false;
     // The public-data fetch answers a reply that is OUTSIDE this request's
     // contract — the same fault expressed in each wire's own terms (D-Bus: a
@@ -468,6 +489,14 @@ public:
     {
         return m_harness.lastSignBatchDocumentBytes();
     }
+    [[nodiscard]] int cscaImportCallCount()
+    {
+        return m_harness.cscaImportCallCount();
+    }
+    [[nodiscard]] QByteArray lastImportedMasterList()
+    {
+        return m_harness.lastImportedMasterList();
+    }
     /// The post-read authoritative cardType update.
     void triggerCardTypeChanged(const QString& cardType)
     {
@@ -537,6 +566,15 @@ private:
         out.raceResultBeforeReturn = cfg.raceResultBeforeReturn;
         out.batchHaltAtIndex = cfg.batchHaltAtIndex;
         out.batchHaltErrorCode = cfg.batchHaltErrorCode;
+        out.cscaAnchorState = cfg.cscaAnchorState;
+        // This fake refuses by agent-namespace SHORT NAME (it mints a real
+        // D-Bus error reply), so the neutral enumerator is spelled back out
+        // through the wire library's own name table rather than a second
+        // hand-kept mapping here.
+        if (cfg.cscaImportError) {
+            const std::string_view name = LibreSCRS::Agent::Wire::syncErrorName(*cfg.cscaImportError);
+            out.cscaImportError = QString::fromLatin1(name.data(), static_cast<qsizetype>(name.size()));
+        }
         return out;
     }
 
@@ -696,6 +734,18 @@ public:
         runOnThread(m_context, [this, &out]() { out = m_agent->lastSignBatchDocumentBytes(); });
         return out;
     }
+    [[nodiscard]] int cscaImportCallCount()
+    {
+        int out = 0;
+        runOnThread(m_context, [this, &out]() { out = m_agent->cscaImportCallCount(); });
+        return out;
+    }
+    [[nodiscard]] QByteArray lastImportedMasterList()
+    {
+        QByteArray out;
+        runOnThread(m_context, [this, &out]() { out = m_agent->lastImportedMasterList(); });
+        return out;
+    }
     /// The post-read authoritative cardType update.
     void triggerCardTypeChanged(const QString& cardType)
     {
@@ -763,6 +813,8 @@ private:
         out.raceResultBeforeReturn = cfg.raceResultBeforeReturn;
         out.batchHaltAtIndex = cfg.batchHaltAtIndex;
         out.batchHaltErrorCode = cfg.batchHaltErrorCode;
+        out.cscaAnchorState = cfg.cscaAnchorState;
+        out.cscaImportError = cfg.cscaImportError;
         return out;
     }
 
@@ -2283,6 +2335,211 @@ TYPED_TEST(TransportParity, CscaSourcesRoundTripAsRowsAcrossTransports)
     ASSERT_EQ(second.size(), 2);
     EXPECT_EQ(second.at(0).toString(), QStringLiteral("file:///etc/librescrs/csca-anchors"));
     EXPECT_FALSE(second.at(1).toBool()) << "the eager flag must survive as a BOOL, per cell, per row";
+}
+
+// ---- Config1.ImportCscaMasterList: the one verb that hands over a FILE -----
+//
+// Every other call on this seam carries values; this one carries an open file
+// description. The distinction is not decorative and it is the reason these
+// scenarios exist as parity cases rather than per-transport ones: a client
+// that passed a NAME instead would look identical in the reply it gets back,
+// and only the sender's own descriptor can tell the two apart (see the first
+// scenario's comment).
+
+// The descriptor test. A file descriptor sent over either wire — D-Bus
+// UNIX_FDS, socket SCM_RIGHTS — is a SECOND REFERENCE TO ONE OPEN FILE
+// DESCRIPTION, not a copy of the file: the receiver's sequential read
+// therefore advances the SENDER's file position. A path never could, and
+// neither could a client that re-opened the descriptor by name
+// (/proc/self/fd/N) before handing it over — that would deliver identical
+// bytes while leaving this offset at 0.
+//
+// So the offset is the assertion that actually distinguishes "passes a
+// descriptor" from "passes a name", and the byte comparison alone does not.
+// Both fakes read the descriptor with read(2) from its CURRENT position for
+// exactly this reason (never pread, which the sign-input capture uses).
+TYPED_TEST(TransportParity, CscaMasterListImportPassesADescriptorNotAPathAcrossTransports)
+{
+    using Env = typename TypeParam::Env;
+    ParityConfig cfg;
+    cfg.capabilities = Cap::Pki;
+    Env env(cfg);
+
+    AgentClient* client = env.client();
+    ASSERT_TRUE(client->isAvailable());
+
+    QTemporaryDir dir(QStringLiteral("/var/tmp/laqt-csca-XXXXXX"));
+    ASSERT_TRUE(dir.isValid());
+    const QByteArray listBytes = QByteArrayLiteral("PARITY-ICAO-MASTER-LIST-BYTES");
+    const QString path = dir.path() + QStringLiteral("/master-list.ml");
+    {
+        QFile file(path);
+        ASSERT_TRUE(file.open(QIODevice::WriteOnly));
+        ASSERT_EQ(file.write(listBytes), listBytes.size());
+    }
+
+    const int fd = ::open(path.toLocal8Bit().constData(), O_RDONLY | O_CLOEXEC);
+    ASSERT_GE(fd, 0);
+    ASSERT_EQ(::lseek(fd, 0, SEEK_CUR), 0) << "the sender starts at the beginning of the file";
+
+    const auto imported = client->importCscaMasterList(fd);
+    ASSERT_TRUE(imported.has_value()) << "the scripted agent accepts this list on both wires";
+
+    EXPECT_EQ(env.cscaImportCallCount(), 1);
+    EXPECT_EQ(env.lastImportedMasterList(), listBytes) << "the agent must receive the list's bytes verbatim";
+    EXPECT_EQ(::lseek(fd, 0, SEEK_CUR), listBytes.size())
+        << "the agent's read must have moved THIS descriptor's offset — it shares one open file "
+           "description with the one that crossed the wire. An offset still at 0 means the client "
+           "handed over a name (or a freshly opened descriptor), which is the failure this "
+           "assertion exists to catch; the byte comparison above passes either way.";
+    ::close(fd);
+}
+
+// The demarshal arm. The reply is the agent's whole anchor-state dict, and a
+// client has to be able to SAY what happened: how many anchors it now holds,
+// how many countries issued them, when the list was signed — and whether
+// rollback refusal is even operating, which is the one a surface must not
+// stay silent about (a list with no signing time cannot be checked against a
+// later one at all).
+TYPED_TEST(TransportParity, CscaAnchorStateFromImportSurfacesIdenticallyAcrossTransports)
+{
+    using Env = typename TypeParam::Env;
+    ParityConfig cfg;
+    cfg.capabilities = Cap::Pki;
+    Env env(cfg);
+
+    AgentClient* client = env.client();
+    ASSERT_TRUE(client->isAvailable());
+
+    const int fd = ::memfd_create("parity-master-list", MFD_CLOEXEC);
+    ASSERT_GE(fd, 0);
+
+    const auto imported = client->importCscaMasterList(fd);
+    ASSERT_TRUE(imported.has_value());
+    const CscaAnchorState& state = *imported;
+
+    EXPECT_EQ(state.anchors, 212u) << "the anchor count must survive both decodes";
+    EXPECT_EQ(state.issuers, 47u);
+    EXPECT_EQ(state.signer, QStringLiteral("9c1f5c7b2f4b4d6f8a0e3d5c7b9a1f3e5d7c9b1a3f5e7d9c1b3a5f7e9d1c3b5a"));
+    EXPECT_TRUE(state.signerPinned);
+    EXPECT_EQ(state.acceptedAt, QDateTime::fromSecsSinceEpoch(1756000000));
+    ASSERT_TRUE(state.signedAt.isValid()) << "this list carried a signing time";
+    EXPECT_EQ(state.signedAt, QDateTime::fromSecsSinceEpoch(1755000000));
+    EXPECT_TRUE(state.replayRefusalActive);
+    EXPECT_EQ(state.origin, QStringLiteral("import"));
+    ::close(fd);
+}
+
+// The other half of that dict, and the half worth a scenario of its own: an
+// UNDATED list. CMS makes signingTime optional, so `signedAt` is simply
+// absent — never a zero sentinel, because a list signed at the epoch and a
+// list with no date must not read alike — and `replayRefusalActive` goes
+// FALSE, meaning "is this older than what I have" cannot be answered at all.
+TYPED_TEST(TransportParity, UndatedMasterListLeavesReplayRefusalOffAcrossTransports)
+{
+    using Env = typename TypeParam::Env;
+    ParityConfig cfg;
+    cfg.capabilities = Cap::Pki;
+    cfg.cscaAnchorState = Fakes::defaultCscaAnchorState();
+    cfg.cscaAnchorState.remove(QString(kCscaAnchorSignedAt));
+    cfg.cscaAnchorState.insert(QString(kCscaAnchorReplayRefusalActive), false);
+    Env env(cfg);
+
+    AgentClient* client = env.client();
+    ASSERT_TRUE(client->isAvailable());
+
+    const int fd = ::memfd_create("parity-master-list", MFD_CLOEXEC);
+    ASSERT_GE(fd, 0);
+
+    const auto imported = client->importCscaMasterList(fd);
+    ASSERT_TRUE(imported.has_value());
+    EXPECT_FALSE(imported->signedAt.isValid())
+        << "an absent signing time must stay absent — an epoch-valued QDateTime would make an "
+           "undated list indistinguishable from one signed on 1970-01-01";
+    EXPECT_FALSE(imported->replayRefusalActive)
+        << "the FALSE is the value worth knowing: rollback refusal is not operating";
+    EXPECT_EQ(imported->anchors, 212u) << "the rest of the dict is unaffected";
+    ::close(fd);
+}
+
+// Trust-on-first-import. There is nothing to check a FIRST master list
+// against — a master list is what supplies anchors — so the first accepted one
+// establishes the publisher and its fingerprint is reported for a person to
+// recognise. `signerPinned == false` is how the agent says exactly that, and a
+// surface that renders "authenticity verified" over it claims more than was
+// measured. The false therefore has to survive both wires as a PRESENT false,
+// never as an absence a consumer would read as "not reported".
+TYPED_TEST(TransportParity, TrustOnFirstImportReportsAnUnpinnedSignerAcrossTransports)
+{
+    using Env = typename TypeParam::Env;
+    ParityConfig cfg;
+    cfg.capabilities = Cap::Pki;
+    cfg.cscaAnchorState.insert(QString(kCscaAnchorSignerPinned), false);
+    Env env(cfg);
+
+    AgentClient* client = env.client();
+    ASSERT_TRUE(client->isAvailable());
+
+    const int fd = ::memfd_create("parity-master-list", MFD_CLOEXEC);
+    ASSERT_GE(fd, 0);
+
+    const auto imported = client->importCscaMasterList(fd);
+    ASSERT_TRUE(imported.has_value());
+    EXPECT_FALSE(imported->signerPinned)
+        << "the publisher was observed, not established — both wires owe a caller that distinction";
+    EXPECT_FALSE(imported->signer.isEmpty()) << "and the fingerprint to show a person is still reported";
+    ::close(fd);
+}
+
+// The replay refusal, NAMED. Without its own enumerator a caller cannot tell
+// "this list is already installed / older than the one you have" from any
+// other import failure, and would have to render a raw D-Bus error name (or
+// nothing) at the one moment a person can actually act on the answer.
+TYPED_TEST(TransportParity, MasterListReplayRefusalIsNamedAcrossTransports)
+{
+    using Env = typename TypeParam::Env;
+    ParityConfig cfg;
+    cfg.capabilities = Cap::Pki;
+    cfg.cscaImportError = SyncError::MasterListReplayed;
+    Env env(cfg);
+
+    AgentClient* client = env.client();
+    ASSERT_TRUE(client->isAvailable());
+
+    const int fd = ::memfd_create("parity-master-list", MFD_CLOEXEC);
+    ASSERT_GE(fd, 0);
+
+    const auto imported = client->importCscaMasterList(fd);
+    ASSERT_FALSE(imported.has_value()) << "a replayed list installs nothing";
+    EXPECT_EQ(imported.error(), SyncError::MasterListReplayed)
+        << "both wires must land on the SAME enumerator — a prefixed D-Bus error name on one, a "
+           "sync-error token on the other";
+    ::close(fd);
+}
+
+// An unreachable agent is the retryable class, and it must NOT be reported as
+// a refusal the agent named: nothing on either wire said anything about this
+// list.
+TYPED_TEST(TransportParity, ImportAgainstAnAbsentAgentIsACommunicationErrorAcrossTransports)
+{
+    using Env = typename TypeParam::Env;
+    ParityConfig cfg;
+    cfg.capabilities = Cap::Pki;
+    Env env(cfg);
+
+    AgentClient* client = env.client();
+    ASSERT_TRUE(client->isAvailable());
+    env.vanishAgent();
+    ASSERT_TRUE(waitFor([&]() { return !client->isAvailable(); }));
+
+    const int fd = ::memfd_create("parity-master-list", MFD_CLOEXEC);
+    ASSERT_GE(fd, 0);
+
+    const auto imported = client->importCscaMasterList(fd);
+    ASSERT_FALSE(imported.has_value());
+    EXPECT_EQ(imported.error(), SyncError::CommunicationError);
+    EXPECT_EQ(env.cscaImportCallCount(), 0) << "nothing reached either fake";
+    ::close(fd);
 }
 
 // ---- feature-gated entry: readTokenInfo() without "token-info" refuses

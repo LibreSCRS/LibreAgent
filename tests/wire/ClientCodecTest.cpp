@@ -179,6 +179,8 @@ TEST(ClientCodec, EncodeRequestEveryTypeRoundTripsThroughServerParse)
     expectRequestRoundTrip(22, ManagePin{"reader/0:card/0", "user:0x01", "activate_pin", std::optional<bool>{true}});
     expectRequestRoundTrip(23, ManagePin{"reader/0:card/0", "user:0x01", "unblock", std::optional<bool>{false}});
     expectRequestRoundTrip(24, ActivateSigningKey{"reader/0:card/0"});
+    expectRequestRoundTrip(26, ImportCscaMasterList{0});
+    expectRequestRoundTrip(27, ImportCscaMasterList{1});
 }
 
 TEST(ClientCodec, EncodeRequestDefaultsRequestIdToZero)
@@ -247,6 +249,83 @@ TEST(ClientCodec, ConfigReplyRoundTrips)
     ConfigReply config;
     config.entries.emplace("DefaultLevel", CborValue(std::string("b-t")));
     expectReplyRoundTrip(8, config, [](std::uint64_t r, const ConfigReply& a) { return makeReply(r, a); });
+}
+
+// csca-anchor-state, with every optional member PRESENT: the ordinary shape a
+// dated master list produces.
+TEST(ClientCodec, CscaAnchorStateReplyRoundTrips)
+{
+    CscaAnchorStateReply state;
+    state.anchors = 212;
+    state.issuers = 47;
+    state.replayRefusalActive = true;
+    state.signer = std::string("9c1f5c7b");
+    state.signerPinned = true;
+    state.acceptedAt = 1756000000;
+    state.signedAt = 1755000000;
+    state.origin = std::string("import");
+    expectReplyRoundTrip(30, state, [](std::uint64_t r, const CscaAnchorStateReply& a) { return makeReply(r, a); });
+}
+
+// The same arm with every optional member ABSENT — an UNDATED list, which is
+// the shape that carries meaning rather than the shape that saves bytes. The
+// round trip is what proves absence survives: an encoder that wrote zeros, or
+// a decoder that substituted them, would make an undated list decode
+// identically to one signed at the epoch and would silently turn
+// `replayRefusalActive == false` into an unexplainable value.
+TEST(ClientCodec, CscaAnchorStateReplyKeepsAnAbsentSigningTimeAbsent)
+{
+    CscaAnchorStateReply state;
+    state.anchors = 3;
+    state.issuers = 1;
+    state.replayRefusalActive = false;
+    expectReplyRoundTrip(31, state, [](std::uint64_t r, const CscaAnchorStateReply& a) { return makeReply(r, a); });
+
+    const auto decoded = parseReply(makeReply(31, state).encode(), {});
+    ASSERT_TRUE(decoded.has_value());
+    const auto* arm = std::get_if<CscaAnchorStateReply>(&decoded->reply);
+    ASSERT_NE(arm, nullptr);
+    EXPECT_FALSE(arm->signedAt.has_value());
+    EXPECT_FALSE(arm->acceptedAt.has_value());
+    EXPECT_FALSE(arm->signer.has_value());
+    EXPECT_FALSE(arm->replayRefusalActive);
+}
+
+// An ENGAGED-but-false optional must still cross. `signerPinned == false` is
+// the trust-on-first-import case -- the publisher's identity was established
+// by nothing but this list -- so an encoder that dropped it would let a
+// surface read "not reported" where the agent said "not established", and a
+// decoder that defaulted it would say the same thing with more confidence.
+TEST(ClientCodec, CscaAnchorStateReplyCarriesAnEngagedFalseSignerPinned)
+{
+    CscaAnchorStateReply state;
+    state.anchors = 90;
+    state.issuers = 12;
+    state.replayRefusalActive = true;
+    state.signerPinned = false;
+    expectReplyRoundTrip(33, state, [](std::uint64_t r, const CscaAnchorStateReply& a) { return makeReply(r, a); });
+
+    const auto decoded = parseReply(makeReply(33, state).encode(), {});
+    ASSERT_TRUE(decoded.has_value());
+    const auto* arm = std::get_if<CscaAnchorStateReply>(&decoded->reply);
+    ASSERT_NE(arm, nullptr);
+    ASSERT_TRUE(arm->signerPinned.has_value()) << "the false must arrive as PRESENT-and-false, not as absent";
+    EXPECT_FALSE(*arm->signerPinned);
+}
+
+// The three REQUIRED members are required: a frame missing one is malformed,
+// not an unrecognised arm. `replayRefusalActive` specifically — a decoder that
+// defaulted it to false would report "rollback refusal is off" about an agent
+// that said no such thing.
+TEST(ClientCodec, CscaAnchorStateReplyRejectsAMissingReplayRefusalFlag)
+{
+    CborValue::Map m;
+    m.emplace("t", CborValue("Reply"));
+    m.emplace("req", CborValue::uint(32));
+    m.emplace("kind", CborValue("CscaAnchorState"));
+    m.emplace("anchors", CborValue::uint(5));
+    m.emplace("issuers", CborValue::uint(2));
+    EXPECT_FALSE(parseReply(CborValue(std::move(m)).encode(), {}).has_value());
 }
 
 TEST(ClientCodec, AckReplyRoundTrips)

@@ -1103,6 +1103,41 @@ void Config1Adaptor::SetValue(const QString& key, const QDBusVariant& value)
     m_agent->applyConfigValue(key, configValueFromVariant(key, value.variant()));
 }
 
+namespace {
+
+/// Read a descriptor to EOF SEQUENTIALLY, from its CURRENT position — read(2),
+/// never pread(2), and no rewind first.
+///
+/// Both are deliberate and neither is incidental. The real agent reads an
+/// imported master list this way, and the received descriptor shares ONE open
+/// file description with the client's, so this read is what advances the
+/// CLIENT's file position — the only observable that tells "the client passed a
+/// descriptor" from "the client passed a name it re-opened". readFdAll() in
+/// MemfdSource.h (used for the sign-input capture) is pread-based and would
+/// leave that offset exactly where it was, which is why this is not that.
+QByteArray readFdSequential(int fd)
+{
+    QByteArray out;
+    char buf[4096];
+    ssize_t n = 0;
+    while ((n = ::read(fd, buf, sizeof(buf))) > 0) {
+        out.append(buf, static_cast<qsizetype>(n));
+    }
+    return out;
+}
+
+} // namespace
+
+QVariantMap Config1Adaptor::ImportCscaMasterList(const QDBusUnixFileDescriptor& masterList)
+{
+    m_agent->captureCscaImport(masterList.isValid() ? readFdSequential(masterList.fileDescriptor()) : QByteArray());
+    if (!m_agent->config().cscaImportError.isEmpty()) {
+        refuse(m_agent->config().cscaImportError, QStringLiteral("scripted master-list refusal"));
+        return {};
+    }
+    return m_agent->config().cscaAnchorState;
+}
+
 void Config1Adaptor::Reset(const QString& key)
 {
     // Reset takes the FULL config-key set (unlike SetValue's settable-only
@@ -1660,6 +1695,22 @@ QVariantMap FakeAgent::lastSignOptions() const
 QByteArray FakeAgent::lastSignInputBytes() const
 {
     return m_lastSignInputBytes;
+}
+
+void FakeAgent::captureCscaImport(const QByteArray& bytes)
+{
+    ++m_cscaImportCalls;
+    m_lastImportedMasterList = bytes;
+}
+
+int FakeAgent::cscaImportCallCount() const
+{
+    return m_cscaImportCalls;
+}
+
+QByteArray FakeAgent::lastImportedMasterList() const
+{
+    return m_lastImportedMasterList;
 }
 
 void FakeAgent::captureSignBatch(const QString& certId, const QStringList& displayNames,

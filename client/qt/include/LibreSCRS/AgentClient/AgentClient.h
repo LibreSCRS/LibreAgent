@@ -16,6 +16,7 @@
 #include <QVariant>
 #include <QVariantMap>
 
+#include <expected>
 #include <memory>
 #include <optional>
 
@@ -189,6 +190,63 @@ public:
     ///        the read-only gate — a setting a client may not write is not
     ///        one it may reset either.
     [[nodiscard]] std::optional<SyncError> resetConfigValue(const QString& key);
+
+    /// @brief Install country-signing (CSCA) trust anchors from a signed ICAO
+    ///        master list (`Config1.ImportCscaMasterList` / socket
+    ///        `ImportCscaMasterList`). Synchronous and bounded; the accepted
+    ///        anchor state on success, else the NAMED refusal.
+    ///
+    ///        The agent needs the trust-tier authorization for this — the same
+    ///        one the `"TsaUrls"` / `"TslSources"` / `"CscaSources"` writes
+    ///        need, and for a stronger version of the same reason: an import
+    ///        does not name a place anchors may come from, it INSTALLS the
+    ///        concrete anchors passports will be accepted or refused against.
+    ///        A user who declines, or a policy that denies, is
+    ///        `SyncError::NotAuthorized`.
+    ///
+    ///        The accepted anchors REPLACE the cached set rather than merging
+    ///        into it: a master list is a complete statement of what its
+    ///        publisher vouches for, so merging would keep anchors it has
+    ///        withdrawn. Nothing about the file is remembered as a SOURCE to
+    ///        fetch from later — that is what the `"CscaSources"` setting is
+    ///        for; this is a one-shot input.
+    ///
+    ///        Refusals worth branching on:
+    ///          - `MasterListReplayed`   the list is authentic and NOT newer
+    ///                                   than the one installed (older, dated
+    ///                                   the same, or undated while the
+    ///                                   installed one is dated). Nothing was
+    ///                                   installed and nothing already held was
+    ///                                   given up — the case a person can act
+    ///                                   on ("you already have this one");
+    ///          - `NotAuthorized`        declined or denied;
+    ///          - `RateLimited`          this caller is over budget;
+    ///          - `InvalidRequest`       not a regular file, or unreadable;
+    ///          - `InputTooLarge`        past the agent's size bound;
+    ///          - `CommunicationError`   the import never REACHED the agent
+    ///                                   (unreachable, timed out, no reply) —
+    ///                                   the one case worth retrying.
+    ///        The agent also names several "this file is not a usable master
+    ///        list" refusals (not a master list, empty, malformed, bad
+    ///        signature, a publisher it does not follow, an unwritable anchor
+    ///        cache). Those are outside the closed `SyncError` vocabulary and
+    ///        arrive as `CommunicationError`, the same degrade an unrecognised
+    ///        name gets on either wire; a caller renders them as "this file
+    ///        could not be installed" and offers a different file.
+    ///
+    /// @param masterListFd An OPEN descriptor for the master list, BORROWED —
+    ///        this call duplicates it for the wire and never closes yours, so
+    ///        closing it stays your job. A descriptor and not a path because
+    ///        the agent is a separate, possibly sandboxed process: a name it
+    ///        would have to re-open is a name it may not be able to open, and
+    ///        would resolve a second time what you already resolved once.
+    ///
+    ///        One consequence follows from what a descriptor IS and is worth
+    ///        knowing before you reuse yours: what crosses the wire refers to
+    ///        the SAME open file description as yours, so the agent's read
+    ///        ADVANCES YOUR FILE POSITION. Rewind (or re-open) before reading
+    ///        the same descriptor yourself afterwards.
+    [[nodiscard]] std::expected<CscaAnchorState, SyncError> importCscaMasterList(int masterListFd);
 
     /// @brief Card-independent, synchronous visible-signature layout preview
     ///        (`Manager1.LayoutVisualSignature` / socket `"LayoutVisual"`) —

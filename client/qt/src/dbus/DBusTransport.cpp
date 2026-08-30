@@ -4,6 +4,7 @@
 #include "DBusTransport.h"
 
 #include "../ConfigKeys.h"
+#include "../CscaAnchorKeys.h"
 #include "AgentDBus.h"
 #include "CappedCall.h"
 #include "ErrorNameMap.h"
@@ -449,6 +450,33 @@ std::optional<SyncError> DBusTransport::resetConfig(const QString& key)
                                                        QStringLiteral("Reset"));
     call.setArguments(QList<QVariant>{key});
     return configOutcome(cappedCall(m_connection, call, kHandshakeTimeoutMs));
+}
+
+std::expected<CscaAnchorState, SyncError> DBusTransport::importCscaMasterList(int masterListFd)
+{
+    QDBusMessage call = QDBusMessage::createMethodCall(m_service, QLatin1String(kRootPath), QLatin1String(kConfigIface),
+                                                       QStringLiteral("ImportCscaMasterList"));
+    // QDBusUnixFileDescriptor DUPS what it is given and owns the duplicate, so
+    // the caller's descriptor is untouched by this call and stays the caller's
+    // to close. The duplicate still refers to the SAME open file description,
+    // which is the whole point: the agent reads the bytes the caller opened,
+    // at the position the caller left them, without ever resolving a name.
+    call.setArguments(QList<QVariant>{QVariant::fromValue(QDBusUnixFileDescriptor(masterListFd))});
+    // Bounded on the method-entry budget rather than the handshake one every
+    // other Config1 call uses: verifying a master list's signature and writing
+    // the anchor cache is real work behind this reply, unlike a property read.
+    const QDBusMessage reply = cappedCall(m_connection, call, kDefaultCallTimeoutMs);
+    if (reply.type() != QDBusMessage::ReplyMessage) {
+        // Same rule as configOutcome(): an agent-namespace name carries its
+        // own enumerator; a bus-daemon failure named nothing about the import,
+        // so it collapses to the retryable class.
+        const SeamError error = mapDBusErrorName(reply.errorName(), reply.errorMessage());
+        return std::unexpected(error.syncError.value_or(SyncError::CommunicationError));
+    }
+    if (reply.arguments().isEmpty()) {
+        return std::unexpected(SyncError::CommunicationError); // a reply outside this method's contract
+    }
+    return cscaAnchorStateFromMap(demarshalVariantMap(reply.arguments().constFirst()));
 }
 
 void DBusTransport::onConfigChanged(const QString& key)

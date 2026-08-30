@@ -95,14 +95,14 @@ struct UnknownEvent
 
 // reply-ok arms (CDDL:118-119: hello-ack, op-started, state, cert-list,
 // cert-der, public-key, config, ack, raw-signature, sign-recovery, layout,
-// appearance-font) plus the error arm (err-info, modelled as ErrInfo) and
-// UnknownReply.
+// appearance-font, csca-anchor-state) plus the error arm (err-info, modelled
+// as ErrInfo) and UnknownReply.
 // sign-recovery's payload (`result: sign-result`) is byte-identical to the
 // Sign op-result-ready payload, so it reuses SignResult rather than adding
 // a distinct wrapper type.
-using ReplyVariant =
-    std::variant<HelloAck, OpStarted, StateReply, CertListReply, CertDerReply, PublicKeyReply, ConfigReply, AckReply,
-                 RawSignatureReply, LayoutReply, AppearanceFontReply, SignResult, ErrInfo, UnknownReply>;
+using ReplyVariant = std::variant<HelloAck, OpStarted, StateReply, CertListReply, CertDerReply, PublicKeyReply,
+                                  ConfigReply, AckReply, RawSignatureReply, LayoutReply, AppearanceFontReply,
+                                  CscaAnchorStateReply, SignResult, ErrInfo, UnknownReply>;
 
 // event arms (CDDL:156-186) plus UnknownEvent. OpIdentityGroup is a
 // progressive hint ahead of the SAME op's eventual OpResultReady (see the

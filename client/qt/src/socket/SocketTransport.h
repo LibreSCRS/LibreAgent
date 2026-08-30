@@ -104,6 +104,7 @@ public:
     [[nodiscard]] QVariantMap configSnapshot() override;
     [[nodiscard]] std::optional<SyncError> setConfig(const QString& key, const QVariant& value) override;
     [[nodiscard]] std::optional<SyncError> resetConfig(const QString& key) override;
+    [[nodiscard]] std::expected<CscaAnchorState, SyncError> importCscaMasterList(int masterListFd) override;
     [[nodiscard]] std::optional<LayoutResult> layoutVisualSignature(const QString& text, QRectF box) override;
     [[nodiscard]] FdHandle appearanceFont() override;
     void subscribeProperties(const QString& objectId, ObjectKind kind, PropertyListener* listener) override;

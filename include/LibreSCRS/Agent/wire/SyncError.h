@@ -114,6 +114,19 @@ enum class SyncError : std::uint8_t {
     /// KeyNotFound stand-in, depending on which host); this is the dedicated
     /// name both hosts serve now.
     NoResult,
+    /// An ImportCscaMasterList list is AUTHENTIC and is not newer than the one
+    /// already installed -- older, dated the same, or carrying no signing time
+    /// while the installed one does. Nothing was installed, and nothing already
+    /// held was given up.
+    ///
+    /// Named rather than folded into `InvalidRequest` because it is the one
+    /// import failure a person can act on directly: "you already have this
+    /// list" and "this one is older than what is installed" are answers, while
+    /// the generic bucket -- shared with a malformed file, a bad signature and
+    /// a wrong publisher -- is not. (Bucket: invalid arguments, alongside
+    /// `InvalidRequest` and the three config names; that this bucket cannot
+    /// tell them apart is the whole reason this axis is carried separately.)
+    MasterListReplayed,
 };
 
 /// @brief The wire name for a `SyncError` (== the literal enumerated by the

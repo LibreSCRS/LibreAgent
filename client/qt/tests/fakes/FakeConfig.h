@@ -15,6 +15,7 @@
 // types as bare `any` on the socket. Two default maps, one per fake, would let
 // the thing under test be scripted differently on each side of the comparison.
 #include "ConfigKeys.h"
+#include "CscaAnchorKeys.h"
 
 #include <QString>
 #include <QStringList>
@@ -43,6 +44,33 @@ namespace LibreSCRS::AgentClient::Fakes {
         {QString(kConfigDefaultReason), QStringLiteral("Approval")},
         {QString(kConfigDefaultLocation), QStringLiteral("Belgrade")},
         {QString(kConfigPluginDir), QStringLiteral("/usr/lib/librescrs/plugins")},
+    };
+}
+
+/// @brief The `CscaAnchorState` dict both fakes answer an accepted
+///        `ImportCscaMasterList` with, in the canonical client-side shape
+///        (the same eight keys the D-Bus property and the socket reply arm
+///        carry). Here for the same reason `defaultAgentConfig()` above is:
+///        the parity corpus scripts it ONCE and each fake re-encodes it into
+///        its own wire form, so the thing under comparison cannot be scripted
+///        differently on the two sides.
+///
+/// The integer members are typed deliberately: `anchors`/`issuers` are `u` on
+/// the bus and `acceptedAt`/`signedAt` are `x`, so a `quint32`/`qint64` split
+/// here is what makes the D-Bus fake marshal the property's real signature
+/// rather than something QtDBus guessed from a bare int.
+[[nodiscard]] inline QVariantMap defaultCscaAnchorState()
+{
+    return QVariantMap{
+        {QString(kCscaAnchorAnchors), QVariant::fromValue<quint32>(212)},
+        {QString(kCscaAnchorIssuers), QVariant::fromValue<quint32>(47)},
+        {QString(kCscaAnchorReplayRefusalActive), true},
+        {QString(kCscaAnchorSigner),
+         QStringLiteral("9c1f5c7b2f4b4d6f8a0e3d5c7b9a1f3e5d7c9b1a3f5e7d9c1b3a5f7e9d1c3b5a")},
+        {QString(kCscaAnchorSignerPinned), true},
+        {QString(kCscaAnchorAcceptedAt), QVariant::fromValue<qint64>(1756000000)},
+        {QString(kCscaAnchorSignedAt), QVariant::fromValue<qint64>(1755000000)},
+        {QString(kCscaAnchorOrigin), QStringLiteral("import")},
     };
 }
 

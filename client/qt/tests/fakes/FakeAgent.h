@@ -214,6 +214,15 @@ public:
 public Q_SLOTS:
     void SetValue(const QString& key, const QDBusVariant& value);
     void Reset(const QString& key);
+    /// @brief `ImportCscaMasterList(h masterList) -> a{sv} state`. Reads the
+    ///        descriptor SEQUENTIALLY, from wherever the caller left its file
+    ///        position — never pread, and never a rewind first, exactly as the
+    ///        real agent does. That is load-bearing for the parity suite: the
+    ///        received descriptor shares one open file description with the
+    ///        client's, so this read is what advances the CLIENT's offset, and
+    ///        that offset is the only thing that tells "a descriptor crossed
+    ///        the wire" from "a name did".
+    QVariantMap ImportCscaMasterList(const QDBusUnixFileDescriptor& masterList);
 
 Q_SIGNALS:
     void Changed(const QString& key);
@@ -703,6 +712,15 @@ public:
         /// structural policy instead (unknown key / read-only key). Mirrors
         /// FakeSocketAgent::Config::configMutationError.
         QString configMutationError;
+        /// The `a{sv}` state an accepted ImportCscaMasterList answers with, in
+        /// the canonical client-side shape (see defaultCscaAnchorState()).
+        QVariantMap cscaAnchorState = defaultCscaAnchorState();
+        /// Refuse every import with this agent-namespace SHORT name instead of
+        /// accepting it ("MasterListReplayed", "NotAuthorized", ...). Empty
+        /// (default) accepts. Mirrors FakeSocketAgent::Config::cscaImportError,
+        /// which spells the same thing as the wire enumerator because that
+        /// fake refuses with a token rather than a D-Bus error name.
+        QString cscaImportError;
         /// Manager1.LayoutVisualSignature's scripted reply. Defaults
         /// model a plausible two-line layout; a cross-transport parity test
         /// scripts these to the SAME values on both fakes for an exact
@@ -806,6 +824,12 @@ public:
     [[nodiscard]] QString lastSignCertId() const;
     [[nodiscard]] QVariantMap lastSignOptions() const;
     [[nodiscard]] QByteArray lastSignInputBytes() const;
+    /// @brief How many ImportCscaMasterList calls reached this fake — 0 proves
+    ///        a refusal was decided before the wire was dialed.
+    [[nodiscard]] int cscaImportCallCount() const;
+    /// @brief The bytes the last import actually read off the descriptor.
+    [[nodiscard]] QByteArray lastImportedMasterList() const;
+    void captureCscaImport(const QByteArray& bytes);
 
     /// @brief Capture the verbatim SignBatch() in-args (CardAdaptor::SignBatch
     ///        dups + reads every document fd synchronously, before the client
@@ -987,6 +1011,8 @@ private:
     QString m_lastSignCertId;
     QVariantMap m_lastSignOptions;
     QByteArray m_lastSignInputBytes;
+    int m_cscaImportCalls = 0;
+    QByteArray m_lastImportedMasterList;
 
     QString m_lastSignBatchCertId;
     QVariantMap m_lastSignBatchOptions;

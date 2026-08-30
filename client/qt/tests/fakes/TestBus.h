@@ -227,6 +227,21 @@ public:
         return out;
     }
 
+    /// @brief Config1.ImportCscaMasterList calls received so far, and the
+    ///        bytes the last one read off the descriptor it was handed.
+    [[nodiscard]] int cscaImportCallCount()
+    {
+        int out = 0;
+        runOnThread(m_context, [this, &out]() { out = m_agent->cscaImportCallCount(); });
+        return out;
+    }
+    [[nodiscard]] QByteArray lastImportedMasterList()
+    {
+        QByteArray out;
+        runOnThread(m_context, [this, &out]() { out = m_agent->lastImportedMasterList(); });
+        return out;
+    }
+
     /// @brief Steps of the faithful "reader arrives already holding a card"
     ///        sequence (a/b/c). Driven separately so the test pumps the client
     ///        loop between them — the client must register its per-path match

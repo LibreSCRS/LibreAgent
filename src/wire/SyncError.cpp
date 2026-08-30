@@ -50,6 +50,8 @@ std::string_view syncErrorName(SyncError e) noexcept
         return "InvalidRequest";
     case SyncError::NoResult:
         return "NoResult";
+    case SyncError::MasterListReplayed:
+        return "MasterListReplayed";
     }
     return "UnknownCard"; // unreachable (all enumerators handled)
 }
@@ -82,6 +84,7 @@ SyncError decodeSyncError(std::string_view name) noexcept
         SyncError::UnknownCredential,
         SyncError::InvalidRequest,
         SyncError::NoResult,
+        SyncError::MasterListReplayed,
     };
     for (const auto e : kAll) {
         if (syncErrorName(e) == name) {

@@ -617,8 +617,11 @@ CborValue encodeRequestBody(const Request& body)
                 m.emplace("y", CborValue(r.y));
                 m.emplace("width", CborValue(r.width));
                 m.emplace("height", CborValue(r.height));
-            } else { // GetAppearanceFont
+            } else if constexpr (std::is_same_v<T, GetAppearanceFont>) {
                 m.emplace("t", CborValue("GetAppearanceFont"));
+            } else { // ImportCscaMasterList
+                m.emplace("t", CborValue("ImportCscaMasterList"));
+                m.emplace("list", CborValue::uint(r.list));
             }
             return CborValue(std::move(m));
         },
@@ -898,6 +901,12 @@ std::expected<RequestEnvelope, WireError> parseRequest(std::span<const std::uint
         env.body = LayoutVisual{std::move(*text), *x, *y, *width, *height};
     } else if (t == "GetAppearanceFont") {
         env.body = GetAppearanceFont{};
+    } else if (t == "ImportCscaMasterList") {
+        auto list = fUint(*m, "list");
+        if (!list) {
+            return std::unexpected(list.error());
+        }
+        env.body = ImportCscaMasterList{*list};
     } else {
         return std::unexpected(WireError::UnknownMessage);
     }
@@ -1054,6 +1063,40 @@ CborValue makeReply(std::uint64_t req, const AppearanceFontReply& a)
     CborValue reply = makeReplyBase(req);
     Map arm;
     arm.emplace("fd", CborValue::uint(a.fd));
+    mergeInto(reply, std::move(arm));
+    return reply;
+}
+
+CborValue makeReply(std::uint64_t req, const CscaAnchorStateReply& a)
+{
+    CborValue reply = makeReplyBase(req);
+    Map arm;
+    arm.emplace("kind", CborValue("CscaAnchorState"));
+    arm.emplace("anchors", CborValue::uint(a.anchors));
+    arm.emplace("issuers", CborValue::uint(a.issuers));
+    arm.emplace("replayRefusalActive", CborValue(a.replayRefusalActive));
+    // The five optional members are EMITTED ONLY WHEN ENGAGED. `signedAt` is
+    // the one that matters: an absent signing time must stay absent, because a
+    // zero written here would be indistinguishable from a list genuinely
+    // signed at the epoch.
+    if (a.signer) {
+        arm.emplace("signer", CborValue(*a.signer));
+    }
+    // has_value(), not the bare optional: this one holds a BOOL, so `if (opt)`
+    // reads like a test of the value and is a test of engagement. A false
+    // signerPinned -- a trust-on-first-import -- must still be EMITTED.
+    if (a.signerPinned.has_value()) {
+        arm.emplace("signerPinned", CborValue(*a.signerPinned));
+    }
+    if (a.acceptedAt) {
+        arm.emplace("acceptedAt", CborValue(*a.acceptedAt));
+    }
+    if (a.signedAt) {
+        arm.emplace("signedAt", CborValue(*a.signedAt));
+    }
+    if (a.origin) {
+        arm.emplace("origin", CborValue(*a.origin));
+    }
     mergeInto(reply, std::move(arm));
     return reply;
 }

@@ -41,6 +41,7 @@
 #include <QVariant>
 #include <QVariantMap>
 
+#include <expected>
 #include <optional>
 #include <vector>
 
@@ -320,6 +321,25 @@ public:
     [[nodiscard]] virtual std::optional<SyncError> setConfig(const QString& key, const QVariant& value) = 0;
     /// Restore one setting to the agent's built-in default; same contract.
     [[nodiscard]] virtual std::optional<SyncError> resetConfig(const QString& key) = 0;
+
+    /// Install country-signing trust anchors from a signed ICAO master list
+    /// (`Config1.ImportCscaMasterList` / socket `ImportCscaMasterList`);
+    /// the accepted anchor state on success, else the NAMED refusal.
+    ///
+    /// @p masterListFd is BORROWED, never owned: an implementation duplicates
+    /// it for the wire (D-Bus UNIX_FDS / socket SCM_RIGHTS) and never closes
+    /// the caller's descriptor. It is a descriptor and not a path on purpose —
+    /// the agent is a separate, possibly sandboxed process, so a name it would
+    /// have to re-open is a name it may not be able to open, and would be a
+    /// second resolution of a file the caller already resolved. One consequence
+    /// is worth knowing before writing a test: the descriptor that crosses the
+    /// wire shares ONE open file description with the caller's, so the agent's
+    /// read advances the CALLER's file position.
+    ///
+    /// A failure the client never got an answer to — unreachable agent,
+    /// capped-call timeout, no reply — is `SyncError::CommunicationError`,
+    /// exactly like `setConfig` above.
+    [[nodiscard]] virtual std::expected<CscaAnchorState, SyncError> importCscaMasterList(int masterListFd) = 0;
 
     // ---- Visual-signature layout preview ---------------------------------
     /// Bounded synchronous layout call (Manager1.LayoutVisualSignature /

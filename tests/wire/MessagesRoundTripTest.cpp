@@ -153,6 +153,16 @@ TEST(MessagesRoundTrip, LayoutRequestsRoundTrip)
     expectStable({38, GetAppearanceFont{}});
 }
 
+// Config1.ImportCscaMasterList: one fd-index and nothing else, exactly like
+// Sign's `in`. Two cases because a zero index and a non-zero one encode to
+// different byte widths and a codec that hardcoded either would still pass one
+// of them.
+TEST(MessagesRoundTrip, ImportCscaMasterListRoundTrips)
+{
+    expectStable({39, ImportCscaMasterList{0}});
+    expectStable({40, ImportCscaMasterList{3}});
+}
+
 // Tolerant decode: an unknown EXTRA map key inside a known request is ignored
 // (mirrors the wire-wide tolerant decode; the parsed body drops the extra key).
 TEST(MessagesRoundTrip, IgnoresUnknownRequestMapKeys)

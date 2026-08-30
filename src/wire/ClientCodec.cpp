@@ -112,6 +112,22 @@ public:
         }
         return static_cast<int>(*v);
     }
+    // An optional SIGNED integer field. Distinct from optUint above rather
+    // than a widening of it: an epoch-seconds field is `int` on the wire and a
+    // negative value (a date before 1970) is well-formed, not malformed.
+    std::optional<std::int64_t> optInt64(std::string_view k)
+    {
+        const auto it = m_m.find(k);
+        if (it == m_m.end()) {
+            return std::nullopt;
+        }
+        const auto v = it->second.asInt();
+        if (!v) {
+            m_ok = false;
+            return std::nullopt;
+        }
+        return *v;
+    }
     bool boolean(std::string_view k)
     {
         const auto it = m_m.find(k);
@@ -831,6 +847,32 @@ std::optional<AppearanceFontReply> decodeAppearanceFontReply(const Map& m, std::
     return AppearanceFontReply{fd};
 }
 
+// csca-anchor-state = ( kind: "CscaAnchorState", anchors, issuers,
+//                       replayRefusalActive, ? signer, ? signerPinned,
+//                       ? acceptedAt, ? signedAt, ? origin )
+//
+// Three required, five optional — see the CDDL arm's own comment for why the
+// split falls exactly there. `signedAt` absent stays absent: this decoder
+// never substitutes a zero, because a list signed at the epoch and a list
+// carrying no signingTime at all must not decode alike.
+std::optional<CscaAnchorStateReply> decodeCscaAnchorStateReply(const Map& m)
+{
+    FieldReader r(m);
+    CscaAnchorStateReply out;
+    out.anchors = r.uint("anchors");
+    out.issuers = r.uint("issuers");
+    out.replayRefusalActive = r.boolean("replayRefusalActive");
+    out.signer = r.optText("signer");
+    out.signerPinned = r.optBool("signerPinned");
+    out.acceptedAt = r.optInt64("acceptedAt");
+    out.signedAt = r.optInt64("signedAt");
+    out.origin = r.optText("origin");
+    if (!r.ok()) {
+        return std::nullopt;
+    }
+    return out;
+}
+
 // err-info = { ( code: error-code // name: sync-error ), ? msgKey, ? msgFallback }
 // (CDDL:105-113): exactly one of code/name, never both, never neither.
 std::optional<ErrInfo> decodeErrInfo(const Map& m)
@@ -1243,6 +1285,13 @@ std::optional<DecodedReply> parseReply(std::span<const std::uint8_t> body, std::
         }
         if (k != nullptr && *k == "Layout") {
             auto v = decodeLayoutReply(*m);
+            if (!v) {
+                return std::nullopt;
+            }
+            return DecodedReply{reqId, std::move(*v)};
+        }
+        if (k != nullptr && *k == "CscaAnchorState") {
+            auto v = decodeCscaAnchorStateReply(*m);
             if (!v) {
                 return std::nullopt;
             }

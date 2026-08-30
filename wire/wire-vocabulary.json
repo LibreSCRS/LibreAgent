@@ -16,7 +16,7 @@
     "settable-config-key": { "kind": "token", "cddlOnly": true, "entries": [ "DefaultLevel", "DefaultReason", "DefaultLocation", "TsaUrls", "TslSources", "CscaSources" ] },
     "sign-format": { "kind": "token", "entries": [ "pades", "cades", "xades", "jades", "asice" ] },
     "sign-level": { "kind": "token", "entries": [ "b-b", "b-t", "b-lt", "b-lta" ] },
-    "sync-error": { "kind": "token", "entries": [ "UnknownCard", "KeyNotFound", "NotAuthorized", "UserNotLoggedIn", "UnknownConfigKey", "ReadOnlyConfig", "InvalidConfigValue", "UnsupportedProtocol", "AuthFailed", "CommunicationError", "NotSupported", "UnsupportedOnThisCard", "UnsupportedSignatureParameter", "InputTooLarge", "RateLimited", "UnknownCredential", "InvalidRequest", "NoResult" ] },
+    "sync-error": { "kind": "token", "entries": [ "UnknownCard", "KeyNotFound", "NotAuthorized", "UserNotLoggedIn", "UnknownConfigKey", "ReadOnlyConfig", "InvalidConfigValue", "UnsupportedProtocol", "AuthFailed", "CommunicationError", "NotSupported", "UnsupportedOnThisCard", "UnsupportedSignatureParameter", "InputTooLarge", "RateLimited", "UnknownCredential", "InvalidRequest", "NoResult", "MasterListReplayed" ] },
     "unblock-style": { "kind": "token", "entries": [ "unknown", "resetOnly", "setsNewPin", "unblockAndChange" ] }
   }
 }

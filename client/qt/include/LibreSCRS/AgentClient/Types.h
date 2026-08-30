@@ -166,4 +166,56 @@ struct LayoutResult
     QVariantMap extra;       ///< Forward-compatible pass-through, as on every result struct.
 };
 
+/// @brief What the agent believes about its country-signing (CSCA) trust
+///        anchors after an `AgentClient::importCscaMasterList()` — the reply
+///        the agent's `Config1.ImportCscaMasterList` answers with, and the
+///        same shape its `CscaAnchorState` property carries.
+///
+/// Every member is a REPORT, never an instruction: this library neither
+/// verifies nor re-derives any of it. What a surface must not do with it is
+/// worth naming, because two of the members are easy to render into a claim
+/// the agent did not make:
+///
+///   - `signerPinned == false` means the publisher's identity was ESTABLISHED
+///     by nothing but this list itself (a trust-on-first-import). Rendering
+///     "authenticity verified" over that claims more than was measured; what
+///     was measured is "the list is self-consistent and here is its
+///     fingerprint, recognise it".
+///   - `replayRefusalActive == false` means the accepted list carried no
+///     signing time, so a later list cannot be checked for rolling the anchors
+///     BACK. Its false is the value worth surfacing: staying silent leaves a
+///     person unable to tell "this is safe" from "this cannot be checked".
+struct CscaAnchorState
+{
+    /// Anchors now held. INCLUDES CSCA link certificates, which are anchors
+    /// like any other — not a count of self-signed roots.
+    quint32 anchors = 0;
+    /// Distinct issuing countries among those anchors.
+    quint32 issuers = 0;
+    /// Whether a later import can be refused for rolling the anchors back.
+    /// See the struct doc comment for why its FALSE must reach a person.
+    bool replayRefusalActive = false;
+    /// Lowercase hex SHA-256 over the publisher's SubjectPublicKeyInfo — the
+    /// fingerprint to show, and the value the next import is pinned to.
+    QString signer;
+    /// Whether this import ESTABLISHED the publisher's identity (matched the
+    /// pinned fingerprint, or built a path to an anchor already held) rather
+    /// than merely observing it. See the struct doc comment.
+    bool signerPinned = false;
+    /// When the AGENT accepted the list — under no publisher's control, and
+    /// not a claim about the list itself. Invalid when the agent said nothing.
+    QDateTime acceptedAt;
+    /// When the list says it was SIGNED (its CMS signingTime attribute).
+    /// INVALID when the list carried none, which CMS permits — never an
+    /// epoch-valued stand-in, so an undated list and one signed on 1970-01-01
+    /// never read alike.
+    QDateTime signedAt;
+    /// Where the anchors came from (`"import"`). Forwarded verbatim; the
+    /// vocabulary is the agent's, not this library's.
+    QString origin;
+    /// Forward-compatible pass-through, as on every result struct: any key the
+    /// agent's state dict carried that no member above names.
+    QVariantMap extra;
+};
+
 } // namespace LibreSCRS::AgentClient

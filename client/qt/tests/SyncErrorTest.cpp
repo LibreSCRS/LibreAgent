@@ -80,6 +80,7 @@ TEST(SyncErrorClassification, EveryWireNameReachesItsOwnEnumerator)
         {"UnknownCredential", SyncError::UnknownCredential},
         {"InvalidRequest", SyncError::InvalidRequest},
         {"NoResult", SyncError::NoResult},
+        {"MasterListReplayed", SyncError::MasterListReplayed},
     };
     for (const Row& row : rows) {
         const SeamError viaShort = mapShort(row.name);
@@ -97,16 +98,20 @@ TEST(SyncErrorClassification, EveryWireNameReachesItsOwnEnumerator)
 
 // ---- the collapse this axis exists to survive -----------------------------------
 
-// Six names share CallError::InvalidArguments and report ErrorCode::None, so
+// Seven names share CallError::InvalidArguments and report ErrorCode::None, so
 // before this axis existed a caller could not tell them apart at all. The two
 // that matter most to a credential surface are the first two rows: one means
 // "your ids went stale, re-list and the user can retry" and the other means "a
-// persistent condition of this card, re-listing cannot clear it".
+// persistent condition of this card, re-listing cannot clear it". The last row
+// is the anchor-import twin of that distinction: "this master list is already
+// installed / older than the one you have" versus a file that is simply not
+// usable -- one is an answer a person can act on, the other is not.
 TEST(SyncErrorClassification, NamesSharingOneCallErrorBucketStayDistinguishable)
 {
     const char* names[] = {
-        "InvalidRequest",   "UnknownCredential", "UnsupportedSignatureParameter",
-        "UnknownConfigKey", "ReadOnlyConfig",    "InvalidConfigValue",
+        "InvalidRequest",     "UnknownCredential", "UnsupportedSignatureParameter",
+        "UnknownConfigKey",   "ReadOnlyConfig",    "InvalidConfigValue",
+        "MasterListReplayed",
     };
     std::vector<SyncError> seen;
     for (const char* name : names) {
@@ -117,7 +122,7 @@ TEST(SyncErrorClassification, NamesSharingOneCallErrorBucketStayDistinguishable)
         ASSERT_TRUE(e.syncError.has_value()) << name;
         seen.push_back(*e.syncError);
     }
-    // All six distinct: no two of them collapse onto one another on this axis.
+    // All seven distinct: no two of them collapse onto one another on this axis.
     const std::size_t before = seen.size();
     std::sort(seen.begin(), seen.end());
     seen.erase(std::unique(seen.begin(), seen.end()), seen.end());

@@ -177,6 +177,19 @@ std::optional<SyncError> AgentClient::resetConfigValue(const QString& key)
     return d->transport->resetConfig(key);
 }
 
+std::expected<CscaAnchorState, SyncError> AgentClient::importCscaMasterList(int masterListFd)
+{
+    if (!d->transport) {
+        return std::unexpected(SyncError::CommunicationError);
+    }
+    // No local validation of the descriptor here, deliberately. Whether it is
+    // a regular file, readable, or within the size bound is the AGENT's
+    // decision — it is the process that reads it, under its own limits — and a
+    // second opinion computed here could only either agree (dead code) or
+    // disagree (a refusal the agent never made, in the agent's vocabulary).
+    return d->transport->importCscaMasterList(masterListFd);
+}
+
 std::optional<LayoutResult> AgentClient::layoutVisualSignature(const QString& text, QRectF box) const
 {
     // Transport-neutral local refusal, mirroring AgentCard::startOperation's

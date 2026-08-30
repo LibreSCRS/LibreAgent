@@ -7,6 +7,7 @@
 
 #include "../CertFieldsExtra.h"
 #include "../ConfigKeys.h"
+#include "../CscaAnchorKeys.h"
 #include "../FieldExtraKeys.h"
 #include "../dbus/AgentDBus.h"    // shared object/interface name spellings (constants only, no QtDBus)
 #include "../dbus/ErrorNameMap.h" // the short-name half doubles as the socket sync-error map
@@ -835,6 +836,60 @@ std::optional<SyncError> SocketTransport::resetConfig(const QString& key)
         return SyncError::CommunicationError;
     }
     return std::nullopt;
+}
+
+std::expected<CscaAnchorState, SyncError> SocketTransport::importCscaMasterList(int masterListFd)
+{
+    // The descriptor is BORROWED: sendFrame passes it through SCM_RIGHTS,
+    // which hands the receiver a reference to the SAME open file description
+    // and leaves this one the caller's to close. Nothing is duplicated here
+    // and nothing is rewound — the agent reads from where the caller left the
+    // position, exactly as the bus transport's own arm does.
+    Wire::ImportCscaMasterList request;
+    request.list = 0; // the only fd on this frame
+    // Bounded on the method-entry budget, not the handshake one the other
+    // Config1 calls use: there is signature verification and an anchor-cache
+    // write behind this reply.
+    SyncResult result = callSync(request, kDefaultCallTimeoutMs, std::span<const int>(&masterListFd, 1));
+    if (result.failure != CallError::None) {
+        return std::unexpected(SyncError::CommunicationError); // the import never arrived — the retryable class
+    }
+    if (const auto* err = std::get_if<Wire::ErrInfo>(&result.reply)) {
+        return std::unexpected(mapErrInfo(*err).syncError.value_or(SyncError::CommunicationError));
+    }
+    const auto* state = std::get_if<Wire::CscaAnchorStateReply>(&result.reply);
+    if (state == nullptr) {
+        return std::unexpected(SyncError::CommunicationError); // a reply outside this request's contract
+    }
+    // Back through the SAME untyped dict the bus transport hands over, so the
+    // one canonical conversion in CscaAnchorKeys.h produces both transports'
+    // value and neither can drift (see that header's own comment). An engaged
+    // optional becomes a present key; a disengaged one is simply not inserted,
+    // which is what keeps an absent signingTime an INVALID QDateTime instead
+    // of the epoch.
+    QVariantMap dict;
+    dict.insert(QString(kCscaAnchorAnchors), QVariant::fromValue(static_cast<quint32>(state->anchors)));
+    dict.insert(QString(kCscaAnchorIssuers), QVariant::fromValue(static_cast<quint32>(state->issuers)));
+    dict.insert(QString(kCscaAnchorReplayRefusalActive), state->replayRefusalActive);
+    if (state->signer) {
+        dict.insert(QString(kCscaAnchorSigner), fromStd(*state->signer));
+    }
+    // has_value(), not the bare optional: this one holds a BOOL, so `if (opt)`
+    // reads like a test of the value and is a test of engagement. A false
+    // signerPinned is exactly the case that must still cross.
+    if (state->signerPinned.has_value()) {
+        dict.insert(QString(kCscaAnchorSignerPinned), *state->signerPinned);
+    }
+    if (state->acceptedAt) {
+        dict.insert(QString(kCscaAnchorAcceptedAt), QVariant::fromValue(*state->acceptedAt));
+    }
+    if (state->signedAt) {
+        dict.insert(QString(kCscaAnchorSignedAt), QVariant::fromValue(*state->signedAt));
+    }
+    if (state->origin) {
+        dict.insert(QString(kCscaAnchorOrigin), fromStd(*state->origin));
+    }
+    return cscaAnchorStateFromMap(dict);
 }
 
 // ---- registry ------------------------------------------------------------------------

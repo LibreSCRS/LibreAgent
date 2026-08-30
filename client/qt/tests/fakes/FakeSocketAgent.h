@@ -201,6 +201,19 @@ public:
         /// guarantees consumers one shape. This knob is how that normalization
         /// gets tested against a shape it does not itself emit.
         bool structuredSourcesAsMaps = false;
+        /// The anchor-state dict an accepted ImportCscaMasterList answers
+        /// with, in the canonical client-side shape — the SAME map
+        /// FakeAgent::Config::cscaAnchorState takes (see
+        /// defaultCscaAnchorState()), so a parity scenario scripts one and
+        /// hands it to both fakes. Re-encoded here into the typed
+        /// `csca-anchor-state` reply arm; an ABSENT key stays absent on the
+        /// wire, which is how an undated master list is scripted.
+        QVariantMap cscaAnchorState = defaultCscaAnchorState();
+        /// Refuse every import with this named sync-error instead of accepting
+        /// it. Mirrors FakeAgent::Config::cscaImportError, which spells the
+        /// same thing as a D-Bus error SHORT NAME because that wire refuses
+        /// with an error reply rather than an err-info token.
+        std::optional<LibreSCRS::Agent::Wire::SyncError> cscaImportError;
     };
 
     explicit FakeSocketAgent(Config config, QObject* parent = nullptr);
@@ -266,6 +279,11 @@ public:
     [[nodiscard]] QVariantMap lastSignBatchOptions() const;
     [[nodiscard]] QStringList lastSignBatchDisplayNames() const;
     [[nodiscard]] QList<QByteArray> lastSignBatchDocumentBytes() const;
+    /// How many ImportCscaMasterList requests reached this fake — 0 proves a
+    /// refusal was decided before the wire was dialed.
+    [[nodiscard]] int cscaImportCallCount() const;
+    /// The bytes the last import actually read off the received descriptor.
+    [[nodiscard]] QByteArray lastImportedMasterList() const;
     [[nodiscard]] QString lastCertDerReader() const;
     [[nodiscard]] QString lastCertDerCertId() const;
     /// The `activateKey` field of the last ManagePin request this fake
@@ -362,6 +380,8 @@ private:
     QVariantMap m_lastSignBatchOptions;
     QStringList m_lastSignBatchDisplayNames;
     QList<QByteArray> m_lastSignBatchDocumentBytes;
+    int m_cscaImportCalls = 0;
+    QByteArray m_lastImportedMasterList;
     QString m_lastCertDerReader;
     QString m_lastCertDerCertId;
     std::optional<bool> m_lastManagePinActivateKey;

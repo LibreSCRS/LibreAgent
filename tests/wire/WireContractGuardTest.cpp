@@ -457,6 +457,8 @@ constexpr const char* syncErrorWireName(SyncError e) noexcept
         return "InvalidRequest";
     case SyncError::NoResult: // appended: GetSignResult's dedicated dead-end name
         return "NoResult";
+    case SyncError::MasterListReplayed: // appended: ImportCscaMasterList's rollback refusal
+        return "MasterListReplayed";
     }
     return nullptr; // not a SyncError value (used to probe past the end for the count)
 }
@@ -657,16 +659,16 @@ static_assert(kCredRecordKeys.size() == 23u, "wire contract: cred-record has 23 
 // wire/Messages.{h,cpp}, and this table (bump kMessageTagCount). The
 // MessagesRoundTripTest proves each tag actually encodes/decodes; this only pins
 // that the vocabulary did not silently change size.
-constexpr std::array<std::string_view, 35> kMessageTags{
-    // requests (24)
+constexpr std::array<std::string_view, 36> kMessageTags{
+    // requests (25)
     "Hello", "GetState", "ReadIdentity", "GetPhoto", "ReadCertificates", "ReadTokenInfo", "Sign", "SignBatch",
     "GetCertDer", "GetConfig", "SetConfig", "ResetConfig", "CancelOp", "GetSignResult", "Pkcs11.Login", "Pkcs11.Logout",
     "Pkcs11.PublicKey", "Pkcs11.SignRaw", "Pkcs11.Decrypt", "ListCredentials", "ManagePin", "ActivateSigningKey",
-    "LayoutVisual", "GetAppearanceFont",
+    "LayoutVisual", "GetAppearanceFont", "ImportCscaMasterList",
     // events (11)
     "ReaderAdded", "ReaderRemoved", "CardAdded", "CardRemoved", "PropertyChanged", "ConfigChanged", "OpProgress",
     "OpIdentityGroup", "OpResultReady", "OpFinished", "AgentQuiesced"};
-constexpr std::size_t kMessageTagCount = 35; // 24 requests + 11 events
+constexpr std::size_t kMessageTagCount = 36; // 25 requests + 11 events
 static_assert(kMessageTags.size() == kMessageTagCount,
               "wire contract: socket message vocabulary changed; update the CDDL + wire/Messages + this guard");
 

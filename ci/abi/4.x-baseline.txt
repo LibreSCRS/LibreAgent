@@ -296,13 +296,14 @@ LibreSCRS::Agent::Wire::FrameReassembler::pump(int)
 LibreSCRS::Agent::Wire::decode(std::span<unsigned char const, 18446744073709551615ul>)
 LibreSCRS::Agent::Wire::decodeSyncError(std::basic_string_view<char, std::char_traits<char> >)
 LibreSCRS::Agent::Wire::encodeFrame(std::span<unsigned char const, 18446744073709551615ul>, unsigned int)
-LibreSCRS::Agent::Wire::encodeRequest(std::variant<LibreSCRS::Agent::Wire::Hello, LibreSCRS::Agent::Wire::GetState, LibreSCRS::Agent::Wire::ReadIdentity, LibreSCRS::Agent::Wire::GetPhoto, LibreSCRS::Agent::Wire::ReadCertificates, LibreSCRS::Agent::Wire::ReadTokenInfo, LibreSCRS::Agent::Wire::Sign, LibreSCRS::Agent::Wire::SignBatch, LibreSCRS::Agent::Wire::GetCertDer, LibreSCRS::Agent::Wire::GetConfig, LibreSCRS::Agent::Wire::SetConfig, LibreSCRS::Agent::Wire::ResetConfig, LibreSCRS::Agent::Wire::CancelOp, LibreSCRS::Agent::Wire::GetSignResult, LibreSCRS::Agent::Wire::PkLogin, LibreSCRS::Agent::Wire::PkLogout, LibreSCRS::Agent::Wire::PkPublicKey, LibreSCRS::Agent::Wire::PkSignRaw, LibreSCRS::Agent::Wire::PkDecrypt, LibreSCRS::Agent::Wire::ListCredentials, LibreSCRS::Agent::Wire::ManagePin, LibreSCRS::Agent::Wire::ActivateSigningKey, LibreSCRS::Agent::Wire::LayoutVisual, LibreSCRS::Agent::Wire::GetAppearanceFont> const&, unsigned long)
+LibreSCRS::Agent::Wire::encodeRequest(std::variant<LibreSCRS::Agent::Wire::Hello, LibreSCRS::Agent::Wire::GetState, LibreSCRS::Agent::Wire::ReadIdentity, LibreSCRS::Agent::Wire::GetPhoto, LibreSCRS::Agent::Wire::ReadCertificates, LibreSCRS::Agent::Wire::ReadTokenInfo, LibreSCRS::Agent::Wire::Sign, LibreSCRS::Agent::Wire::SignBatch, LibreSCRS::Agent::Wire::GetCertDer, LibreSCRS::Agent::Wire::GetConfig, LibreSCRS::Agent::Wire::SetConfig, LibreSCRS::Agent::Wire::ResetConfig, LibreSCRS::Agent::Wire::CancelOp, LibreSCRS::Agent::Wire::GetSignResult, LibreSCRS::Agent::Wire::PkLogin, LibreSCRS::Agent::Wire::PkLogout, LibreSCRS::Agent::Wire::PkPublicKey, LibreSCRS::Agent::Wire::PkSignRaw, LibreSCRS::Agent::Wire::PkDecrypt, LibreSCRS::Agent::Wire::ListCredentials, LibreSCRS::Agent::Wire::ManagePin, LibreSCRS::Agent::Wire::ActivateSigningKey, LibreSCRS::Agent::Wire::LayoutVisual, LibreSCRS::Agent::Wire::GetAppearanceFont, LibreSCRS::Agent::Wire::ImportCscaMasterList> const&, unsigned long)
 LibreSCRS::Agent::Wire::makeErrorReply(unsigned long, LibreSCRS::Agent::Wire::ErrInfo const&)
 LibreSCRS::Agent::Wire::makeReply(unsigned long, LibreSCRS::Agent::Wire::AckReply const&)
 LibreSCRS::Agent::Wire::makeReply(unsigned long, LibreSCRS::Agent::Wire::AppearanceFontReply const&)
 LibreSCRS::Agent::Wire::makeReply(unsigned long, LibreSCRS::Agent::Wire::CertDerReply const&)
 LibreSCRS::Agent::Wire::makeReply(unsigned long, LibreSCRS::Agent::Wire::CertListReply const&)
 LibreSCRS::Agent::Wire::makeReply(unsigned long, LibreSCRS::Agent::Wire::ConfigReply const&)
+LibreSCRS::Agent::Wire::makeReply(unsigned long, LibreSCRS::Agent::Wire::CscaAnchorStateReply const&)
 LibreSCRS::Agent::Wire::makeReply(unsigned long, LibreSCRS::Agent::Wire::HelloAck const&)
 LibreSCRS::Agent::Wire::makeReply(unsigned long, LibreSCRS::Agent::Wire::LayoutReply const&)
 LibreSCRS::Agent::Wire::makeReply(unsigned long, LibreSCRS::Agent::Wire::OpStarted const&)
@@ -374,6 +375,7 @@ LibreSCRS::AgentClient::AgentClient::configChanged(QString const&)
 LibreSCRS::AgentClient::AgentClient::configSnapshot() const
 LibreSCRS::AgentClient::AgentClient::features() const
 LibreSCRS::AgentClient::AgentClient::hasFeature(QString const&) const
+LibreSCRS::AgentClient::AgentClient::importCscaMasterList(int)
 LibreSCRS::AgentClient::AgentClient::isAvailable() const
 LibreSCRS::AgentClient::AgentClient::layoutVisualSignature(QString const&, QRectF) const
 LibreSCRS::AgentClient::AgentClient::metaObject() const
@@ -456,6 +458,7 @@ AgentClient size=24 align=8 members=opaque
 BatchDocument size=32 align=8 members=2 displayName@0 fd@24
 BatchSignRow size=48 align=8 members=4 displayName@0 artifact@24 meta@32 error@40
 CertificateInfo size=184 align=8 members=12 id@0 subject@24 issuer@48 notBefore@72 notAfter@80 signingCapable@88 trust@89 securityStatus@96 keyUsageBits@120 extendedKeyUsageOids@128 chainSubjectCns@152 extra@176
+CscaAnchorState size=96 align=8 members=9 anchors@0 issuers@4 replayRefusalActive@8 signer@16 signerPinned@40 acceptedAt@48 signedAt@56 origin@64 extra@88
 CredentialRecord size=264 align=8 members=24 id@0 label@24 kind@48 state@52 retriesLeft@56 retriesMax@64 usesLeft@72 usesMax@80 unblocksLeft@88 minLength@96 maxLength@104 canChange@112 unblockable@113 activatable@114 keyActivationPending@115 keyActivatable@116 probeSafe@117 unblockStyle@120 recovery@124 blockedGuidanceKey@128 blockedGuidanceFallback@160 keyActivationGuidanceKey@192 keyActivationGuidanceFallback@224 extra@256
 FdHandle size=4 align=4 members=opaque
 Field size=88 align=8 members=4 key@0 value@24 detail@48 extra@80
