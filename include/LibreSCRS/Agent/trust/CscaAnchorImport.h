@@ -231,6 +231,41 @@ struct AnchorState
         }
         return true;
     }
+
+    /// Whether EVERY publisher on record had its identity ESTABLISHED, as
+    /// opposed to merely observed. What a surface renders as "pinned".
+    ///
+    /// The weakest of the parts, for the same reason as @ref
+    /// replayRefusalActive above: "most of them were established" is not a
+    /// statement a person can act on, because the unestablished one is
+    /// precisely the publisher whose anchors got in on a first sighting, and it
+    /// is the one they would want to be told about.
+    ///
+    /// Written over the whole set rather than over the first record, and not
+    /// because a mixed set is easy to produce today — an import into an empty
+    /// store establishes nobody and an import into a populated one admits only
+    /// publishers it could check, so the two outcomes are uniform. This says
+    /// what is true of any set an import may hand it, a claim that survives
+    /// that rule changing; reading one record and calling it the aggregate
+    /// would not.
+    ///
+    /// The empty set answers FALSE, and it is spelled out rather than left to
+    /// a fold: `all_of` over an empty range is TRUE, so the obvious one-liner
+    /// reports a state with no publisher at all as fully established — a record
+    /// claiming an established publisher that does not exist. Both hosts that
+    /// spelled this aggregate for themselves had to rediscover that.
+    [[nodiscard]] bool everyPublisherEstablished() const noexcept
+    {
+        if (signers.empty()) {
+            return false;
+        }
+        for (const AcceptedSigner& s : signers) {
+            if (!s.identityEstablished) {
+                return false;
+            }
+        }
+        return true;
+    }
 };
 
 // Why a whole import was refused: no list in the file was admitted, so nothing

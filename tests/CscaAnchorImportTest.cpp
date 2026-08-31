@@ -1312,3 +1312,71 @@ TEST(CscaAnchorReconcile, NothingRecordedIsNotAReportToDiscard)
 
     EXPECT_FALSE(agent.config().cscaAnchorState().has_value());
 }
+
+// --- the aggregate a surface renders as "pinned" ----------------------------
+//
+// Whether EVERY publisher on record was established, which is what a client is
+// told under signerPinned. Pure logic over a public type — it needs no signed
+// file at all, which is worth saying because both hosts that spell it had put
+// off measuring it on the belief that it needed the import fixture.
+//
+// It lives beside replayRefusalActive because it is the same shape of claim:
+// an aggregate over the accepted publishers, deliberately the weakest of its
+// parts, with the empty set answered explicitly rather than inherited from
+// whatever a fold happens to return.
+
+namespace {
+
+Trust::AnchorState stateWithSigners(const std::vector<bool>& established)
+{
+    Trust::AnchorState state;
+    state.present = true;
+    std::uint8_t tag = 0xA0;
+    for (const bool isEstablished : established) {
+        Trust::AcceptedSigner signer;
+        signer.fingerprint.fill(tag++);
+        signer.identityEstablished = isEstablished;
+        state.signers.push_back(signer);
+    }
+    return state;
+}
+
+} // namespace
+
+TEST(CscaAnchorAggregate, ASingleEstablishedPublisherIsEstablished)
+{
+    EXPECT_TRUE(stateWithSigners({true}).everyPublisherEstablished());
+}
+
+TEST(CscaAnchorAggregate, ASinglePublisherSeenForTheFirstTimeIsNot)
+{
+    EXPECT_FALSE(stateWithSigners({false}).everyPublisherEstablished());
+}
+
+TEST(CscaAnchorAggregate, EveryPublisherEstablishedHoldsAcrossACollection)
+{
+    EXPECT_TRUE(stateWithSigners({true, true, true}).everyPublisherEstablished());
+}
+
+// The weakest-of-the-parts rule, and the case that makes the aggregate worth
+// having: "most of them were established" is not something a person can act
+// on, because the one that was not is precisely the publisher whose anchors
+// got in on a first sighting.
+TEST(CscaAnchorAggregate, OneUnestablishedPublisherAmongManyBringsTheAggregateDown)
+{
+    EXPECT_FALSE(stateWithSigners({true, false, true}).everyPublisherEstablished());
+    EXPECT_FALSE(stateWithSigners({false, true, true}).everyPublisherEstablished())
+        << "the aggregate read only the tail of the set";
+    EXPECT_FALSE(stateWithSigners({true, true, false}).everyPublisherEstablished())
+        << "the aggregate read only the head of the set";
+}
+
+// The vacuous case, asserted rather than inherited: a fold over an empty range
+// answers TRUE, so an implementation written as one bare all_of would report a
+// state with no publisher at all as fully established — claiming an
+// established publisher that does not exist.
+TEST(CscaAnchorAggregate, NoPublisherAtAllIsNotEveryPublisherEstablished)
+{
+    EXPECT_FALSE(Trust::AnchorState{}.everyPublisherEstablished());
+    EXPECT_FALSE(stateWithSigners({}).everyPublisherEstablished()) << "an empty set was folded to true";
+}
