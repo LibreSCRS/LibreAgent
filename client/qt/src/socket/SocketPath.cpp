@@ -13,7 +13,13 @@ QString resolveAgentSocketPath()
     if (!override.isEmpty()) {
         return QString::fromLocal8Bit(override);
     }
-#if defined(Q_OS_DARWIN)
+// Q_OS_MACOS, not Q_OS_DARWIN. The two agreed on macOS and nowhere else, and
+// the factory that decides whether this transport exists at all
+// (AgentClient.cpp) says Q_OS_MACOS. A path helper claiming a platform the
+// factory refuses is a promise nothing keeps: on another Darwin target it would
+// hand back an App-Group container path for a transport that is never built,
+// and the socket tests would FAIL there rather than not run.
+#if defined(Q_OS_MACOS)
     // The App-Group container's socket, addressed by its well-known absolute
     // path — the same directory the entitlement-gated container lookup
     // resolves, reachable without the application-groups entitlement (the
