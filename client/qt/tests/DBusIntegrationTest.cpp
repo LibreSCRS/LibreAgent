@@ -1174,3 +1174,41 @@ TEST(DBusIntegration, LostResultRecoveredWhenFinishedFiresBeforeSubscription)
     QCoreApplication::processEvents();
     EXPECT_EQ(finishedCount, 1);
 }
+
+// ---- authorization ceremonies outlast a card-call budget --------------------
+//
+// ImportCscaMasterList sits behind polkit `auth_self` on the Linux agent, so
+// the reply cannot arrive until a person has typed a password. Budgeting it
+// like a card call gives up while that prompt is still on screen, and the
+// caller then reports a refusal for an import that goes on to succeed — the
+// owner hit exactly this: 3 s budget against an 11 s prompt, and the dialog
+// said "this file is not a signed ICAO master list" about a file that
+// installed 903 anchors seconds later.
+TEST(DBusIntegration, ImportOutlastsAnAuthorizationPromptLongerThanACardCall)
+{
+    FakeAgent::Config cfg;
+    // Past the card-call budget on purpose: this is the boundary that was
+    // wrong. Kept just past it rather than at a realistic prompt length so the
+    // suite stays fast — the mechanism is the same at 4 s as at 40 s.
+    cfg.cscaImportDelayMs = kDefaultCallTimeoutMs + 1200;
+    Harness h(cfg);
+
+    auto client = makeClient(h);
+
+    FdHandle list = makeDocumentFd(QByteArrayLiteral("scripted master list bytes"));
+    ASSERT_TRUE(list.valid());
+
+    QElapsedTimer elapsed;
+    elapsed.start();
+    const auto imported = client->importCscaMasterList(list.get());
+
+    ASSERT_TRUE(imported.has_value())
+        << "the import was abandoned while the agent was still waiting on the authorization prompt. "
+           "A ceremony that waits for a human cannot be budgeted like a call that only touches a "
+           "card: the caller maps the timeout to a refusal and tells the reader their file is not a "
+           "master list, while the agent goes on to accept it.";
+    EXPECT_GE(elapsed.elapsed(), cfg.cscaImportDelayMs)
+        << "the reply arrived before the scripted prompt could have finished, so this test is no "
+           "longer measuring the wait it was written for";
+    EXPECT_EQ(h.cscaImportCallCount(), 1);
+}

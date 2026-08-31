@@ -448,9 +448,14 @@ std::optional<SyncError> DBusTransport::setConfig(const QString& key, const QVar
     call.setArguments(QList<QVariant>{key, QVariant::fromValue(marshalConfigValue(key, value))});
     // No local refusal on this wire: every key marshals, and the agent owns
     // both the vocabulary and the authorization decision (its polkit tiers
-    // are not knowable here). Bounded like the property reads above — a
-    // settings write is a cheap round-trip with no card work behind it.
-    return configOutcome(cappedCall(m_connection, call, kHandshakeTimeoutMs));
+    // are not knowable here). That last point sets the budget: because the
+    // tiers are NOT knowable here, any key may be the one that raises a
+    // prompt, so every write waits on the authorization budget. It was the
+    // handshake budget, on the reasoning that "a settings write is a cheap
+    // round-trip with no card work behind it" — true about the card and
+    // wrong about the wait, which is a person typing a password. One second
+    // against that is a refusal reported for a write that then succeeds.
+    return configOutcome(cappedCall(m_connection, call, kAuthorizedCallTimeoutMs));
 }
 
 std::optional<SyncError> DBusTransport::resetConfig(const QString& key)
@@ -458,7 +463,8 @@ std::optional<SyncError> DBusTransport::resetConfig(const QString& key)
     QDBusMessage call = QDBusMessage::createMethodCall(m_service, QLatin1String(kRootPath), QLatin1String(kConfigIface),
                                                        QStringLiteral("Reset"));
     call.setArguments(QList<QVariant>{key});
-    return configOutcome(cappedCall(m_connection, call, kHandshakeTimeoutMs));
+    // Same gate as setConfig(): a reset of a gated key prompts too.
+    return configOutcome(cappedCall(m_connection, call, kAuthorizedCallTimeoutMs));
 }
 
 std::expected<CscaAnchorState, SyncError> DBusTransport::importCscaMasterList(int masterListFd)
@@ -471,10 +477,13 @@ std::expected<CscaAnchorState, SyncError> DBusTransport::importCscaMasterList(in
     // which is the whole point: the agent reads the bytes the caller opened,
     // at the position the caller left them, without ever resolving a name.
     call.setArguments(QList<QVariant>{QVariant::fromValue(QDBusUnixFileDescriptor(masterListFd))});
-    // Bounded on the method-entry budget rather than the handshake one every
-    // other Config1 call uses: verifying a master list's signature and writing
-    // the anchor cache is real work behind this reply, unlike a property read.
-    const QDBusMessage reply = cappedCall(m_connection, call, kDefaultCallTimeoutMs);
+    // Bounded on the AUTHORIZATION budget, not the card one. Verifying the
+    // signatures and writing the anchor cache is real work, but it is not the
+    // long pole: this method is gated outright, so the agent holds the reply
+    // until a person has finished at the prompt. Budgeting it as a card call
+    // abandoned the import mid-ceremony and reported a refusal for a file that
+    // installed moments later — measured at 3 s against an 11 s prompt.
+    const QDBusMessage reply = cappedCall(m_connection, call, kAuthorizedCallTimeoutMs);
     if (reply.type() != QDBusMessage::ReplyMessage) {
         // Same rule as configOutcome(): an agent-namespace name carries its
         // own enumerator; a bus-daemon failure named nothing about the import,

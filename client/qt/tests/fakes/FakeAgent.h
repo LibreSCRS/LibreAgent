@@ -727,6 +727,14 @@ public:
         /// which spells the same thing as the wire enumerator because that
         /// fake refuses with a token rather than a D-Bus error name.
         QString cscaImportError;
+        /// Hold ImportCscaMasterList this long before answering, modelling the
+        /// polkit prompt the real agent raises: the authorization ceremony is a
+        /// person typing a password, and the reply cannot arrive until they are
+        /// done. Blocking is safe here because the FakeAgent owns its own
+        /// thread and event loop (see TestBus.h) -- the client's capped-call
+        /// loop keeps running on the main thread, which is exactly the
+        /// arrangement being measured.
+        int cscaImportDelayMs = 0;
         /// Manager1.LayoutVisualSignature's scripted reply. Defaults
         /// model a plausible two-line layout; a cross-transport parity test
         /// scripts these to the SAME values on both fakes for an exact

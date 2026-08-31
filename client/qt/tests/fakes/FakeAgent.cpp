@@ -9,6 +9,7 @@
 #include <QDBusMessage>
 #include <QDBusMetaType>
 #include <QDBusUnixFileDescriptor>
+#include <QThread>
 #include <QTimer>
 #include <fcntl.h>
 #include <sys/mman.h>
@@ -1145,6 +1146,11 @@ QByteArray readFdSequential(int fd)
 QVariantMap Config1Adaptor::ImportCscaMasterList(const QDBusUnixFileDescriptor& masterList)
 {
     m_agent->captureCscaImport(masterList.isValid() ? readFdSequential(masterList.fileDescriptor()) : QByteArray());
+    // Stand in for the polkit prompt: the agent cannot answer until a person
+    // has finished authorizing. See Config::cscaImportDelayMs.
+    if (const int delayMs = m_agent->config().cscaImportDelayMs; delayMs > 0) {
+        QThread::msleep(static_cast<unsigned long>(delayMs));
+    }
     if (!m_agent->config().cscaImportError.isEmpty()) {
         refuse(m_agent->config().cscaImportError, QStringLiteral("scripted master-list refusal"));
         return {};

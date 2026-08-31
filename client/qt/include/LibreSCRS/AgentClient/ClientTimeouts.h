@@ -40,6 +40,31 @@ inline constexpr int kHandshakeTimeoutMs = 1000;
 ///        calls) but does no network I/O.
 inline constexpr int kDefaultCallTimeoutMs = 3000;
 
+/// @brief Budget for a synchronous call the agent may hold open while a PERSON
+///        authorizes it (a polkit prompt on Linux, the equivalent ceremony on
+///        another host): Config1 SetValue/Reset, whose trust tier is gated, and
+///        ImportCscaMasterList, which is gated outright.
+///
+/// Sized for a human, not for a machine, because a human is what it waits on:
+/// finding a password manager, mistyping once, reading the prompt. Two minutes
+/// is generous for that and still bounded, so an agent that dies mid-ceremony
+/// does not hang the caller forever.
+///
+/// This is its own budget rather than a reach for kDefaultCallTimeoutMs or
+/// kLongOperationTimeoutMs because it measures something neither of those does.
+/// The card budget assumes the only wait is a chip; the long-operation budget
+/// is a CALLER-ENFORCED advisory with no transport enforcement behind it. An
+/// authorization ceremony is enforced here, in the transport, and its length is
+/// set by a person's hands.
+///
+/// The cost is accepted deliberately: a caller cannot know which config keys
+/// the agent gates (the tiers are the agent's, not the client's), so every
+/// SetValue/Reset is budgeted as though it might prompt. An unresponsive agent
+/// is therefore reported slowly rather than quickly — the trade taken because
+/// the opposite error is a false refusal shown to a person who did nothing
+/// wrong, and that one happens on every ordinary use.
+inline constexpr int kAuthorizedCallTimeoutMs = 120000;
+
 /// @brief Budget for long-running operations whose completion may involve a
 ///        network round trip on the agent side (a TSA contact for a
 ///        timestamped Sign, or a trusted-list revocation fetch for the

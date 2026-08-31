@@ -809,7 +809,7 @@ std::optional<SyncError> SocketTransport::setConfig(const QString& key, const QV
     Wire::SetConfig request;
     request.key = key.toStdString();
     request.value = configValueToCbor(key, value);
-    SyncResult result = callSync(request, kHandshakeTimeoutMs);
+    SyncResult result = callSync(request, kAuthorizedCallTimeoutMs);
     if (result.failure != CallError::None) {
         return SyncError::CommunicationError; // the write never arrived — the retryable class
     }
@@ -834,7 +834,7 @@ std::optional<SyncError> SocketTransport::resetConfig(const QString& key)
     }
     Wire::ResetConfig request;
     request.key = key.toStdString();
-    SyncResult result = callSync(request, kHandshakeTimeoutMs);
+    SyncResult result = callSync(request, kAuthorizedCallTimeoutMs);
     if (result.failure != CallError::None) {
         return SyncError::CommunicationError;
     }
@@ -859,7 +859,7 @@ std::expected<CscaAnchorState, SyncError> SocketTransport::importCscaMasterList(
     // Bounded on the method-entry budget, not the handshake one the other
     // Config1 calls use: there is signature verification and an anchor-cache
     // write behind this reply.
-    SyncResult result = callSync(request, kDefaultCallTimeoutMs, std::span<const int>(&masterListFd, 1));
+    SyncResult result = callSync(request, kAuthorizedCallTimeoutMs, std::span<const int>(&masterListFd, 1));
     if (result.failure != CallError::None) {
         return std::unexpected(SyncError::CommunicationError); // the import never arrived — the retryable class
     }
