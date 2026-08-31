@@ -38,6 +38,48 @@ constexpr const char* kPluginDir = "PluginDir";
 constexpr const char* kPkcs11IdleTimeoutSecs = "Pkcs11IdleTimeoutSecs";
 constexpr const char* kPkcs11MaxLifetimeSecs = "Pkcs11MaxLifetimeSecs";
 
+// One table, two readers. keys() and mutability() below used to be two
+// hand-maintained lists of these same fourteen keys -- one a vector of
+// spellings, the other a chain of comparisons -- and nothing tied them
+// together. A key added to the chain but not the vector is classified and
+// unenumerable: it drops out of every consumer that walks keys(), including
+// the hosts' completeness gates, while still answering mutability() as though
+// it were fully known. Deriving both from one table removes that gap by
+// construction rather than by a test that would have to notice it.
+struct KeySpec
+{
+    // Two arguments, deliberately required. As a plain aggregate this struct
+    // would accept `{kSomething}` and value-initialise `how` to Mutability{0}
+    // -- which is DbusMutable, the MOST permissive of the four -- so a key
+    // filed without a classification would silently become writable by any
+    // client under the default-allow action. The diagnostic that would say so,
+    // -Wmissing-field-initializers, is not an error here: LIBRESCRS_AGENT_WERROR
+    // defaults OFF. A constructor makes the omission fail to compile instead,
+    // which is the only form of this gate that does not depend on build flags.
+    constexpr KeySpec(const char* k, Mutability m) noexcept : key(k), how(m) {}
+
+    const char* key;
+    Mutability how;
+};
+
+// Order is the order keys() has always returned; consumers render it.
+constexpr std::array<KeySpec, 14> kKeySpecs{{
+    {kDefaultLevel, Mutability::DbusMutable},
+    {kTsaUrls, Mutability::DbusMutableTrust},
+    {kLastTsaUrl, Mutability::ReadOnly},
+    {kTslSources, Mutability::DbusMutableTrust},
+    {kTslCacheDir, Mutability::FileOnly},
+    {kAiaCacheDir, Mutability::FileOnly},
+    {kCscaSources, Mutability::DbusMutableTrust},
+    {kCscaCacheDir, Mutability::FileOnly},
+    {kCscaAnchorState, Mutability::ReadOnly},
+    {kDefaultReason, Mutability::DbusMutable},
+    {kDefaultLocation, Mutability::DbusMutable},
+    {kPluginDir, Mutability::FileOnly},
+    {kPkcs11IdleTimeoutSecs, Mutability::FileOnly},
+    {kPkcs11MaxLifetimeSecs, Mutability::FileOnly},
+}};
+
 // PKCS#11 lease-knob built-in defaults: idle 10 min, max lifetime
 // 8 h. Single source of truth for applyDefaults + resetKey so the two cannot
 // drift.
@@ -806,37 +848,23 @@ void ConfigStore::recordCscaAnchorState(CscaAnchorState state)
 
 const std::vector<std::string>& ConfigStore::keys()
 {
-    static const std::vector<std::string> k{kDefaultLevel,
-                                            kTsaUrls,
-                                            kLastTsaUrl,
-                                            kTslSources,
-                                            kTslCacheDir,
-                                            kAiaCacheDir,
-                                            kCscaSources,
-                                            kCscaCacheDir,
-                                            kCscaAnchorState,
-                                            kDefaultReason,
-                                            kDefaultLocation,
-                                            kPluginDir,
-                                            kPkcs11IdleTimeoutSecs,
-                                            kPkcs11MaxLifetimeSecs};
+    static const std::vector<std::string> k = [] {
+        std::vector<std::string> out;
+        out.reserve(kKeySpecs.size());
+        for (const KeySpec& spec : kKeySpecs) {
+            out.emplace_back(spec.key);
+        }
+        return out;
+    }();
     return k;
 }
 
 std::optional<Mutability> ConfigStore::mutability(const std::string& key)
 {
-    if (key == kDefaultLevel || key == kDefaultReason || key == kDefaultLocation) {
-        return Mutability::DbusMutable;
-    }
-    if (key == kTsaUrls || key == kTslSources || key == kCscaSources) {
-        return Mutability::DbusMutableTrust;
-    }
-    if (key == kTslCacheDir || key == kAiaCacheDir || key == kCscaCacheDir || key == kPluginDir ||
-        key == kPkcs11IdleTimeoutSecs || key == kPkcs11MaxLifetimeSecs) {
-        return Mutability::FileOnly;
-    }
-    if (key == kLastTsaUrl || key == kCscaAnchorState) {
-        return Mutability::ReadOnly;
+    for (const KeySpec& spec : kKeySpecs) {
+        if (key == spec.key) {
+            return spec.how;
+        }
     }
     return std::nullopt;
 }
