@@ -2,6 +2,9 @@
 // SPDX-FileCopyrightText: 2026 hirashix0
 #include <LibreSCRS/Agent/trust/CscaAnchorImport.h>
 
+#include <LibreSCRS/Agent/backend/Logging.h>
+#include <LibreSCRS/Agent/config/ConfigStore.h>
+
 #include <LibreSCRS/Certificate/ParsedCertificate.h>
 #include <LibreSCRS/Plugin/CardPluginService.h>
 #include <LibreSCRS/Trust/CscaMasterList.h>
@@ -980,6 +983,29 @@ fs::path publishAnchorDirectory(LibreSCRS::Plugin::CardPluginService& plugins, c
     // side — which is the truth until the import lands.
     plugins.setCscaAnchorDirectory(dir);
     return dir;
+}
+
+void discardStaleAnchorReport(Config::ConfigStore& config)
+{
+    if (!config.cscaAnchorState()) {
+        return; // nothing recorded, so there is no claim to be wrong about
+    }
+    const AnchorCache cache{fs::path{config.cscaCacheDir()}};
+    const bool anchorsHeld = cache.holdsAnchor();
+    // Reads false for an absent, unreadable or corrupt state file alike — every
+    // one of which is the cache saying it establishes no signer, which is the
+    // thing the report would otherwise keep claiming.
+    const bool signerHeld = cache.state().present;
+    if (anchorsHeld && signerHeld) {
+        return;
+    }
+    log::warnf("country signing anchors: the recorded report is not borne out by the cache (anchors held={}, pinned "
+               "signer held={}); discarding the report — nothing in the cache is touched by this",
+               anchorsHeld, signerHeld);
+    // Reset rather than a record of zeros, for the reason in the header. fromDbus
+    // is false: the key is ReadOnly on the wire and this is the agent clearing
+    // its own state, the same standing recordCscaAnchorState writes it under.
+    (void)config.resetKey("CscaAnchorState", /*fromDbus=*/false);
 }
 
 } // namespace LibreSCRS::Agent::Trust

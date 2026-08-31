@@ -20,6 +20,7 @@
 //     file, which has a case for each cell of the rule's table.
 
 #include "SyntheticMasterList.h"
+#include <LibreSCRS/Agent/config/ConfigStore.h>
 #include <LibreSCRS/Agent/trust/CscaAnchorImport.h>
 
 #include <LibreSCRS/Plugin/CardPluginService.h>
@@ -34,6 +35,7 @@
 #include <fstream>
 #include <iostream>
 #include <iterator>
+#include <memory>
 #include <optional>
 #include <string>
 #include <vector>
@@ -1139,4 +1141,174 @@ TEST(CscaAnchorPublication, ThePublishedDirectoryIsWhereAnImportReallyWrote)
     ASSERT_EQ(held.size(), 2u);
     EXPECT_TRUE(holds(held, anchorA));
     EXPECT_TRUE(holds(held, anchorB));
+}
+
+// --- reconciling a recorded report against the cache ------------------------
+//
+// The report a client reads follows the CONFIGURATION file; what it describes
+// lives in the anchor CACHE. Two files, two lifetimes, and a person may empty
+// either one behind the agent's back — so the report goes on describing an
+// agent that is no longer there. The subject here is the reconciliation that
+// refuses to serve such a report.
+//
+// It lives in this shared library rather than in a host because it touches
+// only ConfigStore and AnchorCache and no bus at all: it was file-local to the
+// D-Bus host until 2026-09-01 purely by where it was first written, and a
+// second copy in the socket host would have been a second implementation of a
+// trust-policy decision — the thing LibreKDE removed rather than kept.
+//
+// WHERE the reconciliation is CALLED FROM is a separate question with a
+// separate answer, and it stays with each host: startup, before the object
+// that serves the property exists. That wiring is guarded where it lives, in
+// the same way and for the same reason as publishAnchorDirectory's above.
+
+namespace {
+
+// A configuration file and a cache root of its own per test. The two paths are
+// SIBLINGS rather than one inside the other, which is the layout the fault
+// this reconciliation exists for actually has: a person clears the cache and
+// the configuration file survives it untouched.
+class ConfiguredAgent
+{
+public:
+    explicit ConfiguredAgent(const char* tag) : m_root(fs::temp_directory_path() / (std::string{"la-csca-"} + tag))
+    {
+        fs::remove_all(m_root);
+        fs::create_directories(m_root / "cache");
+        m_config = std::make_unique<Config::ConfigStore>(m_root / "config.conf", m_root / "cache");
+    }
+    ~ConfiguredAgent()
+    {
+        m_config.reset();
+        fs::remove_all(m_root);
+    }
+    ConfiguredAgent(const ConfiguredAgent&) = delete;
+    ConfiguredAgent& operator=(const ConfiguredAgent&) = delete;
+
+    [[nodiscard]] Config::ConfigStore& config() const
+    {
+        return *m_config;
+    }
+    [[nodiscard]] fs::path cacheDir() const
+    {
+        return fs::path{m_config->cscaCacheDir()};
+    }
+
+    // Import a real list into the configured cache and record the report the
+    // way a host does after an accepted import. A REAL import rather than a
+    // hand-built cache: the reconciliation asks the cache questions, so a
+    // fixture that only wrote the files it expects to be read would be
+    // agreeing with itself.
+    void importAndRecord()
+    {
+        Trust::AnchorCache cache{cacheDir()};
+        const auto list = signMasterList({makeCsca("CSCA A", "AA"), makeCsca("CSCA B", "BB")}, makeIndependentSigner());
+        const auto accepted = Trust::importMasterList(list.der, cache, kNow);
+        ASSERT_TRUE(accepted.has_value()) << "the fixture's own import was refused";
+        ASSERT_EQ(accepted->anchorCount, 2u);
+
+        Config::CscaAnchorState recorded;
+        recorded.anchors = accepted->anchorCount;
+        recorded.issuers = accepted->issuerCount;
+        recorded.replayRefusalActive = accepted->replayRefusalActive();
+        recorded.signer = Trust::toHex(onlySigner(*accepted).fingerprint);
+        recorded.signerPinned = true;
+        recorded.acceptedAt = kNow;
+        recorded.origin = "import";
+        m_config->recordCscaAnchorState(recorded);
+        ASSERT_TRUE(m_config->cscaAnchorState().has_value()) << "the fixture recorded nothing to reconcile";
+    }
+
+private:
+    fs::path m_root;
+    std::unique_ptr<Config::ConfigStore> m_config;
+};
+
+} // namespace
+
+// The ordinary restart: everything the report describes is still on disk, so
+// the report is left exactly as it was. Without this case a reconciliation
+// that simply cleared the report every time would pass every other test here.
+TEST(CscaAnchorReconcile, AReportTheCacheBearsOutIsLeftAlone)
+{
+    ConfiguredAgent agent("reconcile-intact");
+    ASSERT_NO_FATAL_FAILURE(agent.importAndRecord());
+    const auto before = agent.config().cscaAnchorState();
+
+    Trust::discardStaleAnchorReport(agent.config());
+
+    const auto after = agent.config().cscaAnchorState();
+    ASSERT_TRUE(after.has_value()) << "a report whose anchors and signer are both still held was discarded";
+    EXPECT_EQ(*after, *before) << "the report was rewritten rather than left alone";
+}
+
+// Half one: the anchors are gone, so the counts name certificates that are not
+// there.
+TEST(CscaAnchorReconcile, AReportIsDiscardedWhenTheAnchorsAreGone)
+{
+    ConfiguredAgent agent("reconcile-wiped");
+    ASSERT_NO_FATAL_FAILURE(agent.importAndRecord());
+
+    std::error_code ec;
+    fs::remove_all(agent.cacheDir() / "anchors", ec);
+    ASSERT_FALSE(ec);
+
+    Trust::discardStaleAnchorReport(agent.config());
+
+    EXPECT_FALSE(agent.config().cscaAnchorState().has_value())
+        << "the agent kept serving counts for anchors it no longer holds";
+}
+
+// Half two, and the one an implementation that only asks "are there anchors"
+// walks straight past: the anchors are all still there, so every COUNT in the
+// report is true, but the cache's own state file is gone. With nothing left to
+// read the pin from the agent follows nobody, so a report naming a publisher
+// claims a NARROWER trust than the one actually in force.
+TEST(CscaAnchorReconcile, AReportIsDiscardedWhenTheCacheStateIsGone)
+{
+    ConfiguredAgent agent("reconcile-unpinned");
+    ASSERT_NO_FATAL_FAILURE(agent.importAndRecord());
+
+    std::error_code ec;
+    ASSERT_TRUE(fs::remove(agent.cacheDir() / "state", ec)) << "the fixture removed nothing";
+    ASSERT_FALSE(ec);
+    const Trust::AnchorCache cache{agent.cacheDir()};
+    ASSERT_TRUE(cache.holdsAnchor()) << "the fixture removed more than the state file";
+
+    Trust::discardStaleAnchorReport(agent.config());
+
+    EXPECT_FALSE(agent.config().cscaAnchorState().has_value())
+        << "the agent kept naming a publisher it no longer follows";
+}
+
+// This REPORTS; it does not tidy. The anchors it just declined to describe are
+// still on disk — clearing them would turn a display fault into a trust one.
+TEST(CscaAnchorReconcile, DiscardingAReportLeavesTheCacheAlone)
+{
+    ConfiguredAgent agent("reconcile-no-tidy");
+    ASSERT_NO_FATAL_FAILURE(agent.importAndRecord());
+
+    std::error_code ec;
+    ASSERT_TRUE(fs::remove(agent.cacheDir() / "state", ec));
+    ASSERT_FALSE(ec);
+
+    Trust::discardStaleAnchorReport(agent.config());
+    ASSERT_FALSE(agent.config().cscaAnchorState().has_value()) << "the precondition for this test did not hold";
+
+    const Trust::AnchorCache cache{agent.cacheDir()};
+    EXPECT_TRUE(cache.holdsAnchor()) << "the reconciliation deleted anchors it only had to stop describing";
+    EXPECT_EQ(cache.anchors().size(), 2u);
+}
+
+// Nothing recorded is not a report to be wrong about, and the empty cache must
+// not provoke a write: a store that persisted on every startup would rewrite a
+// configuration file the agent was only ever asked to read.
+TEST(CscaAnchorReconcile, NothingRecordedIsNotAReportToDiscard)
+{
+    ConfiguredAgent agent("reconcile-nothing");
+    ASSERT_FALSE(agent.config().cscaAnchorState().has_value()) << "the fixture started with a report";
+
+    Trust::discardStaleAnchorReport(agent.config());
+
+    EXPECT_FALSE(agent.config().cscaAnchorState().has_value());
 }

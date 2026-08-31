@@ -269,6 +269,7 @@ LibreSCRS::Agent::Trust::AnchorCache::anchorsDirectory[abi:cxx11]() const
 LibreSCRS::Agent::Trust::AnchorCache::holdsAnchor() const
 LibreSCRS::Agent::Trust::AnchorCache::replace(std::vector<std::vector<unsigned char, std::allocator<unsigned char> >, std::allocator<std::vector<unsigned char, std::allocator<unsigned char> > > > const&, LibreSCRS::Agent::Trust::AnchorState const&)
 LibreSCRS::Agent::Trust::AnchorCache::state() const
+LibreSCRS::Agent::Trust::discardStaleAnchorReport(LibreSCRS::Agent::Config::ConfigStore&)
 LibreSCRS::Agent::Trust::importMasterList(std::vector<unsigned char, std::allocator<unsigned char> > const&, LibreSCRS::Agent::Trust::AnchorCache&, long)
 LibreSCRS::Agent::Trust::masterListsIn(std::vector<unsigned char, std::allocator<unsigned char> > const&)
 LibreSCRS::Agent::Trust::publishAnchorDirectory(LibreSCRS::Plugin::CardPluginService&, std::filesystem::__cxx11::path const&)

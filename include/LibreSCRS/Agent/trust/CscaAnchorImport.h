@@ -65,9 +65,16 @@
 #include <string>
 #include <vector>
 
-// Forward decl — only a reference appears below, in publishAnchorDirectory.
+// Forward decls — only references appear below, in publishAnchorDirectory and
+// discardStaleAnchorReport. The configuration store is deliberately not
+// INCLUDED here: this header describes what the agent believes about anchors,
+// and a consumer that only imports has no business compiling the whole
+// configuration surface to do it.
 namespace LibreSCRS::Plugin {
 class CardPluginService;
+}
+namespace LibreSCRS::Agent::Config {
+class ConfigStore;
 }
 
 namespace LibreSCRS::Agent::Trust {
@@ -433,5 +440,71 @@ private:
 //         compare it against where an import really landed.
 std::filesystem::path publishAnchorDirectory(LibreSCRS::Plugin::CardPluginService& plugins,
                                              const std::filesystem::path& cacheDir);
+
+// Discard a recorded anchor report the anchor cache does not bear out.
+//
+// The report follows the CONFIGURATION file. What it describes lives in the
+// anchor cache: the anchor files themselves, and beside them the cache's own
+// state file, which carries the publishers this agent follows. A person may
+// edit or delete either, and the configuration file survives it — so the report
+// goes on describing an agent that is no longer there. Both halves overstate,
+// which on a trust surface is the direction that matters:
+//
+//   * the ANCHORS are gone, and the counts name anchors that are not there;
+//   * the cache's STATE is gone, and `signer` / `signerPinned` describe
+//     publishers the agent no longer follows. With nothing left to read the
+//     records from, the next list is a trust-on-first-import, so a surface
+//     saying "pinned to X" is claiming a NARROWER trust than the one actually
+//     in force. After a collection there is no `signer` to be wrong and
+//     `signerPinned` overstates alone, which makes it thinner and no less
+//     false. The counts beside it may still be perfectly true, which is what
+//     makes this half the easy one to walk past.
+//
+// The harm is bounded and worth stating exactly: every verdict reads the cache
+// itself and never this report, so no document can be accepted on the strength
+// of a stale one. What breaks is a settings screen that contradicts what
+// reading a passport says, which corrodes trust in the display without being a
+// false green.
+//
+// CLEARED, not marked stale, and the two considerations that pull against each
+// other turn out not to conflict here:
+//
+//   * the pin and the rotation rule read the CACHE — @ref AnchorCache::state for
+//     the signer it follows, @ref AnchorCache::anchors for the path build a
+//     lawful rotation is checked against. Neither has ever read this record.
+//     Clearing it therefore cannot let any publisher re-establish trust on a
+//     wiped cache, which would be a far worse bug than the display one being
+//     fixed. Nothing in the cache is touched from here — this reports, it does
+//     not tidy — so a pin that outlived its anchors goes on refusing a
+//     stranger's list, and anchors that outlived the pin stay on disk;
+//   * absence is the only honest spelling this vocabulary has. A zeroed report
+//     means "a list was accepted and it vouched for nothing" — a different
+//     claim, and a false one. Absence already means "nothing installed that can
+//     be reported from here", which after either wipe is true.
+//
+// Both questions are cheap and neither re-verifies anything: an anchor probe
+// that stops at the first file it finds, and the small state file the cache
+// parses anyway. Startup latency is a real cost.
+//
+// WHY IT LIVES HERE rather than in the host that calls it. It touches
+// @ref AnchorCache and the configuration store and no transport whatever —
+// it was file-local to the D-Bus host until 2026-09-01 purely by where it was
+// first written, and the socket host consequently served reports over a cache
+// that had been wiped. The alternative was a second copy there, which is a
+// second implementation of a trust-policy decision: one that happens to agree
+// today is exactly what a consumer of this library has already removed once.
+//
+// WHERE IT IS CALLED FROM is a separate decision and belongs to each host:
+// at STARTUP, before anything can read the property. Callers must honour that,
+// and it is a deliberate trade a reader should not have to discover: a cache
+// wiped while the agent is running reads stale until the next start. Catching
+// that would mean watching the directory for the life of the process — a
+// standing cost, and a race with every import, for a display that restarting
+// already corrects.
+//
+// @param config the agent's configuration store, read for the recorded report
+//        and for the cache directory it describes, and reset when the two
+//        disagree. Nothing else in it is touched.
+void discardStaleAnchorReport(Config::ConfigStore& config);
 
 } // namespace LibreSCRS::Agent::Trust
