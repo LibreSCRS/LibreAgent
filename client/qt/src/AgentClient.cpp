@@ -10,6 +10,8 @@
 
 #if defined(Q_OS_LINUX)
 #include "dbus/DBusTransport.h"
+#elif defined(Q_OS_MACOS)
+#include "socket/SocketTransport.h"
 #endif
 
 #include <QHash>
@@ -24,14 +26,16 @@ namespace LibreSCRS::AgentClient {
 namespace {
 Q_LOGGING_CATEGORY(lcAgentClient, "librescrs.agentclient.client")
 
-/// The production transport for this platform: D-Bus on Linux; none elsewhere
-/// yet (the socket transport lands in a later task). A transport-less client
+/// The production transport for this platform: D-Bus on Linux, the App-Group
+/// socket on macOS. A platform with neither gets a transport-less client, which
 /// is inert but well-behaved: never available, nothing installed, empty
 /// registry.
 std::unique_ptr<TransportSeam> createDefaultTransport()
 {
 #if defined(Q_OS_LINUX)
     return std::make_unique<DBusTransport>();
+#elif defined(Q_OS_MACOS)
+    return std::make_unique<SocketTransport>();
 #else
     return nullptr;
 #endif

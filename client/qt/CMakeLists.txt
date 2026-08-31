@@ -35,13 +35,13 @@ add_library(LibreAgent::ClientQt ALIAS LibreAgentClientQt)
 
 # The socket transport (AF_UNIX + canonical CBOR over LibreAgent::Wire):
 # compiled on EVERY platform — it is the macOS production transport, written
-# portably, and Linux is where it is testable against the fake socket agent.
-# ErrorNameMap sits here too (not in the Linux-only D-Bus block): it is pure
-# string classification with no QtDBus dependency, and its short-name half is
-# the socket wire's sync-error vocabulary, so both transports share the one
-# table. MemfdSource.{h,cpp} (same directory) is deliberately NOT a library
-# source — it is the Linux-test-only document source, compiled only into the
-# socket test binary.
+# portably, and both Linux and Darwin are where it is testable against the
+# fake socket agent. ErrorNameMap sits here too (not in the Linux-only D-Bus
+# block): it is pure string classification with no QtDBus dependency, and its
+# short-name half is the socket wire's sync-error vocabulary, so both
+# transports share the one table. MemfdSource.{h,cpp} (same directory) is
+# deliberately NOT a library source — it is the Linux/Darwin-test-only
+# document source, compiled only into the socket test binary.
 target_sources(LibreAgentClientQt PRIVATE
     src/dbus/ErrorNameMap.cpp
     src/socket/SocketPath.cpp

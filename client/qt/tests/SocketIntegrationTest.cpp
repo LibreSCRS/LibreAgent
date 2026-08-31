@@ -306,6 +306,96 @@ TEST(SocketIntegration, SocketPathResolutionOrder)
     }
 }
 
+// ---- production transport selection -------------------------------------------
+
+// The PRODUCTION ctor, not ClientTestAccess::create: this is the one assertion
+// that tells a null transport from a real one. Everything else in this file
+// injects a transport and would pass either way.
+TEST(SocketIntegration, ProductionCtorSelectsTheSocketTransportOnApple)
+{
+#if !defined(Q_OS_DARWIN)
+    GTEST_SKIP() << "the socket transport is the production default on Apple only";
+#else
+    FakeSocketAgent::Config cfg;
+    cfg.capabilities = Cap::Pki;
+    cfg.agentVersion = QStringLiteral("9.9-production-ctor");
+    SocketHarness h(cfg);
+
+    const QByteArray saved = qgetenv(kAgentSocketEnvVar);
+    qputenv(kAgentSocketEnvVar, h.path().toLocal8Bit());
+
+    {
+        AgentClient client;
+        EXPECT_TRUE(client.isAvailable());
+        EXPECT_EQ(client.agentVersion(), QStringLiteral("9.9-production-ctor"));
+    }
+
+    if (saved.isEmpty()) {
+        qunsetenv(kAgentSocketEnvVar);
+    } else {
+        qputenv(kAgentSocketEnvVar, saved);
+    }
+#endif
+}
+
+// The regression this change itself introduces: LibreCelik on macOS does not
+// attempt a connection today and will after it. With no agent listening it must
+// still report unavailable -- never hang, never crash.
+TEST(SocketIntegration, ProductionCtorDegradesWhenNoAgentIsListening)
+{
+#if !defined(Q_OS_DARWIN)
+    GTEST_SKIP() << "the socket transport is the production default on Apple only";
+#else
+    const QByteArray saved = qgetenv(kAgentSocketEnvVar);
+    qputenv(kAgentSocketEnvVar, "/tmp/laqt-no-such-agent-should-not-exist.sock");
+
+    {
+        AgentClient client;
+        EXPECT_FALSE(client.isAvailable());
+        EXPECT_TRUE(client.readers().isEmpty());
+    }
+
+    if (saved.isEmpty()) {
+        qunsetenv(kAgentSocketEnvVar);
+    } else {
+        qputenv(kAgentSocketEnvVar, saved);
+    }
+#endif
+}
+
+// The other half of the platform contract, and the only half that runs in CI
+// today. Linux must IGNORE the socket override entirely: it stays on D-Bus, so
+// a fake agent listening on that socket must not make this client available.
+// This is what catches a change that quietly moves Linux onto the socket.
+TEST(SocketIntegration, ProductionCtorIgnoresTheSocketOverrideOnLinux)
+{
+#if !defined(Q_OS_LINUX)
+    GTEST_SKIP() << "this asserts the Linux production transport";
+#else
+    FakeSocketAgent::Config cfg;
+    cfg.capabilities = Cap::Pki;
+    cfg.agentVersion = QStringLiteral("9.9-must-not-be-seen");
+    SocketHarness h(cfg);
+
+    const QByteArray saved = qgetenv(kAgentSocketEnvVar);
+    qputenv(kAgentSocketEnvVar, h.path().toLocal8Bit());
+
+    {
+        AgentClient client;
+        // No assertion about isAvailable(): a developer machine may have a real
+        // agent on the bus. What must NEVER hold is that this client picked up
+        // the FAKE agent's identity from the socket the override names.
+        EXPECT_NE(client.agentVersion(), QStringLiteral("9.9-must-not-be-seen"));
+    }
+
+    if (saved.isEmpty()) {
+        qunsetenv(kAgentSocketEnvVar);
+    } else {
+        qputenv(kAgentSocketEnvVar, saved);
+    }
+#endif
+}
+
 // ---- availability: handshake capture, vanish, reappear -------------------------
 
 TEST(SocketIntegration, AvailabilityHandshakeFeatureTokensAndReappear)

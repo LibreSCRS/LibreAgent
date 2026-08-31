@@ -564,6 +564,68 @@ jobs:
           ASAN_OPTIONS: detect_leaks=0:detect_container_overflow=0
         run: ctest --test-dir build-wire-asan --output-on-failure --no-tests=error
 
+  client-macos:
+    # ClientQt's production transport on Apple platforms, actually exercised
+    # here: until this job, nothing in this workflow ever built or ran
+    # ClientQtSocketIntegrationTest on macOS -- LibreCelik's own build-macos
+    # job runs LibreCelik's tests, not this repo's, and wire-asan-macos above
+    # builds no ClientQt at all. Shape follows wire-asan-macos (macos-15,
+    # Homebrew Ninja + GTest -- Core stays OFF so no LibreMiddleware is ever
+    # built here, same reasoning as that job); the Qt install step and the
+    # ClientQt cmake flags follow the client job above and LibreCelik's own
+    # build-macos job (jurplel/install-qt-action@v4, Qt 6.10, clang_64).
+    #
+    # Test step is scoped to ClientQtSocketIntegrationTest specifically, not
+    # ClientQt's whole local test package: two unrelated, pre-existing targets
+    # (ClientQtSealedPayloadTest, HeaderAcceptance) are not green on macOS
+    # today for reasons that have nothing to do with the transport this job
+    # exists to prove (a Darwin fstat-on-pipe difference and a local Qt
+    # framework header issue, respectively) -- landing this job against them
+    # would make it red on arrival, which defeats the point of adding it.
+    name: client (macOS)
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build tools
+        # googletest as well as ninja, same reasoning as wire-asan-macos:
+        # this job builds no LibreMiddleware, and LibreMiddleware is where
+        # the other macOS jobs in this stack get their vendored GTest from.
+        run: brew install ninja googletest
+
+      - name: Install Qt 6.10
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: '6.10.*'
+          host: mac
+          target: desktop
+          arch: clang_64
+          cache: true
+
+      - name: Configure (Core OFF, Wire+ClientQt ON)
+        # No -DLIBRESCRS_AGENT_WERROR=ON, unlike the Linux jobs above --
+        # wire-asan-macos doesn't set it either. -Wshorten-64-to-32 fires on
+        # src/wire/Framing.cpp's CMSG_SPACE/CMSG_LEN use under AppleClang
+        # (a pre-existing warning, not something this job introduces or this
+        # task's job to fix); turning WERROR on here would fail every build.
+        run: |
+          cmake -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+            -DLIBREAGENT_BUILD_CORE=OFF \
+            -DLIBREAGENT_BUILD_WIRE=ON \
+            -DLIBREAGENT_BUILD_CLIENT_QT=ON
+
+      - name: Build
+        run: cmake --build build -j4
+
+      - name: Test (socket integration suite)
+        # --no-tests=error: ctest exits 0 when it finds nothing at all, so
+        # without this a configuration that stopped generating this test
+        # would report success.
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: ctest --test-dir build --output-on-failure --no-tests=error -R ClientQtSocketIntegrationTest
+
   fuzz-cbor:
     # Untrusted-decoder fuzz gate (moved from LibreDarwin, whose own
     # ci.yml dropped this job once the wire codec/framing/message model

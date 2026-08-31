@@ -292,16 +292,20 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
 endif() # CMAKE_SYSTEM_NAME STREQUAL "Linux"
 
 # Socket integration tests: the REAL SocketTransport driven against an
-# in-process FakeSocketAgent on a temp AF_UNIX path. No bus, no
-# dbus-run-session — the whole wire is this repo's own framing + canonical
-# CBOR (LibreAgent::Wire), so the suite also runs on a D-Bus-less
-# configuration. Linux-gated for now because the fake's document/artifact
-# source is memfd_create (src/socket/MemfdSource.{h,cpp}, the Linux-test-only
-# helper); the transport TU itself compiles into the library on every
-# platform. SocketTransport/SocketPath/ErrorNameMap are INTERNAL,
-# hidden-visibility TUs — compiled directly into the test executable, the
-# same pattern as the D-Bus suites above.
-if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+# in-process FakeSocketAgent on a temp AF_UNIX path. Most of the suite needs
+# no bus -- the whole wire is this repo's own framing + canonical CBOR
+# (LibreAgent::Wire) -- but the production-ctor cases build a real
+# AgentClient, which on Linux constructs a DBusTransport and touches the
+# session bus, same as ClientQtSharedAgentClientTest above; hence the
+# dbus-run-session wrap on Linux below. Linux + Darwin gated: the fake's
+# document/artifact source (src/socket/MemfdSource.{h,cpp}) has a real
+# backend on both — memfd_create on Linux, mkstemp + unlink on Darwin (see
+# that file) — but no portable fallback beyond them, so this stays gated
+# rather than unconditional. The transport TU itself compiles into the
+# library on every platform. SocketTransport/SocketPath/ErrorNameMap are
+# INTERNAL, hidden-visibility TUs — compiled directly into the test
+# executable, the same pattern as the D-Bus suites above.
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux" OR CMAKE_SYSTEM_NAME STREQUAL "Darwin")
     add_executable(ClientQtSocketIntegrationTest
         SocketIntegrationTest.cpp
         fakes/FakeSocketAgent.h
@@ -318,8 +322,15 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
         LibreAgent::ClientQt
         LibreAgent::Wire
         GTest::gtest)
-    add_test(NAME ClientQtSocketIntegrationTest COMMAND ClientQtSocketIntegrationTest)
-    # No bus here, but the real SocketTransport wedges the same way -- same ceiling.
+    if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+        # See the file comment above: a production AgentClient here builds a
+        # DBusTransport, which needs a session bus to connect to.
+        add_test(NAME ClientQtSocketIntegrationTest
+            COMMAND ${DBUS_RUN_SESSION} -- $<TARGET_FILE:ClientQtSocketIntegrationTest>)
+    else()
+        add_test(NAME ClientQtSocketIntegrationTest COMMAND ClientQtSocketIntegrationTest)
+    endif()
+    # The real SocketTransport wedges the same way a real DBusTransport does -- same ceiling.
     set_tests_properties(ClientQtSocketIntegrationTest PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 120)
 endif()
 
