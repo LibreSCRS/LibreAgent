@@ -575,24 +575,31 @@ jobs:
     # ClientQt cmake flags follow the client job above and LibreCelik's own
     # build-macos job (jurplel/install-qt-action@v4, Qt 6.10, clang_64).
     #
-    # Test step runs ClientQt's whole local test package MINUS two unrelated,
-    # pre-existing targets that are not green on macOS today, for reasons
-    # that have nothing to do with the transport this job exists to prove --
-    # landing this job against them would make it red on arrival, which
-    # defeats the point of adding it:
+    # Test step runs ClientQt's whole local test package. It once ran two
+    # targets short, on the reasoning that they were pre-existing failures
+    # unrelated to the transport this job exists to prove; both are fixed and
+    # the filter is gone, because a narrowing kept "until later" is one that
+    # outlives the reason for it and quietly shrinks what the job proves.
     #
-    #   * ClientQtSealedPayloadTest fails on a wrong premise in the fixture,
-    #     not a product bug. Its PipeHoldingReadableBytesIsRefused case
-    #     asserts a pipe's st_size reads back as zero
-    #     (client/qt/tests/SealedPayloadTest.cpp:253); Darwin instead reports
-    #     the buffered byte count there. The assertion on the actual code
-    #     under test, two lines later, still holds on Darwin regardless:
-    #     readBoundedPayload refuses the descriptor on !S_ISREG before it
-    #     ever consults st_size.
-    #   * HeaderAcceptance fails for a local Qt framework header issue.
+    #   * ClientQtSealedPayloadTest asserted a pipe's st_size reads back zero.
+    #     That is Linux's answer; Darwin reports the bytes buffered. Both are
+    #     right -- st_size describes a file extent and a pipe has none -- so
+    #     the premise was a claim about one platform wearing the clothes of a
+    #     claim about pipes. The case does not rest on it and no longer makes
+    #     it.
+    #   * HeaderAcceptance failed on the harness, not on any header. It passed
+    #     Qt's include directories as -I, so a diagnostic raised inside Qt's
+    #     own headers was fatal to a check about OUR headers, and a framework
+    #     Qt -- what this action installs -- needs a framework search path
+    #     before its umbrella headers resolve at all. It now passes them as
+    #     -isystem plus -iframework, which is what CMake does for the real
+    #     targets and the reason they never saw this.
     #
-    # Everything else in the package -- roughly a dozen platform-neutral
-    # suites -- builds and passes on macOS and now runs here.
+    #     The same change fixed a guard that was passing over nothing: the
+    #     Qt-module allowlist matched /Qt<Name>/ and a framework spells it
+    #     Qt<Name>.framework, so on Apple platforms it found zero modules and
+    #     allowlisted them all. Measured by making a public header reach for
+    #     QtGui: caught now, silently green before.
     name: client (macOS)
     runs-on: macos-15
     steps:
@@ -629,15 +636,19 @@ jobs:
       - name: Build
         run: cmake --build build -j4
 
-      - name: Test (ClientQt package, less two known-red targets)
+      - name: Test (ClientQt package)
         # --no-tests=error: ctest exits 0 when it finds nothing at all, so
         # without this a configuration that stopped generating any tests
-        # would report success. -E excludes ClientQtSealedPayloadTest and
-        # HeaderAcceptance -- see the job comment above for what is wrong
-        # with each and why neither is this job's to fix.
+        # would report success.
+        #
+        # No -E any more. It named two targets and the job title carried the
+        # exemption, which is the honest way to defer something -- but the
+        # count it left behind, 23 where the package has 25, is exactly the
+        # denominator a passing percentage hides. Both are fixed; see the job
+        # comment above.
         env:
           QT_QPA_PLATFORM: offscreen
-        run: ctest --test-dir build --output-on-failure --no-tests=error -E "ClientQtSealedPayloadTest|HeaderAcceptance"
+        run: ctest --test-dir build --output-on-failure --no-tests=error
 
   fuzz-cbor:
     # Untrusted-decoder fuzz gate (moved from LibreDarwin, whose own

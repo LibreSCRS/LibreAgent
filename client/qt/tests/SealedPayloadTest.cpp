@@ -249,9 +249,18 @@ TEST(SealedPayloadTest, PipeHoldingReadableBytesIsRefused)
     struct ::stat st{};
     ASSERT_EQ(::fstat(fd.get(), &st), 0);
     ASSERT_FALSE(S_ISREG(st.st_mode)) << "a pipe must not present itself as a regular file";
-    // Premise 2: the size query really does answer zero...
-    ASSERT_EQ(st.st_size, 0) << "a pipe reports no size regardless of what it holds";
-    // Premise 3: ...while the bytes really are sitting there, readable.
+    // Premise 2 USED to be `st.st_size == 0`, and it was a claim about Linux
+    // wearing the clothes of a claim about pipes. Linux reports zero for a pipe
+    // no matter what it holds; Darwin reports the bytes currently buffered --
+    // 38 here -- and both are correct, because st_size describes a FILE EXTENT
+    // and a pipe has none. Asserting one platform's answer made this whole file
+    // unrunnable on the other, for a premise the case does not rest on.
+    //
+    // What the case rests on is the pair below and above: the descriptor is not
+    // a regular file, and the bytes really are sitting in it. That is the shape
+    // a size-bounded read gets wrong, and it is the same shape everywhere.
+    //
+    // Premise 3: the bytes really are sitting there, readable.
     int queued = 0;
     ASSERT_EQ(::ioctl(fd.get(), FIONREAD, &queued), 0);
     ASSERT_EQ(queued, payload.size()) << "the pipe must actually hold the bytes this case is about";
