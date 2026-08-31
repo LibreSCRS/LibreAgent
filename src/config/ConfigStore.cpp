@@ -127,6 +127,27 @@ constexpr std::array<SeedTslSource, 2> kSeedTslSources{
     SeedTslSource{"https://ec.europa.eu/tools/lotl/eu-lotl.xml", true},
 };
 
+// The seed as a VALUE, so first-run and "restore defaults" cannot drift apart.
+// Both callers take the lists from here; a second spelling of the same table is
+// how the two senses of "default" came to disagree in the first place.
+std::vector<std::string> seededTsaUrls()
+{
+    return {kSeedTsaUrls.begin(), kSeedTsaUrls.end()};
+}
+
+std::vector<TslSource> seededTslSources()
+{
+    std::vector<TslSource> out;
+    out.reserve(kSeedTslSources.size());
+    for (const auto& src : kSeedTslSources) {
+        // eager stays false here for the same reason it does on first run: a
+        // restore must not turn on startup network traffic the reader never
+        // asked for.
+        out.push_back(TslSource{.url = src.url, .isLotl = src.isLotl, .eager = false});
+    }
+    return out;
+}
+
 // Seed @p tsaUrls and @p tslSources for an installation that has never been
 // configured, giving a usable timestamp + trusted-list configuration to an agent
 // that would otherwise start with nothing to timestamp against and nothing to
@@ -148,18 +169,14 @@ bool seedFirstRunDefaults(const std::filesystem::path& configFile, std::vector<s
     if (std::filesystem::exists(configFile, ec) || ec) {
         return false; // already configured, or its state cannot be established
     }
-    tsaUrls.assign(kSeedTsaUrls.begin(), kSeedTsaUrls.end());
+    tsaUrls = seededTsaUrls();
     // eager stays false for every source. That flag drives a fetch at trust-store
     // construction -- one worker thread and one HTTPS round trip per source, on
     // every start -- and nothing about seeding a default requires it: the lazy
     // path exists precisely so a host that is offline at login is not forced into
     // startup network traffic. The lists are fetched on the first signature whose
     // level needs them.
-    tslSources.clear();
-    tslSources.reserve(kSeedTslSources.size());
-    for (const auto& src : kSeedTslSources) {
-        tslSources.push_back(TslSource{.url = src.url, .isLotl = src.isLotl, .eager = false});
-    }
+    tslSources = seededTslSources();
     return true;
 }
 
@@ -786,9 +803,19 @@ ConfigStore::SetResult ConfigStore::resetKey(const std::string& key, bool fromDb
         if (key == kDefaultLevel) {
             m_defaultLevel = "b-b";
         } else if (key == kTsaUrls) {
-            m_tsaUrls.clear();
+            // The BUILT-IN default, not emptiness. These two keys are the only
+            // ones with a seed, and a reset that cleared them made the button
+            // labelled "restore defaults" delete the national trusted list and
+            // the EU LOTL pivot instead of bringing them back.
+            //
+            // This does not weaken the once-only seeding rule above: that rule
+            // is about a START never re-seeding a config file that already
+            // exists, because an empty list in that file is the administrator's
+            // answer. A reset is not a start -- it is someone asking for the
+            // built-in answer back, in as many words.
+            m_tsaUrls = seededTsaUrls();
         } else if (key == kTslSources) {
-            m_tslSources.clear();
+            m_tslSources = seededTslSources();
         } else if (key == kCscaSources) {
             m_cscaSources.clear();
         } else if (key == kDefaultReason) {

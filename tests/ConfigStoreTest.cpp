@@ -620,3 +620,41 @@ TEST_F(ConfigStoreTest, RemoveChangeObserverDrainsInFlightCallback)
 }
 
 } // namespace
+
+// "Restore defaults" has to restore the defaults. Reset emptied the two seeded
+// list keys instead, so the button in LibreCelik's Trust tab — whose label says
+// exactly this — wiped the national trusted list and the EU LOTL pivot and left
+// nothing behind. Reported from a real desktop: the reader pressed it and the
+// list box went blank.
+//
+// Two senses of "default" had drifted apart. kSeedTslSources is what an
+// unconfigured install gets, and seeding is deliberately once-only: a config
+// file that exists is the administrator's answer, including when its lists are
+// empty, so no later START may re-seed. A RESET is not a start — it is someone
+// asking for the built-in answer back — and the once-only rule was never about
+// that. FirstRunSeedIsNotReappliedToAnExistingFile still pins the start path.
+TEST_F(ConfigStoreTest, ResettingTheListKeysRestoresTheSeedRatherThanEmptyingThem)
+{
+    ConfigStore cfg(m_configFile, m_cacheRoot);
+    ASSERT_EQ(cfg.tslSources(), kSeededTslSources) << "this test needs the seeded starting point";
+    ASSERT_EQ(cfg.tsaUrls(), kSeededTsaUrls);
+
+    // A reader replaces both with their own, as they are entitled to.
+    ASSERT_TRUE(cfg.setTslSources({TslSource{"https://example.test/tl.xml", false, false}}).ok);
+    ASSERT_TRUE(cfg.setTsaUrls({"https://tsa.example.test"}).ok);
+    ASSERT_EQ(cfg.tslSources().size(), 1u);
+    ASSERT_EQ(cfg.tsaUrls().size(), 1u);
+
+    EXPECT_TRUE(cfg.resetKey("TslSources", /*fromDbus=*/true).ok);
+    EXPECT_TRUE(cfg.resetKey("TsaUrls", /*fromDbus=*/true).ok);
+
+    EXPECT_EQ(cfg.tslSources(), kSeededTslSources)
+        << "restoring defaults emptied the trusted lists instead of bringing back the built-in ones, so a reader "
+           "who presses the button loses the national list and the EU pivot with nothing naming what was there";
+    EXPECT_EQ(cfg.tsaUrls(), kSeededTsaUrls) << "same for the timestamp authorities";
+
+    // And it survives a reload: the restored seed is written, not just held.
+    ConfigStore reopened(m_configFile, m_cacheRoot);
+    EXPECT_EQ(reopened.tslSources(), kSeededTslSources) << "the restored defaults were not persisted";
+    EXPECT_EQ(reopened.tsaUrls(), kSeededTsaUrls);
+}
