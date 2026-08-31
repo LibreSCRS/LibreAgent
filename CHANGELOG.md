@@ -5,6 +5,36 @@ Notable user-visible changes per release. Format follows
 
 ## [Unreleased] — 4.3.0
 
+The country-signing anchor import now accepts what the ICAO Public Key
+Directory actually publishes. The portal serves a directory export (an
+LDIF file) carrying dozens of master lists, each signed by a different
+country; until now the agent could take in one list at a time, so a
+person following the instructions in their own settings dialog was
+refused the file they had just been told to download. One selection is
+still one import, and the agent decides what the file is: a client hands
+over bytes and never has to know what counts as a master list.
+
+Every list in a collection is verified on its own, against its own
+signer, and the anchors installed are the union of the ones that
+survived. The rules that already governed a single list now apply per
+publisher: each is remembered separately, a publisher's lawful key
+rotation is followed on its own evidence, and a list is refused as a
+replay when it is not strictly newer than the one already accepted FROM
+THAT PUBLISHER — so one country publishing rarely no longer looks like a
+rollback. A signer with no record behind it must additionally beat the
+newest publisher the import displaces, which is what keeps a rotation
+from being a way to carry an old list in.
+
+An import takes what verifies rather than refusing everything: two stale
+lists among twenty-eight no longer deny a person the other twenty-six,
+and nothing is installed that was not verified. What did not make it is
+reported alongside what did, so a surface can say how many of how many
+were installed and why the rest were not. An import that admits no list
+at all is still a refusal and still leaves the stored anchors untouched.
+Whether a later collection can be checked for rollback is now reported
+honestly for the whole: one undated list among the accepted ones makes
+it false, because that publisher's anchors can be rolled back freely.
+
 A never-configured installation now seeds a working timestamp-authority
 and trusted-list configuration on first start. Startup stays
 network-free (no seeded list is fetched eagerly), but the first DEFAULT

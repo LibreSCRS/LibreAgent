@@ -2,8 +2,8 @@
 // SPDX-FileCopyrightText: 2026 hirashix0
 #pragma once
 
-// Turning a signed ICAO country-signing master list into the agent's trust
-// anchors, and deciding whether to believe it.
+// Turning signed ICAO country-signing master lists into the agent's trust
+// anchors, and deciding whether to believe them.
 //
 // WHY THERE IS A DECISION TO MAKE. A master list is signed by a key that chains
 // to a country's own authority, and the list is what supplies the anchors that
@@ -13,13 +13,36 @@
 // authenticity; it must never be presented as a check.
 //
 // WHAT THIS DOES INSTEAD. The first list is trusted on import and its signer is
-// remembered. Every later list must be signed by that same key — or by a signer
-// whose certificate chains to an anchor the PREVIOUSLY ACCEPTED list carried,
+// remembered. Every later list must be signed by a key already recorded — or by
+// a signer whose certificate chains to an anchor the PREVIOUS import carried,
 // which is how a publisher's lawful key rotation is followed without a person
 // having to compare fingerprints out of band. Anything else is refused, both
 // fingerprints are reported, and the stored anchors are left alone. A lawful
 // rotation and an attack look identical from here, so accepting one silently
 // would accept the other.
+//
+// A FILE IS NOT A LIST. What the ICAO Public Key Directory actually serves is a
+// directory export (RFC 2849 LDIF) carrying the collection: dozens of master
+// lists, each published and signed by a different country, base64 under a
+// `pkdMasterListContent;binary` attribute. So the unit a person hands in is a
+// FILE and the unit that is verified is a LIST, and everything below is stated
+// per list: each is verified against its own signer, each signer carries its
+// own record, the rotation rule and the replay rule are applied to each. The
+// anchors installed are the UNION of the lists that survived all of it. Reading
+// the file happens HERE rather than in whatever client passed it: a client that
+// decided what counts as a master list would be deciding what this agent may be
+// asked to believe, and it is not the trust boundary.
+//
+// PARTIAL OUTCOMES ARE THE ORDINARY CASE, not an edge. Twenty-eight countries
+// publish on their own schedules, so a collection in which two lists are stale
+// and twenty-six are current is what a reader downloads on an ordinary Tuesday.
+// An import therefore takes what verifies and reports the rest: nothing is
+// installed that was not verified and admitted, and one publisher's stale list
+// does not deny a person the other twenty-seven. The refusals are not
+// swallowed — @ref AnchorState::refusedLists carries one record per list that
+// did not make it, so a surface can say what actually happened rather than
+// showing an unexplained smaller number. An import that admits NO list at all
+// is a refusal like any other and leaves the store untouched.
 //
 // THE ROTATING SIGNER'S CERTIFICATE COMES OUT OF THE LIST, and specifically out
 // of the signer a successful verification RESOLVED — never out of the CMS
@@ -58,50 +81,13 @@ inline constexpr std::size_t kMaxMasterListBytes = 32ull * 1024 * 1024;
 inline constexpr std::size_t kSignerFingerprintSize = 32;
 using SignerFingerprint = std::array<std::uint8_t, kSignerFingerprintSize>;
 
-// What the agent remembers between imports, and what a client reads in order to
-// have something to say about the trust store.
-struct AnchorState
-{
-    bool present{false};        ///< false until a list has been accepted
-    SignerFingerprint signer{}; ///< the publisher the agent follows
-    /// Whether the accepting import ESTABLISHED the signer's identity — matched
-    /// it against the pin, or built a path from it to an anchor already held —
-    /// as opposed to merely observing it. False on a trust-on-first-import, and
-    /// a surface that says "authenticity verified" over a false here claims more
-    /// than was measured.
-    bool signerPinned{false};
-    /// Anchors held. Counts link certificates, which are anchors like any
-    /// other — this is not a count of self-signed roots.
-    std::uint32_t anchorCount{0};
-    /// Distinct issuing countries among those anchors, by the subject's country
-    /// attribute. Anchors that carry none, or that do not parse, share one
-    /// bucket rather than each inventing an issuer.
-    std::uint32_t issuerCount{0};
-    std::int64_t acceptedAt{0};   ///< seconds since the epoch
-    std::string origin{"import"}; ///< where the anchors came from
-    /// When the accepted list said it was SIGNED, from the CMS signingTime
-    /// signed attribute. Empty when the list carried none, which CMS permits.
-    /// Distinct from @ref acceptedAt, which is when this agent took it in and is
-    /// therefore under no publisher's control.
-    std::optional<std::int64_t> signedAt;
-
-    /// Whether a later import can be refused for being a replay.
-    ///
-    /// True exactly when the accepted list carried a signing time. With nothing
-    /// to compare against, "is this list older than the one installed" is not a
-    /// question that can be answered at all, and a surface that stays silent
-    /// about it leaves a person unable to tell "this is safe" from "this cannot
-    /// be checked".
-    [[nodiscard]] bool replayRefusalActive() const noexcept
-    {
-        return signedAt.has_value();
-    }
-};
-
-// Why an import was refused. Every value leaves the stored anchors untouched.
+// Why an import, or one list inside a collection, was refused. Every value
+// leaves the stored anchors untouched when it is the outcome of the whole
+// import; as a per-list record it means that list contributed nothing.
 enum class ImportRefusal : std::uint8_t {
     /// Not a master list: undecodable, or a signed object of some other content
-    /// type. Empty input lands here too.
+    /// type. Empty input lands here too, as does a directory export carrying no
+    /// signed master list at all.
     NotAMasterList,
     /// A master list that verified and carries no anchor. An empty trust store
     /// is not a valid state to import into one.
@@ -111,34 +97,167 @@ enum class ImportRefusal : std::uint8_t {
     /// The signature over the list does not hold.
     BadSignature,
     /// The list is signed by a key the agent does not follow, and that key's
-    /// certificate does not chain to any anchor the accepted list carried.
+    /// certificate does not chain to any anchor the previous import carried.
     SignerChanged,
-    /// The list is authentic and is not newer than the one already accepted:
-    /// either it is dated no later, or it carries no date at all while the
-    /// accepted one does. Installing it would withdraw anchors.
+    /// The list is authentic and is not newer than the one already accepted
+    /// FROM THAT SAME SIGNER: either it is dated no later, or it carries no date
+    /// at all while the accepted one does. Installing it would withdraw anchors.
     Replayed,
     /// The anchors verified but could not be stored. Reported rather than
     /// swallowed: an import that silently kept nothing would leave a person
-    /// believing anchors were installed.
+    /// believing anchors were installed. Never a per-list outcome — storage is
+    /// attempted once, for the union.
     CacheNotWritable,
 };
 
-struct Refusal
+// One publisher whose list an import took in, and what that import established
+// about it. The unit the rotation rule and the replay rule are both applied to:
+// a collection of twenty-eight independently signed lists yields twenty-eight
+// of these, and each later import is judged against the matching one.
+struct AcceptedSigner
+{
+    /// SHA-256 over the DER of this publisher's SubjectPublicKeyInfo.
+    SignerFingerprint fingerprint{};
+    /// Whether the accepting import ESTABLISHED this publisher's identity —
+    /// matched it against a record already held, or built a path from it to an
+    /// anchor already held — as opposed to merely observing it. False on a
+    /// trust-on-first-import, and a surface that says "authenticity verified"
+    /// over a false here claims more than was measured.
+    bool identityEstablished{false};
+    /// When THIS publisher's list said it was SIGNED, from the CMS signingTime
+    /// signed attribute. Empty when the list carried none, which CMS permits.
+    /// Distinct from @ref AnchorState::acceptedAt, which is when this agent took
+    /// the file in and is therefore under no publisher's control.
+    ///
+    /// When two lists in one file share a publisher, the LATER of their dates:
+    /// both were accepted, so the record has to bound what may follow them.
+    std::optional<std::int64_t> signedAt;
+
+    bool operator==(const AcceptedSigner&) const = default;
+};
+
+// One list in an imported file that did not make it into the store, and as much
+// as could be read about it. Carried so a surface can explain a smaller number
+// than a person expected — "twenty-six of twenty-eight, two replays" — instead
+// of leaving them to guess.
+struct RefusedList
 {
     ImportRefusal reason{ImportRefusal::NotAMasterList};
-    /// The signer of the list that was offered, when one could be read. Shown
-    /// beside @ref trustedSigner so a person can tell a rotation from an
-    /// attack; the agent cannot.
+    /// The publisher that signed it, when the list verified far enough for one
+    /// to be resolved. Empty when it did not.
+    std::optional<SignerFingerprint> signer;
+
+    bool operator==(const RefusedList&) const = default;
+};
+
+// What the agent remembers between imports, and what a client reads in order to
+// have something to say about the trust store.
+struct AnchorState
+{
+    bool present{false}; ///< false until at least one list has been accepted
+    /// Every publisher whose list the accepting import took in, one record
+    /// each, in the order the file carried them. Never empty when @ref present.
+    ///
+    /// This is the pin, generalised. A single published list leaves exactly one
+    /// record here and behaves as it always did; the ICAO collection leaves one
+    /// per participating country.
+    std::vector<AcceptedSigner> signers;
+    /// Anchors held: the UNION of what the accepted lists carried, with exact
+    /// duplicates collapsed — the lists in a collection overlap heavily, and
+    /// storing one file per repetition would multiply the store several times
+    /// over for no added trust. Counts link certificates, which are anchors like
+    /// any other — this is not a count of self-signed roots.
+    std::uint32_t anchorCount{0};
+    /// Distinct issuing countries among those anchors, by the subject's country
+    /// attribute. Anchors that carry none, or that do not parse, share one
+    /// bucket rather than each inventing an issuer.
+    std::uint32_t issuerCount{0};
+    /// How many signed master lists the imported FILE was read as carrying: one
+    /// for a single published list, one per country for a directory export. The
+    /// number ACCEPTED is this less @ref refusedLists size, which is at least
+    /// @ref signers size — two lists in one file may share a publisher.
+    std::uint32_t listsOffered{0};
+    /// The lists in that same file that contributed nothing, one record each.
+    /// Empty on an import where everything verified. The order is the order
+    /// they were decided in, which is not quite the file's: a list can only be
+    /// measured against what the whole file displaces once every list has been
+    /// read, so the ones refused by that measure come last.
+    std::vector<RefusedList> refusedLists;
+    std::int64_t acceptedAt{0};   ///< seconds since the epoch
+    std::string origin{"import"}; ///< where the anchors came from
+
+    /// The record held for @p fingerprint, or nullptr when no accepted list was
+    /// signed by that key. The lookup the rotation and replay rules both start
+    /// from, so neither has to know how these are stored.
+    [[nodiscard]] const AcceptedSigner* recordFor(const SignerFingerprint& fingerprint) const noexcept
+    {
+        for (const AcceptedSigner& s : signers) {
+            if (s.fingerprint == fingerprint) {
+                return &s;
+            }
+        }
+        return nullptr;
+    }
+
+    /// Whether a later import can be refused for being a replay.
+    ///
+    /// True exactly when EVERY accepted list carried a signing time. The
+    /// aggregate is deliberately the weakest of its parts: the sentence this
+    /// answers is "a later collection can be checked for rollback", and one
+    /// undated list among twenty-eight is a publisher whose anchors can be
+    /// rolled back freely. Reporting true because most of them were dated would
+    /// overstate exactly the protection a person cannot check for themselves.
+    ///
+    /// With nothing to compare against, "is this list older than the one
+    /// installed" is not a question that can be answered at all, and a surface
+    /// that stays silent about it leaves a person unable to tell "this is safe"
+    /// from "this cannot be checked".
+    [[nodiscard]] bool replayRefusalActive() const noexcept
+    {
+        if (signers.empty()) {
+            return false;
+        }
+        for (const AcceptedSigner& s : signers) {
+            if (!s.signedAt.has_value()) {
+                return false;
+            }
+        }
+        return true;
+    }
+};
+
+// Why a whole import was refused: no list in the file was admitted, so nothing
+// was stored. Reached only when EVERY list failed — a file in which one list
+// verifies is an acceptance carrying the rest in
+// @ref AnchorState::refusedLists.
+struct Refusal
+{
+    /// The reason the FIRST refused list gave, in the file's own order. One
+    /// reason is reported rather than a ranking invented over several: a
+    /// priority order among refusals would have to claim that one publisher's
+    /// failure matters more than another's, which nothing here knows.
+    ImportRefusal reason{ImportRefusal::NotAMasterList};
+    /// The signer of the list that was offered, when one could be read AND the
+    /// file carried exactly one list. Shown beside @ref trustedSigner so a
+    /// person can tell a rotation from an attack; the agent cannot. Empty for a
+    /// collection, where naming one publisher out of twenty-eight would say
+    /// something the reason does not.
     std::optional<SignerFingerprint> seenSigner;
-    /// The signer the agent follows, when it follows one.
+    /// The publisher the agent follows, when it follows exactly one. Empty once
+    /// several are recorded, for the same reason as @ref seenSigner.
     std::optional<SignerFingerprint> trustedSigner;
     /// For @ref ImportRefusal::Replayed: when the offered list says it was
     /// signed, empty when it does not say. Empty here beside a filled
     /// @ref trustedSignedAt is the strip attempt rather than the rollback.
     std::optional<std::int64_t> seenSignedAt;
-    /// For @ref ImportRefusal::Replayed: when the ACCEPTED list said it was
-    /// signed — the value the offered one had to beat.
+    /// For @ref ImportRefusal::Replayed: when the list ALREADY ACCEPTED FROM
+    /// THAT SIGNER said it was signed — the value the offered one had to beat.
     std::optional<std::int64_t> trustedSignedAt;
+    /// How many signed master lists the file was read as carrying. One for a
+    /// single published list — and one, too, for bytes that turned out to be
+    /// no list at all, since they were judged as one. More for a collection,
+    /// and then @ref reason describes the first of them rather than all.
+    std::uint32_t listsOffered{0};
 };
 
 // The anchors and the trust state on disk, under the agent's configured
@@ -149,6 +268,14 @@ struct Refusal
 // CSCA link certificates beside the self-signed roots, and a
 // "keep only self-signed" filter would pass every single-root country and break
 // every country that has rotated its root.
+//
+// The directory is FLAT, and deliberately so: it is handed whole to card
+// plugins (see publishAnchorDirectory), which read every certificate in it and
+// have no business knowing which publisher vouched for which. That is why an
+// import that admits some lists and refuses others stores the union of the
+// admitted ones and nothing else — there is nowhere to keep a refused
+// publisher's previous anchors apart, and quietly leaving them behind would
+// make the store a merge of statements no single publisher ever made.
 class AnchorCache
 {
 public:
@@ -184,6 +311,9 @@ public:
 
     // REPLACES the anchor set — a master list is a complete statement of what a
     // publisher vouches for, so merging would keep anchors it has withdrawn.
+    // For a collection the same holds of the union: it is the complete
+    // statement of every publisher the import admitted, and a publisher whose
+    // list was refused has vouched for nothing this time round.
     // Returns false if anything could not be written, in which case the previous
     // contents may be gone: the state file is written last and only on success,
     // so a torn write leaves the agent believing nothing rather than believing
@@ -194,8 +324,41 @@ private:
     std::filesystem::path m_dir;
 };
 
-// Verify @p der, decide whether to believe it, and on acceptance replace the
-// cached anchors.
+// The signed master lists a downloaded FILE carries, in the order it carries
+// them, each as the bytes that must be verified.
+//
+// Two shapes are recognised and nothing else is guessed at:
+//
+//   * ONE published master list, handed over as it was published — the bytes
+//     are a single CMS ContentInfo carrying id-signedData, and they come back
+//     unchanged as the only element;
+//   * a DIRECTORY EXPORT (RFC 2849 LDIF), which is what the ICAO Public Key
+//     Directory serves — line folding undone, and every base64 attribute value
+//     that decodes to a CMS ContentInfo carrying id-signedData taken, in file
+//     order.
+//
+// THE FILTER IS THE CONTENT, NEVER THE ATTRIBUTE NAME. The portal writes the
+// lists under `pkdMasterListContent;binary`, but base64 is how LDIF carries any
+// value that needs escaping, and a real export has a base64 `cn` sitting beside
+// them — so a scan that took every `::` value would offer one more "list" than
+// the file holds, and a scan that trusted the attribute name would break the
+// day a directory spells it differently. What is taken is what parses as a
+// signed object.
+//
+// This decides only what is WORTH VERIFYING. Nothing here checks a signature,
+// reads a content type from inside the SignedData, or looks at an anchor: a
+// value that survives this may still turn out to be a signed object of some
+// other kind, and importMasterList refuses it then. The BER indefinite-length
+// form is accepted alongside the definite one, because a real collection
+// contains one.
+//
+// @param fileBytes whatever the person selected, as read.
+// @return the lists found, or empty when the bytes are neither of the two
+//         shapes — which is not an error here and is left for a caller to name.
+[[nodiscard]] std::vector<std::vector<std::uint8_t>> masterListsIn(const std::vector<std::uint8_t>& fileBytes);
+
+// Verify every master list @p der carries, decide which of them to believe, and
+// on acceptance replace the cached anchors with the union of those.
 //
 // CALLER OBLIGATIONS THIS FUNCTION DOES NOT ENFORCE.
 //
@@ -223,10 +386,24 @@ private:
 // by any test that ships with this library. A caller must prove both hold,
 // with tests of its own, before it relies on this API.
 //
-// @param der the bytes of a signed master list, as published. Everything the
-//        decision needs is in here, the rotating signer's certificate included.
+// WHAT IS JUDGED PER LIST, AND WHAT IS FIXED FOR THE WHOLE IMPORT. Each list is
+// verified on its own, against its own signer, and measured against the record
+// held for THAT signer — so a stale list from one country cannot deny another
+// country's current one. What is fixed once, before anything is written, is the
+// set of anchors a rotation may be judged against: they are read from the cache
+// as it stood BEFORE this import. A list in the file may therefore never vouch
+// for a signer in the same file, whichever order they arrive in. Letting it
+// would be the circular check this whole design exists to avoid, one level up.
+//
+// @param der the bytes the person handed in: one signed master list as
+//        published, or a directory export carrying a collection of them. See
+//        masterListsIn. Everything the decision needs is in here, the rotating
+//        signers' certificates included.
 // @param now seconds since the epoch, injected rather than read, so the record
 //        an import writes is testable.
+// @return what the agent believes after the import — including, when some lists
+//         were refused and others were not, the record of both. An error only
+//         when NO list was admitted, in which case the store is untouched.
 [[nodiscard]] std::expected<AnchorState, Refusal> importMasterList(const std::vector<std::uint8_t>& der,
                                                                    AnchorCache& cache, std::int64_t now);
 

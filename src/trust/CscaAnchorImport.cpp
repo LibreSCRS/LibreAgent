@@ -14,6 +14,8 @@
 #include <fstream>
 #include <iterator>
 #include <set>
+#include <string>
+#include <string_view>
 #include <system_error>
 #include <utility>
 
@@ -105,6 +107,233 @@ std::optional<std::int64_t> wholeInteger(const std::string& value)
     return static_cast<std::int64_t>(parsed);
 }
 
+// `id-signedData` (1.2.840.113549.1.7.2) as a complete DER OBJECT IDENTIFIER —
+// tag, length and value — so it can be compared as a byte run at the one place
+// a CMS ContentInfo puts it: immediately inside the outer SEQUENCE.
+constexpr std::uint8_t kSignedDataOid[] = {0x06, 0x09, 0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x07, 0x02};
+
+// Whether @p value is one complete CMS ContentInfo carrying id-signedData.
+//
+// The declared length has to cover the value EXACTLY, so a truncated blob and
+// two blobs concatenated are both rejected — except under the BER indefinite
+// form, where no length is declared up front and the end-of-contents octets are
+// what close the object. A real ICAO collection contains one of those, so a
+// definite-length-only check silently counts one list short.
+bool isSignedObject(const std::vector<std::uint8_t>& value)
+{
+    constexpr std::size_t kOidSize = sizeof(kSignedDataOid);
+    if (value.size() < 2 + kOidSize) {
+        return false;
+    }
+    if (value[0] != 0x30) {
+        return false; // not a constructed SEQUENCE, so not a ContentInfo
+    }
+
+    const std::uint8_t lengthByte = value[1];
+    std::size_t header = 0;
+    if (lengthByte == 0x80) {
+        if (value[value.size() - 1] != 0x00 || value[value.size() - 2] != 0x00) {
+            return false; // indefinite and never closed
+        }
+        header = 2;
+    } else if (lengthByte < 0x80) {
+        if (2 + static_cast<std::size_t>(lengthByte) != value.size()) {
+            return false;
+        }
+        header = 2;
+    } else {
+        const std::size_t octets = static_cast<std::size_t>(lengthByte & 0x7F);
+        // Eight would still fit a size_t on this platform; four bounds the
+        // object at 4 GiB, which is far above kMaxMasterListBytes and keeps the
+        // accumulation below from being able to overflow.
+        if (octets < 1 || octets > 4 || value.size() < 2 + octets) {
+            return false;
+        }
+        std::size_t length = 0;
+        for (std::size_t i = 0; i < octets; ++i) {
+            length = (length << 8) | static_cast<std::size_t>(value[2 + i]);
+        }
+        if (2 + octets + length != value.size()) {
+            return false;
+        }
+        header = 2 + octets;
+    }
+
+    if (value.size() < header + kOidSize) {
+        return false;
+    }
+    return std::equal(std::begin(kSignedDataOid), std::end(kSignedDataOid),
+                      value.begin() + static_cast<std::ptrdiff_t>(header));
+}
+
+// RFC 4648 base64, which is what an LDIF `::` value carries. Strict: any
+// character outside the alphabet, and any length that is not a multiple of
+// four, is a decode failure rather than something to skip over. A tolerant
+// decoder would turn a corrupted attribute into a shorter blob that then fails
+// as "not a master list", which names the wrong fault.
+std::optional<std::vector<std::uint8_t>> decodeBase64(std::string_view encoded)
+{
+    const auto digit = [](char c) -> int {
+        if (c >= 'A' && c <= 'Z') {
+            return c - 'A';
+        }
+        if (c >= 'a' && c <= 'z') {
+            return c - 'a' + 26;
+        }
+        if (c >= '0' && c <= '9') {
+            return c - '0' + 52;
+        }
+        if (c == '+') {
+            return 62;
+        }
+        if (c == '/') {
+            return 63;
+        }
+        return -1;
+    };
+
+    if (encoded.empty() || (encoded.size() % 4) != 0) {
+        return std::nullopt;
+    }
+    std::vector<std::uint8_t> out;
+    out.reserve((encoded.size() / 4) * 3);
+    for (std::size_t i = 0; i < encoded.size(); i += 4) {
+        int values[4] = {0, 0, 0, 0};
+        std::size_t padding = 0;
+        for (std::size_t j = 0; j < 4; ++j) {
+            const char c = encoded[i + j];
+            if (c == '=') {
+                // Padding is legal only in the last group, and only as the last
+                // one or two characters of it.
+                if (i + 4 != encoded.size() || j < 2) {
+                    return std::nullopt;
+                }
+                ++padding;
+                continue;
+            }
+            if (padding != 0) {
+                return std::nullopt; // a digit after padding
+            }
+            values[j] = digit(c);
+            if (values[j] < 0) {
+                return std::nullopt;
+            }
+        }
+        const std::uint32_t triple =
+            (static_cast<std::uint32_t>(values[0]) << 18) | (static_cast<std::uint32_t>(values[1]) << 12) |
+            (static_cast<std::uint32_t>(values[2]) << 6) | static_cast<std::uint32_t>(values[3]);
+        out.push_back(static_cast<std::uint8_t>((triple >> 16) & 0xFF));
+        if (padding < 2) {
+            out.push_back(static_cast<std::uint8_t>((triple >> 8) & 0xFF));
+        }
+        if (padding < 1) {
+            out.push_back(static_cast<std::uint8_t>(triple & 0xFF));
+        }
+    }
+    return out;
+}
+
+// The signed objects an RFC 2849 directory export carries, in file order.
+//
+// Returns nothing at all — not a partial answer — for text that is not LDIF, so
+// the caller can fall back to treating the whole input as one published list.
+// The grammar is what settles it: every record names a `dn`, and every other
+// line is an attribute description followed by a colon.
+std::vector<std::vector<std::uint8_t>> signedObjectsInLdif(const std::vector<std::uint8_t>& bytes)
+{
+    const auto isTypeStart = [](char c) {
+        return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9');
+    };
+    // An attribute description is a type plus options: `pkdMasterListContent;binary`.
+    // Numeric OIDs are legal types too, hence the dot.
+    const auto isTypeChar = [&isTypeStart](char c) { return isTypeStart(c) || c == '-' || c == '.' || c == ';'; };
+
+    bool sawDistinguishedName = false;
+    std::vector<std::vector<std::uint8_t>> found;
+
+    // One logical line at a time, with folding undone: RFC 2849 continues a
+    // line by starting the next physical one with a single space. A 1.3 MB
+    // value arrives as thousands of physical lines and one logical one.
+    std::string logical;
+    bool haveLogical = false;
+    std::size_t at = 0;
+
+    const auto consider = [&](const std::string& line) -> bool {
+        if (line.empty() || line.front() == '#') {
+            return true; // the record separator, and a comment
+        }
+        const std::size_t colon = line.find(':');
+        if (colon == std::string::npos || colon < 1 || !isTypeStart(line.front())) {
+            return false; // no attribute description: this is not LDIF
+        }
+        for (std::size_t i = 1; i < colon; ++i) {
+            if (!isTypeChar(line[i])) {
+                return false;
+            }
+        }
+        // Attribute types are case-insensitive, and this one is a gate on the
+        // whole file: reading `DN` as some other attribute would answer "not a
+        // directory export" about an export that is merely spelled differently.
+        if (colon == 2 && (line[0] == 'd' || line[0] == 'D') && (line[1] == 'n' || line[1] == 'N')) {
+            sawDistinguishedName = true;
+        }
+        // `::` is a base64 value, `:<` names a URL to fetch one from, and a
+        // bare `:` is the value itself. Only the first can carry a signed
+        // object: a URL is not content, and this agent does not follow one.
+        if (colon + 1 >= line.size() || line[colon + 1] != ':') {
+            return true;
+        }
+        std::string_view encoded{line};
+        encoded.remove_prefix(colon + 2);
+        while (!encoded.empty() && (encoded.front() == ' ' || encoded.front() == '\t')) {
+            encoded.remove_prefix(1);
+        }
+        while (!encoded.empty() && (encoded.back() == ' ' || encoded.back() == '\t' || encoded.back() == '\r')) {
+            encoded.remove_suffix(1);
+        }
+        auto decoded = decodeBase64(encoded);
+        if (decoded && isSignedObject(*decoded)) {
+            found.push_back(std::move(*decoded));
+        }
+        return true;
+    };
+
+    while (at <= bytes.size()) {
+        std::size_t end = at;
+        while (end < bytes.size() && bytes[end] != '\n') {
+            ++end;
+        }
+        std::size_t stop = end;
+        if (stop > at && bytes[stop - 1] == '\r') {
+            --stop;
+        }
+        const char* first = reinterpret_cast<const char*>(bytes.data()) + at;
+        const std::string_view physical{first, stop - at};
+
+        if (!physical.empty() && physical.front() == ' ') {
+            logical.append(physical.substr(1));
+            haveLogical = true;
+        } else {
+            if (haveLogical && !consider(logical)) {
+                return {};
+            }
+            logical.assign(physical);
+            haveLogical = true;
+        }
+        if (end == bytes.size()) {
+            break;
+        }
+        at = end + 1;
+    }
+    if (haveLogical && !consider(logical)) {
+        return {};
+    }
+    if (!sawDistinguishedName) {
+        return {}; // every LDIF record names a dn; without one this is other text
+    }
+    return found;
+}
+
 std::optional<SignerFingerprint> fingerprintFromHex(std::string_view hex)
 {
     if (hex.size() != kSignerFingerprintSize * 2) {
@@ -130,6 +359,61 @@ std::optional<SignerFingerprint> fingerprintFromHex(std::string_view hex)
     return out;
 }
 
+// The on-disk spelling of each refusal, so a state file stays readable by a
+// person and survives a renumbering of the enum. A name this build does not
+// know makes the whole state unreadable rather than being skipped — see
+// AnchorCache::state.
+struct RefusalName
+{
+    ImportRefusal reason;
+    const char* name;
+};
+constexpr RefusalName kRefusalNames[] = {
+    {ImportRefusal::NotAMasterList, "notAMasterList"},
+    {ImportRefusal::Empty, "empty"},
+    {ImportRefusal::Malformed, "malformed"},
+    {ImportRefusal::BadSignature, "badSignature"},
+    {ImportRefusal::SignerChanged, "signerChanged"},
+    {ImportRefusal::Replayed, "replayed"},
+    {ImportRefusal::CacheNotWritable, "cacheNotWritable"},
+};
+
+const char* refusalName(ImportRefusal reason) noexcept
+{
+    for (const RefusalName& entry : kRefusalNames) {
+        if (entry.reason == reason) {
+            return entry.name;
+        }
+    }
+    return "notAMasterList";
+}
+
+std::optional<ImportRefusal> refusalFromName(std::string_view name)
+{
+    for (const RefusalName& entry : kRefusalNames) {
+        if (name == entry.name) {
+            return entry.reason;
+        }
+    }
+    return std::nullopt;
+}
+
+// The fields of one comma-separated state-file value.
+std::vector<std::string> commaFields(const std::string& value)
+{
+    std::vector<std::string> out;
+    std::size_t at = 0;
+    for (;;) {
+        const std::size_t comma = value.find(',', at);
+        if (comma == std::string::npos) {
+            out.push_back(value.substr(at));
+            return out;
+        }
+        out.push_back(value.substr(at, comma - at));
+        at = comma + 1;
+    }
+}
+
 } // namespace
 
 std::string toHex(const SignerFingerprint& fingerprint)
@@ -153,8 +437,17 @@ AnchorState AnchorCache::state() const
     if (!in) {
         return out; // no cache yet, or unreadable: the agent believes nothing
     }
-    std::optional<SignerFingerprint> signer;
-    bool signedAtUnreadable = false;
+
+    bool unreadable = false;
+    // The single-signer spelling this file used before collections. Read so an
+    // upgrade does not silently forget the publisher it was following: with the
+    // pin gone the next list would be a trust-on-first-import, which is exactly
+    // the state an attacker would like the store to be in.
+    std::optional<SignerFingerprint> legacySigner;
+    bool legacyPinned = false;
+    std::optional<std::int64_t> legacySignedAt;
+    bool legacySignedAtSeen = false;
+
     std::string line;
     while (std::getline(in, line)) {
         const auto eq = line.find('=');
@@ -163,37 +456,108 @@ AnchorState AnchorCache::state() const
         }
         const std::string key = line.substr(0, eq);
         const std::string value = line.substr(eq + 1);
-        if (key == "signer") {
-            signer = fingerprintFromHex(value);
+        if (key == "publisher") {
+            // fingerprint, whether identity was established, and — when the
+            // list carried one — the signing time. Three fields, because the
+            // rotation rule and the replay rule both need this publisher's own.
+            const std::vector<std::string> fields = commaFields(value);
+            if (fields.size() < 2 || fields.size() > 3) {
+                unreadable = true;
+                continue;
+            }
+            auto fingerprint = fingerprintFromHex(fields[0]);
+            if (!fingerprint || (fields[1] != "0" && fields[1] != "1")) {
+                unreadable = true;
+                continue;
+            }
+            AcceptedSigner signer;
+            signer.fingerprint = *fingerprint;
+            signer.identityEstablished = (fields[1] == "1");
+            if (fields.size() == 3) {
+                signer.signedAt = wholeInteger(fields[2]);
+                if (!signer.signedAt) {
+                    unreadable = true;
+                    continue;
+                }
+            }
+            out.signers.push_back(signer);
+        } else if (key == "refused") {
+            const std::vector<std::string> fields = commaFields(value);
+            if (fields.empty() || fields.size() > 2) {
+                unreadable = true;
+                continue;
+            }
+            const auto reason = refusalFromName(fields[0]);
+            if (!reason) {
+                unreadable = true;
+                continue;
+            }
+            RefusedList refused;
+            refused.reason = *reason;
+            if (fields.size() == 2 && fields[1] != "-") {
+                refused.signer = fingerprintFromHex(fields[1]);
+                if (!refused.signer) {
+                    unreadable = true;
+                    continue;
+                }
+            }
+            out.refusedLists.push_back(refused);
+        } else if (key == "signer") {
+            legacySigner = fingerprintFromHex(value);
+            if (!legacySigner) {
+                unreadable = true;
+            }
         } else if (key == "signerPinned") {
-            out.signerPinned = (value == "1");
+            legacyPinned = (value == "1");
         } else if (key == "anchors") {
             out.anchorCount = static_cast<std::uint32_t>(std::strtoul(value.c_str(), nullptr, 10));
         } else if (key == "issuers") {
             out.issuerCount = static_cast<std::uint32_t>(std::strtoul(value.c_str(), nullptr, 10));
+        } else if (key == "offered") {
+            out.listsOffered = static_cast<std::uint32_t>(std::strtoul(value.c_str(), nullptr, 10));
         } else if (key == "acceptedAt") {
             out.acceptedAt = static_cast<std::int64_t>(std::strtoll(value.c_str(), nullptr, 10));
         } else if (key == "signedAt") {
-            // Written only when the accepted list carried a date, so ABSENT and
-            // UNREADABLE are different situations and only the first is normal.
-            out.signedAt = wholeInteger(value);
-            signedAtUnreadable = !out.signedAt.has_value();
+            // Legacy, and written only when the accepted list carried a date, so
+            // ABSENT and UNREADABLE are different situations and only the first
+            // is normal.
+            legacySignedAt = wholeInteger(value);
+            legacySignedAtSeen = true;
+            if (!legacySignedAt) {
+                unreadable = true;
+            }
         } else if (key == "origin") {
             out.origin = value;
         }
     }
-    // A state file without a readable signer establishes nothing, so it is read
-    // as no state at all rather than as a pin of all-zero bytes — which every
-    // list would then fail to match, wedging the agent on a corrupt file.
+
+    if (out.signers.empty() && legacySigner) {
+        AcceptedSigner signer;
+        signer.fingerprint = *legacySigner;
+        signer.identityEstablished = legacyPinned;
+        signer.signedAt = legacySignedAtSeen ? legacySignedAt : std::nullopt;
+        out.signers.push_back(signer);
+        out.listsOffered = 1;
+    }
+
+    // A state file naming no publisher establishes nothing, so it is read as no
+    // state at all rather than as a pin of all-zero bytes — which every list
+    // would then fail to match, wedging the agent on a corrupt file.
     //
-    // A date that is PRESENT and unreadable is treated the same way, and for the
-    // opposite reason: reading it as absent would quietly turn replay refusal
-    // off, so a corrupt file would be a way to strip the protection. Asking for
-    // the list again is the cheap end of that trade.
-    if (!signer || signedAtUnreadable) {
+    // Anything PRESENT and unreadable is treated the same way, and for the
+    // opposite reason: reading a mangled date as absent would quietly turn
+    // replay refusal off, so a corrupt file would be a way to strip the
+    // protection. Asking for the file again is the cheap end of that trade, and
+    // the rule is applied to every field rather than only the dangerous one
+    // because a file this code did not write is not a file to interpret.
+    if (out.signers.empty() || unreadable) {
         return AnchorState{};
     }
-    out.signer = *signer;
+    if (out.listsOffered < out.signers.size() + out.refusedLists.size()) {
+        // The count has to be able to carry the records beside it. Anything
+        // less was not written here.
+        return AnchorState{};
+    }
     out.present = true;
     return out;
 }
@@ -281,19 +645,42 @@ bool AnchorCache::replace(const std::vector<std::vector<std::uint8_t>>& anchors,
     // nothing, which is the safe way for a torn import to end: better to have
     // to import again than to follow a signer whose anchors never arrived.
     std::string text;
-    text += "signer=" + toHex(state.signer) + "\n";
-    text += std::string{"signerPinned="} + (state.signerPinned ? "1" : "0") + "\n";
     text += "anchors=" + std::to_string(state.anchorCount) + "\n";
     text += "issuers=" + std::to_string(state.issuerCount) + "\n";
+    text += "offered=" + std::to_string(state.listsOffered) + "\n";
     text += "acceptedAt=" + std::to_string(state.acceptedAt) + "\n";
-    if (state.signedAt) {
-        // Omitted, never written as a sentinel: a list that carries no date and
-        // one signed at the epoch must not read back the same.
-        text += "signedAt=" + std::to_string(*state.signedAt) + "\n";
-    }
     text += "origin=" + state.origin + "\n";
+    for (const AcceptedSigner& signer : state.signers) {
+        text += "publisher=" + toHex(signer.fingerprint) + (signer.identityEstablished ? ",1" : ",0");
+        if (signer.signedAt) {
+            // Omitted, never written as a sentinel: a list that carries no date
+            // and one signed at the epoch must not read back the same.
+            text += "," + std::to_string(*signer.signedAt);
+        }
+        text += "\n";
+    }
+    for (const RefusedList& refused : state.refusedLists) {
+        text += std::string{"refused="} + refusalName(refused.reason);
+        text += refused.signer ? ("," + toHex(*refused.signer)) : std::string{",-"};
+        text += "\n";
+    }
     const std::vector<std::uint8_t> bytes(text.begin(), text.end());
     return writeFile(m_dir / kStateFileName, bytes);
+}
+
+std::vector<std::vector<std::uint8_t>> masterListsIn(const std::vector<std::uint8_t>& fileBytes)
+{
+    // One published list, handed over as it was published.
+    if (isSignedObject(fileBytes)) {
+        return {fileBytes};
+    }
+    // A master list is binary and full of zero octets; a directory export is
+    // text. Settling that here stops a stray 0x0A inside DER from being read as
+    // a line break, and answers the common case without walking the file twice.
+    if (std::find(fileBytes.begin(), fileBytes.end(), std::uint8_t{0}) != fileBytes.end()) {
+        return {};
+    }
+    return signedObjectsInLdif(fileBytes);
 }
 
 std::expected<AnchorState, Refusal> importMasterList(const std::vector<std::uint8_t>& der, AnchorCache& cache,
@@ -301,17 +688,41 @@ std::expected<AnchorState, Refusal> importMasterList(const std::vector<std::uint
 {
     const AnchorState prior = cache.state();
 
-    // Store the verified list and answer with what was established. Reads the
-    // anchor count from what the list CARRIED, unfiltered.
+    // The anchors a rotation may be judged against, read ONCE and BEFORE
+    // anything is written. Judging a new signer against anchors carried by the
+    // file being imported would be circular: an attacker signs a list of his
+    // own anchors with a key he issued from one of them, and it comes out
+    // internally consistent every time. Fixing the set here also makes the
+    // outcome independent of the order the lists appear in, so no list in a
+    // collection can vouch for a signer of another list beside it.
+    const std::vector<std::vector<std::uint8_t>> vouchingAnchors =
+        prior.present ? cache.anchors() : std::vector<std::vector<std::uint8_t>>{};
+
+    // What the file carries. When it is neither of the two shapes masterListsIn
+    // knows, the whole input is offered as the single candidate so the refusal
+    // names what is wrong with the BYTES rather than with the container.
+    std::vector<std::vector<std::uint8_t>> lists = masterListsIn(der);
+    if (lists.empty()) {
+        lists.push_back(der);
+    }
+
+    // Why one list did not make it, with as much as could be read about it. Held
+    // separately from Refusal because a per-list refusal is not the import's
+    // outcome: twenty-seven of these beside one acceptance is still an
+    // acceptance.
+    struct ListRefusal
+    {
+        ImportRefusal reason{ImportRefusal::NotAMasterList};
+        std::optional<SignerFingerprint> signer;
+        std::optional<std::int64_t> seenSignedAt;
+        std::optional<std::int64_t> trustedSignedAt;
+    };
+
+    // Whether @p incoming may replace what has already been accepted FROM ITS
+    // OWN SIGNER, on the ground of WHEN it was signed. The rule, one line per
+    // case:
     //
-    // @p identityEstablished is passed rather than read off the verified list
-    // because the two ways this agent can establish a signer are not the same
-    // question the facade answers. It matched the pin, OR it chains to an anchor
-    // already trusted; the facade only knows about the first.
-    // Whether @p incoming may replace what has already been accepted, on the
-    // ground of WHEN it was signed. The rule, one line per case:
-    //
-    //   accepted   incoming   outcome
+    //   recorded   incoming   outcome
     //   dated      dated      accept only if STRICTLY newer
     //   dated      undated    REFUSE
     //   undated    dated      accept
@@ -328,93 +739,230 @@ std::expected<AnchorState, Refusal> importMasterList(const std::vector<std::uint
     // Strictly newer, not merely not-older. Two lists signed at the same instant
     // are the same statement as far as anything here can tell, and re-installing
     // one buys nothing that would justify accepting an attacker's copy.
-    const auto replayRefusal = [&](const lm::VerifiedMasterList& incoming) -> std::optional<Refusal> {
-        if (!prior.present || !prior.signedAt) {
+    //
+    // Per signer, because that is the only comparison that means anything: one
+    // country's list being older than another country's is not a rollback, and
+    // measuring across publishers would refuse whichever of them publishes least
+    // often.
+    const auto replayRefusal = [&](const lm::VerifiedMasterList& incoming) -> std::optional<ListRefusal> {
+        const AcceptedSigner* record = prior.recordFor(incoming.signerSpkiSha256);
+        if (record == nullptr || !record->signedAt) {
             return std::nullopt;
         }
         const std::optional<std::int64_t> offered = incoming.signingTimeEpochSeconds;
-        if (offered && *offered > *prior.signedAt) {
+        if (offered && *offered > *record->signedAt) {
             return std::nullopt;
         }
-        return Refusal{ImportRefusal::Replayed, std::nullopt, prior.signer, offered, prior.signedAt};
+        return ListRefusal{ImportRefusal::Replayed, incoming.signerSpkiSha256, offered, record->signedAt};
     };
 
-    const auto accept = [&](const lm::VerifiedMasterList& verified,
-                            bool identityEstablished) -> std::expected<AnchorState, Refusal> {
-        // Applied here rather than at each call site so that no way of reaching
-        // an acceptance — first import, same signer, lawful rotation — can skip
-        // it. On a first import there is nothing to compare against and it
-        // stands aside.
-        if (auto refusal = replayRefusal(verified)) {
+    // One list, verified against its own signer and measured against the record
+    // held for that signer. Everything this decides is about THIS list; nothing
+    // it learns is carried to the next one.
+    const auto judge =
+        [&](const std::vector<std::uint8_t>& list) -> std::expected<lm::VerifiedMasterList, ListRefusal> {
+        auto seen = lm::parseAndVerifyMasterList(list, nullptr);
+        if (!seen) {
+            return std::unexpected(ListRefusal{refusalFor(seen.error()), std::nullopt, std::nullopt, std::nullopt});
+        }
+        if (!prior.present) {
+            // Trust on first import: there is nothing to check a first file
+            // against, so whoever signed each list becomes a record and
+            // identityEstablished says nothing was compared.
+            if (auto refusal = replayRefusal(*seen)) {
+                return std::unexpected(*refusal);
+            }
+            return std::move(*seen);
+        }
+
+        std::optional<lm::VerifiedMasterList> chosen;
+        if (prior.recordFor(seen->signerSpkiSha256) != nullptr) {
+            chosen = std::move(*seen);
+        } else {
+            // The unpinned call reports the FIRST SignerInfo in the object's own
+            // encoded order, and SignerInfos are a DER SET OF — so a publisher
+            // the agent does follow may be sitting behind one it does not.
+            // Asking with each recorded fingerprint in turn is the only way to
+            // find out, and it is what the single-signer form of this has always
+            // done. Reached only when the first signer is unrecorded.
+            for (const AcceptedSigner& record : prior.signers) {
+                auto pinned = lm::parseAndVerifyMasterList(list, &record.fingerprint);
+                if (pinned) {
+                    chosen = std::move(*pinned);
+                    break;
+                }
+            }
+        }
+        if (!chosen) {
+            // The rotation rule, per publisher. A country that has rotated its
+            // key is followed automatically when the certificate that SIGNED
+            // this list chains to an anchor the previous import carried.
+            //
+            // The certificate is the one the verification resolved, so "it
+            // signed this list" needs no separate proof — that is what made it
+            // the signer. Handing the path build some other certificate that
+            // merely chains would let a stranger ride in behind any certificate
+            // the authority ever issued.
+            if (!lm::signerChainsToAnyAnchor(seen->signerCertDer, vouchingAnchors)) {
+                return std::unexpected(
+                    ListRefusal{ImportRefusal::SignerChanged, seen->signerSpkiSha256, std::nullopt, std::nullopt});
+            }
+            chosen = std::move(*seen);
+        }
+        if (auto refusal = replayRefusal(*chosen)) {
             return std::unexpected(*refusal);
         }
-        AnchorState next;
-        next.present = true;
-        next.signer = verified.signerSpkiSha256;
-        next.signerPinned = identityEstablished;
-        next.anchorCount = static_cast<std::uint32_t>(verified.anchors.size());
-        next.issuerCount = countIssuers(verified.anchors);
-        next.acceptedAt = now;
-        next.signedAt = verified.signingTimeEpochSeconds;
-        next.origin = "import";
-        if (!cache.replace(verified.anchors, next)) {
-            return std::unexpected(Refusal{ImportRefusal::CacheNotWritable, verified.signerSpkiSha256,
-                                           prior.present ? std::optional{prior.signer} : std::nullopt, std::nullopt,
-                                           std::nullopt});
-        }
-        return next;
+        return std::move(*chosen);
     };
 
-    if (!prior.present) {
-        // Trust on first import: there is nothing to check a first list against,
-        // so whoever signed it becomes the pin and signerPinned records that
-        // nothing was compared.
-        auto verified = lm::parseAndVerifyMasterList(der, nullptr);
+    // Pass one: every list judged on its own. The verified ones are kept whole
+    // rather than folded straight into the store, because the bar below is a
+    // property of the WHOLE file and cannot be applied while walking it.
+    std::vector<lm::VerifiedMasterList> admitted;
+    std::vector<RefusedList> refusedLists;
+    std::optional<ListRefusal> firstRefusal;
+
+    for (const std::vector<std::uint8_t>& list : lists) {
+        auto verified = judge(list);
         if (!verified) {
-            return std::unexpected(
-                Refusal{refusalFor(verified.error()), std::nullopt, std::nullopt, std::nullopt, std::nullopt});
+            refusedLists.push_back(RefusedList{verified.error().reason, verified.error().signer});
+            if (!firstRefusal) {
+                firstRefusal = verified.error();
+            }
+            continue;
         }
-        return accept(*verified, false);
+        admitted.push_back(std::move(*verified));
     }
 
-    // Pinned. The ordinary case: the publisher the agent already follows.
-    auto verified = lm::parseAndVerifyMasterList(der, &prior.signer);
-    if (verified) {
-        return accept(*verified, true);
-    }
-    if (verified.error() != lm::MasterListError::SignerMismatch) {
-        return std::unexpected(
-            Refusal{refusalFor(verified.error()), std::nullopt, prior.signer, std::nullopt, std::nullopt});
-    }
-
-    // The signer changed. Verify once more without the pin, which names the key
-    // that actually signed it and hands back that key's certificate.
-    auto unpinned = lm::parseAndVerifyMasterList(der, nullptr);
-    if (!unpinned) {
-        return std::unexpected(
-            Refusal{ImportRefusal::SignerChanged, std::nullopt, prior.signer, std::nullopt, std::nullopt});
-    }
-
-    // The rotation rule. A publisher that has rotated its key is followed
-    // automatically when the certificate that SIGNED this list chains to an
-    // anchor the previously accepted list carried.
+    // THE BAR FOR A SIGNER THERE IS NO RECORD OF, and the reason the replay rule
+    // survives a key rotation.
     //
-    // The certificate is the one the verification resolved, so "it signed this
-    // list" needs no separate proof — that is what made it the signer. Handing
-    // the path build some other certificate that merely chains would let a
-    // stranger ride in behind any certificate the authority ever issued.
+    // A signer admitted by the rotation rule is by definition one this agent has
+    // never seen, so the per-signer comparison above has nothing to measure it
+    // against — and without a second bar a publisher could rotate its key and
+    // hand back a list from years ago, which is the rollback the whole rule
+    // exists to refuse. The bar is the newest date among the publishers this
+    // import DISPLACES: those on record whose list is not in this file at all.
     //
-    // The anchors handed to the path build are read from the cache — the list
-    // ALREADY TRUSTED — before anything is replaced. Judging the new signer
-    // against anchors carried by the list being imported would be circular: an
-    // attacker signs a list of his own anchors with a key he issued from one of
-    // them, and it comes out internally consistent every time.
-    if (lm::signerChainsToAnyAnchor(unpinned->signerCertDer, cache.anchors())) {
-        return accept(*unpinned, true);
+    // That is the honest comparison and not a store-wide one. A publisher's old
+    // key is exactly what a rotation displaces, so its date is exactly what the
+    // new key has to beat; a country that publishes rarely is not measured
+    // against a country that publishes often, because a publisher still present
+    // in the file displaces nobody. Undated records impose no bar — never refuse
+    // for a property the ecosystem may not provide.
+    std::optional<std::int64_t> displacedAt;
+    if (prior.present) {
+        for (const AcceptedSigner& record : prior.signers) {
+            if (!record.signedAt) {
+                continue;
+            }
+            const bool stillPublishing =
+                std::any_of(admitted.begin(), admitted.end(), [&record](const lm::VerifiedMasterList& v) {
+                    return v.signerSpkiSha256 == record.fingerprint;
+                });
+            if (stillPublishing) {
+                continue;
+            }
+            if (!displacedAt || *record.signedAt > *displacedAt) {
+                displacedAt = record.signedAt;
+            }
+        }
     }
 
-    return std::unexpected(
-        Refusal{ImportRefusal::SignerChanged, unpinned->signerSpkiSha256, prior.signer, std::nullopt, std::nullopt});
+    // Pass two, and it can only ever remove: every signer it measures was
+    // unrecorded, so no record it read in pass one can move under it. That is
+    // what keeps this one sweep rather than a fixed point, and what keeps the
+    // outcome independent of the order the lists appear in.
+    std::vector<AcceptedSigner> signers;
+    std::vector<std::vector<std::uint8_t>> anchors;
+    std::set<std::vector<std::uint8_t>> alreadyHeld;
+
+    for (lm::VerifiedMasterList& verified : admitted) {
+        if (displacedAt && prior.recordFor(verified.signerSpkiSha256) == nullptr) {
+            const std::optional<std::int64_t> offered = verified.signingTimeEpochSeconds;
+            if (!offered || *offered <= *displacedAt) {
+                const ListRefusal refusal{ImportRefusal::Replayed, verified.signerSpkiSha256, offered, displacedAt};
+                refusedLists.push_back(RefusedList{refusal.reason, refusal.signer});
+                if (!firstRefusal) {
+                    firstRefusal = refusal;
+                }
+                continue;
+            }
+        }
+
+        // One record per PUBLISHER, not per list: two lists in one file may
+        // share a signer, and the record has to bound what may follow BOTH of
+        // them, so the later of their dates is the one kept.
+        AcceptedSigner* existing = nullptr;
+        for (AcceptedSigner& candidate : signers) {
+            if (candidate.fingerprint == verified.signerSpkiSha256) {
+                existing = &candidate;
+                break;
+            }
+        }
+        if (existing != nullptr) {
+            if (verified.signingTimeEpochSeconds &&
+                (!existing->signedAt || *verified.signingTimeEpochSeconds > *existing->signedAt)) {
+                existing->signedAt = verified.signingTimeEpochSeconds;
+            }
+        } else {
+            signers.push_back(
+                AcceptedSigner{verified.signerSpkiSha256, prior.present, verified.signingTimeEpochSeconds});
+        }
+
+        // The union, in the order the file presents it, with exact repeats
+        // collapsed. The lists in a real collection overlap heavily — one
+        // download carries the same certificate from a dozen countries — and
+        // storing each repetition would multiply the store several times over
+        // without adding a single anchor. Repeats are collapsed on the encoded
+        // BYTES and on nothing cleverer: two encodings of one certificate are
+        // two anchors here, which costs a file and cannot lose one.
+        for (std::vector<std::uint8_t>& anchor : verified.anchors) {
+            if (alreadyHeld.insert(anchor).second) {
+                anchors.push_back(std::move(anchor));
+            }
+        }
+    }
+
+    if (signers.empty()) {
+        // Nothing was admitted, so nothing is stored and the store is untouched.
+        const ListRefusal first =
+            firstRefusal.value_or(ListRefusal{ImportRefusal::NotAMasterList, std::nullopt, std::nullopt, std::nullopt});
+        Refusal out;
+        out.reason = first.reason;
+        // A fingerprint is shown only when there is ONE to show. Naming one
+        // publisher out of a collection of them would read as a statement about
+        // the file, which it is not.
+        out.seenSigner = (lists.size() == 1) ? first.signer : std::nullopt;
+        out.trustedSigner = (prior.present && prior.signers.size() == 1)
+                                ? std::optional{prior.signers.front().fingerprint}
+                                : std::nullopt;
+        out.seenSignedAt = first.seenSignedAt;
+        out.trustedSignedAt = first.trustedSignedAt;
+        out.listsOffered = static_cast<std::uint32_t>(lists.size());
+        return std::unexpected(out);
+    }
+
+    AnchorState next;
+    next.present = true;
+    next.signers = std::move(signers);
+    next.anchorCount = static_cast<std::uint32_t>(anchors.size());
+    next.issuerCount = countIssuers(anchors);
+    next.listsOffered = static_cast<std::uint32_t>(lists.size());
+    next.refusedLists = std::move(refusedLists);
+    next.acceptedAt = now;
+    next.origin = "import";
+    if (!cache.replace(anchors, next)) {
+        Refusal out;
+        out.reason = ImportRefusal::CacheNotWritable;
+        out.seenSigner = (next.signers.size() == 1) ? std::optional{next.signers.front().fingerprint} : std::nullopt;
+        out.trustedSigner = (prior.present && prior.signers.size() == 1)
+                                ? std::optional{prior.signers.front().fingerprint}
+                                : std::nullopt;
+        out.listsOffered = next.listsOffered;
+        return std::unexpected(out);
+    }
+    return next;
 }
 
 fs::path publishAnchorDirectory(LibreSCRS::Plugin::CardPluginService& plugins, const fs::path& cacheDir)
