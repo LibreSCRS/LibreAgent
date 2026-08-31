@@ -190,6 +190,25 @@ agent_core_test(CredentialErrorMappingTest)
 # card session, so no LIBRESCRS_INTERNAL_BUILD.
 agent_core_test(CredentialSnapshotCacheTest)
 
+# Country-signing anchor import: trust-on-first-import, pin, rotation, and the
+# refusals — including the link certificate a self-signed-only filter would
+# drop. The fixture mints its certificates with the system OpenSSL directly,
+# which is the fixture's dependency alone; the code under test consumes only
+# the published LibreMiddleware trust API.
+add_library(SyntheticMasterList STATIC SyntheticMasterList.cpp)
+target_include_directories(SyntheticMasterList PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(SyntheticMasterList PUBLIC OpenSSL::Crypto)
+target_compile_features(SyntheticMasterList PUBLIC cxx_std_23)
+set_target_properties(SyntheticMasterList PROPERTIES POSITION_INDEPENDENT_CODE ON)
+
+add_executable(CscaAnchorImportTest CscaAnchorImportTest.cpp)
+target_link_libraries(CscaAnchorImportTest PRIVATE
+    LibreAgent::Core
+    SyntheticMasterList
+    GTest::gtest_main)
+add_test(NAME CscaAnchorImportTest COMMAND CscaAnchorImportTest)
+set_tests_properties(CscaAnchorImportTest PROPERTIES TIMEOUT 120)
+
 # LM-parity oracle for Manager1.LayoutVisualSignature/GetAppearanceFont —
 # needs BOTH LibreAgent::Core (the LM-linked layout/font seam in LmSeams.h)
 # AND LibreAgent::Wire (Messages.h/ClientCodec.h's codec), so it's the one

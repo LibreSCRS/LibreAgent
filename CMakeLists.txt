@@ -111,6 +111,8 @@ if(LIBREAGENT_BUILD_CORE)
         src/operations/PromptSerializer.cpp
         src/operations/OperationBase.cpp
         src/operations/OperationManager.cpp
+        # trust/
+        src/trust/CscaAnchorImport.cpp
         # backend/ log facade
         src/backend/Logging.cpp
         # owning aggregate for the neutral core

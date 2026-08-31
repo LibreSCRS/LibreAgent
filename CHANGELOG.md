@@ -91,16 +91,29 @@ Three targets ship, each independently usable:
   no-consent public-data fetches. It is written against an internal
   transport seam with two implementations, D-Bus and the AF_UNIX socket
   wire, so no transport type appears anywhere in the public API.
-  **This release's public API selects D-Bus and offers no way to ask
-  for the socket transport** — `AgentClient` has a single constructor,
-  which builds the D-Bus transport on Linux and none elsewhere. The
-  socket implementation is complete and tested but not reachable
-  without a constructor this release does not export. Every call that
-  reaches the agent is bounded by a call-timeout budget, so a slow or
-  wedged agent cannot hang a caller indefinitely; the budget is 3 s by
-  default, so a synchronous call is bounded rather than instant. Public
-  value types are plain Qt/std aggregates, and file descriptors cross
-  the boundary as a move-only owning handle rather than a raw `int`.
+  **This release's public API picks the transport per platform and
+  offers no way to override it** — `AgentClient` has a single
+  constructor, which builds the D-Bus transport on Linux and the
+  App-Group socket transport on macOS; a platform with neither yet gets
+  an inert client that is never available. Every call that reaches the
+  agent is bounded by a call-timeout budget, so a slow or wedged agent
+  cannot hang a caller indefinitely; the budget is 3 s by default, so a
+  synchronous call is bounded rather than instant. Public value types
+  are plain Qt/std aggregates, and file descriptors cross the boundary
+  as a move-only owning handle rather than a raw `int`.
+- **The Qt client can now reach the agent on macOS.** Building for
+  macOS previously left `AgentClient` with no transport at all, so a
+  Qt application reported itself permanently unavailable and read no
+  cards. It now opens the same App-Group socket connection the macOS
+  agent host listens on, the same way the Linux build already opens a
+  D-Bus connection — no application code changes to pick it up.
+- **Country-signing (CSCA) trust-anchor import is platform-neutral.**
+  Turning a signed ICAO master list into trust anchors — and the
+  trust-on-first-use, signer-pinning and rotation judgement that
+  decides whether a later list should be believed — now lives in the
+  shared agent core instead of a single platform host, so every host
+  applies the same policy against a travel document's issuing country
+  rather than each carrying its own copy that could quietly disagree.
 - **Best-effort certificate cache warm** (`AgentCard::warmCertificates()`):
   asks the agent to pre-read a card's certificates so a later real read
   finds them warm, for frontends that can predict a read shortly before

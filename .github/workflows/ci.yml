@@ -575,13 +575,24 @@ jobs:
     # ClientQt cmake flags follow the client job above and LibreCelik's own
     # build-macos job (jurplel/install-qt-action@v4, Qt 6.10, clang_64).
     #
-    # Test step is scoped to ClientQtSocketIntegrationTest specifically, not
-    # ClientQt's whole local test package: two unrelated, pre-existing targets
-    # (ClientQtSealedPayloadTest, HeaderAcceptance) are not green on macOS
-    # today for reasons that have nothing to do with the transport this job
-    # exists to prove (a Darwin fstat-on-pipe difference and a local Qt
-    # framework header issue, respectively) -- landing this job against them
-    # would make it red on arrival, which defeats the point of adding it.
+    # Test step runs ClientQt's whole local test package MINUS two unrelated,
+    # pre-existing targets that are not green on macOS today, for reasons
+    # that have nothing to do with the transport this job exists to prove --
+    # landing this job against them would make it red on arrival, which
+    # defeats the point of adding it:
+    #
+    #   * ClientQtSealedPayloadTest fails on a wrong premise in the fixture,
+    #     not a product bug. Its PipeHoldingReadableBytesIsRefused case
+    #     asserts a pipe's st_size reads back as zero
+    #     (client/qt/tests/SealedPayloadTest.cpp:253); Darwin instead reports
+    #     the buffered byte count there. The assertion on the actual code
+    #     under test, two lines later, still holds on Darwin regardless:
+    #     readBoundedPayload refuses the descriptor on !S_ISREG before it
+    #     ever consults st_size.
+    #   * HeaderAcceptance fails for a local Qt framework header issue.
+    #
+    # Everything else in the package -- roughly a dozen platform-neutral
+    # suites -- builds and passes on macOS and now runs here.
     name: client (macOS)
     runs-on: macos-15
     steps:
@@ -618,13 +629,15 @@ jobs:
       - name: Build
         run: cmake --build build -j4
 
-      - name: Test (socket integration suite)
+      - name: Test (ClientQt package, less two known-red targets)
         # --no-tests=error: ctest exits 0 when it finds nothing at all, so
-        # without this a configuration that stopped generating this test
-        # would report success.
+        # without this a configuration that stopped generating any tests
+        # would report success. -E excludes ClientQtSealedPayloadTest and
+        # HeaderAcceptance -- see the job comment above for what is wrong
+        # with each and why neither is this job's to fix.
         env:
           QT_QPA_PLATFORM: offscreen
-        run: ctest --test-dir build --output-on-failure --no-tests=error -R ClientQtSocketIntegrationTest
+        run: ctest --test-dir build --output-on-failure --no-tests=error -E "ClientQtSealedPayloadTest|HeaderAcceptance"
 
   fuzz-cbor:
     # Untrusted-decoder fuzz gate (moved from LibreDarwin, whose own
