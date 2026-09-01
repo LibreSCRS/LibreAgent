@@ -619,9 +619,11 @@ CborValue encodeRequestBody(const Request& body)
                 m.emplace("height", CborValue(r.height));
             } else if constexpr (std::is_same_v<T, GetAppearanceFont>) {
                 m.emplace("t", CborValue("GetAppearanceFont"));
-            } else { // ImportCscaMasterList
+            } else if constexpr (std::is_same_v<T, ImportCscaMasterList>) {
                 m.emplace("t", CborValue("ImportCscaMasterList"));
                 m.emplace("list", CborValue::uint(r.list));
+            } else { // ForgetCscaAnchors -- carries nothing but its tag
+                m.emplace("t", CborValue("ForgetCscaAnchors"));
             }
             return CborValue(std::move(m));
         },
@@ -907,6 +909,8 @@ std::expected<RequestEnvelope, WireError> parseRequest(std::span<const std::uint
             return std::unexpected(list.error());
         }
         env.body = ImportCscaMasterList{*list};
+    } else if (t == "ForgetCscaAnchors") {
+        env.body = ForgetCscaAnchors{};
     } else {
         return std::unexpected(WireError::UnknownMessage);
     }
@@ -1097,6 +1101,21 @@ CborValue makeReply(std::uint64_t req, const CscaAnchorStateReply& a)
     if (a.origin) {
         arm.emplace("origin", CborValue(*a.origin));
     }
+    mergeInto(reply, std::move(arm));
+    return reply;
+}
+
+CborValue makeReply(std::uint64_t req, const ForgetCscaAnchorsReply& a)
+{
+    CborValue reply = makeReplyBase(req);
+    Map arm;
+    arm.emplace("kind", CborValue("ForgottenAnchors"));
+    // Both REQUIRED, neither optional: this reply exists to say what was
+    // destroyed, and a member a decoder may find missing would let "nothing was
+    // there" and "the field was dropped" read alike. Zero is a real answer here
+    // -- an agent holding nothing forgets nothing and says so.
+    arm.emplace("anchorsForgotten", CborValue::uint(a.anchorsForgotten));
+    arm.emplace("hadPinnedSigner", CborValue(a.hadPinnedSigner));
     mergeInto(reply, std::move(arm));
     return reply;
 }

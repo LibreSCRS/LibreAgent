@@ -70,7 +70,7 @@ req-body = ( hello // get-state // read-identity // get-photo //
   read-certificates // read-token-info // sign // sign-batch // get-cert-der // get-config // set-config // reset-config //
   cancel-op // get-sign-result // pk-login // pk-logout // pk-public-key // pk-sign-raw // pk-decrypt //
   list-credentials // manage-pin // activate-signing-key // layout-visual // get-appearance-font //
-  import-csca-master-list )
+  import-csca-master-list // forget-csca-anchors )
 
 hello             = ( t: "Hello", proto: uint, ? client: tstr )
 get-state         = ( t: "GetState" )
@@ -144,6 +144,31 @@ get-config        = ( t: "GetConfig" )                                  ; -> con
 ; names a client build that does not know them degrades to CommunicationError,
 ; under the same tolerance rule.
 import-csca-master-list = ( t: "ImportCscaMasterList", list: fd-index )
+; Config1.ForgetCscaAnchors: discard every country signing anchor this agent
+; holds, and the publisher it follows with them. Answers `forgotten-anchors`.
+;
+; Carries NOTHING, and that is a contract statement rather than a simplification:
+; there is one anchor store and this empties it. A key naming which publisher to
+; forget would describe an operation that does not exist, because the rotation
+; rule is applied against the whole set -- forgetting part of it leaves a store
+; that refuses lists for a reason no surface could explain.
+;
+; WHY A VERB OF ITS OWN when reset-config already exists and would have added
+; nothing to this vocabulary: the anchors and the pin live in the CACHE, not in
+; the configuration, so a config reset does not reach them. It would clear the
+; recorded REPORT and leave the anchors and the pin in place -- a surface saying
+; nothing is installed while every later master list is still refused, which is
+; the exact trap this verb exists to open, reintroduced with no trace.
+;
+; Same authorization as the import (org.librescrs.agent.configure.trust): it
+; changes what this machine will believe about a travel document. Part of the
+; Config1 family, so it carries NO hello-ack feature gate, for the reason spelled
+; out under import-csca-master-list above.
+;
+; Rejections (err-info's `name`): NotAuthorized, RateLimited,
+; AnchorCacheNotWritable. Holding nothing is NOT a rejection: an agent that has
+; imported nothing has already forgotten everything, and it answers zeros.
+forget-csca-anchors = ( t: "ForgetCscaAnchors" )
 set-config        = ( t: "SetConfig", key: settable-config-key, value: any )  ; Config1.SetValue; low vs trust tier
 reset-config      = ( t: "ResetConfig", key: config-key )               ; Config1.Reset(key)
 cancel-op         = ( t: "CancelOp", op: uint )
@@ -302,7 +327,7 @@ sync-error = "UnknownCard" / "KeyNotFound" / "NotAuthorized" / "UserNotLoggedIn"
              "MasterListReplayed"
 reply-ok = ( hello-ack // op-started // state // cert-list // cert-der // public-key //
              config // ack // raw-signature // sign-recovery // layout // appearance-font //
-             csca-anchor-state )
+             csca-anchor-state // forgotten-anchors )
 ; `features` advertises optional request families this agent understands; the
 ; client MUST gate the credential requests (ListCredentials / ManagePin /
 ; ActivateSigningKey) on the "credentials" token and fall back to read-only when
@@ -398,6 +423,22 @@ csca-anchor-state = ( kind: "CscaAnchorState", anchors: uint, issuers: uint,
                       replayRefusalActive: bool,
                       ? signer: tstr, ? signerPinned: bool,
                       ? acceptedAt: int, ? signedAt: int, ? origin: tstr )
+
+; ForgetCscaAnchors' reply: what was DESTROYED, not what remains.
+;
+; Deliberately NOT csca-anchor-state, and the difference is the point. After a
+; forget the state is ABSENT, and that arm cannot say so -- its `anchors` and
+; `issuers` are required, so it would carry zeros, and a zeroed report means "a
+; list was accepted and it vouched for nobody". That is a different claim and a
+; false one, and it is the same distinction the agent keeps when it CLEARS a
+; stale report instead of zeroing it.
+;
+; BOTH members required. This arm exists to state what went, so a member a
+; decoder may find missing would make "nothing was there" and "the field was
+; dropped" read alike. Zero is a real answer: an agent holding nothing forgets
+; nothing and says so.
+forgotten-anchors = ( kind: "ForgottenAnchors", anchorsForgotten: uint,
+                      hadPinnedSigner: bool )
 
 reader-state = { handle: handle, name: tstr, hasCard: bool, ? card: handle }
 ; cardType/atr are appended (feature-gated "card-type"): cardType is

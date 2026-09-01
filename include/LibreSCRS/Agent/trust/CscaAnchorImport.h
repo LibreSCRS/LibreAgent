@@ -362,8 +362,47 @@ public:
     // the wrong thing.
     [[nodiscard]] bool replace(const std::vector<std::vector<std::uint8_t>>& anchors, const AnchorState& state);
 
+    // Remove everything this cache holds: the anchors, the record of the
+    // publishers it follows, and any staging directory a torn import left.
+    // After this the cache is what a first run has, so the next master list is
+    // a trust-on-first-import again.
+    //
+    // ONLY what this cache OWNS, and that is a safety property rather than
+    // tidiness: the cache directory is configurable, so an installation may
+    // point it at a place that holds other things, and removing the directory
+    // wholesale would delete files this code never wrote. The three names are
+    // taken from the same layout @ref replace writes, for the same reason
+    // @ref anchorsDirectory exists — a second spelling of the layout is how the
+    // two halves come to disagree.
+    //
+    // True when nothing this cache owns is left, INCLUDING when there was
+    // nothing to begin with: an empty cache is already forgotten, and calling
+    // that a failure would make a first-run agent report an error for being
+    // asked to do what is already true. False means something is still on disk
+    // — and a caller that also holds a recorded report must then leave that
+    // report alone, because it is the only thing still describing what remains.
+    [[nodiscard]] bool forget();
+
 private:
     std::filesystem::path m_dir;
+};
+
+// What a forget destroyed, reported because after the fact there is nothing
+// left to read it from. A surface asking a person to confirm this needs to name
+// what goes, and afterwards to say what went.
+struct ForgottenAnchors
+{
+    /// Anchors the agent BELIEVED it held, INCLUDING link certificates — the
+    /// cache's own record, not a count of files on disk. A cache whose state
+    /// file was already gone answers zero even if anchor files were removed,
+    /// and that is the consistent answer rather than a gap: everywhere else
+    /// here "what the agent holds" means that record (an absent one is read as
+    /// believing nothing), and counting files instead would put a SECOND
+    /// spelling of it beside the first.
+    std::uint64_t anchors{0};
+    bool hadPinnedSigner{false}; ///< a publisher was being followed, and no longer is
+
+    bool operator==(const ForgottenAnchors&) const = default;
 };
 
 // The signed master lists a downloaded FILE carries, in the order it carries
@@ -541,5 +580,45 @@ std::filesystem::path publishAnchorDirectory(LibreSCRS::Plugin::CardPluginServic
 //        and for the cache directory it describes, and reset when the two
 //        disagree. Nothing else in it is touched.
 void discardStaleAnchorReport(Config::ConfigStore& config);
+
+// Forget every country signing anchor this agent holds, and the report that
+// describes them.
+//
+// WHY THERE HAS TO BE A WAY OUT. The rotation rule refuses a list signed by a
+// publisher this agent does not follow unless it chains to an anchor a previous
+// import carried. That is right, and it has a consequence nobody chose: an
+// installation that imported one country's list and is then offered the ICAO
+// collection has every one of those lists refused, because none of those
+// publishers leads back to the anchors already held. Without this the
+// protection against rotation is also a trap, and the only cure is knowing
+// about a cache directory and deleting it by hand — outside the authorization
+// that covers every other change to this store.
+//
+// THE ORDER IS THE CACHE FIRST AND THE REPORT ONLY AFTER, and it is worth
+// stating because the reasoning is not the obvious one. Both orders leave a
+// window if the process dies between the two steps:
+//
+//   * cache gone, report still there — the report describes anchors that are
+//     no longer held. Stale, and @ref discardStaleAnchorReport ALREADY repairs
+//     exactly this at the next start;
+//   * report gone, cache still there — no report, but a pin that goes on
+//     refusing every list. Nothing anywhere detects that: the reconciliation
+//     reads it as "nothing recorded, so there is no claim to be wrong about"
+//     and returns.
+//
+// So the cache goes first because that failure is the one the system already
+// heals. Doing it the other way would manufacture the very trap this function
+// exists to open, and leave no trace on any surface.
+//
+// For the same reason a cache that could not be cleared must NOT be followed by
+// clearing the report: the report is then the only thing still describing what
+// is on disk.
+//
+// @param config the agent's configuration store: read for the cache directory,
+//        and its recorded report cleared once the cache is gone.
+// @return what was destroyed, or std::nullopt when the anchors could not be
+//         removed — in which case NOTHING was changed, the report included.
+//         Holding nothing is not a failure: it answers a zeroed report.
+[[nodiscard]] std::optional<ForgottenAnchors> forgetCscaAnchors(Config::ConfigStore& config);
 
 } // namespace LibreSCRS::Agent::Trust

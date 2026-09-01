@@ -247,6 +247,32 @@ struct ImportCscaMasterList
     std::uint64_t list{0}; // fd-index into the frame's SCM_RIGHTS vector
     bool operator==(const ImportCscaMasterList&) const = default;
 };
+// Config1.ForgetCscaAnchors: discard every country signing anchor the agent
+// holds, and the publisher it follows with them.
+//
+// Carries nothing: there is one anchor store and this empties it. A key naming
+// which publisher to forget would describe an operation that does not exist --
+// the rotation rule is applied against the whole set, so forgetting part of it
+// leaves a store that refuses lists for reasons no surface can explain.
+//
+// WHY IT IS A VERB OF ITS OWN, since ResetConfig already exists and would have
+// cost nothing on this wire: the anchors and the pin live in the CACHE, not in
+// the configuration, so a config reset does not reach them. It would clear the
+// REPORT and leave the anchors -- a surface saying nothing is installed while
+// every later list is still refused, which is this operation's own reason for
+// existing, reintroduced silently.
+//
+// Same authorization as the import (`org.librescrs.agent.configure.trust`): it
+// changes what the machine will believe about a passport.
+//
+// Rejections (err-info's `name`): NotAuthorized, RateLimited,
+// AnchorCacheNotWritable. Holding nothing is NOT a rejection -- it answers a
+// zeroed report, because an agent that has imported nothing has already
+// forgotten everything.
+struct ForgetCscaAnchors
+{
+    bool operator==(const ForgetCscaAnchors&) const = default;
+};
 struct CancelOp
 {
     std::uint64_t op{0};
@@ -333,7 +359,7 @@ struct GetAppearanceFont
 using Request = std::variant<Hello, GetState, ReadIdentity, GetPhoto, ReadCertificates, ReadTokenInfo, Sign, SignBatch,
                              GetCertDer, GetConfig, SetConfig, ResetConfig, CancelOp, GetSignResult, PkLogin, PkLogout,
                              PkPublicKey, PkSignRaw, PkDecrypt, ListCredentials, ManagePin, ActivateSigningKey,
-                             LayoutVisual, GetAppearanceFont, ImportCscaMasterList>;
+                             LayoutVisual, GetAppearanceFont, ImportCscaMasterList, ForgetCscaAnchors>;
 
 struct RequestEnvelope
 {
@@ -454,6 +480,25 @@ struct CscaAnchorStateReply
     bool operator==(const CscaAnchorStateReply&) const = default;
 };
 
+// ForgetCscaAnchors' reply: what was DESTROYED, not what remains.
+//
+// Deliberately not CscaAnchorStateReply, and the difference is the whole point.
+// After a forget the state is ABSENT, and that reply cannot say so: its
+// `anchors`/`issuers` are required, so it would have to carry zeros -- and a
+// zeroed report means "a list was accepted and it vouched for nobody", which is
+// a different claim and a false one. The same distinction the agent keeps when
+// it discards a stale report by clearing it rather than zeroing it.
+//
+// Reporting what went is also what the caller actually needs: a surface that
+// asked a person to confirm this has to be able to tell them what happened, and
+// after the fact there is nothing left on disk to read it from.
+struct ForgetCscaAnchorsReply
+{
+    std::uint64_t anchorsForgotten{0}; ///< anchors held before this call, INCLUDING link certificates
+    bool hadPinnedSigner{false};       ///< a publisher was being followed, and now none is
+    bool operator==(const ForgetCscaAnchorsReply&) const = default;
+};
+
 struct ErrInfo
 {
     std::variant<ErrorCode, SyncError> code; // async numeric OR sync named
@@ -546,6 +591,7 @@ using OpResult =
 [[nodiscard]] CborValue makeReply(std::uint64_t req, const LayoutReply&);
 [[nodiscard]] CborValue makeReply(std::uint64_t req, const AppearanceFontReply&);
 [[nodiscard]] CborValue makeReply(std::uint64_t req, const CscaAnchorStateReply&);
+[[nodiscard]] CborValue makeReply(std::uint64_t req, const ForgetCscaAnchorsReply&);
 [[nodiscard]] CborValue makeSignRecoveryReply(std::uint64_t req, const SignResult&); // sign-recovery arm
 [[nodiscard]] CborValue makeErrorReply(std::uint64_t req, const ErrInfo&);
 

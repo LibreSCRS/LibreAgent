@@ -33,6 +33,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <unistd.h>
 #include <iostream>
 #include <iterator>
 #include <memory>
@@ -1379,4 +1380,169 @@ TEST(CscaAnchorAggregate, NoPublisherAtAllIsNotEveryPublisherEstablished)
 {
     EXPECT_FALSE(Trust::AnchorState{}.everyPublisherEstablished());
     EXPECT_FALSE(stateWithSigners({}).everyPublisherEstablished()) << "an empty set was folded to true";
+}
+
+// --- forgetting what was imported -------------------------------------------
+//
+// The rotation rule is deliberate and right: a list signed by a publisher this
+// agent does not follow gets in only if it chains to an anchor a previous
+// import carried. What it had no exit from is the consequence — import one
+// country's list, then offer the ICAO collection, and every one of the
+// twenty-eight is refused, because none of those publishers leads back to the
+// five anchors already held. The only cure was knowing about a cache directory
+// and deleting it by hand, outside the authorization gate that covers every
+// other change to this store.
+//
+// Forgetting is therefore a first-class operation, and it has to remove BOTH
+// halves — the anchors and the pin in the cache, and the report in the
+// configuration that describes them.
+
+TEST(CscaAnchorForget, ForgettingRemovesTheAnchorsAndThePin)
+{
+    const CacheDir dir("forget-both");
+    Trust::AnchorCache cache(dir.path());
+    const auto list = signMasterList({makeCsca("CSCA A", "AA"), makeCsca("CSCA B", "BB")}, makeIndependentSigner());
+    ASSERT_TRUE(Trust::importMasterList(list.der, cache, kNow).has_value());
+    ASSERT_TRUE(cache.holdsAnchor());
+    ASSERT_TRUE(cache.state().present);
+
+    ASSERT_TRUE(cache.forget());
+
+    EXPECT_FALSE(cache.holdsAnchor()) << "anchors survived being forgotten";
+    EXPECT_FALSE(cache.state().present) << "the pin survived being forgotten";
+    EXPECT_TRUE(cache.anchors().empty());
+}
+
+// The point of the whole feature, asserted on the BEHAVIOUR rather than on the
+// files: after forgetting, a publisher the agent used to refuse gets in, and
+// gets in as a first import — trusted on sight and saying so.
+TEST(CscaAnchorForget, AfterForgettingAStrangerIsAFirstImportAgain)
+{
+    const CacheDir dir("forget-stranger");
+    Trust::AnchorCache cache(dir.path());
+    ASSERT_TRUE(
+        Trust::importMasterList(signMasterList({makeCsca("CSCA A", "AA")}, makeIndependentSigner()).der, cache, kNow)
+            .has_value());
+
+    // Refused while the pin stands — the trap this exists to open.
+    const auto stranger = signMasterList({makeCsca("CSCA X", "XX")}, makeIndependentSigner());
+    const auto refused = Trust::importMasterList(stranger.der, cache, kNow + 60);
+    ASSERT_FALSE(refused.has_value()) << "the fixture did not reproduce the refusal";
+    ASSERT_EQ(refused.error().reason, Trust::ImportRefusal::SignerChanged);
+
+    ASSERT_TRUE(cache.forget());
+
+    const auto accepted = Trust::importMasterList(stranger.der, cache, kNow + 120);
+    ASSERT_TRUE(accepted.has_value()) << "the publisher is still refused after the anchors were forgotten";
+    EXPECT_FALSE(onlySigner(*accepted).identityEstablished)
+        << "a first import after forgetting was reported as an established publisher";
+}
+
+// A torn import leaves a staging directory behind; forgetting must take it too,
+// or the next import's staging step inherits somebody else's leftovers.
+TEST(CscaAnchorForget, ForgettingTakesAStagingDirectoryWithIt)
+{
+    const CacheDir dir("forget-staging");
+    Trust::AnchorCache cache(dir.path());
+    ASSERT_TRUE(
+        Trust::importMasterList(signMasterList({makeCsca("CSCA A", "AA")}, makeIndependentSigner()).der, cache, kNow)
+            .has_value());
+    fs::create_directories(dir.path() / "anchors.incoming");
+    {
+        std::ofstream(dir.path() / "anchors.incoming" / "000000.cer") << "leftover";
+    }
+
+    ASSERT_TRUE(cache.forget());
+
+    EXPECT_FALSE(fs::exists(dir.path() / "anchors.incoming")) << "a torn import's leftovers survived";
+}
+
+// Only what this cache OWNS. The cache directory is configurable, so an
+// installation may point it somewhere that holds other things; removing the
+// directory wholesale would delete files this code never wrote.
+TEST(CscaAnchorForget, ForgettingRemovesOnlyWhatTheCacheOwns)
+{
+    const CacheDir dir("forget-neighbour");
+    Trust::AnchorCache cache(dir.path());
+    ASSERT_TRUE(
+        Trust::importMasterList(signMasterList({makeCsca("CSCA A", "AA")}, makeIndependentSigner()).der, cache, kNow)
+            .has_value());
+    {
+        std::ofstream(dir.path() / "somebody-elses.txt") << "not ours";
+    }
+
+    ASSERT_TRUE(cache.forget());
+
+    EXPECT_TRUE(fs::exists(dir.path() / "somebody-elses.txt")) << "forgetting removed a file this cache never wrote";
+    EXPECT_TRUE(fs::is_directory(dir.path())) << "the configured cache directory itself was removed";
+}
+
+TEST(CscaAnchorForget, ForgettingWhenNothingWasEverImportedSucceeds)
+{
+    const CacheDir dir("forget-empty");
+    Trust::AnchorCache cache(dir.path());
+    EXPECT_TRUE(cache.forget()) << "an empty cache is already forgotten; that is not a failure";
+}
+
+// --- forgetting across both halves, in the order that matters ---------------
+
+TEST(CscaAnchorForget, ForgettingReportsWhatItRemoved)
+{
+    ConfiguredAgent agent("forget-report");
+    ASSERT_NO_FATAL_FAILURE(agent.importAndRecord());
+
+    const auto forgotten = Trust::forgetCscaAnchors(agent.config());
+
+    ASSERT_TRUE(forgotten.has_value());
+    EXPECT_EQ(forgotten->anchors, 2u) << "the count describes what was destroyed, not what remains";
+    EXPECT_TRUE(forgotten->hadPinnedSigner);
+}
+
+TEST(CscaAnchorForget, ForgettingClearsBothTheCacheAndTheRecordedReport)
+{
+    ConfiguredAgent agent("forget-both-halves");
+    ASSERT_NO_FATAL_FAILURE(agent.importAndRecord());
+
+    ASSERT_TRUE(Trust::forgetCscaAnchors(agent.config()).has_value());
+
+    const Trust::AnchorCache cache{agent.cacheDir()};
+    EXPECT_FALSE(cache.holdsAnchor());
+    EXPECT_FALSE(cache.state().present);
+    EXPECT_FALSE(agent.config().cscaAnchorState().has_value()) << "the report outlived the anchors it describes";
+}
+
+TEST(CscaAnchorForget, ForgettingNothingIsNotAnError)
+{
+    ConfiguredAgent agent("forget-nothing");
+    const auto forgotten = Trust::forgetCscaAnchors(agent.config());
+    ASSERT_TRUE(forgotten.has_value()) << "an agent holding nothing cannot fail to forget it";
+    EXPECT_EQ(forgotten->anchors, 0u);
+    EXPECT_FALSE(forgotten->hadPinnedSigner);
+}
+
+// THE ORDER, asserted through its failure. The cache goes first and the report
+// only after it is gone, so a failure in between leaves the report describing
+// anchors that are still there — a state that is merely stale, and that the
+// startup reconciliation already repairs on its own. Clearing the report first
+// would leave the opposite window: no report, but a pin still refusing every
+// list, with nothing anywhere able to notice. This is the guard that the
+// cheaper order was not taken.
+TEST(CscaAnchorForget, AFailedForgetLeavesTheReportStanding)
+{
+    ConfiguredAgent agent("forget-refused");
+    ASSERT_NO_FATAL_FAILURE(agent.importAndRecord());
+    if (::geteuid() == 0) {
+        GTEST_SKIP() << "root ignores directory permissions, so the failure cannot be provoked";
+    }
+
+    // Read+execute only: the entries under it can be read but not unlinked.
+    fs::permissions(agent.cacheDir(), fs::perms::owner_read | fs::perms::owner_exec, fs::perm_options::replace);
+
+    const auto forgotten = Trust::forgetCscaAnchors(agent.config());
+
+    fs::permissions(agent.cacheDir(), fs::perms::owner_all, fs::perm_options::replace);
+
+    EXPECT_FALSE(forgotten.has_value()) << "a forget that could not remove the anchors reported success";
+    EXPECT_TRUE(agent.config().cscaAnchorState().has_value())
+        << "the report was cleared while the anchors and the pin were still on disk";
 }

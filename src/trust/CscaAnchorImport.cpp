@@ -985,6 +985,24 @@ fs::path publishAnchorDirectory(LibreSCRS::Plugin::CardPluginService& plugins, c
     return dir;
 }
 
+bool AnchorCache::forget()
+{
+    // Each removal is judged on its own error_code rather than on the return
+    // value: remove_all answers 0 both for "removed nothing because it was not
+    // there" and, without the code, for a failure -- and the first of those is
+    // success here.
+    bool ok = true;
+    for (const char* owned : {kAnchorsDirName, kAnchorsStagingName, kStateFileName}) {
+        std::error_code ec;
+        fs::remove_all(m_dir / owned, ec);
+        if (ec) {
+            log::warnf("country signing anchors: could not remove {}: {}", (m_dir / owned).string(), ec.message());
+            ok = false;
+        }
+    }
+    return ok;
+}
+
 void discardStaleAnchorReport(Config::ConfigStore& config)
 {
     if (!config.cscaAnchorState()) {
@@ -1006,6 +1024,32 @@ void discardStaleAnchorReport(Config::ConfigStore& config)
     // is false: the key is ReadOnly on the wire and this is the agent clearing
     // its own state, the same standing recordCscaAnchorState writes it under.
     (void)config.resetKey("CscaAnchorState", /*fromDbus=*/false);
+}
+
+std::optional<ForgottenAnchors> forgetCscaAnchors(Config::ConfigStore& config)
+{
+    AnchorCache cache{fs::path{config.cscaCacheDir()}};
+
+    // Measured BEFORE anything is removed: afterwards there is nothing left to
+    // read it from, and the caller has to be able to say what went.
+    const AnchorState held = cache.state();
+    ForgottenAnchors forgotten;
+    forgotten.anchors = held.anchorCount;
+    forgotten.hadPinnedSigner = held.present && !held.signers.empty();
+
+    if (!cache.forget()) {
+        // The report is left exactly as it was, deliberately: with anchors
+        // still on disk it is the only thing describing them, and clearing it
+        // here would produce the one inconsistent state nothing detects.
+        return std::nullopt;
+    }
+
+    // Only now. See this function's header for why this order and not the
+    // other one.
+    (void)config.resetKey("CscaAnchorState", /*fromDbus=*/false);
+    log::infof("country signing anchors: forgot {} anchor(s){}", forgotten.anchors,
+               forgotten.hadPinnedSigner ? "; the agent now follows no publisher" : "");
+    return forgotten;
 }
 
 } // namespace LibreSCRS::Agent::Trust
