@@ -265,10 +265,13 @@ struct ImportCscaMasterList
 // Same authorization as the import (`org.librescrs.agent.configure.trust`): it
 // changes what the machine will believe about a passport.
 //
-// Rejections (err-info's `name`): NotAuthorized, RateLimited,
-// AnchorCacheNotWritable. Holding nothing is NOT a rejection -- it answers a
-// zeroed report, because an agent that has imported nothing has already
-// forgotten everything.
+// NO per-caller flood bound, unlike the import: that bound exists because the
+// import READS a descriptor the caller hands over. This takes no input and is
+// idempotent, so both hosts authorize and act, by agreement.
+//
+// Rejections (err-info's `name`): NotAuthorized, AnchorCacheNotWritable.
+// Holding nothing is NOT a rejection -- it answers zeros, because an agent that
+// has imported nothing has already forgotten everything.
 struct ForgetCscaAnchors
 {
     bool operator==(const ForgetCscaAnchors&) const = default;

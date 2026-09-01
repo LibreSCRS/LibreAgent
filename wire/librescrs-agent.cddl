@@ -165,9 +165,15 @@ import-csca-master-list = ( t: "ImportCscaMasterList", list: fd-index )
 ; Config1 family, so it carries NO hello-ack feature gate, for the reason spelled
 ; out under import-csca-master-list above.
 ;
-; Rejections (err-info's `name`): NotAuthorized, RateLimited,
-; AnchorCacheNotWritable. Holding nothing is NOT a rejection: an agent that has
-; imported nothing has already forgotten everything, and it answers zeros.
+; NO per-caller flood bound, unlike import-csca-master-list, and the asymmetry
+; is deliberate: that bound exists because the import READS a descriptor the
+; caller hands over, and a refused caller must not be able to make the agent
+; read to the cap. This takes no input, unlinks three paths and is idempotent.
+; Both hosts answer alike here, by agreement rather than by coincidence.
+;
+; Rejections (err-info's `name`): NotAuthorized, AnchorCacheNotWritable.
+; Holding nothing is NOT a rejection: an agent that has imported nothing has
+; already forgotten everything, and it answers zeros.
 forget-csca-anchors = ( t: "ForgetCscaAnchors" )
 set-config        = ( t: "SetConfig", key: settable-config-key, value: any )  ; Config1.SetValue; low vs trust tier
 reset-config      = ( t: "ResetConfig", key: config-key )               ; Config1.Reset(key)
