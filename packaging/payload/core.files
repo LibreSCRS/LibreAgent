@@ -1,0 +1,36 @@
+# librescrs-agent-core — the platform-neutral agent brain and everything a host
+# links against it: the wire codec, the PKCS#11 facade and its socket backend,
+# and the test-support archive.
+#
+# Every per-configuration export file (…Targets-relwithdebinfo.cmake) is listed
+# next to its main targets file on purpose. The main file picks them up with a
+# file(GLOB), where an empty match is NOT an error, so leaving one out installs
+# cleanly and then hands the consumer
+# "IMPORTED_LOCATION not set for imported target" — one release later, in
+# somebody else's build.
+#
+# See common.files for the format.
+
+lib/libLibreAgentCore.a
+lib/cmake/LibreAgent/LibreAgentCoreTargets.cmake
+lib/cmake/LibreAgent/LibreAgentCoreTargets-relwithdebinfo.cmake
+
+lib/libLibreAgentWire.a
+lib/cmake/LibreAgent/LibreAgentWireTargets.cmake
+lib/cmake/LibreAgent/LibreAgentWireTargets-relwithdebinfo.cmake
+
+lib/libLibreAgentPkcs11Facade.a
+lib/cmake/LibreAgent/LibreAgentPkcs11FacadeTargets.cmake
+lib/cmake/LibreAgent/LibreAgentPkcs11FacadeTargets-relwithdebinfo.cmake
+
+lib/libLibreAgentPkcs11SocketClient.a
+lib/cmake/LibreAgent/LibreAgentPkcs11SocketClientTargets.cmake
+lib/cmake/LibreAgent/LibreAgentPkcs11SocketClientTargets-relwithdebinfo.cmake
+
+# Test support travels inside this package rather than in a fourth one: it is
+# an archive like the rest, and a separate package would change the split this
+# project decided on.
+lib/libSyntheticMasterList.a
+lib/cmake/LibreAgent/LibreAgentTestSupportTargets.cmake
+lib/cmake/LibreAgent/LibreAgentTestSupportTargets-relwithdebinfo.cmake
+include/LibreSCRS/AgentTestSupport/*.h

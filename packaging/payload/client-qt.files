@@ -1,0 +1,17 @@
+# librescrs-agent-client-qt — the Qt client library desktop front-ends link
+# against, and the headers that describe it.
+#
+# The shared library is claimed by a GLOB rather than by name. SOVERSION
+# follows PROJECT_VERSION_MAJOR, so the file names move with every major
+# release; naming them literally would ship nothing at all, silently, the first
+# time the major changed. The glob covers the real file and BOTH SONAME
+# symlinks — a package with the file and no links installs cleanly and links
+# nothing.
+#
+# See common.files for the format.
+
+lib/liblibrescrs-agentclient-qt.so*
+lib/cmake/LibreAgent/LibreAgentClientQtTargets.cmake
+lib/cmake/LibreAgent/LibreAgentClientQtTargets-relwithdebinfo.cmake
+
+include/LibreSCRS/AgentClient/*.h

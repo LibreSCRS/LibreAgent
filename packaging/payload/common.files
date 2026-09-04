@@ -1,0 +1,31 @@
+# librescrs-agent-common — the shared contract: the CMake CONFIG package, the
+# public headers, and the wire description.
+#
+# This package exists because LibreAgentConfig.cmake and its version file are
+# installed UNCONDITIONALLY from every configuration, so one of the component
+# packages has to own them — and making either component depend on the other
+# would drag Qt into the agent's dependency closure or the middleware into
+# every Qt client's, which is exactly what this recipe refuses. A third,
+# dependency-free package holding what both need is the smallest split that
+# avoids both.
+#
+# Nothing here is architecture-dependent, which is why this package is `any`.
+#
+# Prefix-relative paths, one per line; `#` comments and shell globs allowed. A
+# pattern that expands to nothing is an ERROR — see packaging/arch/check-split.sh.
+# usr/share/licenses/** is installed by the recipe from source trees, not from
+# the staged install, so it is not listed here.
+
+lib/cmake/LibreAgent/LibreAgentConfig.cmake
+lib/cmake/LibreAgent/LibreAgentConfigVersion.cmake
+lib/cmake/LibreAgent/Pkcs11ModuleExport.cmake
+
+# The platform-neutral agent headers, including the std-only wire headers the
+# public client headers re-export.
+include/LibreSCRS/Agent/*.h
+include/LibreSCRS/Agent/*/*.h
+include/LibreSCRS/Agent/*/*/*.h
+
+share/librescrs/librescrs-agent.cddl
+share/librescrs/pkcs11/exports.map
+share/librescrs/pkcs11/exports.symbols

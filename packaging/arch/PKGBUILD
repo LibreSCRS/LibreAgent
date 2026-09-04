@@ -1,42 +1,43 @@
 # Maintainer: hirashix0 <hirashix0@proton.me>
 #
-# librescrs-agent-client-qt — the Qt client library that desktop front-ends
-# link against to talk to the LibreSCRS smart-card agent. It ships
-# LibreAgent::ClientQt: the public value types, the
-# AgentClient/AgentReader/AgentCard/AgentOperation API over a transport seam
-# (D-Bus on Linux, AF_UNIX + canonical CBOR elsewhere), the std-only wire
-# headers those types re-export, the CBOR/CDDL wire contract, and the CMake
-# CONFIG package that resolves it all.
+# LibreAgent — the smart-card agent's platform-neutral library, split into
+# three packages.
 #
 # WHERE THIS SITS IN THE CHAIN
 # ----------------------------
-# The existing chain is
+# The chain is
 #
-#     librescrs-middleware  <=  librelinux  <=  librekde
+#     librescrs-middleware  <=  libreagent  <=  librelinux  <=  librekde
 #
 # where `librescrs-agent` — the running D-Bus daemon — is one of the packages
-# built from pkgbase `librelinux`. THIS package is a different thing entirely:
-# it is the CLIENT-side library, owned by the LibreAgent repository, and a
-# Qt/KDE front-end needs both — `librescrs-agent` for the daemon it talks to at
-# runtime, and `librescrs-agent-client-qt` for the library it links.
+# built from pkgbase `librelinux`. THESE are a different thing: the library
+# side, owned by the LibreAgent repository. A Qt/KDE front-end needs both, the
+# daemon it talks to at runtime and the client library it links.
 #
-# ONE PACKAGE, NOT A -dev SPLIT
-# -----------------------------
-# Headers and lib/cmake/ ship in the same package as the shared library, which
-# is both the Arch idiom and what `librescrs-middleware` already does.
+# WHY THREE PACKAGES AND NOT TWO
+# ------------------------------
+# LibreAgentConfig.cmake and LibreAgentConfigVersion.cmake are installed
+# UNCONDITIONALLY from every configuration (cmake/InstallExport.cmake), so one
+# of the component packages has to own them. Making either component depend on
+# the other is what the two-package shape would require, and that drags Qt into
+# the agent's dependency closure or the middleware into every Qt client's —
+# which is exactly what this recipe exists to refuse.
 #
-# WHAT IS DELIBERATELY NOT BUILT HERE
-# -----------------------------------
-# The LibreAgent repository also builds LibreAgent::Core — the platform-neutral
-# agent brain, which pulls in LibreMiddleware and OpenSSL — and by default
-# installs LibreAgent::Wire as a standalone static archive. Neither belongs in
-# a client package. Core is the daemon's business and would drag the whole
-# middleware stack into every client's dependency set; the Wire archive is
-# redundant here because Wire is a static library linked straight into
-# liblibrescrs-agentclient-qt.so, so nothing in this package needs a separate
-# copy to link against. Hence LIBREAGENT_BUILD_CORE=OFF and
-# LIBREAGENT_INSTALL_WIRE_ARCHIVE=OFF below. The wire HEADERS and the CDDL
-# contract are still installed, so a client can pin against the protocol.
+# A third, dependency-free package holding the shared contract is the smallest
+# split that avoids both. It was not a guess: a naive two-way split was built
+# and offered to pacman, which refused it on exactly the fifteen files the two
+# halves would both have owned.
+#
+# WHAT EACH PACKAGE HOLDS
+# -----------------------
+# The payload is declared in packaging/payload/*.files rather than spelled out
+# in the package functions, and packaging/arch/check-split.sh compares those
+# lists with a real staged install: everything installed is claimed, nothing is
+# claimed twice, and a pattern that matches nothing is an error. Two things are
+# easy to leave out by hand and fail only at the CONSUMER, one release later —
+# the per-configuration export files, which the main targets file picks up with
+# a glob where an empty match is not an error, and the vendored codec's licence,
+# whose objects are linked into both the core archive and the client library.
 #
 # VENDORED QCBOR
 # --------------
@@ -45,38 +46,31 @@
 # clean chroot has no network during build(), so its tarball is a source entry
 # below and FETCHCONTENT_SOURCE_DIR_QCBOR + FETCHCONTENT_FULLY_DISCONNECTED=ON
 # point the build at the extracted tree instead of letting FetchContent reach
-# the network. QCBOR's objects are folded into the shared library, so its
-# BSD-3-Clause licence is declared in license=() and installed alongside the
-# LGPL text.
+# the network. QCBOR's objects are folded into both the wire archive and the
+# shared client library, so its BSD-3-Clause licence travels with both.
 
-pkgname=librescrs-agent-client-qt
-pkgver=4.2.0
+pkgbase=libreagent
+pkgname=('librescrs-agent-common' 'librescrs-agent-core' 'librescrs-agent-client-qt')
+pkgver=5.0.0
 pkgrel=1
-pkgdesc="Qt client library for the LibreSCRS smart-card agent (D-Bus and AF_UNIX socket transports)"
 arch=('x86_64' 'aarch64')
 url="https://github.com/LibreSCRS/LibreAgent"
-license=('LGPL-2.1-or-later' 'BSD-3-Clause')   # BSD-3 = vendored QCBOR, folded into the .so
-# Runtime: what liblibrescrs-agentclient-qt.so actually links. LibreMiddleware
-# and OpenSSL are NOT here — they only enter through LibreAgent::Core, which
-# this package does not build.
-depends=(
-    'qt6-base'      # Qt6::Core (PUBLIC) and Qt6::DBus (PRIVATE, Linux transport)
-    'gcc-libs'
-    'glibc'
-)
+license=('LGPL-2.1-or-later' 'BSD-3-Clause')   # BSD-3 = vendored QCBOR
 # Build host tooling. base-devel ships none of the first three.
 makedepends=(
     'cmake>=3.28'   # FetchContent_Declare(... EXCLUDE_FROM_ALL) — which keeps
-                    #   QCBOR's own install rules out of this package — is a
+                    #   QCBOR's own install rules out of these packages — is a
                     #   no-op below 3.28, silently, with no configure warning
     'ninja'
     'git'           # cmake/GitVersion.cmake does find_package(Git REQUIRED)
                     #   unconditionally; without it configure fails outright
-    'qt6-base'      # also a runtime depend above; repeated deliberately because
-                    #   Qt6 Core/DBus/Test is a configure-time find_package()
+    'qt6-base'      # Qt6 Core/DBus/Test is a configure-time find_package()
     'gtest'         # the client test suite does find_package(GTest REQUIRED)
     'dbus'          # CONFIGURE-time, not merely check-time: the client test
                     #   CMakeLists does find_program(dbus-run-session REQUIRED)
+    'librescrs-middleware>=5.0'  # LibreAgent::Core links LibreSCRS::* and needs
+                                 #   its CMake config package at configure time
+    'openssl'
 )
 
 _srcname="LibreAgent-$pkgver"
@@ -88,10 +82,14 @@ _srcname="LibreAgent-$pkgver"
 _qcbor_commit=930708bb86481e88879eb1d87fd4d664f1d69503
 
 source=(
-    "$pkgname-$pkgver.tar.gz::https://github.com/LibreSCRS/LibreAgent/archive/refs/tags/v$pkgver.tar.gz"
+    "$pkgbase-$pkgver.tar.gz::https://github.com/LibreSCRS/LibreAgent/archive/refs/tags/v$pkgver.tar.gz"
     "qcbor-$_qcbor_commit.tar.gz::https://github.com/laurencelundblade/QCBOR/archive/$_qcbor_commit.tar.gz"
 )
-# LibreAgent's own tarball is 'SKIP': the v$pkgver tag does not exist yet, so
+# The downloaded name is derived from $pkgbase, not $pkgname: in a split recipe
+# pkgname is an ARRAY, so $pkgname would silently expand to its first element
+# and name the tarball after one of the three packages.
+#
+# LibreAgent's own tarball is 'SKIP': the tag does not exist yet, so
 # there is nothing upstream to fetch or sum. The real sum is filled in at tag
 # time with `updpkgsums`. Until then the recipe is smoke-built against a tarball
 # of the working tree placed next to this file under exactly the name above —
@@ -198,13 +196,19 @@ prepare() {
 
 build() {
     cd "$srcdir/$_srcname"
+    # Every component ON, once. The three packages are carved out of a single
+    # staged install below, so a component left OFF here does not produce a
+    # smaller package — it produces a package whose payload list matches
+    # nothing, and check-split.sh says so.
     cmake -S . -B build -G Ninja \
         -DCMAKE_BUILD_TYPE=RelWithDebInfo \
         -DCMAKE_INSTALL_PREFIX=/usr \
-        -DLIBREAGENT_BUILD_CORE=OFF \
+        -DLIBREAGENT_BUILD_CORE=ON \
         -DLIBREAGENT_BUILD_WIRE=ON \
         -DLIBREAGENT_BUILD_CLIENT_QT=ON \
-        -DLIBREAGENT_INSTALL_WIRE_ARCHIVE=OFF \
+        -DLIBREAGENT_BUILD_PKCS11_FACADE=ON \
+        -DLIBREAGENT_BUILD_PKCS11_SOCKET_CLIENT=ON \
+        -DLIBREAGENT_INSTALL_WIRE_ARCHIVE=ON \
         -DFETCHCONTENT_SOURCE_DIR_QCBOR="$srcdir/QCBOR-$_qcbor_commit" \
         -DFETCHCONTENT_FULLY_DISCONNECTED=ON
     cmake --build build -j4
@@ -218,17 +222,114 @@ check() {
     QT_QPA_PLATFORM=offscreen ctest --test-dir build --output-on-failure -j4
 }
 
-package() {
-    cd "$srcdir/$_srcname"
-    DESTDIR="$pkgdir" cmake --install build
-    # cmake --install already lays down: /usr/lib/liblibrescrs-agentclient-qt.so*,
-    # /usr/include/LibreSCRS/AgentClient/** (incl. the generated Export.h),
-    # /usr/include/LibreSCRS/Agent/** (the std-only wire headers the public
-    # client headers re-export), /usr/lib/cmake/LibreAgent/** (Config,
-    # ConfigVersion, ClientQtTargets) and /usr/share/librescrs/librescrs-agent.cddl.
+# --- shared staging -----------------------------------------------------------
+# One install tree, carved into three packages by the lists under
+# packaging/payload/. Those are the same lists packaging/arch/check-split.sh
+# compares against a real staged install in both directions.
+_stage_once() {
+    local stage="$srcdir/stage"
+    if [ ! -d "$stage" ]; then
+        rm -rf "$stage"
+        DESTDIR="$stage" cmake --install build
+    fi
+}
+
+# _install_payload <payload-name>
+#
+# Copies everything the named list claims out of the staged tree into $pkgdir.
+# Symlinks are copied AS symlinks: a shared library ships as the real file plus
+# the two SONAME links, and a package holding the file without the links
+# installs cleanly and links nothing.
+#
+# A pattern that expands to nothing is an ERROR, not a satisfied line. SOVERSION
+# follows PROJECT_VERSION_MAJOR, so the client library's file names move with
+# every major release; a literal name would ship nothing at all, silently, the
+# first time the major changed.
+_install_payload() {
+    local list="$srcdir/$_srcname/packaging/payload/$1.files"
+    local stage="$srcdir/stage"
+    local pattern hit rel n
+
+    [ -f "$list" ] || { echo "packaging: payload list $list is missing" >&2; return 1; }
+
+    while IFS= read -r pattern || [ -n "$pattern" ]; do
+        case "$pattern" in ''|'#'*) continue;; esac
+        n=0
+        while IFS= read -r hit; do
+            [ -e "$hit" ] || [ -L "$hit" ] || continue
+            rel=${hit#"$stage"/usr/}
+            install -d "$pkgdir/usr/$(dirname "$rel")" || return 1
+            cp -a "$hit" "$pkgdir/usr/$rel" || return 1
+            n=$((n + 1))
+        done < <(compgen -G "$stage/usr/$pattern" || true)
+        if [ "$n" -eq 0 ]; then
+            echo "packaging: '$pattern' in $1.files matches nothing in the staged tree" >&2
+            return 1
+        fi
+    done < "$list"
+}
+
+# _install_licences — every package carries both texts. QCBOR's objects are
+# linked into the wire archive AND into the client library, so its licence
+# cannot travel with only one of them; the shared-contract package carries them
+# too because a user may install it alone.
+_install_licences() {
     install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
-    # QCBOR is compiled into the shared library above, so its licence travels
-    # with this package.
     install -Dm644 "$srcdir/QCBOR-$_qcbor_commit/LICENSE" \
         "$pkgdir/usr/share/licenses/$pkgname/LICENSE.qcbor"
+}
+
+# --- librescrs-agent-common: the shared contract ------------------------------
+package_librescrs-agent-common() {
+    pkgdesc="Shared CMake package, public headers and wire contract for the LibreSCRS smart-card agent"
+    # `any`: measured, not assumed — this package holds no ELF and nothing else
+    # architecture-dependent. Anything naming its built file must therefore glob
+    # the suffix rather than spell -x86_64.
+    arch=('any')
+    depends=()
+    # Until this release the whole library shipped as one package named
+    # librescrs-agent-client-qt, which owned the config files this package now
+    # owns. Without this, an upgrade would put two owners on the same paths and
+    # pacman would refuse the transaction with "exists in filesystem".
+    conflicts=('librescrs-agent-client-qt<5.0.0')
+    cd "$srcdir/$_srcname"
+
+    _stage_once
+    _install_payload common
+    _install_licences
+}
+
+# --- librescrs-agent-core: the platform-neutral agent brain -------------------
+package_librescrs-agent-core() {
+    pkgdesc="Platform-neutral core library, wire codec and PKCS#11 facade for the LibreSCRS smart-card agent"
+    depends=(
+        'librescrs-agent-common'
+        'librescrs-middleware>=5.0'
+        'openssl'
+        'gcc-libs'
+        'glibc'
+    )
+    cd "$srcdir/$_srcname"
+
+    _stage_once
+    _install_payload core
+    _install_licences
+}
+
+# --- librescrs-agent-client-qt: the Qt client library -------------------------
+package_librescrs-agent-client-qt() {
+    pkgdesc="Qt client library for the LibreSCRS smart-card agent (D-Bus and AF_UNIX socket transports)"
+    # No middleware and no OpenSSL here: those enter only through the core
+    # library, which this package deliberately does not depend on.
+    depends=(
+        'librescrs-agent-common'
+        'qt6-base'      # Qt6::Core (PUBLIC) and Qt6::DBus (PRIVATE, Linux transport)
+        'gcc-libs'
+        'glibc'
+    )
+    cd "$srcdir/$_srcname"
+
+    _stage_once
+    _install_payload client-qt
+    _install_licences
 }
