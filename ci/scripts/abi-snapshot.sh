@@ -173,7 +173,7 @@
 #
 # This script generates a stable, sorted, human-readable text artefact
 # checked into the tree at:
-#   ci/abi/4.x-baseline.txt
+#   ci/abi/5.x-baseline.txt
 #
 # Use --check to compare a fresh build against the baseline; the script
 # fails non-zero on any difference in a section the current build produced.
@@ -226,7 +226,7 @@ if [[ ! -d "$BUILD_DIR" ]]; then
 fi
 
 REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
-BASELINE="${REPO_ROOT}/ci/abi/4.x-baseline.txt"
+BASELINE="${REPO_ROOT}/ci/abi/5.x-baseline.txt"
 SCRATCH="$(mktemp -d)"
 trap 'rm -rf "$SCRATCH"' EXIT
 
@@ -325,8 +325,8 @@ clientqt_soname=""
 clientqt_layout=""
 # The SONAME-versioned build produces THREE paths for one real file:
 # liblibrescrs-agentclient-qt.so (unversioned symlink),
-# liblibrescrs-agentclient-qt.so.4 (SONAME symlink), and
-# liblibrescrs-agentclient-qt.so.4.2.0 (the real file). -not -type l
+# liblibrescrs-agentclient-qt.so.5 (SONAME symlink), and
+# liblibrescrs-agentclient-qt.so.5.0.0 (the real file). -not -type l
 # resolves to the one real file instead of reusing the archive section's
 # single-match guard, which would trip on these three paths every time.
 mapfile -t clientqt_libs < <(find "$BUILD_DIR" -name "${CLIENTQT_SECTION}*" -not -type l | sort)

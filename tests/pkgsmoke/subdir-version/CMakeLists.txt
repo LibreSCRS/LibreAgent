@@ -38,9 +38,9 @@ get_directory_property(LIBREAGENT_INNER_VERSION
     DIRECTORY "${LIBREAGENT_SUBDIR_VERSION_ROOT}"
     DEFINITION PROJECT_VERSION)
 
-if(NOT LIBREAGENT_INNER_VERSION STREQUAL "4.2.0")
+if(NOT LIBREAGENT_INNER_VERSION STREQUAL "5.0.0")
     message(FATAL_ERROR
-        "LibreAgent's own PROJECT_VERSION, as add_subdirectory()'d beneath this wrapper's project(wrapper VERSION 0.1.0 ...), resolved to \"${LIBREAGENT_INNER_VERSION}\" -- expected \"4.2.0\" (this repo's own VERSION file). LibreAgent is adopting the enclosing project's version instead of its own; see cmake/GitVersion.cmake.")
+        "LibreAgent's own PROJECT_VERSION, as add_subdirectory()'d beneath this wrapper's project(wrapper VERSION 0.1.0 ...), resolved to \"${LIBREAGENT_INNER_VERSION}\" -- expected \"5.0.0\" (this repo's own VERSION file). LibreAgent is adopting the enclosing project's version instead of its own; see cmake/GitVersion.cmake.")
 endif()
 
 message(STATUS "subdir-version smoke: LibreAgent resolved its own PROJECT_VERSION to \"${LIBREAGENT_INNER_VERSION}\" while add_subdirectory()'d beneath wrapper 0.1.0")

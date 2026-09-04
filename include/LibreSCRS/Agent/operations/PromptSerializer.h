@@ -22,7 +22,7 @@ namespace LibreSCRS::Agent::Operations {
 /// and that inverse. The DERIVATION stays neutral (readerIdentities); this seam
 /// carries only the lookup.
 ///
-/// @since 4.3
+/// @since 5.0
 using ReaderIdentityForCard = std::function<LibreSCRS::Agent::ReaderIdentity(const std::string& cardKey)>;
 
 // Gate that admits AT MOST ONE live prompter interaction PER CARD.

@@ -36,4 +36,5 @@ LibreSCRS release tags are cryptographically signed.
 
 | Version | Supported |
 |---------|-----------|
+| 5.x     | ✅ Active  |
 | 4.x     | ✅ Active  |

@@ -242,8 +242,8 @@ jobs:
             exit 1
           }
 
-      - name: Check ABI snapshot vs 4.x baseline
-        # 4.x baseline — minor-version additions tracked; removals or
+      - name: Check ABI snapshot vs 5.x baseline
+        # 5.x baseline — minor-version additions tracked; removals or
         # signature drift forbidden. Additions land via an intentional
         # baseline regeneration (`abi-snapshot.sh --update`) reviewed in
         # the same commit as the new public symbol.
@@ -553,7 +553,7 @@ jobs:
           project(clientqt_consumer_smoke LANGUAGES CXX)
           set(CMAKE_CXX_STANDARD 23)
           set(CMAKE_CXX_STANDARD_REQUIRED ON)
-          find_package(LibreAgent 4.2 REQUIRED CONFIG COMPONENTS ClientQt)
+          find_package(LibreAgent 5.0 REQUIRED CONFIG COMPONENTS ClientQt)
           find_package(Qt6 REQUIRED COMPONENTS Core)
           add_executable(clientqt_consumer_smoke main.cpp)
           target_link_libraries(clientqt_consumer_smoke PRIVATE LibreAgent::ClientQt Qt6::Core)

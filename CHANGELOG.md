@@ -3,7 +3,7 @@
 Notable user-visible changes per release. Format follows
 [Keep a Changelog](https://keepachangelog.com/) loosely.
 
-## [Unreleased] — 4.3.0
+## [Unreleased] — 5.0.0
 
 The country-signing anchor import now accepts what the ICAO Public Key
 Directory actually publishes. The portal serves a directory export (an
@@ -178,11 +178,20 @@ Three targets ship, each independently usable:
 
 ### Packaging
 
+- **This release is 5.0.0, and the Qt client library's soname moves with
+  it** — `liblibrescrs-agentclient-qt.so.5`, out of a file named
+  `.so.5.0.0`. The number is declared once: the version file feeds the
+  project version, and the soname is that version's major. Consequences
+  worth knowing before you upgrade — a distribution package that carries
+  the number in its name changes name; an already-linked consumer has to
+  be rebuilt; and a `find_package(LibreAgent 4.2 ...)` floor no longer
+  resolves this package at all, because the exported package declares
+  same-major compatibility. Raise such a floor to `5.0`.
 - **Installed CONFIG package** with three components — `Core`, `Wire`
   and `ClientQt`. Ask for what you need and nothing else:
 
   ```cmake
-  find_package(LibreAgent 4.2 REQUIRED CONFIG COMPONENTS ClientQt)
+  find_package(LibreAgent 5.0 REQUIRED CONFIG COMPONENTS ClientQt)
   target_link_libraries(my_gui PRIVATE LibreAgent::ClientQt)
   ```
 

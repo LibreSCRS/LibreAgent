@@ -26,7 +26,7 @@ namespace LibreSCRS::Agent {
 /// the shutdown keep-alive path. @ref generationAtDispatch needs no lock: the
 /// constructor fixes it for the object's entire lifetime.
 ///
-/// @since 4.3
+/// @since 5.0
 class AttemptContext
 {
 public:

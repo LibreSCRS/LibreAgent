@@ -10,7 +10,7 @@
 #
 # Downstream consumers (the platform backends and packagers) pull the package
 # in via:
-#   find_package(LibreAgent 4.2 REQUIRED CONFIG COMPONENTS Core)
+#   find_package(LibreAgent 5.0 REQUIRED CONFIG COMPONENTS Core)
 # and link against the namespaced LibreAgent::<Component> imported target(s).
 #
 # Resolution is filtered by what the caller actually asked for
@@ -72,7 +72,7 @@ foreach(_LibreAgent_comp IN LISTS _LibreAgent_components_to_resolve)
             # ::Plugin) and the PRIVATE seam-only deps (::Certificate,
             # ::Signing, ::Trust, OpenSSL::Crypto) the static archive carries
             # transitively, so consumers do not re-discover them.
-            find_dependency(LibreMiddleware 4.2 REQUIRED CONFIG)
+            find_dependency(LibreMiddleware 5.0 REQUIRED CONFIG)
             find_dependency(OpenSSL 3.0 REQUIRED COMPONENTS Crypto)
         elseif(_LibreAgent_comp STREQUAL "ClientQt")
             # Re-discover only the PUBLIC Qt6::Core this target was built

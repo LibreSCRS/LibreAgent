@@ -9,7 +9,7 @@ namespace LibreSCRS::Agent::Operations {
 /// The secret a prompt collects. Drives the entry deadline only; the wire
 /// kind strings live in PrompterWire.h and are unaffected.
 ///
-/// @since 4.3
+/// @since 5.0
 enum class PromptKind : std::uint8_t { Pin, Can, Mrz, ChangePin };
 
 /// How long the holder gets to type, measured from the moment the prompter
@@ -20,7 +20,7 @@ enum class PromptKind : std::uint8_t { Pin, Can, Mrz, ChangePin };
 /// MRZ is the outlier because it is two lines of 44 characters, usually
 /// transcribed by hand from the document.
 ///
-/// @since 4.3
+/// @since 5.0
 [[nodiscard]] constexpr std::chrono::milliseconds deadlineFor(PromptKind kind) noexcept
 {
     using namespace std::chrono_literals;
@@ -42,7 +42,7 @@ enum class PromptKind : std::uint8_t { Pin, Can, Mrz, ChangePin };
 /// leave a window standing with no consumer -- the defect this design exists
 /// to remove. The consumer side pins that with a static assertion.
 ///
-/// @since 4.3
+/// @since 5.0
 inline constexpr std::chrono::milliseconds kLongestDeadline{300'000};
 
 /// How many times a CAN or MRZ may be collected and rejected before the
@@ -55,7 +55,7 @@ inline constexpr std::chrono::milliseconds kLongestDeadline{300'000};
 /// the cap lives in CredentialCache::requestCredential, through which a PIN
 /// never passes.
 ///
-/// @since 4.3
+/// @since 5.0
 inline constexpr std::uint32_t kMaxPaceAttempts = 3;
 
 } // namespace LibreSCRS::Agent::Operations

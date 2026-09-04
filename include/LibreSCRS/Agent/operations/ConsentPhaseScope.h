@@ -30,7 +30,7 @@ namespace LibreSCRS::Agent::Operations {
 ///
 /// Construct on the stack, on the worker thread, for the duration of one prompt.
 ///
-/// @since 4.3
+/// @since 5.0
 class ConsentPhaseScope
 {
 public:

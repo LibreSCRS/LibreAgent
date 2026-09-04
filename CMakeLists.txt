@@ -78,7 +78,7 @@ endif()
 option(LIBRESCRS_AGENT_WERROR "Treat compiler warnings as errors" OFF)
 
 if(LIBREAGENT_BUILD_CORE)
-    find_package(LibreMiddleware 4.2 REQUIRED CONFIG)
+    find_package(LibreMiddleware 5.0 REQUIRED CONFIG)
     find_package(OpenSSL 3.0 REQUIRED COMPONENTS Crypto)
 
     # Platform-neutral agent core: card-read/sign flows, scheduler, presence model,

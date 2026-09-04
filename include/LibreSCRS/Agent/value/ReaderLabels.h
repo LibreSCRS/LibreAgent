@@ -11,7 +11,7 @@ namespace LibreSCRS::Agent {
 /// unit surfaces two PC/SC names that share a serial, so this is what tells
 /// a holder which of two otherwise identical dialogs belongs to which slot.
 ///
-/// @since 4.3
+/// @since 5.0
 enum class ReaderInterface : std::uint8_t {
     Unknown,     ///< Single-interface reader, or not determinable.
     Contact,     ///< Contact slot of a dual-interface unit.
@@ -26,7 +26,7 @@ enum class ReaderInterface : std::uint8_t {
 /// prompter; the prompter receives the qualifier and says it in the holder's
 /// language (see the design's M-1 correction).
 ///
-/// @since 4.3
+/// @since 5.0
 struct ReaderIdentity
 {
     std::string model;
@@ -41,7 +41,7 @@ struct ReaderIdentity
 /// decidable across the whole set, so this takes the list rather than one
 /// name. Never returns an empty model (falls back to the raw name).
 ///
-/// @since 4.3
+/// @since 5.0
 [[nodiscard]] std::vector<ReaderIdentity> readerIdentities(const std::vector<std::string>& rawNames);
 
 } // namespace LibreSCRS::Agent

@@ -23,7 +23,7 @@ namespace LibreSCRS::Agent::Operations {
 /// operation already running, which is deliberate — re-deriving under a running
 /// prompt would change the words in front of the holder mid-entry.
 ///
-/// @since 4.3
+/// @since 5.0
 struct PromptContext
 {
     LibreSCRS::Agent::ReaderIdentity reader;
@@ -37,7 +37,7 @@ struct PromptContext
 /// name for is ignored rather than defaulted, so a form nobody can render also
 /// grants nobody any time.
 ///
-/// @since 4.3
+/// @since 5.0
 [[nodiscard]] constexpr std::uint32_t deadlineForWireKind(std::string_view kind) noexcept
 {
     const auto ms = [](PromptKind k) { return static_cast<std::uint32_t>(deadlineFor(k).count()); };
@@ -71,7 +71,7 @@ struct PromptContext
 /// be separately addressable, or a cancel meant for the second dialog would
 /// close the first.
 ///
-/// @since 4.3
+/// @since 5.0
 inline void stampPrompt(LibreSCRS::Agent::PromptOptions& opts, const PromptContext& ctx, PromptKind kind)
 {
     opts.promptId = ctx.minter.mint();

@@ -21,7 +21,7 @@ namespace LibreSCRS::Agent::Operations {
 ///
 /// Injected by the agent core, never a static: the project bans singletons.
 ///
-/// @since 4.3
+/// @since 5.0
 class PromptIdMinter
 {
 public:

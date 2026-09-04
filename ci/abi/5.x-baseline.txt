@@ -366,7 +366,7 @@ LibreSCRS::Agent::Wire::toCbor(LibreSCRS::Agent::Wire::ReaderAdded const&)
 LibreSCRS::Agent::Wire::toCbor(LibreSCRS::Agent::Wire::ReaderRemoved const&)
 LibreSCRS::Agent::Wire::toCbor(LibreSCRS::Agent::Wire::RequestEnvelope const&)
 == liblibrescrs-agentclient-qt.so ==
-SONAME=liblibrescrs-agentclient-qt.so.4
+SONAME=liblibrescrs-agentclient-qt.so.5
 LibreSCRS::Agent::Wire::decodeSyncError(std::basic_string_view<char, std::char_traits<char> >)
 LibreSCRS::Agent::Wire::syncErrorName(LibreSCRS::Agent::Wire::SyncError)
 LibreSCRS::AgentClient::AgentCard::AgentCard(LibreSCRS::AgentClient::TransportSeam*, QString const&, QObject*)
@@ -485,11 +485,15 @@ LibreSCRS::AgentClient::FdHandle::release()
 LibreSCRS::AgentClient::FdHandle::valid() const
 LibreSCRS::AgentClient::FdHandle::~FdHandle()
 LibreSCRS::AgentClient::PinResult::fromVariantMap(QMap<QString, QVariant> const&)
+LibreSCRS::AgentClient::categoryFromString(QStringView)
+LibreSCRS::AgentClient::fieldOrderForGroup(QString const&)
 LibreSCRS::AgentClient::flattenIdentityFields(QList<LibreSCRS::AgentClient::FieldGroup> const&)
 LibreSCRS::AgentClient::isSecurityVerdictGroup(QString const&)
+LibreSCRS::AgentClient::normalizedCardDate(QString const&)
 LibreSCRS::AgentClient::readBoundedPayload(LibreSCRS::AgentClient::FdHandle const&)
 LibreSCRS::AgentClient::separateSecurityChecks(LibreSCRS::AgentClient::FieldGroup const&)
 LibreSCRS::AgentClient::sharedAgentClient()
+LibreSCRS::AgentClient::statusFromString(QStringView)
 == layout: liblibrescrs-agentclient-qt.so ==
 AgentClient size=24 align=8 members=opaque
 BatchDocument size=32 align=8 members=2 displayName@0 fd@24

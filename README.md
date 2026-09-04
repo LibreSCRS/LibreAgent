@@ -117,11 +117,11 @@ components they need:
 
 ```cmake
 # A platform host:
-find_package(LibreAgent 4.2 REQUIRED CONFIG COMPONENTS Core)
+find_package(LibreAgent 5.0 REQUIRED CONFIG COMPONENTS Core)
 target_link_libraries(my_host PRIVATE LibreAgent::Core)
 
 # A Qt/KDE desktop client:
-find_package(LibreAgent 4.2 REQUIRED CONFIG COMPONENTS ClientQt)
+find_package(LibreAgent 5.0 REQUIRED CONFIG COMPONENTS ClientQt)
 target_link_libraries(my_gui PRIVATE LibreAgent::ClientQt)
 ```
 
