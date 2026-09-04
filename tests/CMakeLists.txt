@@ -209,6 +209,36 @@ target_link_libraries(CscaAnchorImportTest PRIVATE
 add_test(NAME CscaAnchorImportTest COMMAND CscaAnchorImportTest)
 set_tests_properties(CscaAnchorImportTest PROPERTIES TIMEOUT 120)
 
+# --- the card operations' own suites ---------------------------------------
+#
+# These arrived with the nine operation classes: each drives one operation
+# through a fake channel and fake seams, on the test thread, with no bus and no
+# card. Two of them were split rather than moved -- a sealed-descriptor round
+# trip and a result-recovery store stayed with the backend that can seal one.
+agent_core_test(ReadIdentityOperationTest)
+agent_core_test(GetPhotoOperationTest)
+agent_core_test(ReadCertificatesOperationTest)
+agent_core_test(ReadTokenInfoOperationTest)
+agent_core_test(SignBatchOperationTest)
+agent_core_test(CredentialOperationContractTest)
+agent_core_test(SignFlowOrchestrationTest)
+agent_core_test(CardTypeArbitrationTest)
+
+# All but the arbitration test build a held card session through the LM-internal
+# detached factory, whose prototype is guarded behind LIBRESCRS_INTERNAL_BUILD.
+# Without the define they COMPILE and do not RUN what they claim to, which no
+# test count can see.
+foreach(_op_internal IN ITEMS
+        ReadIdentityOperationTest
+        GetPhotoOperationTest
+        ReadCertificatesOperationTest
+        ReadTokenInfoOperationTest
+        SignBatchOperationTest
+        CredentialOperationContractTest
+        SignFlowOrchestrationTest)
+    target_compile_definitions(${_op_internal} PRIVATE LIBRESCRS_INTERNAL_BUILD)
+endforeach()
+
 # LM-parity oracle for Manager1.LayoutVisualSignature/GetAppearanceFont —
 # needs BOTH LibreAgent::Core (the LM-linked layout/font seam in LmSeams.h)
 # AND LibreAgent::Wire (Messages.h/ClientCodec.h's codec), so it's the one

@@ -11,6 +11,7 @@ CardPluginRoutingTest
 CardReadCacheTest
 CardReadSnapshotTest
 CardSessionHolderTest
+CardTypeArbitrationTest
 CborRelocationTest
 CborRoundTripTest
 CddlVocabularyTest
@@ -45,6 +46,7 @@ CredentialCacheRequestTest
 CredentialCacheTest
 CredentialErrorMappingTest
 CredentialListFlowTest
+CredentialOperationContractTest
 CredentialRecordTest
 CredentialSeamTest
 CredentialSnapshotCacheTest
@@ -55,6 +57,7 @@ FeatureTokensGuardTest
 FieldKeyParityTest
 FrameReassemblerTest
 FramingTest
+GetPhotoOperationTest
 HeaderAcceptance
 IdentityReadFlowTest
 IdentityTest
@@ -91,11 +94,16 @@ PropertyEmissionThrottlerTest
 RateLimiterTest
 RawCryptoCaptureGuardTest
 RawCryptoFlowTest
+ReadCertificatesOperationTest
+ReadIdentityOperationTest
+ReadTokenInfoOperationTest
 ReaderLabelsTest
 RsaPublicKeyTest
 ScmRightsSpikeTest
 SeamsCompileTest
 Sha256HexTest
+SignBatchOperationTest
+SignFlowOrchestrationTest
 SignFlowPhaseTest
 SignFlowTest
 SignGateTest
