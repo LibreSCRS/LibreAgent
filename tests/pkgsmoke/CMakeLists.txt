@@ -30,6 +30,14 @@ endif()
 if(PKGSMOKE_COMPONENTS STREQUAL "ClientQt")
     add_executable(pkgsmoke main_clientqt.cpp)
     target_link_libraries(pkgsmoke PRIVATE LibreAgent::ClientQt)
+elseif(PKGSMOKE_COMPONENTS STREQUAL "Pkcs11Facade")
+    # Linked by bare name on purpose: this fixture proves the component
+    # RESOLVES and its headers are installed, which is a different question
+    # from whether a MODULE built from it exports an entry point. That second
+    # question is a property of a dlopen-able file and is held by
+    # ci/scripts/check-pkcs11-facade.sh over a real build, not here.
+    add_executable(pkgsmoke main_pkcs11.cpp)
+    target_link_libraries(pkgsmoke PRIVATE LibreAgent::Pkcs11Facade)
 else()
     add_executable(pkgsmoke main.cpp)
     target_link_libraries(pkgsmoke PRIVATE LibreAgent::Core)

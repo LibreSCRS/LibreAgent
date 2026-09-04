@@ -42,7 +42,7 @@ include(CMakeFindDependencyMacro)
 # local variable literally named "_comp". A generically-named loop variable
 # here would be silently clobbered by that find_dependency(OpenSSL ...) call
 # below before the include() line runs.
-set(_LibreAgent_known_components Core Wire ClientQt)
+set(_LibreAgent_known_components Core Wire ClientQt Pkcs11Facade Pkcs11SocketClient)
 
 # A componentless caller (LibreAgent_FIND_COMPONENTS unset/empty) probes every
 # known component, exactly as before; a caller that named components gets only
@@ -58,7 +58,16 @@ endif()
 foreach(_LibreAgent_comp IN LISTS _LibreAgent_components_to_resolve)
     set(_LibreAgent_comp_targets_file "${CMAKE_CURRENT_LIST_DIR}/LibreAgent${_LibreAgent_comp}Targets.cmake")
     if(EXISTS "${_LibreAgent_comp_targets_file}")
-        if(_LibreAgent_comp STREQUAL "Core")
+        if(_LibreAgent_comp STREQUAL "Pkcs11Facade")
+            # No find_dependency: this component links nothing. What it does
+            # need is the function that links it correctly, because linking the
+            # archive by bare name produces a module with no entry point.
+            set(LIBREAGENT_PKCS11_EXPORTS_MAP
+                "${PACKAGE_PREFIX_DIR}/@CMAKE_INSTALL_DATADIR@/librescrs/pkcs11/exports.map")
+            set(LIBREAGENT_PKCS11_EXPORTS_SYMBOLS
+                "${PACKAGE_PREFIX_DIR}/@CMAKE_INSTALL_DATADIR@/librescrs/pkcs11/exports.symbols")
+            include("${CMAKE_CURRENT_LIST_DIR}/Pkcs11ModuleExport.cmake")
+        elseif(_LibreAgent_comp STREQUAL "Core")
             # Re-expose the PUBLIC card stack (LibreSCRS::SmartCard /
             # ::Plugin) and the PRIVATE seam-only deps (::Certificate,
             # ::Signing, ::Trust, OpenSSL::Crypto) the static archive carries

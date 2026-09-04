@@ -616,6 +616,68 @@ jobs:
             -DPKGSMOKE_COMPONENTS=ClientQt
           cmake --build build-pkgsmoke-clientqt -j4
 
+  pkcs11-facade:
+    # The PKCS#11 facade in the configuration it actually ships in: no card
+    # stack, no crypto library, no bus, no Qt. A build that happens to have
+    # those available cannot show that the module does not need them, so this
+    # is a separate job rather than one more step in an existing one.
+    #
+    # It is also the only job that builds the browser-loadable module itself.
+    # The shared core has no host here, so without a module of its own the two
+    # properties a loader cares about -- what it can see, and what it must find
+    # first -- would only ever be checked on one platform backend's build.
+    runs-on: ubuntu-latest
+    container: archlinux:latest
+    timeout-minutes: 20
+    steps:
+      - name: Install system dependencies
+        run: |
+          pacman -Syu --noconfirm
+          pacman -S --noconfirm --needed \
+            base-devel cmake ninja git pkgconf \
+            gtest opensc
+
+      - uses: actions/checkout@v4
+        with:
+          path: LibreAgent
+
+      - name: Configure (Core OFF, Wire + both pkcs11 components ON, LibreMiddleware disabled)
+        working-directory: LibreAgent
+        run: |
+          cmake -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+            -DLIBREAGENT_BUILD_CORE=OFF \
+            -DLIBREAGENT_BUILD_WIRE=ON \
+            -DLIBREAGENT_BUILD_PKCS11_FACADE=ON \
+            -DLIBREAGENT_BUILD_PKCS11_SOCKET_CLIENT=ON \
+            -DCMAKE_DISABLE_FIND_PACKAGE_LibreMiddleware=ON \
+            -DLIBRESCRS_AGENT_WERROR=ON
+
+      - name: Build
+        working-directory: LibreAgent
+        timeout-minutes: 10
+        run: cmake --build build -j4
+
+      - name: Test
+        working-directory: LibreAgent
+        timeout-minutes: 10
+        run: ctest --test-dir build --output-on-failure --no-tests=error
+
+      - name: Prove the facade gate still fails when it should
+        working-directory: LibreAgent
+        run: ./ci/scripts/check-pkcs11-facade.selftest.sh
+
+      - name: One exported symbol, nothing needed
+        working-directory: LibreAgent
+        run: ./ci/scripts/check-pkcs11-facade.sh build
+
+      - name: Check the discovered test set
+        working-directory: LibreAgent
+        # The leg is spelled out, never interpolated: this workflow has no
+        # strategy.matrix, and an empty expression would make the argument
+        # vanish and send the gate looking for ci/test-manifest..txt.
+        run: ./ci/scripts/test-manifest-gate.sh --check build pkcs11-facade
+
   wire-asan-macos:
     # The wire codec on Apple Clang, under AddressSanitizer. It exists because a
     # CborValue holding a Map was left addressing a freed buffer when a growing

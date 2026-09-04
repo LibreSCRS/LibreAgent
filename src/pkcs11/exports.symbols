@@ -1,0 +1,3 @@
+# Apple's linker has no --version-script. This is the same statement in the
+# form ld64 takes: the one Cryptoki entry point, with its platform underscore.
+_C_GetFunctionList

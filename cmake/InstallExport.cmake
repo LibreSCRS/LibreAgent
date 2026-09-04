@@ -127,6 +127,59 @@ if(LIBREAGENT_BUILD_WIRE)
     endif()
 endif()
 
+if(LIBREAGENT_BUILD_PKCS11_FACADE)
+    # In-tree target LibreAgentPkcs11Facade -> imported LibreAgent::Pkcs11Facade.
+    set_target_properties(LibreAgentPkcs11Facade PROPERTIES EXPORT_NAME Pkcs11Facade)
+
+    install(TARGETS LibreAgentPkcs11Facade EXPORT LibreAgentPkcs11FacadeTargets
+        ARCHIVE  DESTINATION ${CMAKE_INSTALL_LIBDIR}
+        INCLUDES DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
+
+    install(EXPORT LibreAgentPkcs11FacadeTargets
+        FILE LibreAgentPkcs11FacadeTargets.cmake
+        NAMESPACE LibreAgent::
+        DESTINATION ${_cfgdir})
+
+    # The two linker statements and the function that applies them travel with
+    # the package: a consumer that links this archive by bare name gets a
+    # loadable file with no entry point in it, so the correct way to link it
+    # must be installed alongside it rather than described in prose.
+    install(FILES
+            ${CMAKE_CURRENT_SOURCE_DIR}/cmake/Pkcs11ModuleExport.cmake
+        DESTINATION ${_cfgdir})
+    install(FILES
+            ${CMAKE_CURRENT_SOURCE_DIR}/src/pkcs11/exports.map
+            ${CMAKE_CURRENT_SOURCE_DIR}/src/pkcs11/exports.symbols
+        DESTINATION ${CMAKE_INSTALL_DATADIR}/librescrs/pkcs11)
+
+    if(NOT LIBREAGENT_BUILD_CORE)
+        # Core's install(DIRECTORY include/LibreSCRS ...) ships these when it
+        # runs. In a CORE=OFF build it does not, and this component would then
+        # install an archive with no public headers at all -- including the
+        # contract header a second host instantiates its own transport's suite
+        # from, which is why that header lives under include/ rather than
+        # tests/.
+        install(DIRECTORY include/LibreSCRS/Agent/pkcs11
+            DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/LibreSCRS/Agent
+            FILES_MATCHING PATTERN "*.h")
+    endif()
+endif()
+
+if(LIBREAGENT_BUILD_PKCS11_SOCKET_CLIENT)
+    # In-tree target LibreAgentPkcs11SocketClient -> LibreAgent::Pkcs11SocketClient.
+    set_target_properties(LibreAgentPkcs11SocketClient PROPERTIES
+        EXPORT_NAME Pkcs11SocketClient)
+
+    install(TARGETS LibreAgentPkcs11SocketClient EXPORT LibreAgentPkcs11SocketClientTargets
+        ARCHIVE  DESTINATION ${CMAKE_INSTALL_LIBDIR}
+        INCLUDES DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
+
+    install(EXPORT LibreAgentPkcs11SocketClientTargets
+        FILE LibreAgentPkcs11SocketClientTargets.cmake
+        NAMESPACE LibreAgent::
+        DESTINATION ${_cfgdir})
+endif()
+
 if(LIBREAGENT_BUILD_CLIENT_QT)
     # In-tree target LibreAgentClientQt -> imported LibreAgent::ClientQt.
     set_target_properties(LibreAgentClientQt PROPERTIES EXPORT_NAME ClientQt)

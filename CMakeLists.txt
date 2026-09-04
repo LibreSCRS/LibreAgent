@@ -51,9 +51,25 @@ endif()
 option(LIBREAGENT_BUILD_CORE "Build the platform-neutral LibreAgent::Core library" ON)
 option(LIBREAGENT_BUILD_WIRE "Build the LibreAgent::Wire socket-wire library" ON)
 option(LIBREAGENT_BUILD_CLIENT_QT "Build the LibreAgent::ClientQt Qt client library" OFF)
+# Pkcs11Facade is the transport-free Cryptoki core a browser-loadable module is
+# built from; Pkcs11SocketClient is one transport for it. Two components and not
+# one, because the core must not acquire the wire library through the back door:
+# the bus backend links no wire at all, and a module a browser opens should hold
+# nothing it does not use. Both default OFF like ClientQt — a host turns on the
+# ones it ships.
+option(LIBREAGENT_BUILD_PKCS11_FACADE "Build the LibreAgent::Pkcs11Facade PKCS#11 core library" OFF)
+option(LIBREAGENT_BUILD_PKCS11_SOCKET_CLIENT "Build the LibreAgent::Pkcs11SocketClient socket backend" OFF)
 
 if(LIBREAGENT_BUILD_CLIENT_QT AND NOT LIBREAGENT_BUILD_WIRE)
     message(FATAL_ERROR "LIBREAGENT_BUILD_CLIENT_QT requires LIBREAGENT_BUILD_WIRE (the Qt client library links the wire protocol library)")
+endif()
+
+if(LIBREAGENT_BUILD_PKCS11_SOCKET_CLIENT AND NOT LIBREAGENT_BUILD_WIRE)
+    message(FATAL_ERROR "LIBREAGENT_BUILD_PKCS11_SOCKET_CLIENT requires LIBREAGENT_BUILD_WIRE (the socket backend speaks the framed CBOR wire)")
+endif()
+
+if(LIBREAGENT_BUILD_PKCS11_SOCKET_CLIENT AND NOT LIBREAGENT_BUILD_PKCS11_FACADE)
+    message(FATAL_ERROR "LIBREAGENT_BUILD_PKCS11_SOCKET_CLIENT requires LIBREAGENT_BUILD_PKCS11_FACADE (the backend implements that library's AgentClient interface)")
 endif()
 
 # Strict warnings by default; treat as errors only in CI builds. Declared once,
@@ -285,6 +301,81 @@ if(LIBREAGENT_BUILD_WIRE)
     endif()
 endif() # LIBREAGENT_BUILD_WIRE
 
+if(LIBREAGENT_BUILD_PKCS11_FACADE)
+    # The Cryptoki core: the C_* ABI, the slot/object/mechanism model, and the
+    # session/object/cursor bookkeeping. It links NOTHING -- no card stack, no
+    # crypto library, no bus, no Qt -- because a browser-loaded module has to be
+    # able to hold nothing a browser would rather not load. It is deliberately
+    # not part of Core, which links LibreMiddleware and OpenSSL.
+    #
+    # makeAgentClient() is left UNDEFINED here. Exactly one translation unit in
+    # the host that builds a module defines it, and that TU belongs to no
+    # exported component: a definition shipped inside an archive would either
+    # collide with the host's own or, worse, silently win and look for the agent
+    # somewhere that host does not keep it.
+    include(cmake/Pkcs11ModuleExport.cmake)
+
+    add_library(LibreAgentPkcs11Facade STATIC
+        src/pkcs11/Module.cpp
+        src/pkcs11/ObjectModel.cpp
+        src/pkcs11/SessionState.cpp)
+    add_library(LibreAgent::Pkcs11Facade ALIAS LibreAgentPkcs11Facade)
+    target_include_directories(LibreAgentPkcs11Facade PUBLIC
+        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+        $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>)
+    target_compile_features(LibreAgentPkcs11Facade PUBLIC cxx_std_23)
+    # Hidden, for the same reason LibreAgentWire is: this archive is folded
+    # WHOLE into a shared module, and visibility is decided when an object is
+    # COMPILED, so the module's own preset cannot reach objects arriving from a
+    # dependency. The version script would still cut the exports down, but then
+    # the version script would be the only thing doing it.
+    set_target_properties(LibreAgentPkcs11Facade PROPERTIES
+        POSITION_INDEPENDENT_CODE ON
+        CXX_VISIBILITY_PRESET hidden
+        VISIBILITY_INLINES_HIDDEN ON)
+    target_compile_options(LibreAgentPkcs11Facade PRIVATE
+        -Wall -Wextra -Wpedantic
+        -Wshadow -Wnon-virtual-dtor -Wold-style-cast -Wcast-align
+        -Woverloaded-virtual -Wnull-dereference
+        -Wdouble-promotion -Wformat=2)
+    if(LIBRESCRS_AGENT_WERROR)
+        target_compile_options(LibreAgentPkcs11Facade PRIVATE -Werror)
+    endif()
+    if(CMAKE_CXX_COMPILER_ID STREQUAL "AppleClang")
+        target_compile_options(LibreAgentPkcs11Facade PUBLIC -fexperimental-library)
+        target_link_options(LibreAgentPkcs11Facade PUBLIC -fexperimental-library)
+    endif()
+endif() # LIBREAGENT_BUILD_PKCS11_FACADE
+
+if(LIBREAGENT_BUILD_PKCS11_SOCKET_CLIENT)
+    # One transport for the interface above: blocking, single-threaded, over the
+    # framed CBOR wire. Its own component rather than a corner of the facade, so
+    # a host that speaks a bus never acquires the wire library by linking the
+    # Cryptoki core.
+    add_library(LibreAgentPkcs11SocketClient STATIC
+        src/pkcs11/SocketAgentClient.cpp)
+    add_library(LibreAgent::Pkcs11SocketClient ALIAS LibreAgentPkcs11SocketClient)
+    target_link_libraries(LibreAgentPkcs11SocketClient
+        PUBLIC LibreAgent::Pkcs11Facade LibreAgent::Wire)
+    target_compile_features(LibreAgentPkcs11SocketClient PUBLIC cxx_std_23)
+    set_target_properties(LibreAgentPkcs11SocketClient PROPERTIES
+        POSITION_INDEPENDENT_CODE ON
+        CXX_VISIBILITY_PRESET hidden
+        VISIBILITY_INLINES_HIDDEN ON)
+    target_compile_options(LibreAgentPkcs11SocketClient PRIVATE
+        -Wall -Wextra -Wpedantic
+        -Wshadow -Wnon-virtual-dtor -Wold-style-cast -Wcast-align
+        -Woverloaded-virtual -Wconversion -Wsign-conversion -Wnull-dereference
+        -Wdouble-promotion -Wformat=2)
+    if(LIBRESCRS_AGENT_WERROR)
+        target_compile_options(LibreAgentPkcs11SocketClient PRIVATE -Werror)
+    endif()
+    if(CMAKE_CXX_COMPILER_ID STREQUAL "AppleClang")
+        target_compile_options(LibreAgentPkcs11SocketClient PUBLIC -fexperimental-library)
+        target_link_options(LibreAgentPkcs11SocketClient PUBLIC -fexperimental-library)
+    endif()
+endif() # LIBREAGENT_BUILD_PKCS11_SOCKET_CLIENT
+
 if(LIBREAGENT_BUILD_CLIENT_QT)
     # Qt enters this whole repo's build HERE and ONLY here: this is the one
     # and only find_package(Qt6 ...) call in this tree, so a WIRE-only or
@@ -320,7 +411,7 @@ if(PROJECT_IS_TOP_LEVEL)
     # so it costs nothing outside of a Core/Wire build.
     add_subdirectory(wire/tools)
 
-    if(LIBREAGENT_BUILD_CORE OR LIBREAGENT_BUILD_WIRE)
+    if(LIBREAGENT_BUILD_CORE OR LIBREAGENT_BUILD_WIRE OR LIBREAGENT_BUILD_PKCS11_FACADE)
         # Platform-neutral unit tests + the five shared backend fakes (Core
         # only) plus the dependency-light Wire/spike GTest targets, which stay
         # reachable in a Core-less (CORE=OFF, WIRE=ON) configuration too — see

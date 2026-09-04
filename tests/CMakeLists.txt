@@ -11,6 +11,14 @@ add_subdirectory(wire)
 # tests/spike/CMakeLists.txt and tests/spike/ScmRightsSpikeTest.cpp.
 add_subdirectory(spike)
 
+# The PKCS#11 facade's own suites. Above the LIBREAGENT_BUILD_CORE gate below,
+# because the facade has to be testable in the Core-less configuration it ships
+# in -- a suite that only ever runs alongside the card stack cannot show that
+# the module does not need it.
+if(LIBREAGENT_BUILD_PKCS11_FACADE)
+    add_subdirectory(pkcs11)
+endif()
+
 # Everything below this point links LibreAgent::Core (directly, or via a flow
 # TU folded into it) and is therefore only reachable in a LIBREAGENT_BUILD_CORE
 # configuration — see the caller (root CMakeLists.txt) which now also
