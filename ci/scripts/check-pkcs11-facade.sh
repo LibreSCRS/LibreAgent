@@ -51,6 +51,7 @@ EXPECTED_TESTS=(
     SecurityTest
     SnapshotParityTest
     SocketAgentClientTest
+    SocketAgentClientContractTest
 )
 
 [[ -d "$BUILD" ]] || { echo "FATAL: not a directory: $BUILD" >&2; exit 2; }

@@ -17,5 +17,6 @@ RealCardSmokeTest
 ScmRightsSpikeTest
 SecurityTest
 SnapshotParityTest
+SocketAgentClientContractTest
 SocketAgentClientTest
 WireHeadersTest

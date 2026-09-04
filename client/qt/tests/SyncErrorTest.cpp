@@ -81,6 +81,7 @@ TEST(SyncErrorClassification, EveryWireNameReachesItsOwnEnumerator)
         {"InvalidRequest", SyncError::InvalidRequest},
         {"NoResult", SyncError::NoResult},
         {"MasterListReplayed", SyncError::MasterListReplayed},
+        {"Cancelled", SyncError::Cancelled},
     };
     for (const Row& row : rows) {
         const SeamError viaShort = mapShort(row.name);
@@ -151,6 +152,27 @@ TEST(SyncErrorClassification, MissingObjectNamesAreNamedAndUnavailabilityIsNot)
     EXPECT_EQ(unavailable.callError, CallError::AgentUnavailable);
     EXPECT_FALSE(unavailable.syncError.has_value())
         << "an unreachable agent must not be reported as a named wire refusal";
+}
+
+// A dismissed prompt and a broken exchange share the coarse bucket -- neither
+// CallError nor the frozen ErrorCode taxonomy has a name for a cancellation --
+// and are told apart on this axis alone. That is the whole claim: a caller that
+// reads only the two coarse axes cannot offer the person another try, and one
+// that reads this axis can.
+TEST(SyncErrorClassification, ACancelledPromptIsDistinguishableFromABrokenExchange)
+{
+    const SeamError cancelled = mapShort("Cancelled");
+    ASSERT_TRUE(cancelled.syncError.has_value());
+    EXPECT_EQ(*cancelled.syncError, SyncError::Cancelled);
+
+    const SeamError broken = mapShort("CommunicationError");
+    ASSERT_TRUE(broken.syncError.has_value());
+
+    // Same coarse answer on both axes...
+    EXPECT_EQ(cancelled.callError, broken.callError);
+    EXPECT_EQ(cancelled.errorCode, broken.errorCode);
+    // ...and different on the one that carries the name.
+    EXPECT_NE(*cancelled.syncError, *broken.syncError);
 }
 
 // ---- the degrade, pinned so nobody mistakes it for identification -------------

@@ -61,6 +61,14 @@ if(LIBREAGENT_BUILD_PKCS11_SOCKET_CLIENT)
     agent_pkcs11_test(SnapshotParityTest)
     target_link_libraries(SnapshotParityTest PRIVATE LibreAgent::Pkcs11SocketClient)
 
+    # The shared client contract, instantiated over this transport. The claims
+    # come from the INSTALLED header (Pkcs11Facade carries include/ as an
+    # interface property), which is the same path the other host's tree reaches
+    # them by -- so this target also proves that path resolves inside this
+    # project, where a break is cheap to see.
+    agent_pkcs11_test(SocketAgentClientContractTest)
+    target_link_libraries(SocketAgentClientContractTest PRIVATE LibreAgent::Pkcs11SocketClient)
+
     # --- suites that arrived with the core they cover -----------------------
     # Pure slot/token/object/mechanism mapping. No socket, no module, no card:
     # it compiled the mapping source directly where it used to live, and links

@@ -459,6 +459,8 @@ constexpr const char* syncErrorWireName(SyncError e) noexcept
         return "NoResult";
     case SyncError::MasterListReplayed: // appended: ImportCscaMasterList's rollback refusal
         return "MasterListReplayed";
+    case SyncError::Cancelled: // appended: the prompt the person dismissed
+        return "Cancelled";
     }
     return nullptr; // not a SyncError value (used to probe past the end for the count)
 }

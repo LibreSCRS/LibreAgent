@@ -127,6 +127,19 @@ enum class SyncError : std::uint8_t {
     /// `InvalidRequest` and the three config names; that this bucket cannot
     /// tell them apart is the whole reason this axis is carried separately.)
     MasterListReplayed,
+    /// The person the prompt was raised for dismissed it. Nothing failed: the
+    /// card is fine, no credential was refused, and the same request succeeds
+    /// if it is made again and answered.
+    ///
+    /// Named rather than folded into `CommunicationError`, which is where this
+    /// wire used to leave it. A caller told the device failed does not offer
+    /// the person another try -- a PKCS#11 loader shown a device error gives up
+    /// on the token -- so the difference between "it broke" and "I said no" has
+    /// to survive the trip. (Bucket: communication error, and that collapse is
+    /// exactly what this axis exists to survive: no coarse classification on
+    /// either wire has a name for a cancellation, so a consumer that must tell
+    /// the two apart reads the name.)
+    Cancelled,
 };
 
 /// @brief The wire name for a `SyncError` (== the literal enumerated by the

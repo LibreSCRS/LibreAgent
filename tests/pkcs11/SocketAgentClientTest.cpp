@@ -241,11 +241,11 @@ TEST(SocketAgentClient, ReportsDeviceRemovedWhenTheHandshakeIsRefused)
 TEST(SocketAgentClient, MapsEveryRefusalTheWireHasANameFor)
 {
     // The refusal table is the part with no compiler holding it, so every
-    // row is driven. What this suite CANNOT state is the row that is missing:
-    // this wire has no token for a cancelled prompt, so a cancelled prompt is
-    // indistinguishable here from a generic communication failure. Holding
-    // both transports to one answer about that needs a token added to the
-    // contract, and is not this file's to decide.
+    // row is driven, including the one this wire used to have no token for: a
+    // dismissed prompt is its own answer here now rather than a generic
+    // communication failure. That the OTHER transport agrees about it is not
+    // asserted here -- that claim belongs to the suite both transports
+    // instantiate, not to this transport's own file.
     struct Row
     {
         W::SyncError wire;
@@ -255,6 +255,7 @@ TEST(SocketAgentClient, MapsEveryRefusalTheWireHasANameFor)
         {W::SyncError::UserNotLoggedIn, P::Status::UserNotLoggedIn},
         {W::SyncError::NotAuthorized, P::Status::NotAuthorized},
         {W::SyncError::AuthFailed, P::Status::AuthFailed},
+        {W::SyncError::Cancelled, P::Status::Cancelled},
         {W::SyncError::KeyNotFound, P::Status::KeyNotFound},
         {W::SyncError::UnknownCard, P::Status::UnknownCard},
         {W::SyncError::NotSupported, P::Status::NotSupported},

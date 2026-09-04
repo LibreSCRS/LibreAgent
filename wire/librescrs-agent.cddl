@@ -325,12 +325,20 @@ err-info = { ( code: error-code // name: sync-error ), ? msgKey: tstr, ? msgFall
 ; person can act on directly ("you already have this list", "this one is older
 ; than what is installed"), and a caller that cannot tell it from a malformed
 ; file has to say nothing useful at the only moment saying something helps.
+; "Cancelled" is the person dismissing the prompt the request raised. It is the
+; one refusal in this group that is not a failure at all, and it is named for
+; that reason: an agent that answers a dismissed prompt with CommunicationError
+; -- which is what this wire had a client do before this token existed -- tells
+; the caller the device broke, and a PKCS#11 loader shown a device error stops
+; offering the token rather than letting the person answer the prompt again.
+; The other transport has carried this name from the start
+; (org.librescrs.Agent.Error.Cancelled); this closes the gap between the two.
 sync-error = "UnknownCard" / "KeyNotFound" / "NotAuthorized" / "UserNotLoggedIn" /
              "UnknownConfigKey" / "ReadOnlyConfig" / "InvalidConfigValue" / "UnsupportedProtocol" /
              "AuthFailed" / "CommunicationError" / "NotSupported" /
              "UnsupportedOnThisCard" / "UnsupportedSignatureParameter" /
              "InputTooLarge" / "RateLimited" / "UnknownCredential" / "InvalidRequest" / "NoResult" /
-             "MasterListReplayed"
+             "MasterListReplayed" / "Cancelled"
 reply-ok = ( hello-ack // op-started // state // cert-list // cert-der // public-key //
              config // ack // raw-signature // sign-recovery // layout // appearance-font //
              csca-anchor-state // forgotten-anchors )

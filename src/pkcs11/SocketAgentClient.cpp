@@ -34,13 +34,12 @@ constexpr std::uint32_t kDataEnciphermentBit = 1U << 3;
 
 /// Map a wire refusal onto the module's own vocabulary.
 ///
-/// One name has no counterpart and that is a fact about the wire, not a bug in
-/// this table: the socket contract has no token for "the user cancelled the
-/// prompt", so a cancelled prompt arrives as the generic communication failure
-/// and cannot be told apart from one. The bus transport does have that name and
-/// does produce CKR_FUNCTION_CANCELED. Making the two agree needs a new token on
-/// the wire and its four mirrors, which is a change to the contract rather than
-/// to this file.
+/// Every row the two transports share is here, the dismissed prompt included:
+/// it reaches the loader as CKR_FUNCTION_CANCELED on this transport exactly as
+/// it already did on the bus, rather than as the device error a shared generic
+/// bucket used to make of it. The claims that hold the two tables to one answer
+/// are not in this file -- they are the contract suite both transports
+/// instantiate (pkcs11/testing/AgentClientContract.h).
 [[nodiscard]] Status mapWireError(W::SyncError e) noexcept
 {
     switch (e) {
@@ -50,6 +49,8 @@ constexpr std::uint32_t kDataEnciphermentBit = 1U << 3;
         return Status::NotAuthorized;
     case W::SyncError::AuthFailed:
         return Status::AuthFailed;
+    case W::SyncError::Cancelled:
+        return Status::Cancelled;
     case W::SyncError::KeyNotFound:
         return Status::KeyNotFound;
     case W::SyncError::UnknownCard:

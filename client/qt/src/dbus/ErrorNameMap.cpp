@@ -98,6 +98,18 @@ SeamError classifyAgentErrorShortName(QStringView shortName, const QString& mess
     if (shortName == QLatin1StringView("NoResult")) {
         return make(CallError::None, ErrorCode::CommunicationError, shortName, message);
     }
+    // The person dismissed the prompt. Neither coarse axis has a name for that
+    // -- CallError classifies how the CALL went and this one arrived fine, and
+    // ErrorCode is the frozen async taxonomy, whose cancellation lives on the
+    // operation's own status rather than in its error. So the coarse pair says
+    // what it can (the exchange produced no result) and the named axis below
+    // carries which refusal it actually was, which is the whole reason this
+    // client reports three axes instead of two. Spelled out rather than left to
+    // the catch-all so the classification is a decision on the record: a reader
+    // who sees CommunicationError here must be able to tell it was chosen.
+    if (shortName == QLatin1StringView("Cancelled")) {
+        return make(CallError::None, ErrorCode::CommunicationError, shortName, message);
+    }
 
     // Pre-operation rejections outside the taxonomy: the request itself was
     // unacceptable (fix the request / re-list and retry), or the caller was
