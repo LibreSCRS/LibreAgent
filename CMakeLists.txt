@@ -146,16 +146,16 @@ if(LIBREAGENT_BUILD_CORE)
     set_target_properties(LibreAgentCore PROPERTIES POSITION_INDEPENDENT_CODE ON)
     target_link_libraries(LibreAgentCore
         PUBLIC
-            LibreMiddleware::SmartCard
-            LibreMiddleware::Plugin
+            LibreSCRS::SmartCard
+            LibreSCRS::Plugin
         PRIVATE
             # PRIVATE: only the Lm* seam .cpp files + SigningEngineProvider.cpp
             # consume LM X.509/Certificate + Signing/Trust types; no public header
             # includes them, which keeps consumers of this lib free of those symbols
             # (the seam-boundary invariant).
-            LibreMiddleware::Certificate
-            LibreMiddleware::Signing
-            LibreMiddleware::Trust
+            LibreSCRS::Certificate
+            LibreSCRS::Signing
+            LibreSCRS::Trust
             OpenSSL::Crypto)
 
     target_compile_options(LibreAgentCore PRIVATE
