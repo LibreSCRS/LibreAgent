@@ -45,6 +45,7 @@ constexpr long kForwardValidity = 365L * 24 * 3600;
     throw std::runtime_error(std::string{"SyntheticMasterList: "} + what);
 }
 
+// MIRROR-OF: LibreMiddleware/lib/LibreSCRS/include/LibreSCRS_internal/Crypto/OpenSslPtr.h - this repository is Qt-free and middleware-free by design; that header is internal to the middleware and unreachable from here, so the fixture writes its own.
 struct X509Deleter
 {
     void operator()(X509* p) const noexcept
@@ -59,6 +60,7 @@ struct PKeyDeleter
         EVP_PKEY_free(p);
     }
 };
+// MIRROR-OF: LibreMiddleware/lib/LibreSCRS/include/LibreSCRS_internal/Crypto/OpenSslPtrCms.h - this repository is Qt-free and middleware-free by design; that header is internal to the middleware and unreachable from here, so the fixture writes its own.
 struct CmsDeleter
 {
     void operator()(CMS_ContentInfo* p) const noexcept
@@ -66,6 +68,7 @@ struct CmsDeleter
         CMS_ContentInfo_free(p);
     }
 };
+// MIRROR-OF: LibreMiddleware/lib/LibreSCRS/include/LibreSCRS_internal/Crypto/OpenSslPtr.h - this repository is Qt-free and middleware-free by design; that header is internal to the middleware and unreachable from here, so the fixture writes its own.
 struct BioDeleter
 {
     void operator()(BIO* p) const noexcept
@@ -80,6 +83,7 @@ struct Asn1ObjDeleter
         ASN1_OBJECT_free(p);
     }
 };
+// MIRROR-OF: LibreMiddleware/lib/LibreSCRS/include/LibreSCRS_internal/Crypto/OpenSslPtr.h - this repository is Qt-free and middleware-free by design; that header is internal to the middleware and unreachable from here, so the fixture writes its own.
 struct BnDeleter
 {
     void operator()(BIGNUM* p) const noexcept

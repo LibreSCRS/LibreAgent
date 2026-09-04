@@ -13,7 +13,9 @@
 #include <QDBusContext>
 #include <QDBusObjectPath>
 #include <QDBusUnixFileDescriptor>
+#include <QList>
 #include <QMap>
+#include <QMetaObject>
 #include <QObject>
 #include <QString>
 #include <QStringList>
@@ -838,6 +840,11 @@ public:
     [[nodiscard]] QString lastSignCertId() const;
     [[nodiscard]] QVariantMap lastSignOptions() const;
     [[nodiscard]] QByteArray lastSignInputBytes() const;
+    /// @brief How many Sign() calls the fake has served, across both card
+    ///        paths -- the witness that a SECOND sign was issued rather than
+    ///        refused client-side, which the lastSign* getters above cannot
+    ///        say because they describe one call and keep no history.
+    [[nodiscard]] int signCallCount() const;
     /// @brief How many ImportCscaMasterList calls reached this fake — 0 proves
     ///        a refusal was decided before the wire was dialed.
     [[nodiscard]] int cscaImportCallCount() const;
@@ -979,6 +986,15 @@ public:
     QString emitArrivedReaderCardAdded(uint capabilities, const QString& preReadAuth = QStringLiteral("None"));
     void emitArrivedReaderHasCard();
 
+    /// @brief Model an agent restart's re-minted per-process ids: re-register
+    ///        the two card objects with their paths SWAPPED, so the path each
+    ///        id names now resolves a live card in the OTHER reader -- exactly
+    ///        what a fresh id counter can do to a client that kept an id
+    ///        across the restart. Both cards must exist. No signals are
+    ///        emitted (the surrounding vanish/reappear carries the news);
+    ///        `GetManagedObjects` tells the swapped truth afterwards.
+    void remintCardPathsSwapped();
+
 private:
     void exportTree();
 
@@ -1022,6 +1038,7 @@ private:
     ReaderAdaptor* m_reader2Adaptor = nullptr;
     CardAdaptor* m_card2Adaptor = nullptr;
 
+    int m_signCallCount = 0;
     QString m_lastSignCertId;
     QVariantMap m_lastSignOptions;
     QByteArray m_lastSignInputBytes;
@@ -1040,6 +1057,20 @@ private:
     QString m_lastManagePinVerb;
     QVariantMap m_lastManagePinOptions;
 };
+
+/// @brief Every `QDBusAbstractAdaptor` this fake defines, across both files.
+///        A NEW ADAPTOR MUST BE ADDED HERE -- the out-parameter pin walks
+///        exactly this list, and a slot the walk never sees is a slot nothing
+///        checks. Half the fake's adaptors are file-local to the
+///        implementation and unreachable from a test any other way.
+[[nodiscard]] QList<const QMetaObject*> adaptorMetaObjects();
+
+/// @brief The type name moc recorded for every reference OUTPUT parameter of
+///        every slot on those adaptors, trailing `&` included -- the exact
+///        strings QtDBus will look up. A name QtDBus cannot resolve makes the
+///        slot invisible on the bus, and nothing about that is visible to the
+///        compiler.
+[[nodiscard]] QList<QByteArray> adaptorReferenceOutParameterTypes();
 
 } // namespace LibreSCRS::AgentClient::Fakes
 

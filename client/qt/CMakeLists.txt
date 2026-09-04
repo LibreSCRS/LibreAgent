@@ -146,8 +146,18 @@ set(LIBREAGENT_CLIENTQT_EXPORT_HEADER ${LIBREAGENT_CLIENTQT_EXPORT_HEADER} PAREN
 # discover add_test() registrations made below it.
 if(PROJECT_IS_TOP_LEVEL)
     enable_testing()
-    add_subdirectory(tests)
+endif()
 
+# The subdirectory is entered for a SECOND reason now: it also defines the
+# exported agent doubles (LibreAgent::ClientQtTestSupport), which a consumer
+# asks for without becoming the top-level project. The ctest registrations
+# inside it stay behind their own PROJECT_IS_TOP_LEVEL guard -- entering the
+# directory must not hand a FetchContent consumer this repo's test suite.
+if(PROJECT_IS_TOP_LEVEL OR LIBREAGENT_BUILD_CLIENT_QT_TEST_SUPPORT)
+    add_subdirectory(tests)
+endif()
+
+if(PROJECT_IS_TOP_LEVEL)
     # The public value types' LAYOUT probe, consumed by ci/scripts/abi-snapshot.sh
     # (see tools/ValueLayoutProbe.cpp for why a symbol diff alone cannot see a
     # member add/remove/reorder on a by-value type). Not a test and not

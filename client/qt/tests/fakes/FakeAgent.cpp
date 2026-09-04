@@ -8,6 +8,7 @@
 #include <QDBusConnection>
 #include <QDBusMessage>
 #include <QDBusMetaType>
+#include <QMetaMethod>
 #include <QDBusUnixFileDescriptor>
 #include <QThread>
 #include <QTimer>
@@ -1686,6 +1687,7 @@ FakeManagedObjects FakeAgent::managedObjects() const
 
 void FakeAgent::captureSign(const QString& certId, const QByteArray& inputBytes, const QVariantMap& options)
 {
+    ++m_signCallCount;
     m_lastSignCertId = certId;
     m_lastSignInputBytes = inputBytes;
     m_lastSignOptions = options;
@@ -1700,6 +1702,11 @@ void FakeAgent::captureSign(const QString& certId, const QByteArray& inputBytes,
         m_lastSignOptions.insert(QStringLiteral("visualSignature"),
                                  demarshalVariantMap(m_lastSignOptions.value(QStringLiteral("visualSignature"))));
     }
+}
+
+int FakeAgent::signCallCount() const
+{
+    return m_signCallCount;
 }
 
 QString FakeAgent::lastSignCertId() const
@@ -2107,6 +2114,56 @@ void FakeAgent::dropCardSilently()
     m_cardObject = nullptr;
     m_cardAdaptor = nullptr;
     m_cardPropsWedge = nullptr;
+}
+
+void FakeAgent::remintCardPathsSwapped()
+{
+    Q_ASSERT(m_cardObject != nullptr && m_card2Object != nullptr);
+    m_connection.unregisterObject(m_cardPath);
+    m_connection.unregisterObject(m_card2Path);
+    std::swap(m_cardPath, m_card2Path);
+    m_connection.registerObject(m_cardPath, m_cardObject);
+    m_connection.registerObject(m_card2Path, m_card2Object);
+    // Each reader keeps ITS card object; only the path that names it moved.
+    m_readerAdaptor->setCard(QDBusObjectPath(m_cardPath));
+    m_reader2Adaptor->setCard(QDBusObjectPath(m_card2Path));
+}
+
+// --- reference-out-parameter introspection ---------------------------------
+// Lives at the bottom of this file because seven of these classes are declared
+// in it, so this is the first point where all fifteen are complete types.
+QList<const QMetaObject*> adaptorMetaObjects()
+{
+    return {
+        &WedgedPropertiesAdaptor::staticMetaObject, &ObjectManagerAdaptor::staticMetaObject,
+        &ManagerAdaptor::staticMetaObject,          &Config1Adaptor::staticMetaObject,
+        &ReaderAdaptor::staticMetaObject,           &CardAdaptor::staticMetaObject,
+        &CredentialsAdaptor::staticMetaObject,      &Pkcs11Adaptor::staticMetaObject,
+        &FakeOperationAdaptor::staticMetaObject,    &FakeSignAdaptor::staticMetaObject,
+        &FakeSignBatchAdaptor::staticMetaObject,    &FakeIdentityAdaptor::staticMetaObject,
+        &FakePhotoAdaptor::staticMetaObject,        &FakeCertificatesAdaptor::staticMetaObject,
+        &FakeCredentialsAdaptor::staticMetaObject,
+    };
+}
+
+QList<QByteArray> adaptorReferenceOutParameterTypes()
+{
+    QList<QByteArray> out;
+    for (const QMetaObject* mo : adaptorMetaObjects()) {
+        // From methodOffset(): the adaptor's OWN methods, skipping the ones
+        // QObject and QDBusAbstractAdaptor contribute.
+        for (int i = mo->methodOffset(); i < mo->methodCount(); ++i) {
+            const QList<QByteArray> params = mo->method(i).parameterTypes();
+            for (const QByteArray& type : params) {
+                // A surviving `&` means moc did not normalize it away, which it
+                // does for every `const T&` -- so this is an output parameter.
+                if (type.endsWith('&')) {
+                    out.append(type);
+                }
+            }
+        }
+    }
+    return out;
 }
 
 } // namespace LibreSCRS::AgentClient::Fakes

@@ -59,6 +59,32 @@ option(LIBREAGENT_BUILD_CLIENT_QT "Build the LibreAgent::ClientQt Qt client libr
 # ones it ships.
 option(LIBREAGENT_BUILD_PKCS11_FACADE "Build the LibreAgent::Pkcs11Facade PKCS#11 core library" OFF)
 option(LIBREAGENT_BUILD_PKCS11_SOCKET_CLIENT "Build the LibreAgent::Pkcs11SocketClient socket backend" OFF)
+# The Qt client's in-process agent doubles -- the D-Bus FakeAgent, the socket
+# FakeSocketAgent and the two-connection Harness around them -- built and
+# exported as LibreAgent::ClientQtTestSupport. A desktop host that drives this
+# library against a fake needs the SAME fake this library's own suite drives,
+# or the two understandings of one bus surface drift apart with a green suite
+# on each side. Defaulted to this repo's own builds; a consumer that wants it
+# says so, and one that does not pays nothing.
+# The default follows CLIENT_QT as well as top level, and not only top level:
+# CLIENT_QT is OFF by default, so a default configuration of THIS repository
+# would otherwise turn the doubles on and then refuse itself. Measured that way
+# before it was written this way.
+if(PROJECT_IS_TOP_LEVEL AND LIBREAGENT_BUILD_CLIENT_QT)
+    set(_libreagent_client_qt_test_support_default ON)
+else()
+    set(_libreagent_client_qt_test_support_default OFF)
+endif()
+option(LIBREAGENT_BUILD_CLIENT_QT_TEST_SUPPORT
+       "Build and export the LibreAgent::ClientQtTestSupport agent doubles"
+       ${_libreagent_client_qt_test_support_default})
+unset(_libreagent_client_qt_test_support_default)
+
+# An EXPLICIT incoherent request is still refused: the doubles compile against
+# the Qt client's own internals, so there is nothing to build them from.
+if(LIBREAGENT_BUILD_CLIENT_QT_TEST_SUPPORT AND NOT LIBREAGENT_BUILD_CLIENT_QT)
+    message(FATAL_ERROR "LIBREAGENT_BUILD_CLIENT_QT_TEST_SUPPORT requires LIBREAGENT_BUILD_CLIENT_QT (the doubles compile against that library's own internals)")
+endif()
 
 if(LIBREAGENT_BUILD_CLIENT_QT AND NOT LIBREAGENT_BUILD_WIRE)
     message(FATAL_ERROR "LIBREAGENT_BUILD_CLIENT_QT requires LIBREAGENT_BUILD_WIRE (the Qt client library links the wire protocol library)")

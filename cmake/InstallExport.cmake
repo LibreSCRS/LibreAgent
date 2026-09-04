@@ -91,6 +91,20 @@ if(LIBREAGENT_BUILD_WIRE)
     option(LIBREAGENT_INSTALL_WIRE_ARCHIVE
         "Install libLibreAgentWire.a (and register its CMake export)" ON)
 
+    # The exported agent doubles link LibreAgent::Wire PUBLIC -- the socket
+    # double speaks this repository's own framing, and the shared library folds
+    # Wire in with its symbols deliberately unexported (ClientQtWireExportsTest
+    # asserts exactly that), so a consumer of the doubles has to link the
+    # archive itself. Exporting the doubles while leaving the archive out
+    # produces a LibreAgentClientQtTestSupportTargets.cmake naming a target the
+    # consumer's find_package never defines, and CMake refuses at generate time
+    # in the CONSUMER's build -- a failure a long way from its cause.
+    if(LIBREAGENT_BUILD_CLIENT_QT_TEST_SUPPORT AND NOT LIBREAGENT_INSTALL_WIRE_ARCHIVE)
+        message(FATAL_ERROR
+            "LIBREAGENT_BUILD_CLIENT_QT_TEST_SUPPORT needs LIBREAGENT_INSTALL_WIRE_ARCHIVE: "
+            "the exported doubles name LibreAgent::Wire, so its archive and export must be installed too")
+    endif()
+
     if(LIBREAGENT_INSTALL_WIRE_ARCHIVE)
         install(TARGETS LibreAgentWire EXPORT LibreAgentWireTargets
             ARCHIVE  DESTINATION ${CMAKE_INSTALL_LIBDIR}

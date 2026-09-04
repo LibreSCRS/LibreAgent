@@ -1,6 +1,110 @@
 # SPDX-License-Identifier: LGPL-2.1-or-later
 find_package(GTest REQUIRED)
 
+# --- the one target in this directory a consumer may ask for ----------------
+#
+# The in-process agent doubles are a component of this package, not a test: the
+# D-Bus FakeAgent, the socket FakeSocketAgent, and the two-connection Harness
+# that stands either of them up on a private bus. A desktop host driving this
+# client library needs the same double this library's own suite drives -- a
+# host that keeps its own copy ends up with a second, drifting understanding of
+# one bus surface, and a green suite on each side of the drift.
+#
+# Defined ABOVE the top-level guard on purpose, exactly like the fixture
+# archive in tests/CMakeLists.txt: a consumer pulls this repository in as a
+# subproject, so PROJECT_IS_TOP_LEVEL is false for it, and a target that only
+# ever comes into existence inside a block the consumer never enters would
+# leave LibreAgent::ClientQtTestSupport undefined and the consumer unable to
+# link.
+if(PROJECT_IS_TOP_LEVEL OR LIBREAGENT_BUILD_CLIENT_QT_TEST_SUPPORT)
+    # Marshal.cpp and MemfdSource.cpp are INTERNAL, hidden-visibility TUs of
+    # the client library: their symbols are not resolvable from the installed
+    # .so, so the doubles that call them carry them here. This repository's own
+    # suites keep compiling their own copies of those TUs (see the D-Bus and
+    # socket blocks below); a static archive member is pulled only for a symbol
+    # nothing else defines, so the two never collide.
+    add_library(ClientQtTestSupport STATIC
+        fakes/FakeAgent.cpp
+        fakes/FakeAgent.h
+        fakes/FakeSocketAgent.cpp
+        fakes/FakeSocketAgent.h
+        fakes/TestBus.h
+        ${CMAKE_CURRENT_SOURCE_DIR}/../src/dbus/Marshal.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/../src/socket/MemfdSource.cpp)
+    add_library(LibreAgent::ClientQtTestSupport ALIAS ClientQtTestSupport)
+    set_target_properties(ClientQtTestSupport PROPERTIES
+        AUTOMOC ON
+        EXPORT_NAME ClientQtTestSupport
+        # The archive lands in a shared libdir, so it carries the project's
+        # own prefix there rather than the bare target name.
+        OUTPUT_NAME librescrs-agentclient-qt-testsupport
+        POSITION_INDEPENDENT_CODE ON)
+    # BUILD_INTERFACE/INSTALL_INTERFACE split: an exported target whose PUBLIC
+    # include directory is an absolute path into this source tree generates a
+    # Targets.cmake naming a directory the consumer does not have. The single
+    # installed root carries dbus/ and socket/ subdirectories, so the quoted
+    # includes inside these headers resolve there unchanged.
+    target_include_directories(ClientQtTestSupport PUBLIC
+        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/fakes>
+        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/../src>
+        $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}/LibreSCRS/AgentClientTestSupport>)
+    # GTest is PUBLIC because TestBus.h asserts with EXPECT_TRUE in the harness
+    # constructor -- a consumer of that header compiles gtest into its own TU.
+    # Qt6::Test supplies QSignalSpy to the same header set; Qt6::DBus is the
+    # bus the D-Bus double is a peer on; LibreAgent::Wire is the framing the
+    # socket double speaks.
+    target_link_libraries(ClientQtTestSupport PUBLIC
+        LibreAgent::ClientQt
+        LibreAgent::Wire
+        Qt6::Core
+        Qt6::DBus
+        Qt6::Test
+        GTest::gtest)
+    target_compile_features(ClientQtTestSupport PUBLIC cxx_std_23)
+
+    # Installing and exporting the component is gated on the OPTION, not merely
+    # on being top level -- the same lesson the fixture archive already carries:
+    # gating on top level alone makes the switch a lie, because an agent
+    # configured with the doubles explicitly turned off still ships the
+    # Targets.cmake that lets a consumer find them.
+    if(PROJECT_IS_TOP_LEVEL AND LIBREAGENT_BUILD_CLIENT_QT_TEST_SUPPORT)
+        include(GNUInstallDirs)
+        install(TARGETS ClientQtTestSupport
+            EXPORT LibreAgentClientQtTestSupportTargets
+            ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR})
+        install(FILES
+                fakes/FakeAgent.h
+                fakes/FakeSocketAgent.h
+                fakes/TestBus.h
+                fakes/FakeCertFields.h
+                fakes/FakeConfig.h
+                ${CMAKE_CURRENT_SOURCE_DIR}/../src/ConfigKeys.h
+                ${CMAKE_CURRENT_SOURCE_DIR}/../src/CscaAnchorKeys.h
+                ${CMAKE_CURRENT_SOURCE_DIR}/../src/TransportSeam.h
+            DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/LibreSCRS/AgentClientTestSupport)
+        # The six internal headers below are not public client surface and are
+        # installed HERE, under this component's own root, rather than beside
+        # the client's installed headers: the doubles include them by the same
+        # quoted paths the in-tree build uses, and a consumer of the doubles is
+        # the only consumer that ever sees them.
+        install(FILES
+                ${CMAKE_CURRENT_SOURCE_DIR}/../src/dbus/Marshal.h
+                ${CMAKE_CURRENT_SOURCE_DIR}/../src/dbus/AgentDBus.h
+            DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/LibreSCRS/AgentClientTestSupport/dbus)
+        install(FILES ${CMAKE_CURRENT_SOURCE_DIR}/../src/socket/MemfdSource.h
+            DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/LibreSCRS/AgentClientTestSupport/socket)
+        install(EXPORT LibreAgentClientQtTestSupportTargets
+            FILE LibreAgentClientQtTestSupportTargets.cmake
+            NAMESPACE LibreAgent::
+            DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/LibreAgent)
+    endif()
+endif()
+
+# Everything below is this repository's own test suite. A consumer that asked
+# for the doubles above does not inherit a foreign test package: entering this
+# directory must not register a single ctest target in the consumer's build.
+if(PROJECT_IS_TOP_LEVEL)
+
 # FdHandle's move-only RAII contract + default-value sanity for the plain
 # value-type aggregates. Links the real LibreAgentClientQt shared library --
 # FdHandle IS exported (LIBRESCRS_AGENTCLIENT_EXPORT), so its symbols are
@@ -276,6 +380,13 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     # + live add/remove + availability, and AgentOperation's Finished/Result race
     # + recovery + Cancel(), all now mediated through AgentClient (AgentCard has
     # no public constructor in the scrubbed API).
+    # Moved here from the KDE client, whose own copy of this fake it pinned.
+    # The ctest name is deliberately NOT given this directory's ClientQt prefix:
+    # the proof that the case travelled rather than being rewritten is a diff of
+    # the two repositories' ctest listings, and a rename would turn that diff
+    # into "one gone, one new" and hide whatever else moved with it.
+    libreagent_add_client_dbus_test(FakeAgentWireShapeTest FakeAgentWireShapeTest.cpp)
+
     libreagent_add_client_dbus_test(ClientQtAgentCardTest AgentCardTest.cpp)
     libreagent_add_client_dbus_test(ClientQtAgentDiscoveryTest AgentDiscoveryTest.cpp)
     libreagent_add_client_dbus_test(ClientQtAgentOperationTest AgentOperationTest.cpp)
@@ -425,3 +536,5 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
              COMMAND ${PROJECT_SOURCE_DIR}/ci/scripts/check-wire-exports.sh
                      $<TARGET_FILE:LibreAgentClientQt>)
 endif()
+
+endif() # PROJECT_IS_TOP_LEVEL -- this repository's own test suite

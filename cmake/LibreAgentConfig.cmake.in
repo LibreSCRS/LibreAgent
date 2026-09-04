@@ -42,7 +42,8 @@ include(CMakeFindDependencyMacro)
 # local variable literally named "_comp". A generically-named loop variable
 # here would be silently clobbered by that find_dependency(OpenSSL ...) call
 # below before the include() line runs.
-set(_LibreAgent_known_components Core Wire ClientQt Pkcs11Facade Pkcs11SocketClient TestSupport)
+set(_LibreAgent_known_components Core Wire ClientQt Pkcs11Facade Pkcs11SocketClient TestSupport
+                                 ClientQtTestSupport)
 
 # A componentless caller (LibreAgent_FIND_COMPONENTS unset/empty) probes every
 # known component, exactly as before; a caller that named components gets only
@@ -54,6 +55,25 @@ if(LibreAgent_FIND_COMPONENTS)
 else()
     set(_LibreAgent_components_to_resolve ${_LibreAgent_known_components})
 endif()
+
+# One component depends on another INSIDE this package, and a consumer cannot
+# be expected to know that: the agent doubles link LibreAgent::Wire (the socket
+# double speaks this project's framing, whose symbols the shared client library
+# deliberately does not export). Naming only ClientQtTestSupport would leave
+# LibreAgentWireTargets.cmake un-included, and the imported target would then
+# reference a target that does not exist -- CMake reports that as this package
+# being NOT FOUND, several steps from the cause. Resolve the dependency here,
+# before the loop, and de-duplicate so a consumer that named both is unaffected.
+#
+# PREPENDED, not appended, and that is the whole of it: each generated
+# Targets.cmake verifies at include time that every target its imported targets
+# reference already exists, so Wire has to be included BEFORE the doubles that
+# name it. list(REMOVE_DUPLICATES) keeps the first occurrence, so a consumer
+# that also named Wire itself keeps working and the order still holds.
+if("ClientQtTestSupport" IN_LIST _LibreAgent_components_to_resolve)
+    list(INSERT _LibreAgent_components_to_resolve 0 Wire)
+endif()
+list(REMOVE_DUPLICATES _LibreAgent_components_to_resolve)
 
 foreach(_LibreAgent_comp IN LISTS _LibreAgent_components_to_resolve)
     set(_LibreAgent_comp_targets_file "${CMAKE_CURRENT_LIST_DIR}/LibreAgent${_LibreAgent_comp}Targets.cmake")
@@ -94,6 +114,15 @@ foreach(_LibreAgent_comp IN LISTS _LibreAgent_components_to_resolve)
             # dependency (confirmed empirically: a consumer configures and
             # links fine with only Core found).
             find_dependency(Qt6 REQUIRED COMPONENTS Core)
+        elseif(_LibreAgent_comp STREQUAL "ClientQtTestSupport")
+            # Unlike the client library above, the doubles name Qt6::DBus and
+            # Qt6::Test as PUBLIC link libraries -- the harness header a
+            # consumer compiles builds a QDBusConnection and a QSignalSpy in
+            # the consumer's own TU -- so both must resolve as real CMake
+            # targets on this side, and Core alone is not enough. GTest is
+            # PUBLIC for the same reason: the harness constructor asserts.
+            find_dependency(Qt6 REQUIRED COMPONENTS Core DBus Test)
+            find_dependency(GTest REQUIRED)
         elseif(_LibreAgent_comp STREQUAL "TestSupport")
             # The fixture archive mints certificates with OpenSSL directly and
             # links it PUBLIC, so the imported target names OpenSSL::Crypto in

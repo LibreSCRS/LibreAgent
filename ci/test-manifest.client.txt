@@ -55,6 +55,7 @@ CredentialSeamTest
 CredentialSnapshotCacheTest
 CscaAnchorImportTest
 ErrorTaxonomyTest
+FakeAgentWireShapeTest
 FakeBackendsTest
 FeatureTokensGuardTest
 FieldKeyParityTest
