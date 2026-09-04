@@ -52,11 +52,27 @@ jobs:
           sudo apt-get install -y clang-format-21
 
       - name: Check clang-format
-        # client: the Qt client library's own tree (client/qt/{include,src,
-        # tests}/), not covered by the four directories above.
+        # The roots live in ci/format-dirs.txt, which the scope check below
+        # reads too: a directory nobody formats cannot appear without one of
+        # these two steps saying so.
+        #
+        # -print0/-0 for paths with spaces, a parenthesised extension filter so
+        # the -o cannot swallow the directory list, and -r because without it an
+        # empty result makes clang-format read stdin and hang rather than fail.
+        # One wedged job in this project cost most of a working afternoon.
         run: |
-          find include src tests client -name "*.cpp" -o -name "*.h" \
-            | xargs clang-format-21 --dry-run --Werror
+          mapfile -t dirs < <(grep -v '^#' ci/format-dirs.txt)
+          find "${dirs[@]}" \
+            \( -name '*.cpp' -o -name '*.h' -o -name '*.hpp' -o -name '*.mm' \) -print0 \
+            | xargs -0 -r clang-format-21 --dry-run --Werror
+
+      - name: Check every tracked source is reachable by the formatter
+        run: ./ci/scripts/check-format-scope.sh
+
+      - name: Check every skip carries a reason
+        # A test that skips without saying why is indistinguishable from a test
+        # that passed. Costs a second and builds nothing.
+        run: ./ci/scripts/check-skip-reasons.sh
 
   docs-check:
     # The public-API documentation gate. Self-contained for the same reason
@@ -182,7 +198,24 @@ jobs:
 
       - name: Build
         working-directory: LibreAgent
-        run: cmake --build build -j4
+        run: |
+          # set -o pipefail is explicit: without it `| tee` reports tee's status
+          # and a failed build becomes a green step, after which the warning
+          # check measures a log that was never produced.
+          set -o pipefail
+          LC_ALL=C cmake --build build -j4 2>&1 | tee build.log
+
+      - name: Check the discovered test set
+        working-directory: LibreAgent
+        run: ./ci/scripts/test-manifest-gate.sh --check build linux
+
+      - name: Check the warning baseline
+        # Counted by the [-Wname] tag, never by the message text: diagnostics
+        # are localised. An unknown compiler is reported, not failed -- this
+        # runner and the machine that recorded the baseline do not agree on a
+        # diagnostic set, and neither is authoritative over the other.
+        working-directory: LibreAgent
+        run: ./ci/scripts/warning-gate.py --check build.log --build-dir build
 
       - name: Check the wire vocabulary manifest is current
         # The manifest is generated but committed, like the ABI baseline
@@ -236,7 +269,28 @@ jobs:
       # exist in the neutral core.
       - name: Test
         working-directory: LibreAgent
-        run: ctest --test-dir build --output-on-failure --no-tests=error
+        run: |
+          # The pipe is removed rather than patched. The runner's default shell
+          # for a `run:` step is `bash -e {0}` WITHOUT pipefail, so
+          # `ctest ... | tee ctest.log` reports the status of tee: a failed
+          # suite showed as a green step, and a check reading that log
+          # afterwards passed too. With no pipe there is no question about what
+          # the default is. Measured: the old shape exits 0 on a ctest that
+          # fails, this one exits 1.
+          set +e
+          ctest --test-dir build --output-on-failure --no-tests=error > ctest.log 2>&1
+          rc=$?
+          set -e
+          cat ctest.log
+          echo "ctest rc=$rc"
+          exit "$rc"
+
+      - name: Check the skip ledger
+        # always(): the ledger's whole point is the run where something did not
+        # run, including runs where something also failed.
+        if: always()
+        working-directory: LibreAgent
+        run: ./ci/scripts/skip-ledger.sh --check ctest.log linux
 
       # --- Installed CONFIG package smoke -----------------------------------
       # Prove the EXPORTED package actually resolves downstream — nothing the
@@ -348,11 +402,36 @@ jobs:
         working-directory: LibreAgent
         run: cmake --build build -j4
 
+      - name: Check the discovered test set
+        working-directory: LibreAgent
+        run: ./ci/scripts/test-manifest-gate.sh --check build client
+
       - name: Test
         working-directory: LibreAgent
         env:
           QT_QPA_PLATFORM: offscreen
-        run: ctest --test-dir build --output-on-failure --no-tests=error
+        run: |
+          # The pipe is removed rather than patched. The runner's default shell
+          # for a `run:` step is `bash -e {0}` WITHOUT pipefail, so
+          # `ctest ... | tee ctest.log` reports the status of tee: a failed
+          # suite showed as a green step, and a check reading that log
+          # afterwards passed too. With no pipe there is no question about what
+          # the default is. Measured: the old shape exits 0 on a ctest that
+          # fails, this one exits 1.
+          set +e
+          ctest --test-dir build --output-on-failure --no-tests=error > ctest.log 2>&1
+          rc=$?
+          set -e
+          cat ctest.log
+          echo "ctest rc=$rc"
+          exit "$rc"
+
+      - name: Check the skip ledger
+        # always(): the ledger's whole point is the run where something did not
+        # run, including runs where something also failed.
+        if: always()
+        working-directory: LibreAgent
+        run: ./ci/scripts/skip-ledger.sh --check ctest.log client
 
   client-lm-less:
     # The Wire+ClientQt "no LibreMiddleware anywhere" guarantee: Core stays
@@ -431,11 +510,36 @@ jobs:
         working-directory: LibreAgent
         run: cmake --build build -j4
 
+      - name: Check the discovered test set
+        working-directory: LibreAgent
+        run: ./ci/scripts/test-manifest-gate.sh --check build client-lm-less
+
       - name: Test
         working-directory: LibreAgent
         env:
           QT_QPA_PLATFORM: offscreen
-        run: ctest --test-dir build --output-on-failure --no-tests=error
+        run: |
+          # The pipe is removed rather than patched. The runner's default shell
+          # for a `run:` step is `bash -e {0}` WITHOUT pipefail, so
+          # `ctest ... | tee ctest.log` reports the status of tee: a failed
+          # suite showed as a green step, and a check reading that log
+          # afterwards passed too. With no pipe there is no question about what
+          # the default is. Measured: the old shape exits 0 on a ctest that
+          # fails, this one exits 1.
+          set +e
+          ctest --test-dir build --output-on-failure --no-tests=error > ctest.log 2>&1
+          rc=$?
+          set -e
+          cat ctest.log
+          echo "ctest rc=$rc"
+          exit "$rc"
+
+      - name: Check the skip ledger
+        # always(): the ledger's whole point is the run where something did not
+        # run, including runs where something also failed.
+        if: always()
+        working-directory: LibreAgent
+        run: ./ci/scripts/skip-ledger.sh --check ctest.log client-lm-less
 
       - name: Install ClientQt to a throwaway prefix
         working-directory: LibreAgent
@@ -682,3 +786,107 @@ jobs:
 
       - name: Run the bounded fuzz
         run: ci/scripts/fuzz-cbor.sh --time 120 --clang clang++-21
+
+  coverage:
+    # Arch container: a rolling-release distro whose packages track current
+    # LibreMiddleware build/runtime deps (pcsclite, OpenSC). pacman provides
+    # openssl, pcsclite, OpenSC (for LibreMiddleware), gtest, and — unlike
+    # this job's older Core+Wire-only shape — qt6-base (Core/DBus/Test in one
+    # package, same as the client job below) and dbus (dbus-run-session,
+    # which client/qt/tests/CMakeLists.txt requires at configure time once
+    # ClientQt builds here). ClientQt is turned ON in this job for one reason
+    # only: the ABI snapshot check below is otherwise blind to
+    # liblibrescrs-agentclient-qt.so, and this is the job that runs that check —
+    # the fuller D-Bus/socket/transport-parity Qt suite still lives in the
+    # client job below.
+    runs-on: ubuntu-latest
+    container: archlinux:latest
+    env:
+      # Where LibreMiddleware is installed and where the core finds it.
+      LM_PREFIX: /opt/libremiddleware
+      # Git ref of LibreMiddleware to build against. Track its trunk during the
+      # development cycle (LibreLinux/LibreCelik do the same); pin to a release
+      # tag once LibreMiddleware tags releases. find_package(LibreMiddleware 4.2)
+      # in CMakeLists.txt enforces the required version independently of this ref.
+      MIDDLEWARE_REF: main
+    # Not on pull_request: this pass costs an hour and the moment a
+    # function actually lands is the push to main. Manual only until one
+    # measured run says what it really costs on a hosted runner.
+    if: github.event_name == 'workflow_dispatch'
+    timeout-minutes: 120
+    steps:
+      - name: Install system dependencies
+        run: |
+          pacman -Syu --noconfirm
+          pacman -S --noconfirm --needed \
+            base-devel cmake ninja git pkgconf \
+            openssl pcsclite opensc \
+            gtest dbus \
+            qt6-base \
+            python-jsonschema  # LibreMiddleware's plugin-manifest validation needs it during the build below
+
+      - uses: actions/checkout@v4
+        with:
+          path: LibreAgent
+
+      # --- LibreMiddleware: build from source + install to a prefix ---------
+      # The core consumes the installed CONFIG package
+      # (find_package(LibreMiddleware 4.2 REQUIRED CONFIG)), so it must exist on
+      # disk first. SHARED + plugins ON to match how LibreLinux acquires it;
+      # native signing backend (the CI default) — DSS is only a test oracle.
+      - name: Checkout LibreMiddleware
+        uses: actions/checkout@v4
+        with:
+          repository: LibreSCRS/LibreMiddleware
+          ref: ${{ env.MIDDLEWARE_REF }}
+          path: LibreMiddleware
+          fetch-depth: 0
+          submodules: recursive   # LM vendors OpenSC as a git submodule (thirdparty/opensc-source)
+
+      - name: Build & install LibreMiddleware (Release, SHARED)
+        working-directory: LibreMiddleware
+        run: |
+          cmake -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_INSTALL_PREFIX="$LM_PREFIX" \
+            -DLIBREMIDDLEWARE_BUILD_SHARED=ON
+          cmake --build build -j4
+          cmake --install build
+
+      # --- LibreAgentCore: configure / build --------------------------
+
+      - name: Install gcovr
+        # Pinned: the baseline records the gcovr version it was measured with
+        # and the gate refuses to compare across versions, because the exclude
+        # semantics that decide the denominator have changed between them.
+        run: python3 -m pip install --break-system-packages 'gcovr==8.6'
+
+      - name: Configure (coverage)
+        working-directory: LibreAgent
+        run: cmake --preset coverage -DCMAKE_PREFIX_PATH="$LM_PREFIX"
+
+      - name: Build
+        working-directory: LibreAgent
+        run: cmake --build build-cov -j4
+
+      - name: Test
+        working-directory: LibreAgent
+        run: |
+          set +e
+          ctest --test-dir build-cov --output-on-failure --no-tests=error > ctest.log 2>&1
+          rc=$?
+          set -e
+          cat ctest.log
+          echo "ctest rc=$rc"
+          exit "$rc"
+
+      - name: Check coverage against the baseline
+        working-directory: LibreAgent
+        # The committed baseline was measured with a different compiler than
+        # this runner uses, so the FIRST authorised run of this job is expected
+        # to refuse to compare and say so. Refusing is the design: a coverage
+        # number carries the configuration it was measured under, and comparing
+        # across configurations is how a gap becomes an artefact. Record a
+        # runner-side baseline with --update, review it in the same commit, and
+        # from then on this step is a ratchet.
+        run: ./ci/scripts/coverage-gate.py --check build-cov
