@@ -13,6 +13,33 @@ target_link_libraries(ClientQtTypesTest PRIVATE
     GTest::gtest_main)
 add_test(NAME ClientQtTypesTest COMMAND ClientQtTypesTest)
 
+# The annex reading order, which two desktop hosts used to each keep their own
+# byte-identical copy of. Exported from the shared library, so this links it.
+add_executable(ClientQtFieldOrderTest FieldOrderTest.cpp)
+target_link_libraries(ClientQtFieldOrderTest PRIVATE
+    LibreAgent::ClientQt
+    GTest::gtest
+    GTest::gtest_main)
+add_test(NAME ClientQtFieldOrderTest COMMAND ClientQtFieldOrderTest)
+
+# The two-shape card-date rule, which both desktop hosts used to write out for
+# themselves. Exported from the shared library, so this links it.
+add_executable(ClientQtCardDateTest CardDateTest.cpp)
+target_link_libraries(ClientQtCardDateTest PRIVATE
+    LibreAgent::ClientQt
+    GTest::gtest
+    GTest::gtest_main)
+add_test(NAME ClientQtCardDateTest COMMAND ClientQtCardDateTest)
+
+# The security vocabulary's decoders, which used to live in a desktop host
+# where nothing tested them.
+add_executable(ClientQtSecurityVocabularyTest SecurityVocabularyTest.cpp)
+target_link_libraries(ClientQtSecurityVocabularyTest PRIVATE
+    LibreAgent::ClientQt
+    GTest::gtest
+    GTest::gtest_main)
+add_test(NAME ClientQtSecurityVocabularyTest COMMAND ClientQtSecurityVocabularyTest)
+
 # TokenMap round-trip coverage. TokenMap.{h,cpp} is an INTERNAL, hidden-
 # visibility TU with no export macro on any of its functions -- linking the
 # shared library would not resolve its symbols. Compiling TokenMap.cpp

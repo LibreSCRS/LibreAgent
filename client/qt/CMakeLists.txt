@@ -21,6 +21,7 @@ qt_add_library(LibreAgentClientQt SHARED
     src/AgentReader.cpp
     src/CredentialTypes.cpp
     src/FdHandle.cpp
+    src/FieldOrder.cpp
     src/IdentityRows.cpp
     src/SealedPayload.cpp
     src/SealedPayloadInternal.cpp

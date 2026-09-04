@@ -1,4 +1,68 @@
 # SPDX-License-Identifier: LGPL-2.1-or-later
+
+# --- the one target in this directory a consumer may ask for ----------------
+#
+# The synthetic master-list fixture is a component of this package, not a test.
+# The platform backend needs exactly this fixture to drive its own D-Bus import
+# test, and used to carry a byte-identical copy of it; it now links this one.
+#
+# It is defined ABOVE the top-level guard on purpose. A consumer pulls this
+# repository in as a subproject, so PROJECT_IS_TOP_LEVEL is false for it, and a
+# switch that only ever turned on inside a block the consumer never enters
+# would leave LibreAgent::TestSupport undefined and the consumer unable to
+# link — which is the shape this replaces, not a fix for it.
+if(LIBREAGENT_BUILD_CORE AND (PROJECT_IS_TOP_LEVEL OR LIBREAGENT_BUILD_TEST_SUPPORT))
+    # The fixture mints its certificates with the system OpenSSL directly.
+    # That dependency is the fixture's alone: the code under test consumes only
+    # the published LibreMiddleware trust API.
+    find_package(OpenSSL 3.0 REQUIRED COMPONENTS Crypto)
+
+    add_library(SyntheticMasterList STATIC SyntheticMasterList.cpp)
+    add_library(LibreAgent::TestSupport ALIAS SyntheticMasterList)
+    set_target_properties(SyntheticMasterList PROPERTIES
+        EXPORT_NAME TestSupport
+        POSITION_INDEPENDENT_CODE ON)
+    # BUILD_INTERFACE/INSTALL_INTERFACE split: an exported target whose PUBLIC
+    # include directory is an absolute path into this source tree generates a
+    # Targets.cmake naming a directory the consumer does not have.
+    target_include_directories(SyntheticMasterList PUBLIC
+        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>
+        $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}/LibreSCRS/AgentTestSupport>)
+    target_link_libraries(SyntheticMasterList PUBLIC OpenSSL::Crypto)
+    target_compile_features(SyntheticMasterList PUBLIC cxx_std_23)
+
+    # Installing and exporting the component is gated on the OPTION, not merely
+    # on being top level. Gating it on top level alone makes the switch a lie:
+    # an agent configured with the fixture explicitly turned off still shipped
+    # LibreAgentTestSupportTargets.cmake, so a consumer that named the
+    # component found it and the refusal this component exists to make could
+    # not happen. Measured that way before it was written this way.
+    #
+    # The TARGET above stays reachable regardless, because this repository's
+    # own anchor-import test links it and must keep building with the export
+    # turned off.
+    if(PROJECT_IS_TOP_LEVEL AND LIBREAGENT_BUILD_TEST_SUPPORT)
+        include(GNUInstallDirs)
+        install(TARGETS SyntheticMasterList
+            EXPORT LibreAgentTestSupportTargets
+            ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR})
+        install(FILES SyntheticMasterList.h
+            DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/LibreSCRS/AgentTestSupport)
+        install(EXPORT LibreAgentTestSupportTargets
+            FILE LibreAgentTestSupportTargets.cmake
+            NAMESPACE LibreAgent::
+            DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/LibreAgent)
+    endif()
+endif()
+
+# Everything below is this repository's own test suite. A consumer that asked
+# for the fixture does not inherit a foreign test package: that is what the
+# top-level guard around this directory used to buy, and it is kept here now
+# that the directory itself is reachable from a subproject build.
+if(NOT PROJECT_IS_TOP_LEVEL)
+    return()
+endif()
+
 find_package(GTest REQUIRED)
 
 # Dependency-free wire-header compile guard (no LibreAgent::Core link, no LM
@@ -203,12 +267,6 @@ agent_core_test(CredentialSnapshotCacheTest)
 # drop. The fixture mints its certificates with the system OpenSSL directly,
 # which is the fixture's dependency alone; the code under test consumes only
 # the published LibreMiddleware trust API.
-add_library(SyntheticMasterList STATIC SyntheticMasterList.cpp)
-target_include_directories(SyntheticMasterList PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
-target_link_libraries(SyntheticMasterList PUBLIC OpenSSL::Crypto)
-target_compile_features(SyntheticMasterList PUBLIC cxx_std_23)
-set_target_properties(SyntheticMasterList PROPERTIES POSITION_INDEPENDENT_CODE ON)
-
 add_executable(CscaAnchorImportTest CscaAnchorImportTest.cpp)
 target_link_libraries(CscaAnchorImportTest PRIVATE
     LibreAgent::Core

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 // SPDX-FileCopyrightText: 2026 hirashix0
 #pragma once
+#include <LibreSCRS/Agent/operations/FlowOutcome.h>
 #include <LibreSCRS/Agent/value/CardReadSnapshot.h>
 #include <LibreSCRS/Agent/value/CertSnapshot.h>
 #include <LibreSCRS/Agent/value/ErrorTaxonomy.h>
@@ -29,7 +30,7 @@ namespace LibreSCRS::Agent::Operations {
 //    LM result into a CardReadSnapshot. Production: LmCardReader.
 struct ReadOutcome
 {
-    enum class Status { Ok, AuthFailed, ParseError, UnsupportedCard, CommunicationError, Cancelled };
+    using Status = SeamStatus;
     Status status{Status::CommunicationError};
     std::optional<CardReadSnapshot> snapshot;
     std::string msgFallback;
@@ -79,7 +80,7 @@ public:
 //     itself is not cancellable mid-call).
 struct CertReadOutcome
 {
-    enum class Status { Ok, AuthFailed, ParseError, UnsupportedCard, CommunicationError, Cancelled };
+    using Status = SeamStatus;
     Status status{Status::CommunicationError};
     std::vector<CertSnapshot> certs;
     std::string msgFallback;

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 // SPDX-FileCopyrightText: 2026 hirashix0
 #pragma once
+#include <LibreSCRS/Agent/operations/FlowOutcome.h>
 #include <LibreSCRS/Agent/cache/AttemptContext.h>
 #include <LibreSCRS/Agent/cache/CardReadCache.h>
 #include <LibreSCRS/Agent/value/CardReadSnapshot.h>
@@ -94,7 +95,7 @@ struct IdentityReadFlowDeps
 class IdentityReadFlow
 {
 public:
-    enum class Outcome { Ok, Cancelled, Error };
+    using Outcome = FlowOutcome;
 
     struct Result
     {

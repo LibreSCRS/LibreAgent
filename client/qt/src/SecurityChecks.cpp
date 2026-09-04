@@ -210,4 +210,42 @@ SecurityVerdict separateSecurityChecks(const FieldGroup& group)
     return verdict;
 }
 
+std::optional<SecurityCheckStatus> statusFromString(QStringView token)
+{
+    // The producer's own spelling, upper case, as it crosses the wire.
+    if (token == u"PASSED") {
+        return SecurityCheckStatus::Passed;
+    }
+    if (token == u"FAILED") {
+        return SecurityCheckStatus::Failed;
+    }
+    if (token == u"NOT_PERFORMED") {
+        return SecurityCheckStatus::NotPerformed;
+    }
+    if (token == u"NOT_SUPPORTED") {
+        return SecurityCheckStatus::NotSupported;
+    }
+    if (token == u"SKIPPED") {
+        return SecurityCheckStatus::Skipped;
+    }
+    return std::nullopt;
+}
+
+std::optional<SecurityCategory> categoryFromString(QStringView token)
+{
+    if (token == u"data_integrity") {
+        return SecurityCategory::DataIntegrity;
+    }
+    if (token == u"data_authenticity") {
+        return SecurityCategory::Authenticity;
+    }
+    if (token == u"chip_genuineness") {
+        return SecurityCategory::Genuineness;
+    }
+    if (token == u"other") {
+        return SecurityCategory::Other;
+    }
+    return std::nullopt;
+}
+
 } // namespace LibreSCRS::AgentClient

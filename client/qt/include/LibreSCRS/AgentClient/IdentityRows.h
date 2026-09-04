@@ -7,6 +7,8 @@
 #include <QList>
 #include <QString>
 
+#include <optional>
+
 /// @file
 /// @brief Structural flattening of an identity read into presentation-neutral
 ///        rows. This is the STRUCTURAL half of the lifted row assembly: it
@@ -38,5 +40,23 @@ struct IdentityRow
 /// Empty values are RETAINED (a tabular renderer shows them); a caller that
 /// wants them dropped filters locally.
 [[nodiscard]] LIBRESCRS_AGENTCLIENT_EXPORT QList<IdentityRow> flattenIdentityFields(const QList<FieldGroup>& groups);
+
+/// @brief A card date in readable form, or nothing when the value is not a date.
+///
+/// The annex reader ships the address-change date as the card's raw `ddMMyyyy`
+/// digits ("06082016"); the middleware never reformats signed card bytes, so a
+/// reader has to. Both desktop hosts did, with the same two-shape rule written
+/// out twice: accept `dd.MM.yyyy` as it stands, normalise `ddMMyyyy`, and treat
+/// anything else as the card carrying no date.
+///
+/// Parsing rather than pattern-matching, so an impossible day or month is
+/// rejected rather than reformatted into a date nobody signed.
+///
+/// Only the PARSING half lives here. What a reader shows for a value that is
+/// not a date is a decision with a catalogue behind it — one host leaves the
+/// value exactly as the card sent it, the other draws a translated "Unknown" —
+/// and those stay in the hosts, which is why this returns an empty optional
+/// rather than a stand-in string of its own.
+[[nodiscard]] LIBRESCRS_AGENTCLIENT_EXPORT std::optional<QString> normalizedCardDate(const QString& value);
 
 } // namespace LibreSCRS::AgentClient

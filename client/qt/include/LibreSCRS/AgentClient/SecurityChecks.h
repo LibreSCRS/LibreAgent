@@ -6,6 +6,10 @@
 
 #include <QList>
 #include <QString>
+#include <QStringView>
+
+#include <cstdint>
+#include <optional>
 
 /// @file
 /// @brief The one reader of a security-verdict group's wire shape.
@@ -30,6 +34,47 @@
 /// particular `SecurityCheckEntry::reason` is a KEY, not a sentence.
 
 namespace LibreSCRS::AgentClient {
+
+/// @brief What kind of thing a check verified.
+///
+/// The producer names this with a token on the wire and the vocabulary is
+/// closed. Decoding it is structure, not presentation: the enumerator says
+/// which kind, and a host still needs its own catalogue to put a word on it.
+///
+/// `Other` is the honest landing place for a token this build has no
+/// enumerator for, but only when a caller CHOOSES it — @ref categoryFromString
+/// returns nothing rather than picking it, because a category nobody
+/// recognised and a category explicitly outside the canonical three are
+/// different situations.
+enum class SecurityCategory : std::uint8_t {
+    DataIntegrity, ///< Hash/MAC integrity of the data groups.
+    Authenticity,  ///< Signature / passive authentication over the data.
+    Genuineness,   ///< Chip genuineness (active authentication, chip auth).
+    Other,         ///< A check outside the canonical categories.
+};
+
+/// @brief How a single check came out.
+///
+/// `NotPerformed` is not a failure and must never be rendered as one: a check
+/// nobody ran says nothing about the card.
+enum class SecurityCheckStatus : std::uint8_t {
+    Passed,       ///< Performed and succeeded.
+    Failed,       ///< Performed and failed.
+    NotPerformed, ///< Not run (a prerequisite was missing).
+    NotSupported, ///< The card does not implement the check.
+    Skipped,      ///< The read chose to bypass the check.
+};
+
+/// @brief Decode a status token; nothing for a token this build cannot name.
+///
+/// Deliberately NOT defaulting to @ref SecurityCheckStatus::NotPerformed. That
+/// is the safest-LOOKING wrong answer: it turns a verdict this build failed to
+/// understand into a confident statement that no check ran, and a reader
+/// cannot tell the two apart afterwards. The caller decides, in the open.
+[[nodiscard]] LIBRESCRS_AGENTCLIENT_EXPORT std::optional<SecurityCheckStatus> statusFromString(QStringView token);
+
+/// @brief Decode a category token; nothing for a token this build cannot name.
+[[nodiscard]] LIBRESCRS_AGENTCLIENT_EXPORT std::optional<SecurityCategory> categoryFromString(QStringView token);
 
 /// @brief One security check, its wire fields separated.
 ///

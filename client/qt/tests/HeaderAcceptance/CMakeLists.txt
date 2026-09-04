@@ -51,6 +51,7 @@ set(_agentclient_public_headers
     ErrorCode.h
     Export.h
     FdHandle.h
+    FieldOrder.h
     IdentityRows.h
     OperationPhase.h
     SealedPayload.h

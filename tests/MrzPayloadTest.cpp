@@ -50,9 +50,11 @@ constexpr const char* kTd3Payload = "L898902C36\n7408122\n1204159";
 //   dob 340712 (cd 7), doe 950712 (cd 2). All three cds are ICAO-7-3-1-valid.
 constexpr const char* kPaddedShortPayload = "D2314589<7\n3407127\n9507122";
 
-// ICAO 9303 Part 3 §4.9 check digit (weights 7,3,1 repeating), re-derived here
-// so the invariant test never trusts a literal — this is the SAME algorithm as
-// LibreMiddleware/lib/emrtd-crypto/src/crypto_utils.cpp:79-99 (computeCheckDigit).
+// MIRROR-OF: LibreAgent/include/LibreSCRS/Agent/cache/MrzPayload.h - a fourth
+// writing of the ICAO 9303 Part 3 4.9 walk (weights 7,3,1), on purpose: the
+// invariant tests below must not trust a literal, and calling the production
+// walk to check the production walk would prove nothing. Held to the same
+// golden table as the production one, so the two cannot drift apart.
 int icaoCheckDigit(std::string_view field)
 {
     static constexpr int weights[3] = {7, 3, 1};
@@ -91,6 +93,50 @@ std::string icaoMrzInformation(std::string_view documentNumber, std::string_view
 }
 
 } // namespace
+
+// The ICAO 9303 Part 3 4.9 check digit (weights 7,3,1) is computed in three
+// places in this workspace, and no two of them can share an implementation:
+// the middleware's throws on a non-MRZ character, this one returns -1 without
+// ever materialising the secret bytes as a std::string, and the Linux
+// prompter's walks QChar. Unifying them would cost a new published middleware
+// API to save forty lines.
+//
+// So they are pinned to one table of golden vectors, asserted independently
+// from each package. These ten are the same ten in LibreMiddleware
+// (test/emrtd_crypto_test.cpp, BACTestVectors.ICAO9303CheckDigits) and
+// LibreLinux (prompter/tests/InputWidgetValidationTest.cpp).
+//
+// The helper above is a FOURTH writing of the same walk, kept because the
+// invariant tests must not trust a literal - so it is held to the same table,
+// and a drift between it and the production one fails here.
+TEST(MrzPayload, IcaoGoldenCheckDigits)
+{
+    struct Vector
+    {
+        std::string_view field;
+        int digit;
+    };
+    static constexpr Vector kVectors[] = {
+        {"L898902C<", 3}, {"740727", 3},       {"120714", 9},    {"690806", 1}, {"940623", 6},
+        {"AB1234<<<", 1}, {"D23145890734", 9}, {"ZE184226B", 1}, {"", 0},       {"<<<<<<<<<", 0},
+    };
+
+    for (const Vector& v : kVectors) {
+        EXPECT_EQ(LibreSCRS::Agent::detail::mrzCheckDigit(v.field), v.digit)
+            << "production walk disagrees on \"" << v.field << "\"";
+        EXPECT_EQ(icaoCheckDigit(v.field), v.digit)
+            << "this file's own re-derivation disagrees on \"" << v.field << "\"";
+    }
+}
+
+TEST(MrzPayload, ANonMrzCharacterIsRefusedRatherThanScoredAsZero)
+{
+    // The three implementations differ HERE and nowhere else, which is why the
+    // golden table alone would not have caught a walk that silently scored an
+    // unexpected byte as filler.
+    EXPECT_LT(LibreSCRS::Agent::detail::mrzCheckDigit("L8989 2C<"), 0);
+    EXPECT_LT(LibreSCRS::Agent::detail::mrzCheckDigit("l898902c<"), 0);
+}
 
 // -- Acceptance / invariant -------------------------------------------------
 

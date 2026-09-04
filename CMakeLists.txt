@@ -399,6 +399,14 @@ endif() # LIBREAGENT_BUILD_CLIENT_QT
 # backend such as LibreLinux), the consumer wants just the enabled component
 # libraries: the neutral tests run in this repo's own CI, and the backend
 # provides its own install/export rules.
+# The fixture archive a platform backend links to drive its own anchor-import
+# test. Off by default in a consumer build: a backend that wants it says so,
+# and one that does not pays nothing. Defaulted to this repo's own builds so
+# the suite here is unaffected.
+option(LIBREAGENT_BUILD_TEST_SUPPORT
+       "Build and export the LibreAgent::TestSupport fixture archive"
+       ${PROJECT_IS_TOP_LEVEL})
+
 if(PROJECT_IS_TOP_LEVEL)
     # Installed CONFIG package: LibreAgent{,Config,ConfigVersion}.cmake plus a
     # per-component <Component>Targets.cmake for each of Core/Wire/ClientQt
@@ -411,12 +419,18 @@ if(PROJECT_IS_TOP_LEVEL)
     # so it costs nothing outside of a Core/Wire build.
     add_subdirectory(wire/tools)
 
-    if(LIBREAGENT_BUILD_CORE OR LIBREAGENT_BUILD_WIRE OR LIBREAGENT_BUILD_PKCS11_FACADE)
-        # Platform-neutral unit tests + the five shared backend fakes (Core
-        # only) plus the dependency-light Wire/spike GTest targets, which stay
-        # reachable in a Core-less (CORE=OFF, WIRE=ON) configuration too — see
-        # tests/CMakeLists.txt for the Core/non-Core split.
-        enable_testing()
-        add_subdirectory(tests)
-    endif()
+    # ctest registrations belong to this repository's own build and nobody
+    # else's, so enable_testing() stays under the top-level guard even though
+    # the directory below is now reachable from a consumer.
+    enable_testing()
+endif()
+
+if((LIBREAGENT_BUILD_CORE OR LIBREAGENT_BUILD_WIRE OR LIBREAGENT_BUILD_PKCS11_FACADE)
+   AND (PROJECT_IS_TOP_LEVEL OR LIBREAGENT_BUILD_TEST_SUPPORT))
+    # Platform-neutral unit tests + the five shared backend fakes (Core only)
+    # plus the dependency-light Wire/spike GTest targets, which stay reachable
+    # in a Core-less (CORE=OFF, WIRE=ON) configuration too — see
+    # tests/CMakeLists.txt for the Core/non-Core split, and for the fixture
+    # archive it defines above its own top-level guard.
+    add_subdirectory(tests)
 endif()

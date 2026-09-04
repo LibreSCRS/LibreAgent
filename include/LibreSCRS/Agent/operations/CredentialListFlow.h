@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 // SPDX-FileCopyrightText: 2026 hirashix0
 #pragma once
+#include <LibreSCRS/Agent/operations/FlowOutcome.h>
 #include <LibreSCRS/Agent/value/CredentialRecord.h>
 #include <LibreSCRS/Agent/value/ErrorTaxonomy.h>
 #include <LibreSCRS/Agent/operations/CardPluginRouting.h>
@@ -51,7 +52,7 @@ struct CredentialListFlowDeps
 class CredentialListFlow
 {
 public:
-    enum class Outcome { Ok, Cancelled, Error };
+    using Outcome = FlowOutcome;
     struct Result
     {
         Outcome outcome{Outcome::Error};

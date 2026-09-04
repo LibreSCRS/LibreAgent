@@ -21,6 +21,9 @@
 /// by `client/qt/tests/TokenMapTest.cpp`'s round-trip tests.
 namespace LibreSCRS::AgentClient {
 
+// MIRROR-OF: LibreMiddleware/include/LibreSCRS/Signing/Enums.h - one of the
+// four deliberate mirrors of the wire vocabulary. The client may not link the
+// middleware, so it re-declares what it must speak; a parity test pins them.
 /// @brief Signature container format (wire/librescrs-agent.cddl's
 ///        `sign-opts.format`; `LibreSCRS::Agent::Operations::SignatureParams::isKnownFormat`'s
 ///        closed set).
