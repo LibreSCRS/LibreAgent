@@ -40,6 +40,7 @@ jobs:
     # job below runs in an Arch container instead, because Arch's rolling
     # `clang` package is ahead of 21 and would reformat against a different
     # major — the project standard is clang-format 21, not the distro default.
+    timeout-minutes: 15
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -74,6 +75,20 @@ jobs:
         # that passed. Costs a second and builds nothing.
         run: ./ci/scripts/check-skip-reasons.sh
 
+      - name: Changelog and version agree on the pending release
+        # Run on every push with the version this tree is heading for, so the
+        # agreement is proved weeks before the tag rather than first on a tag
+        # that cannot be taken back. The release job calls the same script with
+        # the tag's version.
+        run: ci/scripts/check-release-lockstep.sh "$(head -n1 VERSION | tr -d '[:space:]')"
+
+      - name: Every job carries a time bound
+        # An unbounded job that hangs holds a runner for six hours and will
+        # not serve its log until the run is cancelled, so the failing test
+        # cannot even be named. This fails when a new job arrives without a
+        # bound, which is the only moment the omission is cheap to fix.
+        run: ci/scripts/check-job-timeouts.sh
+
   docs-check:
     # The public-API documentation gate. Self-contained for the same reason
     # format-check is: doxygen only PARSES the headers, so this needs neither
@@ -84,6 +99,7 @@ jobs:
     # A documentation rule nothing runs in CI is a rule that holds until the
     # first person who does not know about it, which for an undocumented public
     # symbol means it ships.
+    timeout-minutes: 20
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -137,6 +153,7 @@ jobs:
     # liblibrescrs-agentclient-qt.so, and this is the job that runs that check —
     # the fuller D-Bus/socket/transport-parity Qt suite still lives in the
     # client job below.
+    timeout-minutes: 90
     runs-on: ubuntu-latest
     container: archlinux:latest
     env:
@@ -345,6 +362,7 @@ jobs:
     # actual build shape, and the full suite here includes HeaderAcceptance
     # plus every D-Bus/socket/parity integration test alongside the plain
     # Core/Wire unit tests build-linux already covers on its own.
+    timeout-minutes: 90
     runs-on: ubuntu-latest
     container: archlinux:latest
     env:
@@ -477,6 +495,7 @@ jobs:
     # ClientQt-only package sharing one install prefix and prove
     # LibreAgentConfig.cmake.in's component filtering never include()s the
     # Core export a ClientQt-only consumer never asked for.
+    timeout-minutes: 45
     runs-on: ubuntu-latest
     container: archlinux:latest
     env:
@@ -688,6 +707,7 @@ jobs:
     # Wire-only on purpose -- no Core, so no LibreMiddleware, so no card stack to
     # build. That keeps this a couple of minutes rather than half an hour, which
     # is what makes it usable while working on the codec rather than only after.
+    timeout-minutes: 30
     name: wire-asan (macOS)
     runs-on: macos-15
     steps:
@@ -766,6 +786,7 @@ jobs:
     #     Qt<Name>.framework, so on Apple platforms it found zero modules and
     #     allowlisted them all. Measured by making a public header reach for
     #     QtGui: caught now, silently green before.
+    timeout-minutes: 30
     name: client (macOS)
     runs-on: macos-15
     steps:
@@ -830,6 +851,7 @@ jobs:
     # same script a dev runs locally — rather than duplicating its
     # QCBOR-pinning / build / run steps inline, so the two never drift.
     # Bounded run over the seed corpus; any crash/UB/leak fails the job.
+    timeout-minutes: 30
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
