@@ -1,0 +1,11 @@
+usr/lib/*/libLibreAgentCore.a
+usr/lib/*/libLibreAgentWire.a
+usr/lib/*/libLibreAgentPkcs11Facade.a
+usr/lib/*/libLibreAgentPkcs11SocketClient.a
+usr/lib/*/libSyntheticMasterList.a
+usr/lib/*/cmake/LibreAgent/LibreAgentCoreTargets*.cmake
+usr/lib/*/cmake/LibreAgent/LibreAgentWireTargets*.cmake
+usr/lib/*/cmake/LibreAgent/LibreAgentPkcs11FacadeTargets*.cmake
+usr/lib/*/cmake/LibreAgent/LibreAgentPkcs11SocketClientTargets*.cmake
+usr/lib/*/cmake/LibreAgent/LibreAgentTestSupportTargets*.cmake
+usr/include/LibreSCRS/AgentTestSupport/

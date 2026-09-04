@@ -1,0 +1,10 @@
+usr/lib/*/liblibrescrs-agentclient-qt.so
+usr/lib/*/liblibrescrs-agentclient-qt-testsupport.a
+# A glob on the per-configuration export file, never the literal
+# -relwithdebinfo the Arch recipe can name: debhelper builds with
+# CMAKE_BUILD_TYPE=None on purpose, so the file here is …Targets-none.cmake and
+# a literal name would match nothing at all, silently.
+usr/lib/*/cmake/LibreAgent/LibreAgentClientQtTargets*.cmake
+usr/lib/*/cmake/LibreAgent/LibreAgentClientQtTestSupportTargets*.cmake
+usr/include/LibreSCRS/AgentClient/
+usr/include/LibreSCRS/AgentClientTestSupport/

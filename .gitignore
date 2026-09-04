@@ -14,3 +14,6 @@
 # regeneration run is interrupted before the rename step; never itself the
 # committed manifest.
 /wire/wire-vocabulary.json.tmp
+
+# Working copy of the packaging recipe; dpkg-buildpackage wants it at the root.
+/debian/

@@ -59,7 +59,14 @@ endif()
 # for the fixture does not inherit a foreign test package: that is what the
 # top-level guard around this directory used to buy, and it is kept here now
 # that the directory itself is reachable from a subproject build.
-if(NOT PROJECT_IS_TOP_LEVEL)
+# BUILD_TESTING as well as the top-level check. include(CTest) in the root file
+# defines it and defaults it ON, so a developer build is unchanged; a
+# distribution package is built with it OFF and now stops here, having defined
+# the fixture archive above and nothing else. That is worth having twice over:
+# a package build was compiling seven hundred targets it would never run, and on
+# Ubuntu 26.04 with gcc 15 two of those test executables fail to link against
+# libstdc++ symbols -- in code the package does not ship.
+if(NOT PROJECT_IS_TOP_LEVEL OR NOT BUILD_TESTING)
     return()
 endif()
 

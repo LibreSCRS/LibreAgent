@@ -1,0 +1,35 @@
+#!/usr/bin/make -f
+
+export DEB_BUILD_MAINT_OPTIONS = hardening=+all
+export DEB_CPPFLAGS_MAINT_APPEND = -DNDEBUG
+
+%:
+	dh $@ --buildsystem=cmake+ninja --builddirectory=build
+
+# QCBOR comes from the source tarball, never from the network. The assertion
+# below targets the FETCH, not the existence of _deps: FetchContent_MakeAvailable
+# does add_subdirectory into _deps/qcbor-build even when nothing was downloaded,
+# so `test ! -e build/_deps` would fail on every correct build. The directory
+# that appears only when the download step actually runs is …-subbuild, and the
+# cache entry says *which* source was used.
+override_dh_auto_configure:
+	test -f thirdparty/QCBOR/CMakeLists.txt || \
+	  { echo "thirdparty/QCBOR is missing; the source tarball has to carry it"; exit 1; }
+	dh_auto_configure -- -DBUILD_TESTING=OFF -DINSTALL_GTEST=OFF \
+	                     -DLIBREAGENT_BUILD_CORE=ON \
+	                     -DLIBREAGENT_BUILD_WIRE=ON \
+	                     -DLIBREAGENT_BUILD_CLIENT_QT=ON \
+	                     -DLIBREAGENT_BUILD_PKCS11_FACADE=ON \
+	                     -DLIBREAGENT_BUILD_PKCS11_SOCKET_CLIENT=ON \
+	                     -DLIBREAGENT_INSTALL_WIRE_ARCHIVE=ON \
+	                     -DFETCHCONTENT_FULLY_DISCONNECTED=ON \
+	                     -DFETCHCONTENT_SOURCE_DIR_QCBOR=$(CURDIR)/thirdparty/QCBOR
+	test ! -e build/_deps/qcbor-subbuild || \
+	  { echo "the build fetched QCBOR; every source must come from the tarball"; exit 1; }
+	grep -q '^FETCHCONTENT_SOURCE_DIR_QCBOR:.*=$(CURDIR)/thirdparty/QCBOR$$' build/CMakeCache.txt || \
+	  { echo "QCBOR source dir is not the one shipped in the tarball"; exit 1; }
+
+override_dh_auto_test:
+
+override_dh_missing:
+	dh_missing --fail-missing

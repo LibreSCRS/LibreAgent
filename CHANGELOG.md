@@ -5,6 +5,16 @@ Notable user-visible changes per release. Format follows
 
 ## [Unreleased] — 5.0.0
 
+### Added
+
+- **Distribution packages for the agent libraries.** `deb` for Debian 13 and
+  Ubuntu 26.04 LTS, `rpm` for Fedora 43. Four binary packages where Arch has
+  three: the shared Qt client library keeps its runtime and its development
+  files apart, which both layouts require and pacman does not. The core packages
+  ship static archives with no shared counterpart, so they have no runtime
+  sibling at all and a host depends on them only to build.
+
+
 The country-signing anchor import now accepts what the ICAO Public Key
 Directory actually publishes. The portal serves a directory export (an
 LDIF file) carrying dozens of master lists, each signed by a different

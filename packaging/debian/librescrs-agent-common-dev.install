@@ -1,0 +1,7 @@
+usr/lib/*/cmake/LibreAgent/LibreAgentConfig.cmake
+usr/lib/*/cmake/LibreAgent/LibreAgentConfigVersion.cmake
+usr/lib/*/cmake/LibreAgent/Pkcs11ModuleExport.cmake
+usr/include/LibreSCRS/Agent/
+usr/share/librescrs/librescrs-agent.cddl
+usr/share/librescrs/pkcs11/exports.map
+usr/share/librescrs/pkcs11/exports.symbols

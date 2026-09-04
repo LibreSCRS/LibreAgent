@@ -1,0 +1,67 @@
+Source: libreagent
+Section: libdevel
+Priority: optional
+Maintainer: LibreSCRS <packages@librescrs.org>
+Build-Depends: debhelper-compat (= 13),
+               cmake (>= 3.28),
+               ninja-build,
+               make,
+               pkg-config,
+               git,
+               qt6-base-dev,
+               libgtest-dev,
+               dbus-daemon,
+               libssl-dev,
+               liblibrescrs-dev (>= 5.0)
+Standards-Version: 4.7.0
+Homepage: https://github.com/LibreSCRS/LibreAgent
+Rules-Requires-Root: no
+
+Package: librescrs-agent-common-dev
+Architecture: all
+Multi-Arch: foreign
+Depends: ${misc:Depends}
+Description: Shared CMake package and wire contract for the LibreSCRS agent
+ The CMake CONFIG package, the platform-neutral public headers and the wire
+ description shared by the agent and by every client of it.
+ .
+ This package exists because the CMake config and its version file are
+ installed from every configuration, so one package has to own them. Making
+ either component package own them would drag Qt into the agent's dependency
+ closure or the middleware into every Qt client's; a third, dependency-free
+ package holding what both need is the smallest split that avoids both.
+
+Package: librescrs-agent-core-dev
+Architecture: any
+Multi-Arch: same
+Depends: ${misc:Depends}, librescrs-agent-common-dev (= ${source:Version}), liblibrescrs-dev (>= 5.0)
+Description: LibreSCRS agent core, wire codec and PKCS#11 facade (static)
+ The platform-neutral agent brain and everything a host links against it: the
+ wire codec, the PKCS#11 facade and its socket backend, and the test-support
+ archive.
+ .
+ These are static archives with no shared counterpart, so this package has no
+ runtime sibling and a host depends on it only to build. That asymmetry is
+ correct and should not be tidied away. For the same reason the archives are
+ not moved into a -static package as the RPM guideline would otherwise
+ suggest: doing so would leave an empty development package behind.
+
+Package: liblibrescrs-agentclient-qt5
+Section: libs
+Architecture: any
+Multi-Arch: same
+Depends: ${shlibs:Depends}, ${misc:Depends}
+Description: Qt client library for the LibreSCRS smart-card agent
+ The library desktop front-ends link against to talk to the agent over its
+ session-bus interface.
+
+Package: liblibrescrs-agentclient-qt-dev
+Architecture: any
+Multi-Arch: same
+Depends: ${misc:Depends},
+         liblibrescrs-agentclient-qt5 (= ${binary:Version}),
+         librescrs-agent-common-dev (= ${source:Version}),
+         qt6-base-dev
+Description: Development files for the LibreSCRS agent Qt client library
+ Headers, linker symlink and the CMake component targets for building against
+ the Qt client library.

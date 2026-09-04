@@ -15,3 +15,16 @@ lib/cmake/LibreAgent/LibreAgentClientQtTargets.cmake
 lib/cmake/LibreAgent/LibreAgentClientQtTargets-relwithdebinfo.cmake
 
 include/LibreSCRS/AgentClient/*.h
+
+# The Qt client's test-support archive and its headers. They travel with this
+# component rather than with the core: they link Qt, and putting them in the
+# core package would drag Qt into the dependency closure of a package that
+# exists precisely to stay free of it.
+#
+# These were installed but claimed by no list -- found by a real package build,
+# where an unassigned installed file is an error rather than a warning.
+lib/liblibrescrs-agentclient-qt-testsupport.a
+lib/cmake/LibreAgent/LibreAgentClientQtTestSupportTargets.cmake
+lib/cmake/LibreAgent/LibreAgentClientQtTestSupportTargets-relwithdebinfo.cmake
+include/LibreSCRS/AgentClientTestSupport/*.h
+include/LibreSCRS/AgentClientTestSupport/*/*.h

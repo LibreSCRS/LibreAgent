@@ -1,0 +1,20 @@
+Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
+Upstream-Name: LibreAgent
+Upstream-Contact: LibreSCRS <packages@librescrs.org>
+Source: https://github.com/LibreSCRS/LibreAgent
+
+Files: *
+Copyright: 2024-2026 LibreSCRS contributors
+License: LGPL-2.1-or-later
+
+Files: thirdparty/QCBOR/*
+Copyright: 2018-2025 Laurence Lundblade and contributors
+License: BSD-3-Clause
+
+License: LGPL-2.1-or-later
+ On Debian systems the full text is in /usr/share/common-licenses/LGPL-2.1.
+
+License: BSD-3-Clause
+ Redistribution and use in source and binary forms, with or without
+ modification, are permitted provided that the conditions of the
+ three-clause BSD licence are met.
