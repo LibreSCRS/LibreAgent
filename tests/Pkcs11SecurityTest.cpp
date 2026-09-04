@@ -54,9 +54,9 @@ Pkcs11Broker::Caller appCaller()
 
 struct DenyAll final : Authorizer
 {
-    bool authorize(std::string_view, const CallerToken&) override
+    AuthorizationOutcome authorize(std::string_view, const CallerToken&) override
     {
-        return false;
+        return AuthorizationOutcome::Denied;
     }
 };
 
@@ -65,10 +65,10 @@ struct DenyAll final : Authorizer
 struct CountingAuthorizer final : Authorizer
 {
     int calls{0};
-    bool authorize(std::string_view, const CallerToken&) override
+    AuthorizationOutcome authorize(std::string_view, const CallerToken&) override
     {
         ++calls;
-        return true;
+        return AuthorizationOutcome::Granted;
     }
 };
 

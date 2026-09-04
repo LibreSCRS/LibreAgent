@@ -95,7 +95,11 @@ void Pkcs11Broker::login(const std::string& reader, const Caller& caller, Reply<
     // a Login(CKU_CONTEXT_SPECIFIC) before every sign, so a per-window login cap
     // would reject legitimate multi-sign sessions with CKR_FUNCTION_REJECTED. The
     // anti-phishing flood throttle lives on the consent surface (Card1.Sign).
-    if (!m_deps.authorizer.authorize(kActionPkcs11Login, caller.busName)) {
+    //
+    // Undecided folds into the same refusal here -- default-allow means polkit
+    // answers without a dialog, there is no human waiting on this leg, and the
+    // PKCS#11 caller has no user to tell.
+    if (m_deps.authorizer.authorize(kActionPkcs11Login, caller.busName) != AuthorizationOutcome::Granted) {
         reply.fail(LoginOutcome::NotAuthorized);
         return;
     }

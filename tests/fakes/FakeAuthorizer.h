@@ -27,13 +27,13 @@ struct FakeAuthorizer final : Authorizer
         allowed.emplace(actionId);
     }
 
-    [[nodiscard]] bool authorize(std::string_view actionId, const CallerToken& caller) override
+    [[nodiscard]] AuthorizationOutcome authorize(std::string_view actionId, const CallerToken& caller) override
     {
         calls.emplace_back(std::string(actionId), caller);
         if (allowAll) {
-            return true;
+            return AuthorizationOutcome::Granted;
         }
-        return allowed.contains(std::string(actionId));
+        return allowed.contains(std::string(actionId)) ? AuthorizationOutcome::Granted : AuthorizationOutcome::Denied;
     }
 };
 

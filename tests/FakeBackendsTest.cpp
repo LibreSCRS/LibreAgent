@@ -148,12 +148,12 @@ TEST(FakeAuthorizer, AllowAllThenScopedAllowList)
     Authorizer& iface = authz;
     const CallerToken caller{":1.42"};
 
-    EXPECT_TRUE(iface.authorize(kActionSign, caller));
+    EXPECT_EQ(iface.authorize(kActionSign, caller), AuthorizationOutcome::Granted);
 
     authz.allowAll = false;
     authz.allow(kActionConfigure);
-    EXPECT_TRUE(iface.authorize(kActionConfigure, caller));
-    EXPECT_FALSE(iface.authorize(kActionSign, caller));
+    EXPECT_EQ(iface.authorize(kActionConfigure, caller), AuthorizationOutcome::Granted);
+    EXPECT_EQ(iface.authorize(kActionSign, caller), AuthorizationOutcome::Denied);
 
     ASSERT_EQ(authz.calls.size(), 3u);
     EXPECT_EQ(authz.calls[0].second, caller);

@@ -3,9 +3,19 @@
 #pragma once
 #include <LibreSCRS/Agent/Identity.h>
 
+#include <cstdint>
 #include <string_view>
 
 namespace LibreSCRS::Agent {
+
+/// What the policy gate concluded. THREE states, because two cannot tell a
+/// refusal from a silence: a client told "not authorized" when the authority
+/// never answered has been told something untrue about a security decision.
+enum class AuthorizationOutcome : std::uint8_t {
+    Granted,   ///< The authority answered, and the answer was yes.
+    Denied,    ///< The authority answered, and the answer was no.
+    Undecided, ///< No answer was obtained. NOTHING was decided, nothing was done.
+};
 
 // Authorization action ids for Config1 mutation, gated by the Authorizer.
 // Shared by the backend's action-selection path and the Authorizer implementations
@@ -43,16 +53,16 @@ class Authorizer
 {
 public:
     virtual ~Authorizer() = default;
-    [[nodiscard]] virtual bool authorize(std::string_view actionId, const CallerToken& caller) = 0;
+    [[nodiscard]] virtual AuthorizationOutcome authorize(std::string_view actionId, const CallerToken& caller) = 0;
 };
 
 // Allows every action. Test/dev only, and the explicit "no policy gate" mode.
 class AllowAllAuthorizer final : public Authorizer
 {
 public:
-    [[nodiscard]] bool authorize(std::string_view /*actionId*/, const CallerToken& /*caller*/) override
+    [[nodiscard]] AuthorizationOutcome authorize(std::string_view /*actionId*/, const CallerToken& /*caller*/) override
     {
-        return true;
+        return AuthorizationOutcome::Granted;
     }
 };
 
@@ -69,10 +79,14 @@ public:
 class DefaultAuthorizer final : public Authorizer
 {
 public:
-    [[nodiscard]] bool authorize(std::string_view actionId, const CallerToken& /*caller*/) override
+    // Never Undecided: this fallback calls out to nothing external, so there is
+    // nothing that can fail to answer.
+    [[nodiscard]] AuthorizationOutcome authorize(std::string_view actionId, const CallerToken& /*caller*/) override
     {
-        return actionId == kActionConfigure || actionId == kActionSign || actionId == kActionPkcs11Login ||
-               actionId == kActionCredentialsManage;
+        return (actionId == kActionConfigure || actionId == kActionSign || actionId == kActionPkcs11Login ||
+                actionId == kActionCredentialsManage)
+                   ? AuthorizationOutcome::Granted
+                   : AuthorizationOutcome::Denied;
     }
 };
 

@@ -348,9 +348,9 @@ std::shared_ptr<CardSessionHolder> makeDetachedHolder()
 
 struct AllowAllAuthorizer final : Authorizer
 {
-    bool authorize(std::string_view, const CallerToken&) override
+    AuthorizationOutcome authorize(std::string_view, const CallerToken&) override
     {
-        return true;
+        return AuthorizationOutcome::Granted;
     }
 };
 

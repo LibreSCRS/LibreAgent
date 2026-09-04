@@ -31,9 +31,9 @@ public:
         CallerToken caller;
     };
 
-    explicit FakeAuthorizer(bool verdict) noexcept : m_verdict(verdict) {}
+    explicit FakeAuthorizer(AuthorizationOutcome verdict) noexcept : m_verdict(verdict) {}
 
-    [[nodiscard]] bool authorize(std::string_view actionId, const CallerToken& caller) override
+    [[nodiscard]] AuthorizationOutcome authorize(std::string_view actionId, const CallerToken& caller) override
     {
         m_calls.push_back(Call{std::string{actionId}, caller});
         return m_verdict;
@@ -45,7 +45,7 @@ public:
     }
 
 private:
-    bool m_verdict;
+    AuthorizationOutcome m_verdict;
     std::vector<Call> m_calls;
 };
 
@@ -53,14 +53,14 @@ private:
 
 TEST(Authorizer, FakeRecordsActionAndCallerAndReturnsVerdict)
 {
-    FakeAuthorizer allow{true};
-    EXPECT_TRUE(allow.authorize(kActionSign, CallerToken{":1.42"}));
+    FakeAuthorizer allow{AuthorizationOutcome::Granted};
+    EXPECT_EQ(allow.authorize(kActionSign, CallerToken{":1.42"}), AuthorizationOutcome::Granted);
     ASSERT_EQ(allow.calls().size(), 1u);
     EXPECT_EQ(allow.calls()[0].actionId, std::string{kActionSign});
     EXPECT_EQ(allow.calls()[0].caller, CallerToken{":1.42"});
 
-    FakeAuthorizer deny{false};
-    EXPECT_FALSE(deny.authorize(kActionConfigure, CallerToken{":1.7"}));
+    FakeAuthorizer deny{AuthorizationOutcome::Denied};
+    EXPECT_EQ(deny.authorize(kActionConfigure, CallerToken{":1.7"}), AuthorizationOutcome::Denied);
     ASSERT_EQ(deny.calls().size(), 1u);
     EXPECT_EQ(deny.calls()[0].caller, CallerToken{":1.7"});
 }
@@ -69,12 +69,12 @@ TEST(Authorizer, FakeRecordsActionAndCallerAndReturnsVerdict)
 TEST(Authorizer, AllowAllPermitsEveryAction)
 {
     AllowAllAuthorizer auth;
-    EXPECT_TRUE(auth.authorize(kActionConfigure, CallerToken{":1.9"}));
-    EXPECT_TRUE(auth.authorize(kActionConfigureTrust, CallerToken{":1.9"}));
-    EXPECT_TRUE(auth.authorize(kActionSign, CallerToken{":1.9"}));
-    EXPECT_TRUE(auth.authorize(kActionPkcs11Login, CallerToken{":1.9"}));
-    EXPECT_TRUE(auth.authorize("org.librescrs.agent.future.unknown", CallerToken{":1.9"}));
-    EXPECT_TRUE(auth.authorize(kActionConfigure, CallerToken{}));
+    EXPECT_EQ(auth.authorize(kActionConfigure, CallerToken{":1.9"}), AuthorizationOutcome::Granted);
+    EXPECT_EQ(auth.authorize(kActionConfigureTrust, CallerToken{":1.9"}), AuthorizationOutcome::Granted);
+    EXPECT_EQ(auth.authorize(kActionSign, CallerToken{":1.9"}), AuthorizationOutcome::Granted);
+    EXPECT_EQ(auth.authorize(kActionPkcs11Login, CallerToken{":1.9"}), AuthorizationOutcome::Granted);
+    EXPECT_EQ(auth.authorize("org.librescrs.agent.future.unknown", CallerToken{":1.9"}), AuthorizationOutcome::Granted);
+    EXPECT_EQ(auth.authorize(kActionConfigure, CallerToken{}), AuthorizationOutcome::Granted);
 }
 
 // The authorizer-unreachable fallback is a fail-closed allow-LIST: the low-tier
@@ -83,9 +83,9 @@ TEST(Authorizer, AllowAllPermitsEveryAction)
 TEST(Authorizer, DefaultAllowsLowTierAndSignAndPkcs11LoginOnly)
 {
     DefaultAuthorizer auth;
-    EXPECT_TRUE(auth.authorize(kActionConfigure, CallerToken{":1.7"}));
-    EXPECT_TRUE(auth.authorize(kActionSign, CallerToken{":1.7"}));
-    EXPECT_TRUE(auth.authorize(kActionPkcs11Login, CallerToken{":1.7"}));
-    EXPECT_FALSE(auth.authorize(kActionConfigureTrust, CallerToken{":1.7"}));
-    EXPECT_FALSE(auth.authorize("org.librescrs.agent.future.unknown", CallerToken{":1.7"}));
+    EXPECT_EQ(auth.authorize(kActionConfigure, CallerToken{":1.7"}), AuthorizationOutcome::Granted);
+    EXPECT_EQ(auth.authorize(kActionSign, CallerToken{":1.7"}), AuthorizationOutcome::Granted);
+    EXPECT_EQ(auth.authorize(kActionPkcs11Login, CallerToken{":1.7"}), AuthorizationOutcome::Granted);
+    EXPECT_EQ(auth.authorize(kActionConfigureTrust, CallerToken{":1.7"}), AuthorizationOutcome::Denied);
+    EXPECT_EQ(auth.authorize("org.librescrs.agent.future.unknown", CallerToken{":1.7"}), AuthorizationOutcome::Denied);
 }

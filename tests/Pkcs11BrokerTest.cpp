@@ -243,9 +243,9 @@ TEST(Pkcs11Broker, LoginRejectedWhenAuthorizerDenies)
 {
     struct DenyAll final : Authorizer
     {
-        bool authorize(std::string_view, const CallerToken&) override
+        AuthorizationOutcome authorize(std::string_view, const CallerToken&) override
         {
-            return false;
+            return AuthorizationOutcome::Denied;
         }
     };
     Harness h;
