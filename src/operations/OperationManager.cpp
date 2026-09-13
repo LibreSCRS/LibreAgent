@@ -81,7 +81,7 @@ OperationManager::~OperationManager()
     // a never-destroyed process-lifetime sink so it lives until exit
     // independent of the manager — this is the "tolerate the leaked
     // thread+storage until exit" contract (the udisksd LUKS-wedge pattern).
-    // SECURITY (accepted risk, decision 2026-07-03): a wedged holder may keep
+    // SECURITY (accepted risk): a wedged holder may keep
     // live SM/PACE session keys resident until daemon exit — they are
     // intentionally NOT force-scrubbed. The blocked SCardTransmit is
     // uncancellable on Linux and may still read the channel buffers, so

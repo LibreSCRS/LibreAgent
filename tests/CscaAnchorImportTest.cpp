@@ -1154,9 +1154,9 @@ TEST(CscaAnchorPublication, ThePublishedDirectoryIsWhereAnImportReallyWrote)
 //
 // It lives in this shared library rather than in a host because it touches
 // only ConfigStore and AnchorCache and no bus at all: it was file-local to the
-// D-Bus host until 2026-09-01 purely by where it was first written, and a
-// second copy in the socket host would have been a second implementation of a
-// trust-policy decision — the thing LibreKDE removed rather than kept.
+// D-Bus host purely by where it was first written, and a second copy in the
+// socket host would have been a second implementation of a trust-policy
+// decision — the thing LibreKDE removed rather than kept.
 //
 // WHERE the reconciliation is CALLED FROM is a separate question with a
 // separate answer, and it stays with each host: startup, before the object

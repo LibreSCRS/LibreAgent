@@ -562,11 +562,11 @@ std::filesystem::path publishAnchorDirectory(LibreSCRS::Plugin::CardPluginServic
 //
 // WHY IT LIVES HERE rather than in the host that calls it. It touches
 // @ref AnchorCache and the configuration store and no transport whatever —
-// it was file-local to the D-Bus host until 2026-09-01 purely by where it was
-// first written, and the socket host consequently served reports over a cache
-// that had been wiped. The alternative was a second copy there, which is a
-// second implementation of a trust-policy decision: one that happens to agree
-// today is exactly what a consumer of this library has already removed once.
+// it was file-local to the D-Bus host purely by where it was first written,
+// and the socket host consequently served reports over a cache that had been
+// wiped. The alternative was a second copy there, which is a second
+// implementation of a trust-policy decision: one that happens to agree today
+// is exactly what a consumer of this library has already removed once.
 //
 // WHERE IT IS CALLED FROM is a separate decision and belongs to each host:
 // at STARTUP, before anything can read the property. Callers must honour that,

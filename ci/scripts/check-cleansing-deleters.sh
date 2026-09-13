@@ -6,13 +6,13 @@
 # The master-list fixture carries a marked mirror of the middleware's internal
 # BnDeleter, because this repository is middleware-free by design and cannot
 # include that header. The canonical one zeroes the limb buffer before handing
-# it back: the secrets that made it do so live over there, but a mirror whose
-# body drifts from its canonical is how the cleansing was lost once already --
-# a deduplication pass matched two deleters on their names, kept the plain
-# body, and deleted the comment that said why the other existed.
+# it back: the secrets that made it do so live over there, and the failure this
+# gate exists for is a mirror whose body drifts back to a plain BN_free -- two
+# deleters agreeing on their name while disagreeing on whether they cleanse,
+# with the comment that explained the difference gone.
 #
 # The registry that knows about the mirror compares declaration names and
-# sites, never bodies, so it reported nothing while the two bodies disagreed.
+# sites, never bodies, so nothing it reports changes when the bodies disagree.
 # This gate is the missing half, and it lives here rather than in the
 # middleware because the middleware's copy reads its own checkout and cannot
 # see this file.
