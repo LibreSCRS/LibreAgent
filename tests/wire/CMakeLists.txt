@@ -96,6 +96,23 @@ if(LIBREAGENT_BUILD_WIRE)
         add_test(NAME ${wire_test} COMMAND ${wire_test})
     endforeach()
 
+    # FdHarvestTest: the SCM_RIGHTS length clamp on its own. The two harvest
+    # loops above run over a real socketpair, and on Linux that cannot tell the
+    # clamped computation from the unclamped one -- the kernel rewrites cmsg_len
+    # down to what it delivered, so both suites stay green with the clamp
+    # removed. This one hand-builds the msghdr/cmsghdr pair the truncating
+    # kernel produces, so the clamp is falsifiable here rather than only on an
+    # Apple host. It reaches src/wire/FdHarvest.h, which is internal to the wire
+    # target and therefore not on LibreAgent::Wire's include interface; the
+    # helper is header-only, so nothing needs to be linked for it.
+    add_executable(FdHarvestTest FdHarvestTest.cpp)
+    target_include_directories(FdHarvestTest PRIVATE ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/include)
+    target_compile_features(FdHarvestTest PRIVATE cxx_std_23)
+    target_link_libraries(FdHarvestTest PRIVATE
+        GTest::gtest
+        GTest::gtest_main)
+    add_test(NAME FdHarvestTest COMMAND FdHarvestTest)
+
     # 5. MessagesRoundTripTest: the typed request/reply/event model over the
     #    Cbor seam, re-based onto this component's std-only wire mirrors
     #    (wire/PreReadAuth.h, wire/CredentialWire.h) — no LM either. Supplies

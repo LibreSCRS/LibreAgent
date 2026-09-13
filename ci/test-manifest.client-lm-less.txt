@@ -29,6 +29,7 @@ ClientQtTypesTest
 ClientQtVendoredExportsTest
 ClientQtWireExportsTest
 FakeAgentWireShapeTest
+FdHarvestTest
 FeatureTokensGuardTest
 FrameReassemblerTest
 FramingTest

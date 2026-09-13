@@ -7,13 +7,11 @@
 // limit violation; every received fd gets FD_CLOEXEC before it is owned.
 #include <LibreSCRS/Agent/wire/FrameReassembler.h>
 
-#include <fcntl.h>
-#include <sys/socket.h>
-#include <unistd.h>
+#include "FdHarvest.h"
 
 #include <array>
 #include <cerrno>
-#include <cstring>
+#include <utility>
 
 namespace LibreSCRS::Agent::Wire {
 namespace {
@@ -38,23 +36,16 @@ PumpResult FrameReassembler::pump(int fd)
 
     for (;;) {
         std::array<std::uint8_t, 4096> chunk{};
-        iovec iov{};
-        iov.iov_base = chunk.data();
-        iov.iov_len = chunk.size();
 
-        alignas(struct cmsghdr) std::array<std::uint8_t, CMSG_SPACE(sizeof(int) * kMaxFrameFds)> control{};
-        msghdr msg{};
-        msg.msg_iov = &iov;
-        msg.msg_iovlen = 1;
-        msg.msg_control = control.data();
-        msg.msg_controllen = static_cast<socklen_t>(control.size());
-
-        const ssize_t r = ::recvmsg(fd, &msg, 0);
-        if (r == 0) {
+        // The read and the harvest are one operation, and it lives in
+        // FdHarvest.h: the descriptor count comes from what the kernel
+        // delivered, never from what the peer claimed.
+        FdRecvResult got = receiveWithFds(fd, chunk.data(), chunk.size());
+        if (got.bytes == 0) {
             out.status = PumpStatus::PeerClosed;
             break;
         }
-        if (r < 0) {
+        if (got.bytes < 0) {
             if (errno == EINTR) {
                 continue;
             }
@@ -66,20 +57,13 @@ PumpResult FrameReassembler::pump(int fd)
             break;
         }
 
-        // Harvest fds (FD_CLOEXEC; no MSG_CMSG_CLOEXEC on macOS).
-        for (cmsghdr* c = CMSG_FIRSTHDR(&msg); c != nullptr; c = CMSG_NXTHDR(&msg, c)) {
-            if (c->cmsg_level != SOL_SOCKET || c->cmsg_type != SCM_RIGHTS) {
-                continue;
-            }
-            const std::size_t payload = c->cmsg_len - CMSG_LEN(0);
-            const std::size_t count = payload / sizeof(int);
-            const auto* fds = reinterpret_cast<const int*>(CMSG_DATA(c));
-            for (std::size_t i = 0; i < count; ++i) {
-                ::fcntl(fds[i], F_SETFD, FD_CLOEXEC);
-                m_fds.emplace_back(fds[i]);
-            }
+        // Take ownership before the truncation verdict below: the descriptors
+        // that DID arrive are open in this process either way, and the FIFO is
+        // what closes them.
+        for (UniqueFd& harvested : got.fds) {
+            m_fds.push_back(std::move(harvested));
         }
-        if (msg.msg_flags & MSG_CTRUNC) {
+        if (got.ancillaryTruncated) {
             out.status = PumpStatus::Error;
             out.error = FrameError::Io;
             break;
@@ -90,7 +74,7 @@ PumpResult FrameReassembler::pump(int fd)
             break;
         }
 
-        m_buffer.insert(m_buffer.end(), chunk.begin(), chunk.begin() + r);
+        m_buffer.insert(m_buffer.end(), chunk.begin(), chunk.begin() + got.bytes);
         if (m_buffer.size() > kMaxBufferBytes) {
             out.status = PumpStatus::Error;
             out.error = FrameError::Oversize;

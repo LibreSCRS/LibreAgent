@@ -57,6 +57,7 @@ CscaAnchorImportTest
 ErrorTaxonomyTest
 FakeAgentWireShapeTest
 FakeBackendsTest
+FdHarvestTest
 FeatureTokensGuardTest
 FieldKeyParityTest
 FrameReassemblerTest

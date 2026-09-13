@@ -15,7 +15,9 @@
 #include <unistd.h>
 
 #include <array>
+#include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <vector>
 
 using namespace LibreSCRS::Agent::Wire;
@@ -169,6 +171,56 @@ TEST(FrameReassembler, DeclaredFdCountWithoutFdsFailsClosed)
     const auto r = ra.pump(sp.reader());
     EXPECT_EQ(r.status, PumpStatus::Error);
     EXPECT_EQ(r.error, FrameError::FdMismatch);
+}
+
+// The twin has this test (FramingTest.cpp) and the twin is the reason the clamp
+// exists: ASan reported a stack-buffer-overflow from that very test while the
+// frame still failed closed -- the overrun happens on the way there. pump() had
+// no such test, so the same overrun rode into the Qt client library unseen.
+//
+// On Linux this passes with or without the clamp (scm_detach_fds rewrites
+// cmsg_len to what it delivered), so it is NOT the Linux gate --
+// ci/scripts/check-fd-harvest.sh is. Its job is the wire ASan leg on macOS,
+// which already builds and runs this binary under -fsanitize=address: there the
+// kernel leaves cmsg_len saying 32 descriptors while delivering 16, and the
+// unclamped loop walks 64 bytes past `control`.
+TEST(FrameReassembler, ControlMessageTruncatedFailsClosed)
+{
+    NbSocketPair sp;
+    int pipefd[2]{-1, -1};
+    ASSERT_EQ(::pipe(pipefd), 0);
+
+    constexpr std::size_t kOverflowCount = kMaxFrameFds * 2;
+    const std::vector<int> manyFds(kOverflowCount, pipefd[0]);
+    const auto framed = encodeFrame(body({0x01}), static_cast<std::uint32_t>(kMaxFrameFds));
+
+    iovec iov{};
+    iov.iov_base = const_cast<std::uint8_t*>(framed.data());
+    iov.iov_len = framed.size();
+
+    const std::size_t ctrlBytes = sizeof(int) * kOverflowCount;
+    std::vector<std::uint8_t> control(CMSG_SPACE(ctrlBytes));
+    msghdr msg{};
+    msg.msg_iov = &iov;
+    msg.msg_iovlen = 1;
+    msg.msg_control = control.data();
+    msg.msg_controllen = static_cast<socklen_t>(control.size());
+    cmsghdr* c = CMSG_FIRSTHDR(&msg);
+    ASSERT_NE(c, nullptr);
+    c->cmsg_level = SOL_SOCKET;
+    c->cmsg_type = SCM_RIGHTS;
+    c->cmsg_len = CMSG_LEN(ctrlBytes);
+    std::memcpy(CMSG_DATA(c), manyFds.data(), ctrlBytes);
+
+    ASSERT_GE(::sendmsg(sp.writer(), &msg, 0), 0);
+
+    FrameReassembler ra;
+    const auto r = ra.pump(sp.reader());
+    EXPECT_EQ(r.status, PumpStatus::Error);
+    EXPECT_EQ(r.error, FrameError::Io);
+
+    ::close(pipefd[0]);
+    ::close(pipefd[1]);
 }
 
 } // namespace

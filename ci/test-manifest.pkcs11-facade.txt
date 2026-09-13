@@ -3,6 +3,7 @@ CborRoundTripTest
 CddlVocabularyTest
 ClientCodecTest
 FakeSocketAgentTest
+FdHarvestTest
 FeatureTokensGuardTest
 FrameReassemblerTest
 FramingTest
