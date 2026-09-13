@@ -82,19 +82,21 @@ _srcname="LibreAgent-$pkgver"
 _qcbor_commit=930708bb86481e88879eb1d87fd4d664f1d69503
 
 source=(
-    "$pkgbase-$pkgver.tar.gz::https://github.com/LibreSCRS/LibreAgent/archive/refs/tags/v$pkgver.tar.gz"
+    "$pkgbase-$pkgver.tar.gz::https://github.com/LibreSCRS/LibreAgent/releases/download/$pkgver/libreagent_$pkgver.orig.tar.gz"
     "qcbor-$_qcbor_commit.tar.gz::https://github.com/laurencelundblade/QCBOR/archive/$_qcbor_commit.tar.gz"
 )
 # The downloaded name is derived from $pkgbase, not $pkgname: in a split recipe
 # pkgname is an ARRAY, so $pkgname would silently expand to its first element
 # and name the tarball after one of the three packages.
 #
-# LibreAgent's own tarball is 'SKIP': the tag does not exist yet, so
-# there is nothing upstream to fetch or sum. The real sum is filled in at tag
-# time with `updpkgsums`. Until then the recipe is smoke-built against a tarball
-# of the working tree placed next to this file under exactly the name above —
-# makepkg reuses an already-present source file instead of downloading it, so
-# the recipe itself needs no edit to be built today.
+# LibreAgent's own tarball is 'SKIP': the release that carries it does not
+# exist yet, so there is nothing to fetch or sum. The real sum is filled in at
+# tag time with `makepkg -g` (pacman's own tool; `updpkgsums` needs
+# pacman-contrib), and packaging/arch/check-recipe.sh turns a remaining SKIP
+# into an error once the tag exists. Until then the recipe is smoke-built
+# against a tarball of the working tree placed next to this file under exactly
+# the name above — makepkg reuses an already-present source file instead of
+# downloading it, so the recipe itself needs no edit to be built today.
 # QCBOR's sum is real and pinned now; that tarball exists upstream already.
 sha256sums=(
     'SKIP'

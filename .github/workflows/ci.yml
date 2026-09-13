@@ -43,7 +43,16 @@ jobs:
     timeout-minutes: 15
     runs-on: ubuntu-latest
     steps:
+      # fetch-tags, deliberately. The recipe check run further down decides
+      # its last arm on whether the LOCAL clone holds refs/tags/<pkgver>: with
+      # a tagless checkout it prints SKIPPED forever, so a sha256sums that is
+      # still a placeholder would outlive the release it waits for and no run
+      # would ever say so. actions/checkout fetches with --no-tags unless this
+      # is set, and a shallow fetch would not carry the tagged commit anyway.
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          fetch-tags: true
 
       - name: Install clang-format-21
         run: |
@@ -144,6 +153,28 @@ jobs:
         # have really been written: the tag deciding unconditionally, and git
         # being ignored altogether.
         run: ./ci/scripts/check-version-stamp.selftest.sh
+      - name: The Arch recipe fetches the tarball this project publishes
+        # Two scripts, because a gate nobody proves is a gate nobody trusts:
+        # the selftest perturbs the recipe -- and the tree around it -- and
+        # requires each refusal to name its own arm, then the gate runs over
+        # the committed recipe. It prints how many cases it ran, which is the
+        # only count that cannot go stale.
+        # Neither touches the network — `git ls-remote` against these SSH
+        # remotes hangs on a developer machine, and a gate that can hang is
+        # worse than one that can fail.
+        run: |
+          ./packaging/arch/check-recipe.selftest.sh
+          ./packaging/arch/check-recipe.sh
+
+      - name: Every uploaded artefact has someone to download it
+        # An artefact whose name no download step can match is built, kept for
+        # ninety days and dropped from the release without a word: the release
+        # simply carries one asset fewer. Names only -- whether the consumer is
+        # ordered after the producer is the needs question, which this
+        # repository answers only if it carries check-release-artifacts.sh.
+        run: |
+          ./ci/scripts/check-artifact-names.selftest.sh
+          ./ci/scripts/check-artifact-names.sh
 
   docs-check:
     # The public-API documentation gate. Self-contained for the same reason
