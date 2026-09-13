@@ -23,14 +23,25 @@ if(PROJECT_IS_TOP_LEVEL OR LIBREAGENT_BUILD_CLIENT_QT_TEST_SUPPORT)
     # suites keep compiling their own copies of those TUs (see the D-Bus and
     # socket blocks below); a static archive member is pulled only for a symbol
     # nothing else defines, so the two never collide.
-    add_library(ClientQtTestSupport STATIC
-        fakes/FakeAgent.cpp
-        fakes/FakeAgent.h
+    # The D-Bus half of the doubles is Linux-only, for the same reason the root
+    # CMakeLists.txt only looks for Qt6::DBus there: D-Bus is LibreLinux's
+    # transport. Listing FakeAgent/TestBus/Marshal unconditionally made this
+    # target -- and therefore the whole configure -- require a Qt6::DBus that is
+    # never found off Linux, so the macOS client leg could not configure at all:
+    # "Target ClientQtTestSupport links to Qt6::DBus but the target was not
+    # found". Nothing had noticed because that leg has never run.
+    set(clientqt_testsupport_sources
         fakes/FakeSocketAgent.cpp
         fakes/FakeSocketAgent.h
-        fakes/TestBus.h
-        ${CMAKE_CURRENT_SOURCE_DIR}/../src/dbus/Marshal.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/../src/socket/MemfdSource.cpp)
+    if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+        list(APPEND clientqt_testsupport_sources
+            fakes/FakeAgent.cpp
+            fakes/FakeAgent.h
+            fakes/TestBus.h
+            ${CMAKE_CURRENT_SOURCE_DIR}/../src/dbus/Marshal.cpp)
+    endif()
+    add_library(ClientQtTestSupport STATIC ${clientqt_testsupport_sources})
     add_library(LibreAgent::ClientQtTestSupport ALIAS ClientQtTestSupport)
     set_target_properties(ClientQtTestSupport PROPERTIES
         AUTOMOC ON
@@ -57,9 +68,11 @@ if(PROJECT_IS_TOP_LEVEL OR LIBREAGENT_BUILD_CLIENT_QT_TEST_SUPPORT)
         LibreAgent::ClientQt
         LibreAgent::Wire
         Qt6::Core
-        Qt6::DBus
         Qt6::Test
         GTest::gtest)
+    if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+        target_link_libraries(ClientQtTestSupport PUBLIC Qt6::DBus)
+    endif()
     target_compile_features(ClientQtTestSupport PUBLIC cxx_std_23)
 
     # Installing and exporting the component is gated on the OPTION, not merely

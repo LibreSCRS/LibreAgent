@@ -979,6 +979,11 @@ jobs:
           QT_QPA_PLATFORM: offscreen
         run: ctest --test-dir build --output-on-failure --no-tests=error
 
+      - name: Check the discovered test set
+        # This leg had no listing, and it is the only place several of these
+        # targets are built with an Apple toolchain at all.
+        run: ./ci/scripts/test-manifest-gate.sh --check build client-macos
+
   fuzz-cbor:
     # Untrusted-decoder fuzz gate (moved from LibreDarwin, whose own
     # ci.yml dropped this job once the wire codec/framing/message model
