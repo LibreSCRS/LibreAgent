@@ -95,8 +95,9 @@ struct SocketAgentClient::Impl
     // presence read must not queue behind one. The module deliberately drops
     // its own global lock across a human-paced call so an unrelated C_* is not
     // stalled behind a PIN prompt; a client that made the socket the new global
-    // lock would put that stall straight back, one layer down. Measured: with a
-    // signature parked for three seconds, C_GetSlotList took 2.7 s.
+    // lock would put that stall straight back, one layer down: a presence read
+    // issued while a signature sits at a PIN prompt would wait out the whole
+    // prompt before it could answer.
     std::mutex callMutex;
     std::mutex cacheMutex;
     AgentSnapshot cachedSnapshot;

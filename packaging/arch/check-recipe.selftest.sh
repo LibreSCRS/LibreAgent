@@ -150,7 +150,7 @@ sed -i 's#/\([a-z-]*\)_\$pkgver\.orig\.tar\.gz#/\1-sources_$pkgver.orig.tar.gz#'
     "$(fx asset_name_drift)/packaging/arch/PKGBUILD"
 expect_red asset_name_drift "the release workflow uploads"
 
-# 7 -- the recipe fetches a SIBLING repository's asset. These four recipes are
+# 7 -- the recipe fetches a SIBLING repository's asset. The recipes are
 #      near-copies of one another, so this is what a careless copy produces.
 fixture sibling_repo
 sed -i "s#github.com/LibreSCRS/$rname/releases#github.com/LibreSCRS/NotThisRepo/releases#" \

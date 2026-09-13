@@ -142,9 +142,9 @@ jobs:
         run: python3 tools/dup-scan.py --repo "$(basename "$PWD")"
 
       - name: Every first-party version floor names the major in VERSION
-        # The 4.x sweep before 5.0 searched for the token `4.2`; the floor that
-        # mattered read `4.0`, in the only executable consumer the project
-        # ships, and survived. This measures the property instead: every
+        # Grepping for one spelling of an old floor cannot see the floors
+        # written another way, and a floor a major behind still configures
+        # and still builds. This measures the property instead: every
         # first-party find_package/find_dependency floor must name the major
         # the VERSION file names. It reads VERSION and never `git describe`, so
         # it is decidable before a tag exists -- which is the whole window in

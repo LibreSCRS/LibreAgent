@@ -480,9 +480,11 @@ std::expected<CscaAnchorState, SyncError> DBusTransport::importCscaMasterList(in
     // Bounded on the AUTHORIZATION budget, not the card one. Verifying the
     // signatures and writing the anchor cache is real work, but it is not the
     // long pole: this method is gated outright, so the agent holds the reply
-    // until a person has finished at the prompt. Budgeting it as a card call
-    // abandoned the import mid-ceremony and reported a refusal for a file that
-    // installed moments later — measured at 3 s against an 11 s prompt.
+    // until a person has finished at the prompt. A card call is budgeted at
+    // 3 s (kDefaultCallTimeoutMs); a prompt a person answers takes on the order
+    // of 11 s, so the card budget must not apply to a call that waits on one:
+    // it would abandon the import mid-ceremony and report a refusal for a file
+    // that installs moments later.
     const QDBusMessage reply = cappedCall(m_connection, call, kAuthorizedCallTimeoutMs);
     if (reply.type() != QDBusMessage::ReplyMessage) {
         // Same rule as configOutcome(): an agent-namespace name carries its
