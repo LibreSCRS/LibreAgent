@@ -75,6 +75,17 @@ jobs:
         # that passed. Costs a second and builds nothing.
         run: ./ci/scripts/check-skip-reasons.sh
 
+      - name: BIGNUM deleters cleanse, and the mirror still names its canonical
+        # The master-list fixture's deleter is a marked mirror of the
+        # middleware's, and the registry that pairs them compares names and
+        # sites, never bodies -- so it reported nothing while this one had
+        # stopped cleansing. Checks the call and the marker as two separate
+        # failures, and every other BIGNUM deleter in the checkout as a third.
+        run: ./ci/scripts/check-cleansing-deleters.sh
+
+      - name: BIGNUM deleter gate can still tell red from green
+        run: ./ci/scripts/check-cleansing-deleters.selftest.sh
+
       - name: Changelog and version agree on the pending release
         # Run on every push with the version this tree is heading for, so the
         # agreement is proved weeks before the tag rather than first on a tag
