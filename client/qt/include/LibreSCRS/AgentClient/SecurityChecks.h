@@ -42,7 +42,7 @@ namespace LibreSCRS::AgentClient {
 /// which kind, and a host still needs its own catalogue to put a word on it.
 ///
 /// `Other` is the honest landing place for a token this build has no
-/// enumerator for, but only when a caller CHOOSES it — @ref categoryFromString
+/// enumerator for, but only when a caller CHOOSES it — @ref LibreSCRS::AgentClient::categoryFromString
 /// returns nothing rather than picking it, because a category nobody
 /// recognised and a category explicitly outside the canonical three are
 /// different situations.
@@ -67,7 +67,7 @@ enum class SecurityCheckStatus : std::uint8_t {
 
 /// @brief Decode a status token; nothing for a token this build cannot name.
 ///
-/// Deliberately NOT defaulting to @ref SecurityCheckStatus::NotPerformed. That
+/// Deliberately NOT defaulting to @ref LibreSCRS::AgentClient::SecurityCheckStatus::NotPerformed. That
 /// is the safest-LOOKING wrong answer: it turns a verdict this build failed to
 /// understand into a confident statement that no check ran, and a reader
 /// cannot tell the two apart afterwards. The caller decides, in the open.
