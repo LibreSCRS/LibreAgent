@@ -50,8 +50,12 @@ std::optional<RsaPublicKey> rsaPublicKeyFromCertDer(std::span<const std::uint8_t
     BIGNUM* eBn = nullptr;
     const bool gotN = EVP_PKEY_get_bn_param(pkey.get(), OSSL_PKEY_PARAM_RSA_N, &nBn) == 1;
     const bool gotE = EVP_PKEY_get_bn_param(pkey.get(), OSSL_PKEY_PARAM_RSA_E, &eBn) == 1;
-    std::unique_ptr<BIGNUM, decltype(&BN_free)> nGuard{nBn, &BN_free};
-    std::unique_ptr<BIGNUM, decltype(&BN_free)> eGuard{eBn, &BN_free};
+    // BN_clear_free, not BN_free: one policy for BIGNUM release in this tree,
+    // so no call site has to be right about which values are secret. These two
+    // are public (an RSA modulus and its exponent); the cost is a memset of a
+    // few hundred bytes against a free that costs an order of magnitude more.
+    std::unique_ptr<BIGNUM, decltype(&BN_clear_free)> nGuard{nBn, &BN_clear_free};
+    std::unique_ptr<BIGNUM, decltype(&BN_clear_free)> eGuard{eBn, &BN_clear_free};
     if (!gotN || !gotE) {
         return std::nullopt;
     }
