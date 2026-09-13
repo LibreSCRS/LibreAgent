@@ -70,6 +70,18 @@ jobs:
       - name: Check every tracked source is reachable by the formatter
         run: ./ci/scripts/check-format-scope.sh
 
+      - name: Prove the fd-harvest gate discriminates
+        run: ./ci/scripts/check-fd-harvest.selftest.sh
+
+      - name: One clamped SCM_RIGHTS harvest, not two
+        # cmsg_len says what the SENDER attached. XNU keeps reporting that
+        # after truncation while msg_controllen shrinks to what arrived, so a
+        # loop that subtracts CMSG_LEN(0) from it walks off a stack buffer and
+        # hands every int past the end to fcntl(). Linux rewrites cmsg_len to
+        # what it delivered, which is why no test running here can see the
+        # difference and why this is a source-shape gate rather than a test.
+        run: ./ci/scripts/check-fd-harvest.sh
+
       - name: Check every skip carries a reason
         # A test that skips without saying why is indistinguishable from a test
         # that passed. Costs a second and builds nothing.
