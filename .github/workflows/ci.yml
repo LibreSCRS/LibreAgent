@@ -121,6 +121,25 @@ jobs:
         # bound, which is the only moment the omission is cheap to fix.
         run: ci/scripts/check-job-timeouts.sh
 
+      - name: Every shipped gate is wired into CI
+        # A gate nobody runs is not a gate: dup-scan.py and canonical-types.py
+        # shipped in five repositories for a whole release cycle and no
+        # workflow ever named either.
+        run: ci/scripts/check-gates-wired.sh
+
+      - name: Gate-wiring check self-test
+        run: ci/scripts/check-gates-wired.selftest.sh
+
+      - name: Canonical declaration registry
+        # Single-checkout subset of the workspace scan. The cross-repository
+        # half -- duplicate bodies between two checkouts -- needs every tree
+        # side by side, which no single repository's CI has; this half is the
+        # part one repository can prove on its own.
+        run: python3 tools/canonical-types.py --repo "$(basename "$PWD")"
+
+      - name: Duplicate bodies (this checkout)
+        run: python3 tools/dup-scan.py --repo "$(basename "$PWD")"
+
       - name: Every first-party version floor names the major in VERSION
         # The 4.x sweep before 5.0 searched for the token `4.2`; the floor that
         # mattered read `4.0`, in the only executable consumer the project
