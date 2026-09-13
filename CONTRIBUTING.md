@@ -39,7 +39,7 @@ of the tool. CI will reject diverging layouts.
 ## Build and test
 
 See the top-level `README.md` for the build instructions. LibreAgent depends on
-LibreMiddleware (consumed via `find_package(LibreMiddleware 4.2 CONFIG)`); make
+LibreMiddleware (consumed via `find_package(LibreMiddleware 5.0 CONFIG)`); make
 sure it is installed and discoverable, or point CMake at its prefix with
 `-DCMAKE_PREFIX_PATH=<lm-install-prefix>`. Platform hosts that pull the core in
 as a subproject build it from source with FetchContent — see

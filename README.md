@@ -85,7 +85,7 @@ Requirements:
   keeps the vendored QCBOR dependency's own install rules out of the
   installed tree)
 - A C++23 toolchain (GCC 13+ / Clang 16+)
-- `find_package(LibreMiddleware 4.2 CONFIG)` — the sole first-party dependency,
+- `find_package(LibreMiddleware 5.0 CONFIG)` — the sole first-party dependency,
   needed by `LibreAgent::Core` only
 - OpenSSL ≥ 3.0 (`Crypto`) — `LibreAgent::Core` only
 - Qt6 (`Core`, plus `DBus` on Linux) — `LibreAgent::ClientQt` only
