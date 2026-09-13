@@ -112,6 +112,39 @@ jobs:
         # bound, which is the only moment the omission is cheap to fix.
         run: ci/scripts/check-job-timeouts.sh
 
+      - name: Every first-party version floor names the major in VERSION
+        # The 4.x sweep before 5.0 searched for the token `4.2`; the floor that
+        # mattered read `4.0`, in the only executable consumer the project
+        # ships, and survived. This measures the property instead: every
+        # first-party find_package/find_dependency floor must name the major
+        # the VERSION file names. It reads VERSION and never `git describe`, so
+        # it is decidable before a tag exists -- which is the whole window in
+        # which the mistake is cheap. --min 1 is the vacuum guard: a scan that
+        # matches nothing is unmeasured, not clean.
+        run: ci/scripts/check-version-floors.sh --min 1
+
+      - name: Prove the floor gate still fails when it should
+        # Twenty cases, instant, no build. A gate nobody has seen fail is a
+        # line in a workflow file.
+        run: ./ci/scripts/check-version-floors.selftest.sh
+
+      - name: The version this tree stamps names the major in VERSION
+        # The floor gate reads VERSION and the sources, so it stays green
+        # whatever the version derivation does, and a check that configures
+        # with git switched off is measuring the one input under which a tag
+        # cannot win. Between code freeze and the tag `git describe` still
+        # answers with the PREVIOUS release, and a tree that lets it decide
+        # installs a package whose major contradicts its own VERSION, changelog
+        # and packaging. This configures the real CMakeLists against a stubbed
+        # tag, in both directions, and creates no tag anywhere.
+        run: ci/scripts/check-version-stamp.sh --verbose
+
+      - name: Prove the stamp gate still fails when it should
+        # Seven fixtures, no compiler, no build. Two of them are shapes that
+        # have really been written: the tag deciding unconditionally, and git
+        # being ignored altogether.
+        run: ./ci/scripts/check-version-stamp.selftest.sh
+
   docs-check:
     # The public-API documentation gate. Self-contained for the same reason
     # format-check is: doxygen only PARSES the headers, so this needs neither
@@ -184,7 +217,7 @@ jobs:
       LM_PREFIX: /opt/libremiddleware
       # Git ref of LibreMiddleware to build against. Track its trunk during the
       # development cycle (LibreLinux/LibreCelik do the same); pin to a release
-      # tag once LibreMiddleware tags releases. find_package(LibreMiddleware 4.2)
+      # tag once LibreMiddleware tags releases. find_package(LibreMiddleware 5.0)
       # in CMakeLists.txt enforces the required version independently of this ref.
       MIDDLEWARE_REF: main
     steps:
@@ -204,7 +237,7 @@ jobs:
 
       # --- LibreMiddleware: build from source + install to a prefix ---------
       # The core consumes the installed CONFIG package
-      # (find_package(LibreMiddleware 4.2 REQUIRED CONFIG)), so it must exist on
+      # (find_package(LibreMiddleware 5.0 REQUIRED CONFIG)), so it must exist on
       # disk first. SHARED + plugins ON to match how LibreLinux acquires it;
       # native signing backend (the CI default) — DSS is only a test oracle.
       - name: Checkout LibreMiddleware
@@ -913,7 +946,7 @@ jobs:
       LM_PREFIX: /opt/libremiddleware
       # Git ref of LibreMiddleware to build against. Track its trunk during the
       # development cycle (LibreLinux/LibreCelik do the same); pin to a release
-      # tag once LibreMiddleware tags releases. find_package(LibreMiddleware 4.2)
+      # tag once LibreMiddleware tags releases. find_package(LibreMiddleware 5.0)
       # in CMakeLists.txt enforces the required version independently of this ref.
       MIDDLEWARE_REF: main
     # Not on pull_request: this pass costs an hour and the moment a
@@ -938,7 +971,7 @@ jobs:
 
       # --- LibreMiddleware: build from source + install to a prefix ---------
       # The core consumes the installed CONFIG package
-      # (find_package(LibreMiddleware 4.2 REQUIRED CONFIG)), so it must exist on
+      # (find_package(LibreMiddleware 5.0 REQUIRED CONFIG)), so it must exist on
       # disk first. SHARED + plugins ON to match how LibreLinux acquires it;
       # native signing backend (the CI default) — DSS is only a test oracle.
       - name: Checkout LibreMiddleware
