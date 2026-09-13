@@ -223,8 +223,11 @@ RawCryptoFlow::Result RawCryptoFlow::run(Op op, std::span<const std::uint8_t> by
         }
     } else if (outcome == Outcome::Ok && !alreadyVerified && m_deps.markPinVerified) {
         // First op of the lease succeeded (verify + PSO): remember the verified
-        // state so subsequent ops on this held channel skip the re-prompt. Only
-        // the boolean is remembered — the PIN above is cleansed when `pin` drops.
+        // state so subsequent ops of the lease skip the re-prompt. What carries
+        // that state is the card itself, on a session the holder keeps open —
+        // NOT a channel or a lock spanning the two plugin calls, because none
+        // spans them; that is why clearPinVerified above has to exist. Only the
+        // boolean is remembered — the PIN above is cleansed when `pin` drops.
         m_deps.markPinVerified();
     }
 

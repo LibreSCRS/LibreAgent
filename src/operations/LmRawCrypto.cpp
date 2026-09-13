@@ -157,8 +157,11 @@ RawCryptoResult signRaw(const CandidateList& candidates, const std::string& cert
     // the authority): an EC key takes the pre-hashed ECDSA path — both the
     // hash-on-card probe and the DigestInfo fallback below are RSA-shaped.
     // The PKCS#11 module hands the pre-computed digest for CKM_ECDSA, so
-    // @p input IS the hash; verify-then-sign runs back-to-back on the held
-    // channel exactly like the DigestInfo family.
+    // @p input IS the hash; verify-then-sign are two SEPARATE plugin calls,
+    // back-to-back but NOT under one channel holder or one card transaction:
+    // no type in this host takes either across a plugin call, so between the
+    // two the reader is open to another process. For a PIN-ALWAYS key that gap
+    // is where the verified state is lost.
     if (certPublicKeyIsEcdsa(selection->cert.derBytes)) {
         if (pin) {
             if (const auto fail = verifyPinOnCard(*selection->plugin, session, *pin)) {
@@ -208,8 +211,9 @@ RawCryptoResult signRaw(const CandidateList& candidates, const std::string& cert
                                       LibreSCRS::Plugin::SignMechanism::RSA_SHA256, token);
     if (sr.outcome == LibreSCRS::Plugin::SignResultOutcome::NotImplemented) {
         // DigestInfo family: PIN-as-consent verify on-card before the PSO when a
-        // PIN was just collected; verify + sign run back-to-back on the held
-        // channel so a PIN-ALWAYS key keeps its verified state for the sign.
+        // PIN was just collected. Two separate plugin calls, with no lock
+        // spanning both: a PIN-ALWAYS key (PIV slot 9C) can lose its verified
+        // state between them.
         if (pin) {
             if (const auto fail = verifyPinOnCard(*selection->plugin, session, *pin)) {
                 return err(*fail);
@@ -249,7 +253,7 @@ RawCryptoResult decryptRaw(const CandidateList& candidates, const std::string& c
         return err(RawCryptoStatus::NotSupported);
     }
     // PIN-as-consent: verify on-card before the PSO when a PIN was just
-    // collected. verify + decipher run back-to-back on the held channel.
+    // collected. Two separate plugin calls; nothing spans both.
     if (pin) {
         if (const auto fail = verifyPinOnCard(*selection->plugin, session, *pin)) {
             return err(*fail);
