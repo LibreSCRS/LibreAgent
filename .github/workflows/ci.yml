@@ -598,7 +598,11 @@ jobs:
     # component still resolves downstream with libLibreAgentWire.a left out
     # of the install tree entirely (Wire is folded into
     # liblibrescrs-agentclient-qt.so as a static link regardless — see that
-    # option's own comment in cmake/InstallExport.cmake).
+    # option's own comment in cmake/InstallExport.cmake). That is also why the
+    # exported ClientQt doubles are turned off here by hand: their default
+    # follows CLIENT_QT, they name LibreAgent::Wire in their own export, and an
+    # install tree without that archive cannot carry them -- left implicit, the
+    # configure refuses itself before a single file compiles.
     #
     # Two more fixtures get their only exercise on this same LM-less,
     # Core-less prefix: tests/pkgsmoke/subdir-version (add_subdirectory()s
@@ -630,6 +634,20 @@ jobs:
         with:
           path: LibreAgent
 
+      # The exported ClientQt doubles are OFF here and nowhere else: their export
+      # names LibreAgent::Wire, and this job's whole point is an install tree
+      # without the wire archive, so the two options cannot both be on. What this
+      # leg therefore does NOT cover is the doubles' own install/export --
+      # LibreAgentClientQtTestSupportTargets.cmake is not written here. The job
+      # that does write it is build-linux: its "Installed CONFIG package smoke"
+      # step is the only one that runs `cmake --install` on a top-level
+      # configuration with the doubles at their default ON, and then consumes
+      # that prefix through tests/pkgsmoke. (The client job builds the doubles
+      # but never installs the LibreAgent tree -- its only `cmake --install` is
+      # LibreMiddleware's -- so it produces no Targets.cmake at all.)
+      # The file is also named by the three packaging payload lists. The ctest
+      # inventory is unaffected either way, because the doubles are still BUILT
+      # when the project is top level.
       - name: Configure (Core OFF, Wire+ClientQt ON, LibreMiddleware disabled, Wire archive not installed)
         working-directory: LibreAgent
         run: |
@@ -638,6 +656,7 @@ jobs:
             -DLIBREAGENT_BUILD_CORE=OFF \
             -DLIBREAGENT_BUILD_WIRE=ON \
             -DLIBREAGENT_BUILD_CLIENT_QT=ON \
+            -DLIBREAGENT_BUILD_CLIENT_QT_TEST_SUPPORT=OFF \
             -DLIBREAGENT_INSTALL_WIRE_ARCHIVE=OFF \
             -DCMAKE_DISABLE_FIND_PACKAGE_LibreMiddleware=ON \
             -DLIBRESCRS_AGENT_WERROR=ON
