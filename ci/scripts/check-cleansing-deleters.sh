@@ -58,7 +58,7 @@ if ! printf '%s\n' "$body" | grep -q 'BN_clear_free'; then
     echo "ERROR: $MIRROR:$decl BnDeleter does not call BN_clear_free." >&2
     echo "       It mirrors the middleware's, which cleanses because PACE key" >&2
     echo "       material exists only as a BIGNUM. A mirror that drifts is what" >&2
-    echo "       nothing reported last time." >&2
+    echo "       the registry cannot see: it compares names, never bodies." >&2
     fail=1
 fi
 
