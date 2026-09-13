@@ -1,0 +1,11 @@
+CborRelocationTest
+CborRoundTripTest
+CddlVocabularyTest
+ClientCodecTest
+FdHarvestTest
+FeatureTokensGuardTest
+FrameReassemblerTest
+FramingTest
+MessagesRoundTripTest
+PropertyChangedVocabGuardTest
+WireHeadersTest

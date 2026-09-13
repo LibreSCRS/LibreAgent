@@ -886,6 +886,12 @@ jobs:
           ASAN_OPTIONS: detect_leaks=0:detect_container_overflow=0
         run: ctest --test-dir build-wire-asan --output-on-failure --no-tests=error
 
+      - name: Check the discovered test set
+        # --no-tests=error above catches a configuration that stopped generating
+        # these tests ALTOGETHER; it says nothing about one of them quietly
+        # dropping out. Every other leg in this workflow commits its listing.
+        run: ./ci/scripts/test-manifest-gate.sh --check build-wire-asan wire-asan-macos
+
   client-macos:
     # ClientQt's production transport on Apple platforms, actually exercised
     # here: until this job, nothing in this workflow ever built or ran
