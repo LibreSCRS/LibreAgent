@@ -167,6 +167,17 @@ public:
     // calls this — the holder uses the in-process CardSession::open wrapper.
     void setSessionFactoryForTest(SessionFactory factory);
 
+    // Test seam: the worker's bounded cv wait (the idle sweep period), default
+    // CardSessionHolder::kIdleClose. MUST be called before the first enqueue for
+    // any reader (captured when each worker is built). Production never calls
+    // this.
+    void setIdleSweepForTest(std::chrono::milliseconds sweep);
+
+    // Test seam: the clock handed to every holder workerFor builds, so an idle
+    // test advances a fake clock instead of waiting kIdleClose. MUST be called
+    // before the first enqueue for any reader. Production never calls this.
+    void setHolderClockForTest(CardSessionHolder::Clock clock);
+
     // Test seam: enqueue a probe that runs ON THE WORKER THREAD with a
     // reference to the reader's CardSessionHolder. Lets a bus-less test drive a
     // worker-thread holder->acquire() (the bus-less enqueueForTest path does NOT
@@ -180,6 +191,32 @@ public:
     // it; the worker invalidates the holder between ops. No-op when no worker
     // exists for the reader (nothing is held).
     void invalidateReaderSession(ObjectId reader);
+
+    // Hold (or release) a bare power hold on the reader: while held, the
+    // reader's worker keeps a second CardSession open that is never resolved,
+    // never handed to a plugin and never transmits, so the card stays powered.
+    // A dual-interface CONTACT card kept powered starves the contactless twin of
+    // the same single-chip card, which stops the CL slot from reporting an
+    // endless phantom insert/remove. The logical session is NOT affected: it
+    // still idle-closes after kIdleClose, so secrets stay bounded. The host
+    // holds on export of such a card and releases in its card-removed hook.
+    // Like invalidateReaderSession, this only flags the worker (under its mutex)
+    // and wakes it; the worker applies the hold on its own thread before its
+    // next op and renews it on every idle sweep. No-op when no worker exists.
+    void setReaderHold(ObjectId reader, bool hold);
+
+    // Test seam: the hold flag as the host last set it (false when no worker
+    // exists). Inline — emits no ABI symbol.
+    [[nodiscard]] bool isReaderHeldForTest(ObjectId reader)
+    {
+        std::lock_guard wl(m_workersMutex);
+        auto it = m_workers.find(reader);
+        if (it == m_workers.end() || !it->second) {
+            return false;
+        }
+        std::lock_guard l(it->second->mutex);
+        return it->second->hold;
+    }
 
     // Trip the cancel on the live Operation @p id. No-op if absent.
     void cancel(OperationId id);
@@ -291,6 +328,17 @@ private:
         // touch the holder), never mid-op, so a live AcquiredCard is never
         // pulled out from under an in-flight doWork().
         bool pendingInvalidate{false};
+        // Set by setReaderHold (monitor/bus thread) under `mutex`; applied by the
+        // worker thread (acquireHold / releaseHold on the holder) when
+        // `holdDirty` wakes it, and renewed on every idle sweep. Plain bools
+        // guarded by `mutex`, like pendingInvalidate, so they participate in the
+        // cv wait predicate under the one lock.
+        bool hold{false};
+        bool holdDirty{false};
+        // The bounded cv wait; kIdleClose in production, shortened by
+        // setIdleSweepForTest. Written once at construction (workerFor), read
+        // only by this worker's thread.
+        std::chrono::milliseconds idleSweep{CardSessionHolder::kIdleClose};
         std::mutex mutex;
         std::condition_variable_any cv;
         std::jthread worker;
@@ -369,6 +417,10 @@ private:
     // per-reader holder uses it instead of the in-process CardSession::open
     // wrapper. Set once before any enqueue, then only read on the enqueue path.
     SessionFactory m_testSessionFactory;
+    // Test-only overrides (empty / default in production), captured by each
+    // worker at construction like m_testSessionFactory.
+    std::chrono::milliseconds m_idleSweep{CardSessionHolder::kIdleClose};
+    CardSessionHolder::Clock m_testHolderClock;
     std::mutex m_workersMutex;
     // std::map over unordered_map for consistency with the rest of the
     // manager's id-keyed tables; reader churn is low so ordering overhead is

@@ -139,4 +139,27 @@ CapabilityResolver::CardResolution CardSessionHolder::fullResolution() noexcept
     }
 }
 
+void CardSessionHolder::acquireHold() noexcept
+{
+    if (m_hold) {
+        return;
+    }
+    // The injected factory is a std::function and may throw; honour the
+    // noexcept contract by degrading to "no hold" — the worker retries at its
+    // next sweep.
+    try {
+        auto opened = m_factory(m_readerName);
+        if (opened) {
+            m_hold = std::move(*opened);
+        }
+    } catch (...) {
+        m_hold.reset();
+    }
+}
+
+void CardSessionHolder::releaseHold() noexcept
+{
+    m_hold.reset();
+}
+
 } // namespace LibreSCRS::Agent::Operations

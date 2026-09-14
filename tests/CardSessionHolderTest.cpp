@@ -224,3 +224,112 @@ TEST(CardSessionHolder, ActivityResetsIdle)
     EXPECT_EQ(opens, 1) << "every acquire re-stamps lastUsed, so the reader is not idle";
     EXPECT_EQ(b->session.get(), c->session.get()) << "same session handle";
 }
+
+// ---- Power hold: a bare second session that keeps the card powered ----------
+
+// A counting resolver, so a test can prove the hold is NEVER resolved (no
+// plugin ever sees the hold session).
+namespace {
+CandidateResolver makeCountingResolver(int& resolves)
+{
+    return [&resolves](std::span<const std::uint8_t>, LibreSCRS::SmartCard::CardSession&) {
+        ++resolves;
+        return CandidateList{};
+    };
+}
+} // namespace
+
+TEST(CardSessionHolder, HoldOpensThroughFactoryWithoutResolving)
+{
+    int opens = 0;
+    int resolves = 0;
+    CardSessionHolder h{"R", makeCountingFactory(opens), makeCountingResolver(resolves),
+                        std::make_shared<LibreSCRS::SmartCard::CardMap>()};
+
+    EXPECT_FALSE(h.hasHoldForTest());
+    h.acquireHold();
+    EXPECT_TRUE(h.hasHoldForTest());
+    EXPECT_EQ(opens, 1) << "the hold is one bare session open";
+    EXPECT_EQ(resolves, 0) << "the hold is never resolved: no plugin sees it";
+
+    h.acquireHold();
+    EXPECT_EQ(opens, 1) << "a second acquireHold is a no-op while the hold exists";
+    EXPECT_TRUE(h.hasHoldForTest());
+}
+
+TEST(CardSessionHolder, HoldSurvivesIdleCloseOfLogicalSession)
+{
+    int opens = 0;
+    auto now = std::chrono::steady_clock::time_point{};
+    CardSessionHolder h{"R", makeCountingFactory(opens), makeCannedResolver(),
+                        std::make_shared<LibreSCRS::SmartCard::CardMap>(), [&now] { return now; }};
+
+    auto a = h.acquire();
+    ASSERT_TRUE(a.has_value());
+    h.acquireHold();
+    EXPECT_EQ(opens, 2) << "logical session + hold";
+
+    now += CardSessionHolder::kIdleClose;
+    h.closeIfIdle();
+
+    EXPECT_TRUE(h.hasHoldForTest()) << "idle-close touches only the logical session";
+    auto b = h.acquire();
+    ASSERT_TRUE(b.has_value());
+    EXPECT_EQ(opens, 3) << "the logical session was closed and re-opened";
+    EXPECT_NE(a->session.get(), b->session.get());
+}
+
+TEST(CardSessionHolder, ReleaseHoldDropsOnlyTheHold)
+{
+    int opens = 0;
+    CardSessionHolder h{"R", makeCountingFactory(opens), makeCannedResolver(),
+                        std::make_shared<LibreSCRS::SmartCard::CardMap>()};
+
+    auto a = h.acquire();
+    ASSERT_TRUE(a.has_value());
+    h.acquireHold();
+    ASSERT_TRUE(h.hasHoldForTest());
+
+    h.releaseHold();
+    EXPECT_FALSE(h.hasHoldForTest());
+    auto b = h.acquire();
+    ASSERT_TRUE(b.has_value());
+    EXPECT_EQ(a->session.get(), b->session.get()) << "the logical session is untouched by releaseHold";
+    EXPECT_EQ(opens, 2);
+
+    h.releaseHold(); // no-op without a hold
+    EXPECT_FALSE(h.hasHoldForTest());
+}
+
+TEST(CardSessionHolder, HoldOpenFailureLeavesNoHold)
+{
+    int calls = 0;
+    SessionFactory failing = [&calls](const std::string&)
+        -> std::expected<std::shared_ptr<LibreSCRS::SmartCard::CardSession>, LibreSCRS::SmartCard::OpenError> {
+        ++calls;
+        return std::unexpected{LibreSCRS::SmartCard::OpenError{LibreSCRS::SmartCard::OpenError::Kind::ReaderUnavailable,
+                                                               LibreSCRS::LocalizedText{}, std::nullopt}};
+    };
+    CardSessionHolder h{"R", failing, makeCannedResolver(), std::make_shared<LibreSCRS::SmartCard::CardMap>()};
+
+    EXPECT_NO_THROW(h.acquireHold());
+    EXPECT_FALSE(h.hasHoldForTest());
+    EXPECT_EQ(calls, 1);
+    h.acquireHold(); // retry is allowed: the worker retries at its next sweep
+    EXPECT_EQ(calls, 2);
+    EXPECT_FALSE(h.hasHoldForTest());
+}
+
+TEST(CardSessionHolder, InvalidateLeavesHoldAlone)
+{
+    int opens = 0;
+    CardSessionHolder h{"R", makeCountingFactory(opens), makeCannedResolver(),
+                        std::make_shared<LibreSCRS::SmartCard::CardMap>()};
+
+    ASSERT_TRUE(h.acquire().has_value());
+    h.acquireHold();
+    h.invalidate();
+    EXPECT_TRUE(h.hasHoldForTest()) << "the worker, not the holder, decides when the hold goes";
+    ASSERT_TRUE(h.acquire().has_value());
+    EXPECT_EQ(opens, 3) << "logical re-opened after invalidate; the hold was not re-opened";
+}

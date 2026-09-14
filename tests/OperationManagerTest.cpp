@@ -13,6 +13,7 @@
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
+#include <cstdint>
 #include <expected>
 #include <functional>
 #include <memory>
@@ -524,4 +525,155 @@ TEST(OperationManager, NormalCompletionCleanupScrubsSenderTables)
         << "m_opToSender scrubbed by the normal cleanup route (pre-fix: leaked)";
     EXPECT_FALSE(mgr.isSenderTrackedForTest(sender))
         << "m_senderToOps scrubbed by the normal cleanup route (pre-fix: leaked)";
+}
+
+namespace {
+
+// Counting factory shared by the hold tests: every open (logical or hold) is a
+// fresh detached session. Tests that must tell the two apart observe the
+// holder through a worker-thread probe, never through the count alone,
+// because the idle sweep renews the hold (release + re-acquire) every period.
+void installCountingFactory(OperationManager& mgr, std::atomic<int>& opens)
+{
+    mgr.setSessionFactoryForTest(
+        [&opens](const std::string& r)
+            -> std::expected<std::shared_ptr<LibreSCRS::SmartCard::CardSession>, LibreSCRS::SmartCard::OpenError> {
+            opens.fetch_add(1);
+            return LibreSCRS::SmartCard::detail::makeDetachedCardSession(r);
+        });
+}
+
+// Run @p probe on reader 1's worker thread and wait (bounded) for it.
+void probeOnWorker(OperationManager& mgr, std::function<void(CardSessionHolder&)> probe)
+{
+    std::atomic<bool> done{false};
+    mgr.enqueueHolderProbeForTest(ObjectId{1}, [&, probe = std::move(probe)](CardSessionHolder& h) {
+        probe(h);
+        done.store(true);
+    });
+    const auto start = std::chrono::steady_clock::now();
+    while (!done.load() && (std::chrono::steady_clock::now() - start) < 2s) {
+        std::this_thread::sleep_for(2ms);
+    }
+    ASSERT_TRUE(done.load()) << "worker probe did not run within 2 s";
+}
+
+} // namespace
+
+// setReaderHold routes to the per-reader worker and the worker applies it on
+// its own thread BEFORE the next queued op, so a probe enqueued after the call
+// observes the hold state deterministically.
+TEST(OperationManager, SetReaderHoldRoutesAndApplies)
+{
+    // Everything a worker-thread lambda captures by reference is declared
+    // BEFORE the manager, so it outlives the workers the manager joins.
+    std::atomic<int> opens{0};
+    OperationManager mgr; // bus-less unit-test mode
+    installCountingFactory(mgr, opens);
+
+    EXPECT_FALSE(mgr.isReaderHeldForTest(ObjectId{1})) << "no worker yet";
+    mgr.setReaderHold(ObjectId{1}, true); // no worker: must be a silent no-op
+    EXPECT_FALSE(mgr.isReaderHeldForTest(ObjectId{1})) << "no worker: nothing stored";
+
+    probeOnWorker(mgr, [](CardSessionHolder&) {}); // materialise the worker
+    EXPECT_EQ(opens.load(), 0) << "materialising the worker opens nothing";
+
+    mgr.setReaderHold(ObjectId{1}, true);
+    EXPECT_TRUE(mgr.isReaderHeldForTest(ObjectId{1}));
+    std::atomic<int> held{-1};
+    probeOnWorker(mgr, [&](CardSessionHolder& h) { held.store(h.hasHoldForTest() ? 1 : 0); });
+    EXPECT_EQ(held.load(), 1) << "the hold was applied before the next queued op";
+    EXPECT_EQ(opens.load(), 1) << "the hold opened exactly once through the factory";
+
+    mgr.setReaderHold(ObjectId{1}, false);
+    EXPECT_FALSE(mgr.isReaderHeldForTest(ObjectId{1}));
+    probeOnWorker(mgr, [&](CardSessionHolder& h) { held.store(h.hasHoldForTest() ? 1 : 0); });
+    EXPECT_EQ(held.load(), 0) << "the hold was released before the next queued op";
+
+    EXPECT_FALSE(mgr.isReaderHeldForTest(ObjectId{2})) << "an unrelated reader is untouched";
+}
+
+// The assertion an earlier draft of this feature could not make: with a hold in place the
+// LOGICAL session still idle-closes (secrets stay bounded by kIdleClose) while
+// the hold survives. Deterministic through two seams: a short worker sweep and
+// a fake holder clock.
+TEST(OperationManager, HoldDoesNotBlockIdleClose)
+{
+    // The fake clock is called by the worker at EVERY sweep until the manager
+    // joins it, so it must be declared before the manager (destroyed after).
+    std::atomic<int> opens{0};
+    std::atomic<std::int64_t> nowNs{0};
+    OperationManager mgr;
+    installCountingFactory(mgr, opens);
+    mgr.setIdleSweepForTest(20ms);
+    mgr.setHolderClockForTest(
+        [&nowNs] { return std::chrono::steady_clock::time_point{std::chrono::nanoseconds{nowNs.load()}}; });
+
+    // Logical session opened by a probe; keep the AcquiredCard alive so the
+    // session object cannot be freed and its address reused by the re-open.
+    std::shared_ptr<LibreSCRS::SmartCard::CardSession> first;
+    probeOnWorker(mgr, [&](CardSessionHolder& h) {
+        auto a = h.acquire();
+        if (a) {
+            first = a->session;
+        }
+    });
+    ASSERT_NE(first, nullptr);
+
+    mgr.setReaderHold(ObjectId{1}, true);
+    std::atomic<int> held{-1};
+    probeOnWorker(mgr, [&](CardSessionHolder& h) { held.store(h.hasHoldForTest() ? 1 : 0); });
+    ASSERT_EQ(held.load(), 1);
+
+    // Past the idle window on the fake clock; let several sweeps run.
+    nowNs.store(std::chrono::duration_cast<std::chrono::nanoseconds>(CardSessionHolder::kIdleClose + 1s).count());
+
+    // Poll (bounded to 2 s) rather than sleep a fixed window: the worker needs
+    // at least one 20 ms sweep, and a descheduled runner can miss a fixed
+    // wait. held must stay 1 on every sweep; stop as soon as the session
+    // changes. second starts equal to first (no change observed yet) so the
+    // loop condition holds for the first pass.
+    std::shared_ptr<LibreSCRS::SmartCard::CardSession> second = first;
+    const auto pollStart = std::chrono::steady_clock::now();
+    while (second == first && std::chrono::steady_clock::now() - pollStart < 2s) {
+        // Sleep BEFORE probing: acquire() stamps the idle clock on every call,
+        // even a reused session, so touching the holder before the worker's
+        // wait_for has had a genuine 20 ms idle gap would erase the staleness
+        // the sweep is looking for. 25 ms comfortably clears that window.
+        std::this_thread::sleep_for(25ms);
+        probeOnWorker(mgr, [&](CardSessionHolder& h) {
+            held.store(h.hasHoldForTest() ? 1 : 0);
+            auto b = h.acquire();
+            if (b) {
+                second = b->session;
+            }
+        });
+        EXPECT_EQ(held.load(), 1) << "the hold survived every sweep";
+    }
+
+    ASSERT_NE(second, nullptr);
+    EXPECT_NE(second, first) << "the logical session was idle-closed and re-opened despite the hold";
+    EXPECT_EQ(held.load(), 1) << "the hold survived the idle sweeps";
+}
+
+// Card removal (invalidateReaderSession) releases the hold on the worker
+// thread: there is nothing left to keep powered.
+TEST(OperationManager, CardRemovedReleasesHold)
+{
+    std::atomic<int> opens{0};
+    OperationManager mgr;
+    installCountingFactory(mgr, opens);
+
+    probeOnWorker(mgr, [](CardSessionHolder&) {});
+    mgr.setReaderHold(ObjectId{1}, true);
+    std::atomic<int> held{-1};
+    probeOnWorker(mgr, [&](CardSessionHolder& h) { held.store(h.hasHoldForTest() ? 1 : 0); });
+    ASSERT_EQ(held.load(), 1);
+
+    mgr.invalidateReaderSession(ObjectId{1});
+    probeOnWorker(mgr, [&](CardSessionHolder& h) { held.store(h.hasHoldForTest() ? 1 : 0); });
+    EXPECT_EQ(held.load(), 0) << "invalidate released the hold before the next op";
+    EXPECT_TRUE(mgr.isReaderHeldForTest(ObjectId{1}))
+        << "the FLAG is the host's to clear (its card-removed hook calls setReaderHold(false) first); "
+           "the worker only dropped the handle";
 }

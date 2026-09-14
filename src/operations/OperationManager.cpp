@@ -133,7 +133,8 @@ std::shared_ptr<OperationManager::ReaderWorker> OperationManager::workerFor(Obje
                 }
                 return resolver->resolveCandidates(atr, s);
             },
-            std::make_shared<LibreSCRS::SmartCard::CardMap>());
+            std::make_shared<LibreSCRS::SmartCard::CardMap>(), m_testHolderClock);
+        worker->idleSweep = m_idleSweep;
         auto* raw = worker.get();
         raw->worker = std::jthread([this, raw](std::stop_token st) { workerLoop(*raw, std::move(st)); });
         it = m_workers.emplace(reader, std::move(worker)).first;
@@ -147,38 +148,64 @@ void OperationManager::workerLoop(ReaderWorker& worker, std::stop_token st)
 {
     while (!st.stop_requested()) {
         std::unique_lock lock(worker.mutex);
-        // Wake on a queued op, a pending session-invalidate, stop, or the idle
-        // sweep deadline. The invalidate is honoured BETWEEN ops (here, with no
-        // op in flight) so a live AcquiredCard is never pulled out from under a
-        // running doWork(). The bounded wait caps a quiescent reader's sleep at
-        // kIdleClose so an idle held session is proactively closed even with no
-        // queue traffic and no events; a real op / invalidate / stop still wins
-        // and is handled promptly. wait_for returns false only on timeout.
-        const bool ready = worker.cv.wait_for(lock, st, CardSessionHolder::kIdleClose, [&] {
-            return !worker.queue.empty() || worker.pendingInvalidate || st.stop_requested();
+        // Wake on a queued op, a pending session-invalidate, a hold change, stop,
+        // or the idle sweep deadline. The invalidate is honoured BETWEEN ops
+        // (here, with no op in flight) so a live AcquiredCard is never pulled out
+        // from under a running doWork(). The bounded wait caps a quiescent
+        // reader's sleep at idleSweep (kIdleClose in production) so an idle held
+        // session is proactively closed even with no queue traffic and no
+        // events. wait_for returns false only on timeout.
+        const bool ready = worker.cv.wait_for(lock, st, worker.idleSweep, [&] {
+            return !worker.queue.empty() || worker.pendingInvalidate || worker.holdDirty || st.stop_requested();
         });
         if (st.stop_requested()) {
             break;
         }
-        if (!ready) {
-            // Timed out with an empty queue and no pending invalidate: close the
-            // shared CardSession if it has been idle long enough. closeIfIdle is
-            // touched ONLY on this (the worker) thread, like the holder's other
-            // methods. The lock guards the queue/flags, not the holder.
-            lock.unlock();
-            if (worker.holder) {
-                worker.holder->closeIfIdle(); // noexcept
-            }
-            continue;
-        }
-        // Process a pending session-invalidate before touching the queue: close
-        // the shared CardSession on this (the only) thread allowed to touch the
-        // holder, then re-loop so the next op re-opens + re-resolves candidates.
+        // 1. Card removed: drop the power hold (nothing left to keep powered) and
+        //    close the shared CardSession, both on this (the only) thread allowed
+        //    to touch the holder; then re-loop so the next op re-opens.
         if (worker.pendingInvalidate) {
             worker.pendingInvalidate = false;
             lock.unlock();
             if (worker.holder) {
-                worker.holder->invalidate(); // noexcept
+                worker.holder->releaseHold(); // noexcept
+                worker.holder->invalidate();  // noexcept
+            }
+            continue;
+        }
+        // 2. Hold change: apply it now, BEFORE any queued op, then re-loop — a
+        //    non-empty queue makes the predicate true again immediately, so no
+        //    op is delayed; an empty queue must NOT fall through to the pop.
+        if (worker.holdDirty) {
+            worker.holdDirty = false;
+            const bool hold = worker.hold;
+            lock.unlock();
+            if (worker.holder) {
+                if (hold) {
+                    worker.holder->acquireHold(); // noexcept
+                } else {
+                    worker.holder->releaseHold(); // noexcept
+                }
+            }
+            continue;
+        }
+        if (!ready) {
+            // 3. Idle sweep. First renew the hold (release + re-acquire: heals a
+            //    handle a resume or a foreign reset invalidated, at the cost of two
+            //    pcscd calls per sweep; a SHARED re-connect on a powered card does
+            //    not reset it and the zero-handle window is far below pcscd's
+            //    power-off grace), THEN close the logical session if it has been
+            //    idle long enough — unconditionally: the hold, not the logical
+            //    session, is what keeps the card powered, so secrets stay bounded.
+            //    Holder access is worker-thread-only and never under worker.mutex.
+            const bool hold = worker.hold;
+            lock.unlock();
+            if (worker.holder) {
+                worker.holder->releaseHold(); // noexcept
+                if (hold) {
+                    worker.holder->acquireHold(); // noexcept
+                }
+                worker.holder->closeIfIdle(); // noexcept
             }
             continue;
         }
@@ -278,6 +305,16 @@ void OperationManager::setSessionFactoryForTest(SessionFactory factory)
     m_testSessionFactory = std::move(factory);
 }
 
+void OperationManager::setIdleSweepForTest(std::chrono::milliseconds sweep)
+{
+    m_idleSweep = sweep;
+}
+
+void OperationManager::setHolderClockForTest(CardSessionHolder::Clock clock)
+{
+    m_testHolderClock = std::move(clock);
+}
+
 void OperationManager::invalidateReaderSession(ObjectId reader)
 {
     // Lock order: m_workersMutex FIRST, then briefly w.mutex — never the
@@ -297,6 +334,27 @@ void OperationManager::invalidateReaderSession(ObjectId reader)
     {
         std::lock_guard l(w.mutex);
         w.pendingInvalidate = true;
+    }
+    w.cv.notify_all();
+}
+
+void OperationManager::setReaderHold(ObjectId reader, bool hold)
+{
+    // Same lock discipline as invalidateReaderSession: m_workersMutex held
+    // across the flag write and the notify so removeReader cannot free the
+    // worker underneath; m_workersMutex -> w.mutex, never the reverse. holdDirty
+    // is in the worker's wait predicate, so the notify has an effect: the worker
+    // applies the change on its own thread before its next op.
+    std::lock_guard wl(m_workersMutex);
+    auto it = m_workers.find(reader);
+    if (it == m_workers.end() || !it->second) {
+        return; // no worker yet => nothing to hold
+    }
+    auto& w = *it->second;
+    {
+        std::lock_guard l(w.mutex);
+        w.hold = hold;
+        w.holdDirty = true;
     }
     w.cv.notify_all();
 }

@@ -107,6 +107,28 @@ public:
     ///        Worker-thread only.
     [[nodiscard]] CapabilityResolver::CardResolution fullResolution() noexcept;
 
+    /// @brief Power hold: open a second, bare CardSession on this reader and keep
+    ///        it until releaseHold(). It is never returned from acquire(), never
+    ///        handed to a plugin, and never transmits; its only effect is to keep
+    ///        the PC/SC handle — and so the card's power — alive, which starves
+    ///        the contactless twin of a dual-interface card so its slot stops
+    ///        reporting a phantom insert/remove. Opened through the same
+    ///        SessionFactory as the logical session (CardSession::open is a bare
+    ///        SCardConnect). A failed open leaves no hold; the caller retries at
+    ///        its next sweep. Worker-thread only, like every other method here.
+    void acquireHold() noexcept;
+
+    /// @brief Drop the power hold if present (the CardSession destructor
+    ///        disconnects with SCARD_LEAVE_CARD). No-op without a hold.
+    ///        Worker-thread only.
+    void releaseHold() noexcept;
+
+    /// @brief Test seam: whether a power hold is currently held.
+    [[nodiscard]] bool hasHoldForTest() const noexcept
+    {
+        return m_hold != nullptr;
+    }
+
 private:
     /// @brief Union of all capabilities declared by the held session's candidates.
     ///        Opens the session if not already open. Returns 0 on open failure.
@@ -130,6 +152,10 @@ private:
     std::optional<LibreSCRS::Auth::PreReadAuthMethod> m_preReadAuth; // memoized per held session
     Clock m_clock;
     std::chrono::steady_clock::time_point m_lastUsed{}; // stamped on every acquire
+    // Power hold (see acquireHold). Deliberately a separate slot from
+    // m_session: invalidate()/closeIfIdle() must never drop it, and it must
+    // never be resolved or handed out.
+    std::shared_ptr<LibreSCRS::SmartCard::CardSession> m_hold;
 };
 
 } // namespace LibreSCRS::Agent::Operations
