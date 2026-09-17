@@ -234,13 +234,14 @@ get-appearance-font = ( t: "GetAppearanceFont" )
 ; "" is NOT a member: the socket frontend tolerates it for robustness, but no
 ; client in this stack emits it and it is not contractual.
 ;
-; Only the three RESOLVED forms are closed groups the manifest carries. Each
-; requested-* form names its resolved form plus the sentinel, which makes it a
-; rule reference rather than a bare alternation, and the vocabulary reader
-; deliberately reports only rules whose right-hand side is nothing but quoted
-; literals. Spelling the four levels out a second time here to make the
-; requested form "closed" too would reintroduce exactly the hand-copied
-; vocabulary this manifest exists to eliminate.
+; The three RESOLVED forms are closed groups the manifest carries. Each
+; requested-* form names its resolved form plus the sentinel -- one rule
+; reference and one literal, never the members re-spelled -- and the
+; vocabulary reader publishes that shape as a UNION: the manifest entry lists
+; the resolved members followed by "auto" and names its base under "union-of",
+; so a client mirror can check the sentinel's spelling against the contract
+; instead of carrying its own copy. The guard test still holds the requested
+; side to exactly one added literal.
 sign-level          = "b-b" / "b-t" / "b-lt" / "b-lta"
 requested-level     = sign-level / "auto"        ; "auto": the agent's configured DefaultLevel (+ its TSA-derived upgrade)
 sign-format         = "pades" / "cades" / "xades" / "jades" / "asice"
@@ -280,10 +281,12 @@ visual-sig-opts = { page: uint, x: float64, y: float64, width: float64, height: 
 ;
 ; NOTE for the vocabulary manifest: settable-config-key is a CLOSED token
 ; alternation and is therefore published in wire/wire-vocabulary.json and
-; guarded against the clients' mirrors. config-key is NOT -- its right-hand
-; side names another rule, which the manifest reader deliberately reports as
-; open -- so appending a read-only key here moves no manifest entry, and the
-; drift guard that watches it is ConfigKeyMirrorTest's own probe list instead.
+; guarded against the clients' mirrors. config-key is published too, as a
+; UNION of it ("union-of": "settable-config-key") -- the settable members
+; followed by the read-only keys -- so appending a read-only key here DOES move
+; a manifest entry, and a client mirror of the wider key set can be checked
+; against the contract. Both are marked cddlOnly: their members are string
+; constants agent-side, not an enum.
 settable-config-key = "DefaultLevel" / "DefaultReason" / "DefaultLocation" /   ; low tier (configure)
                       "TsaUrls" / "TslSources" / "CscaSources"                 ; trust tier (configure.trust)
 config-key = settable-config-key / "LastTsaUrl" / "CscaAnchorState" /

@@ -234,3 +234,19 @@ TEST(SignatureParams, RequestedLevelFromTreatsEmptyAndAutoAsAgentDecides)
     // rather than being silently treated as "use the default".
     EXPECT_EQ(sp::requestedLevelFrom("nonsense").value(), "nonsense");
 }
+
+TEST(SignatureParams, RequestedFormatAndPackagingShareTheLevelsDeferralRule)
+{
+    // One spelling of the "let the agent decide" sentinel below the wire, for
+    // all three requested forms -- the frontends used to open-code each.
+    EXPECT_EQ(sp::kDeferSentinel, "auto");
+    EXPECT_FALSE(sp::requestedFormatFrom("").has_value());
+    EXPECT_FALSE(sp::requestedFormatFrom(sp::kDeferSentinel).has_value());
+    EXPECT_EQ(sp::requestedFormatFrom("pades").value(), "pades");
+    EXPECT_EQ(sp::requestedFormatFrom("nonsense").value(), "nonsense");
+    EXPECT_FALSE(sp::requestedPackagingFrom("").has_value());
+    EXPECT_FALSE(sp::requestedPackagingFrom(sp::kDeferSentinel).has_value());
+    EXPECT_EQ(sp::requestedPackagingFrom("detached").value(), "detached");
+    EXPECT_EQ(sp::requestedPackagingFrom("nonsense").value(), "nonsense");
+    EXPECT_FALSE(sp::requestedLevelFrom(sp::kDeferSentinel).has_value());
+}

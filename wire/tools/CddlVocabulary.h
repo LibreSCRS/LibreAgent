@@ -7,6 +7,8 @@
 // agent core.
 #pragma once
 
+#include <algorithm>
+#include <cstddef>
 #include <cstdint>
 #include <fstream>
 #include <regex>
@@ -63,12 +65,17 @@ struct NumericEntry
     std::string name;
 };
 
-enum class GroupKind { Numeric, Token };
+// Union: a closed token group extended by literals -- `requested-level =
+// sign-level / "auto"`. Its members are the base group's members plus its own
+// literals, so it is closed too; `base` names the group it extends and is empty
+// for the other two kinds.
+enum class GroupKind { Numeric, Token, Union };
 
 struct DiscoveredGroup
 {
     std::string rule;
     GroupKind kind;
+    std::string base;
 };
 
 // The `Name: <value>` pairs of a CDDL numeric socket `<rule> = &( ... )`.
@@ -121,16 +128,55 @@ inline bool isNumericVocabularyBody(const std::string& body)
     return sawOne;
 }
 
-// Every CLOSED vocabulary in the grammar, in the three shapes it actually
+// The '/'-separated alternatives of a right-hand side, each trimmed, with a
+// '/' inside a quoted literal left alone. SPLITTING on the joiner rather than
+// deleting it is what keeps `base / other` two references instead of one
+// fused `baseother` -- the difference between a rule that names one group and
+// a rule that names two.
+inline std::vector<std::string> cddlAlternatives(const std::string& rhs)
+{
+    std::vector<std::string> alternatives;
+    std::string current;
+    bool quoted = false;
+    const auto flush = [&]() {
+        const std::size_t first = current.find_first_not_of(" \t\r\n");
+        if (first != std::string::npos) {
+            const std::size_t last = current.find_last_not_of(" \t\r\n");
+            alternatives.push_back(current.substr(first, last - first + 1));
+        }
+        current.clear();
+    };
+    for (const char c : rhs) {
+        if (c == '"') {
+            quoted = !quoted;
+        }
+        if (c == '/' && !quoted) {
+            flush();
+            continue;
+        }
+        current += c;
+    }
+    flush();
+    return alternatives;
+}
+
+// Every CLOSED vocabulary in the grammar, in the four shapes it actually
 // uses: a numeric socket `= &( ... )`; a plain numeric group `= ( ... )` (how
-// a .bits right-hand side is written); or a rule whose right-hand side is
-// nothing but quoted literals joined by '/'. A rule carrying a bare type name
-// (`tstr`, `uint`, another rule) is OPEN and deliberately NOT reported -- an
-// open field's legal values live in prose, so no manifest can carry them and
-// no gate can watch them.
+// a .bits right-hand side is written); a rule whose right-hand side is
+// nothing but quoted literals joined by '/'; or a UNION -- exactly one name of
+// a closed token group plus at least one quoted literal, joined by '/'. A rule
+// carrying any other bare type name (`tstr`, `uint`, two group names, a union
+// of a union) is OPEN and deliberately NOT reported -- an open field's legal
+// values live in prose, so no manifest can carry them and no gate can watch
+// them.
+//
+// Two passes, so the result does not depend on where in the grammar the base
+// group is defined: the first collects the numeric and token groups, the
+// second resolves each remaining candidate's single name against them.
 inline std::vector<DiscoveredGroup> discoverClosedGroups(const std::string& cddl)
 {
     std::vector<DiscoveredGroup> groups;
+    std::vector<std::pair<std::string, std::string>> undecided; // (rule, rhs)
     std::istringstream lines(cddl);
     std::string line;
     const std::regex defRe(R"(^\s*([A-Za-z][A-Za-z0-9-]*)\s*=)");
@@ -159,9 +205,37 @@ inline std::vector<DiscoveredGroup> discoverClosedGroups(const std::string& cddl
         const std::string residue =
             std::regex_replace(std::regex_replace(rhs, std::regex(R"rx("[^"]*")rx"), ""), std::regex(R"([/\s])"), "");
         if (!residue.empty() || rhs.find('"') == std::string::npos) {
+            undecided.emplace_back(rule, rhs);
             continue;
         }
         groups.push_back({rule, GroupKind::Token});
+    }
+
+    const std::regex nameRe(R"(^[A-Za-z][A-Za-z0-9-]*$)");
+    const auto isLiteral = [](const std::string& alt) {
+        return alt.size() >= 2 && alt.front() == '"' && alt.back() == '"';
+    };
+    const auto tokenGroupNamed = [&groups](const std::string& name) {
+        return std::any_of(groups.begin(), groups.end(),
+                           [&](const DiscoveredGroup& g) { return g.rule == name && g.kind == GroupKind::Token; });
+    };
+    for (const auto& [rule, rhs] : undecided) {
+        std::string base;
+        std::size_t names = 0;
+        std::size_t literals = 0;
+        const auto alternatives = cddlAlternatives(rhs);
+        for (const auto& alt : alternatives) {
+            if (isLiteral(alt)) {
+                ++literals;
+            } else if (std::regex_match(alt, nameRe)) {
+                ++names;
+                base = alt;
+            }
+        }
+        if (names != 1 || literals == 0 || names + literals != alternatives.size() || !tokenGroupNamed(base)) {
+            continue;
+        }
+        groups.push_back({rule, GroupKind::Union, base});
     }
     return groups;
 }
@@ -177,6 +251,19 @@ inline std::vector<std::string> cddlQuotedTokens(const std::string& rhs)
     for (auto it = std::sregex_iterator(rhs.begin(), rhs.end(), quoted); it != std::sregex_iterator(); ++it) {
         tokens.push_back((*it)[1].str());
     }
+    return tokens;
+}
+
+// The members of a union group: its base group's literals first, then its own
+// added literals, each run in grammar order. A sentinel that is also a base
+// member shows up twice here, which firstDuplicateToken below turns into a
+// generator refusal -- exactly the behaviour that check already has for an
+// eroded rule boundary.
+inline std::vector<std::string> unionTokens(const std::string& cddl, const DiscoveredGroup& group)
+{
+    std::vector<std::string> tokens = cddlQuotedTokens(cddlRuleRhs(cddl, group.base));
+    const auto own = cddlQuotedTokens(cddlRuleRhs(cddl, group.rule));
+    tokens.insert(tokens.end(), own.begin(), own.end());
     return tokens;
 }
 

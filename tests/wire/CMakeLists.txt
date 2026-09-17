@@ -45,6 +45,11 @@ add_test(NAME FeatureTokensGuardTest COMMAND FeatureTokensGuardTest)
 add_executable(CddlVocabularyTest CddlVocabularyTest.cpp)
 target_link_libraries(CddlVocabularyTest PRIVATE
     LibreAgentCddlVocabulary GTest::gtest GTest::gtest_main)
+# The union tests drive the real generator binary over scratch grammars: the
+# emitted shape and the duplicate refusal live in the generator, not the header.
+add_dependencies(CddlVocabularyTest wire-vocabulary-gen)
+target_compile_definitions(CddlVocabularyTest PRIVATE
+    LIBRESCRS_WIRE_VOCABULARY_GEN="$<TARGET_FILE:wire-vocabulary-gen>")
 add_test(NAME CddlVocabularyTest COMMAND CddlVocabularyTest)
 
 # 8. PropertyChangedVocabGuardTest: ties the CDDL comment documenting the

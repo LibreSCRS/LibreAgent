@@ -1100,6 +1100,10 @@ TEST(WireContractGuard, CddlRequestedFormsAreTheResolvedFormPlusTheSentinel)
         const auto literals = cddlQuotedTokens(rhs);
         ASSERT_EQ(literals.size(), 1U) << requested << " should add exactly one literal, the sentinel";
         EXPECT_EQ(literals[0], "auto") << requested << "'s added literal is not the sentinel";
+        // ...and the agent resolves the SAME spelling: the grammar's sentinel
+        // and the code's are one value, not two copies that happen to agree.
+        EXPECT_EQ(literals[0], LibreSCRS::Agent::Operations::SignatureParams::kDeferSentinel)
+            << requested << "'s sentinel is not the one the agent's requested*From helpers resolve";
     }
 }
 
@@ -1109,9 +1113,11 @@ TEST(WireContractGuard, ClosedVocabulariesAreTheExpectedSet)
     ASSERT_FALSE(cddl.empty()) << "wire CDDL source path not wired";
 
     const std::set<std::string> expected = {
-        "capability-bit", "cred-kind",      "cred-outcome",        "cred-recovery",  "cred-state",    "cred-verb",
-        "error-code",     "op-phase",       "op-status",           "packaging-mode", "pre-read-auth", "sign-format",
-        "sign-level",     "quiesce-reason", "settable-config-key", "sync-error",     "unblock-style",
+        "capability-bit", "cred-kind",     "cred-outcome",     "cred-recovery",   "cred-state",
+        "cred-verb",      "error-code",    "op-phase",         "op-status",       "packaging-mode",
+        "pre-read-auth",  "sign-format",   "sign-level",       "quiesce-reason",  "settable-config-key",
+        "sync-error",     "unblock-style", "requested-format", "requested-level", "requested-packaging",
+        "config-key",
     };
 
     std::set<std::string> found;

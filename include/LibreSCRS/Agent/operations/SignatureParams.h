@@ -163,20 +163,43 @@ inline constexpr const auto& kImplementedSignLevels = kSignLevels;
     return out;
 }
 
-// The "let the agent decide" sentinel for a requested level, in ONE place so
-// the D-Bus and socket frontends cannot drift apart -- they used to open-code
-// this differently, and had: one accepted "auto", the other only an absent
-// key. Empty or "auto" => nullopt, which resolveSignLevel below reads as
-// "apply the configured default". "" is tolerated for robustness but is NOT
-// contractual: the CDDL's requested-level group does not admit it and no
-// client in this stack emits it. Anything else passes through verbatim for
-// isKnownLevel / isImplementedSignLevel to judge.
-[[nodiscard]] inline std::optional<std::string> requestedLevelFrom(std::string_view level)
+// The "let the agent decide" sentinel of the three requested-* wire forms
+// (requested-format / requested-level / requested-packaging), spelled ONCE
+// below the wire. The contract guard holds the grammar's added literal to this
+// value, so the two cannot drift apart.
+inline constexpr std::string_view kDeferSentinel = "auto";
+
+// Empty or the sentinel => nullopt, meaning "the agent resolves it"; anything
+// else passes through verbatim for the isKnown* validator to judge, so an
+// out-of-vocabulary token is rejected with its own message instead of being
+// silently read as the default. "" is tolerated for robustness but is NOT
+// contractual: no requested-* group admits it and no client in this stack
+// emits it.
+[[nodiscard]] inline std::optional<std::string> requestedOrDeferred(std::string_view value)
 {
-    if (level.empty() || level == "auto") {
+    if (value.empty() || value == kDeferSentinel) {
         return std::nullopt;
     }
-    return std::string{level};
+    return std::string{value};
+}
+
+// One named helper per requested form, in ONE place so the D-Bus and socket
+// frontends cannot drift apart -- they used to open-code the level rule
+// differently, and had: one accepted "auto", the other only an absent key.
+// resolveSignLevel below reads a nullopt level as "apply the configured
+// default"; a nullopt format is sniffed from the document, a nullopt
+// packaging comes from defaultPackagingFor.
+[[nodiscard]] inline std::optional<std::string> requestedLevelFrom(std::string_view level)
+{
+    return requestedOrDeferred(level);
+}
+[[nodiscard]] inline std::optional<std::string> requestedFormatFrom(std::string_view format)
+{
+    return requestedOrDeferred(format);
+}
+[[nodiscard]] inline std::optional<std::string> requestedPackagingFrom(std::string_view packaging)
+{
+    return requestedOrDeferred(packaging);
 }
 
 // Resolve the effective per-request signing level. An explicit @p requested

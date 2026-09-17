@@ -17,12 +17,13 @@
 
 namespace {
 
-// The two vocabularies with no upstream enum to compare against: cred-verb
-// is a bare string compared inline (PinChangeFlow.cpp's kVerbChange/
-// kVerbUnblock/kVerbActivatePin), and settable-config-key's members are
-// ConfigStore.cpp's kDefaultLevel/kTsaUrls/kTslSources/kDefaultReason/
-// kDefaultLocation string constants -- neither is backed by a C++ enum.
-const std::set<std::string> kCddlOnly = {"cred-verb", "settable-config-key"};
+// The vocabularies with no upstream enum to compare against: cred-verb is a
+// bare string compared inline (PinChangeFlow.cpp's kVerbChange/kVerbUnblock/
+// kVerbActivatePin); settable-config-key's members are ConfigStore.cpp's
+// kDefaultLevel/kTsaUrls/kTslSources/kDefaultReason/kDefaultLocation string
+// constants; config-key is that group plus the read-only keys, string
+// constants likewise -- none is backed by a C++ enum.
+const std::set<std::string> kCddlOnly = {"cred-verb", "settable-config-key", "config-key"};
 
 std::string jsonEscape(const std::string& s)
 {
@@ -107,8 +108,10 @@ int main(int argc, char** argv)
             }
             std::cout << " ] }";
         } else {
+            const bool isUnion = g.kind == LibreSCRS::Wire::Tools::GroupKind::Union;
             const auto tokens =
-                LibreSCRS::Wire::Tools::cddlQuotedTokens(LibreSCRS::Wire::Tools::cddlRuleRhs(cddl, g.rule));
+                isUnion ? LibreSCRS::Wire::Tools::unionTokens(cddl, g)
+                        : LibreSCRS::Wire::Tools::cddlQuotedTokens(LibreSCRS::Wire::Tools::cddlRuleRhs(cddl, g.rule));
             if (tokens.empty()) {
                 std::cerr << "error: token group '" << g.rule << "' parsed to nothing\n";
                 return 1;
@@ -128,7 +131,14 @@ int main(int argc, char** argv)
                              "parse likely ran past this rule's boundary and absorbed part of the next one\n";
                 return 1;
             }
+            // A union is published as a plain token list: every reader in the
+            // stack decodes "token" entries and ignores keys it does not know,
+            // so none has to change to keep working. "union-of" names the base
+            // for the reader that wants to know where the members came from.
             std::cout << "    \"" << g.rule << "\": { \"kind\": \"token\"";
+            if (isUnion) {
+                std::cout << ", \"union-of\": \"" << jsonEscape(g.base) << "\"";
+            }
             if (kCddlOnly.count(g.rule) != 0) {
                 std::cout << ", \"cddlOnly\": true";
             }

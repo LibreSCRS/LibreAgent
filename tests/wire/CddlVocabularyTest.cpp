@@ -6,14 +6,20 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <cstdio>
+#include <filesystem>
+#include <fstream>
 #include <string>
+#include <sys/wait.h>
 
+using LibreSCRS::Wire::Tools::cddlAlternatives;
 using LibreSCRS::Wire::Tools::cddlQuotedTokens;
 using LibreSCRS::Wire::Tools::cddlRuleRhs;
 using LibreSCRS::Wire::Tools::discoverClosedGroups;
 using LibreSCRS::Wire::Tools::firstDuplicateToken;
 using LibreSCRS::Wire::Tools::GroupKind;
 using LibreSCRS::Wire::Tools::parseCddlNumericGroup;
+using LibreSCRS::Wire::Tools::unionTokens;
 
 namespace {
 // A miniature grammar carrying one of each shape the real contract uses, plus
@@ -49,6 +55,61 @@ kind      = "user" / "sign" / "unknown"
             "unknown" / "other"
 next-rule = "x" / "y"
 )";
+
+// A closed group extended by literals -- the requested-* shape of the real
+// grammar -- next to every shape that must NOT be reported as such: a union
+// over an open type, a rule naming two groups, and a union over a union.
+const std::string kUnions = R"(
+base     = "x" / "y"
+extended = base / "auto"
+other    = "p" / "q"
+loose    = tstr / "auto"
+pair     = base / other / "auto"
+deep     = extended / "more"
+)";
+
+// The same union with its base defined AFTER it: the reader must not depend on
+// definition order, which the real grammar only satisfies by accident.
+const std::string kUnionBeforeBase = R"(
+extended = base / "auto"
+base     = "x" / "y"
+)";
+
+// A union whose added literal is already a member of its base.
+const std::string kDuplicateUnion = R"(
+base = "x" / "y"
+dup  = base / "x"
+)";
+
+struct GeneratorRun
+{
+    int exitCode;
+    std::string output; // stdout and stderr, in order
+};
+
+// Runs the real generator binary over a grammar written to a scratch file.
+GeneratorRun runGenerator(const std::string& cddl)
+{
+    const auto path = std::filesystem::temp_directory_path() / "CddlVocabularyTest-grammar.cddl";
+    {
+        std::ofstream out(path);
+        out << cddl;
+    }
+    const std::string cmd = std::string{"'"} + LIBRESCRS_WIRE_VOCABULARY_GEN + "' '" + path.string() + "' 2>&1";
+    FILE* pipe = popen(cmd.c_str(), "r");
+    GeneratorRun run{-1, {}};
+    if (pipe == nullptr) {
+        return run;
+    }
+    char buf[512];
+    while (fgets(buf, sizeof buf, pipe) != nullptr) {
+        run.output += buf;
+    }
+    const int status = pclose(pipe);
+    run.exitCode = WIFEXITED(status) ? WEXITSTATUS(status) : -1;
+    std::filesystem::remove(path);
+    return run;
+}
 } // namespace
 
 TEST(CddlVocabulary, ParsesAnyNumericGroupByName)
@@ -132,4 +193,89 @@ TEST(CddlVocabulary, ErodedRuleBoundaryProducesADetectableDuplicate)
     const auto tokens = cddlQuotedTokens(cddlRuleRhs(kBoundaryEroded, "kind"));
     ASSERT_EQ(tokens.size(), 5u); // kind's real 3 plus next-rule's absorbed 2
     EXPECT_EQ(firstDuplicateToken(tokens), "unknown");
+}
+
+TEST(CddlVocabulary, SplitsAlternativesOnTheSlashInsteadOfDeletingIt)
+{
+    // Deleting '/' would fuse `base / other` into `baseother`, which then reads
+    // as ONE rule reference; splitting keeps the two apart.
+    const auto alts = cddlAlternatives(R"( base / other / "auto" )");
+    ASSERT_EQ(alts.size(), 3u);
+    EXPECT_EQ(alts[0], "base");
+    EXPECT_EQ(alts[1], "other");
+    EXPECT_EQ(alts[2], "\"auto\"");
+}
+
+namespace {
+const LibreSCRS::Wire::Tools::DiscoveredGroup*
+findGroup(const std::vector<LibreSCRS::Wire::Tools::DiscoveredGroup>& groups, const std::string& rule)
+{
+    const auto it = std::find_if(groups.begin(), groups.end(), [&](const auto& g) { return g.rule == rule; });
+    return it == groups.end() ? nullptr : &*it;
+}
+} // namespace
+
+TEST(CddlVocabulary, ReportsAClosedGroupPlusLiteralsAsAUnionOfThatGroup)
+{
+    const auto groups = discoverClosedGroups(kUnions);
+    const auto* extended = findGroup(groups, "extended");
+    ASSERT_NE(extended, nullptr);
+    EXPECT_EQ(extended->kind, GroupKind::Union);
+    EXPECT_EQ(extended->base, "base");
+    // Base members first, in grammar order, then the added literals.
+    EXPECT_EQ(unionTokens(kUnions, *extended), (std::vector<std::string>{"x", "y", "auto"}));
+    // The plain token groups keep an empty base.
+    const auto* base = findGroup(groups, "base");
+    ASSERT_NE(base, nullptr);
+    EXPECT_EQ(base->kind, GroupKind::Token);
+    EXPECT_TRUE(base->base.empty());
+}
+
+TEST(CddlVocabulary, UnionOverAnOpenTypeStaysUnreported)
+{
+    // `tstr` resolves to no closed group, so the rule is open and no manifest
+    // can carry it -- this is the case that must stay silent.
+    EXPECT_EQ(findGroup(discoverClosedGroups(kUnions), "loose"), nullptr);
+}
+
+TEST(CddlVocabulary, UnionNamingTwoRulesStaysUnreported)
+{
+    EXPECT_EQ(findGroup(discoverClosedGroups(kUnions), "pair"), nullptr);
+}
+
+TEST(CddlVocabulary, UnionOverAUnionStaysUnreported)
+{
+    // Transitive flattening was never asked for; refusing it is cheaper than
+    // getting it silently wrong.
+    EXPECT_EQ(findGroup(discoverClosedGroups(kUnions), "deep"), nullptr);
+}
+
+TEST(CddlVocabulary, UnionIsReportedWhenItsBaseIsDefinedLater)
+{
+    const auto groups = discoverClosedGroups(kUnionBeforeBase);
+    const auto* extended = findGroup(groups, "extended");
+    ASSERT_NE(extended, nullptr);
+    EXPECT_EQ(extended->kind, GroupKind::Union);
+    EXPECT_EQ(extended->base, "base");
+}
+
+TEST(CddlVocabularyGenerator, EmitsAUnionAsATokenListNamingItsBase)
+{
+    const auto run = runGenerator(kUnions);
+    ASSERT_EQ(run.exitCode, 0) << run.output;
+    // "kind": "token" on purpose: every existing reader decodes a token list
+    // and ignores keys it does not know, so no consumer has to change to keep
+    // working. "union-of" is for the reader that wants to know.
+    EXPECT_NE(
+        run.output.find(R"("extended": { "kind": "token", "union-of": "base", "entries": [ "x", "y", "auto" ] })"),
+        std::string::npos)
+        << run.output;
+    EXPECT_EQ(run.output.find("union-of"), run.output.rfind("union-of")) << "only the union carries union-of";
+}
+
+TEST(CddlVocabularyGenerator, RefusesAUnionThatRepeatsABaseMember)
+{
+    const auto run = runGenerator(kDuplicateUnion);
+    EXPECT_NE(run.exitCode, 0);
+    EXPECT_NE(run.output.find("'dup' contains 'x' twice"), std::string::npos) << run.output;
 }
