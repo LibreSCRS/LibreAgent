@@ -3,7 +3,7 @@
 # Mirrors LibreMiddleware/Doxyfile.publicapi's convention.
 
 PROJECT_NAME            = "LibreAgent Qt Client"
-PROJECT_NUMBER          = 4.2
+PROJECT_NUMBER          = 5.0.0
 OUTPUT_DIRECTORY        = build/doc/publicapi
 
 # Scope: the Qt client's public headers, plus the shared wire-stable value
