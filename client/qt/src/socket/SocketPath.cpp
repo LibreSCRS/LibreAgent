@@ -23,7 +23,9 @@ QString resolveAgentSocketPath()
     // The App-Group container's socket, addressed by its well-known absolute
     // path — the same directory the entitlement-gated container lookup
     // resolves, reachable without the application-groups entitlement (the
-    // Swift client's last-resort spelling of the same location).
+    // Swift client's last-resort spelling of the same location). Documentation
+    // only, not checked by any gate: the Swift client's own path lives in a
+    // repository outside this project's canonical-types registry.
     return QDir::homePath() + QStringLiteral("/Library/Group Containers/") + QLatin1String(kAgentAppGroupIdentifier) +
            QStringLiteral("/agent.sock");
 #else

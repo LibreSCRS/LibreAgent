@@ -80,7 +80,9 @@ FdHandle makeMemfdDocument(const QByteArray& bytes)
     // No memfd_create on Darwin: mkstemp into TMPDIR + immediate unlink is the
     // anonymous-file equivalent (same technique as LibreDarwin's
     // agent/src/backend/wire/AnonFd.cpp) — a regular-file fd that fully
-    // supports pread/SCM_RIGHTS, unlike shm_open's mmap-only object.
+    // supports pread/SCM_RIGHTS, unlike shm_open's mmap-only object. Cross-repo
+    // documentation only: LibreDarwin keeps no canonical-types registry, so no
+    // gate ties this comment to that file staying true.
     const char* tmpDir = std::getenv("TMPDIR");
     std::string tmpl = (tmpDir != nullptr && *tmpDir != '\0') ? std::string(tmpDir) : std::string("/tmp/");
     if (tmpl.back() != '/') {
