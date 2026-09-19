@@ -1019,6 +1019,57 @@ jobs:
       - name: Run the bounded fuzz
         run: ci/scripts/fuzz-cbor.sh --time 120 --clang clang++-21
 
+  fuzz-csca-ldif:
+    # The other untrusted-input surface in this repository, and the one that had
+    # no fuzz cover: the CSCA anchor import walks a directory export a person
+    # downloads from a public ICAO PKD mirror. Before any signature has been
+    # verified it runs an RFC 2849 line grammar, a base64 decoder, its OWN
+    # short/long/indefinite BER length decoder, and the three small scalar
+    # parsers the same path uses for its state file — six readers, all six
+    # fuzzed here. Same standalone shape as fuzz-cbor above and for the same
+    # reason: -fsanitize=fuzzer needs a fuzzer-capable clang, not this repo's
+    # default build compiler. This job shells out to
+    # ci/scripts/fuzz-csca-ldif.sh — the exact same script a dev runs locally —
+    # rather than duplicating its build and run steps inline, so the two never
+    # drift. Bounded run over the seed corpus; any crash/UB/leak fails the job.
+    timeout-minutes: 30
+    runs-on: ubuntu-latest
+    env:
+      # Git ref of LibreMiddleware whose HEADERS this compiles against. Tracks
+      # its trunk during the development cycle, like build-linux above. Nothing
+      # of LibreMiddleware is BUILT or linked here: the readers under test are
+      # in an anonymous namespace of one translation unit, and the script's
+      # link drops every section no path from the fuzz entry point reaches.
+      MIDDLEWARE_REF: main
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: LibreAgent
+
+      - name: Checkout LibreMiddleware headers
+        uses: actions/checkout@v4
+        with:
+          repository: LibreSCRS/LibreMiddleware
+          ref: ${{ env.MIDDLEWARE_REF }}
+          path: LibreMiddleware
+
+      - name: Install clang-21
+        # Same LLVM 21 the fuzz-cbor job pins, for the same std::expected
+        # reason; libclang-rt-21-dev carries the libFuzzer/ASan runtimes. lld-21
+        # is the third requirement here and not there: the driver includes the
+        # implementation file, so functions that call into LibreMiddleware are
+        # emitted but never reached, and lld --gc-sections drops them while
+        # still failing the link for anything the fuzzed path does reach.
+        run: |
+          wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key | sudo gpg --dearmor -o /usr/share/keyrings/llvm.gpg
+          echo "deb [signed-by=/usr/share/keyrings/llvm.gpg] http://apt.llvm.org/noble/ llvm-toolchain-noble-21 main" | sudo tee /etc/apt/sources.list.d/llvm-21.list
+          sudo apt-get update
+          sudo apt-get install -y clang-21 libclang-rt-21-dev lld-21
+
+      - name: Run the bounded fuzz
+        working-directory: LibreAgent
+        run: ci/scripts/fuzz-csca-ldif.sh --time 120 --clang clang++-21 --lm-include ../LibreMiddleware/include
+
   coverage:
     # Arch container: a rolling-release distro whose packages track current
     # LibreMiddleware build/runtime deps (pcsclite, OpenSC). pacman provides

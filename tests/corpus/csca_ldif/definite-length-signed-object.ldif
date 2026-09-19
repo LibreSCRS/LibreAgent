@@ -1,0 +1,7 @@
+dn: c=XX,dc=data,dc=pkdDownload
+objectClass: inetOrgPerson
+cn: XX
+
+dn: o=Master List,c=XX,dc=data,dc=pkdDownload
+objectClass: inetOrgPerson
+userCertificate;binary:: MAsGCSqGSIb3DQEHAg==
