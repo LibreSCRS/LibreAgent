@@ -202,7 +202,32 @@ std::optional<std::uint32_t> parseU32(std::string_view s)
     return out;
 }
 
-bool isHttpUrl(std::string_view url)
+// The scheme-and-authority filter every URL this store keeps has to pass. It is
+// the narrow point for SIX paths and THREE lists: the timestamp endpoints, the
+// trusted-list sources, and the country-signing anchor sources — the last of
+// which is the LDIF the anchor import parses byte by byte before anything has
+// verified a signature. A rule relaxed here is relaxed for all three, which is
+// why @p allowPlainHttp is a parameter and not a default: a caller has to say
+// out loud that plaintext is acceptable for what it is about to store.
+//
+// No caller says so today, and the reason is per-list rather than general. A
+// timestamp endpoint receives a hash of the document being signed; a
+// trusted-list or anchor source decides what this machine will trust. Over
+// plaintext, either can be answered by whoever is on the path — and the address
+// need not even be remote: `http://169.254.169.254/` is a cloud metadata
+// service that answers without credentials. The per-request `tsaUrl` sign
+// option has been https-only since it was written
+// (SignatureParams::isValidTsaUrl), so accepting plaintext from the
+// configuration file meant this agent refused from a caller exactly what it
+// took from its own config; the middleware likewise requires https of a
+// trusted-list source, so one accepted here could only fail later.
+//
+// What this does NOT judge: address literals. Loopback, link-local and private
+// ranges are rejected on the middleware's fetch path, where the request is
+// built and where every caller passes — including the ones that never touch
+// this store. A second literal parser here would be a second policy to keep in
+// step with the first.
+bool isHttpUrl(std::string_view url, bool allowPlainHttp)
 {
     // Require an http(s) scheme AND a non-empty authority after it. A scheme-only
     // "http://" (or one whose authority starts with '/', i.e. an empty host) would
@@ -212,6 +237,9 @@ bool isHttpUrl(std::string_view url)
     // LM staticTsaChecked rejection) so the default never upgrades on a typo.
     std::string_view authority;
     if (url.starts_with("http://")) {
+        if (!allowPlainHttp) {
+            return false;
+        }
         authority = url.substr(std::string_view{"http://"}.size());
     } else if (url.starts_with("https://")) {
         authority = url.substr(std::string_view{"https://"}.size());
@@ -414,7 +442,7 @@ void ConfigStore::loadFromFile()
                 log::warnf("config: ignoring invalid DefaultLevel '{}'", value);
             }
         } else if (key == "TsaUrl") { // singular, repeated
-            if (isHttpUrl(value)) {
+            if (isHttpUrl(value, /*allowPlainHttp=*/false)) {
                 m_tsaUrls.push_back(value);
             }
         } else if (key == kLastTsaUrl) {
@@ -434,7 +462,7 @@ void ConfigStore::loadFromFile()
                     src.eager = true;
                 }
             }
-            if (isHttpUrl(src.url)) {
+            if (isHttpUrl(src.url, /*allowPlainHttp=*/false)) {
                 m_tslSources.push_back(std::move(src));
             }
         } else if (key == "CscaSource") { // singular, repeated: uri[|eager]
@@ -452,7 +480,7 @@ void ConfigStore::loadFromFile()
                     src.eager = true;
                 }
             }
-            if (isHttpUrl(src.uri)) {
+            if (isHttpUrl(src.uri, /*allowPlainHttp=*/false)) {
                 m_cscaSources.push_back(std::move(src));
             }
         } else if (key == kTslCacheDir) {
@@ -721,7 +749,7 @@ ConfigStore::SetResult ConfigStore::setDefaultLevel(std::string level)
 ConfigStore::SetResult ConfigStore::setTsaUrls(std::vector<std::string> urls)
 {
     for (const auto& u : urls) {
-        if (!isHttpUrl(u)) {
+        if (!isHttpUrl(u, /*allowPlainHttp=*/false)) {
             return SetResult{false, kErrInvalidValue, "TsaUrls entries must be http(s) URLs"};
         }
     }
@@ -737,7 +765,7 @@ ConfigStore::SetResult ConfigStore::setTsaUrls(std::vector<std::string> urls)
 ConfigStore::SetResult ConfigStore::setTslSources(std::vector<TslSource> sources)
 {
     for (const auto& s : sources) {
-        if (!isHttpUrl(s.url)) {
+        if (!isHttpUrl(s.url, /*allowPlainHttp=*/false)) {
             return SetResult{false, kErrInvalidValue, "TslSources entries must be http(s) URLs"};
         }
     }
@@ -753,7 +781,7 @@ ConfigStore::SetResult ConfigStore::setTslSources(std::vector<TslSource> sources
 ConfigStore::SetResult ConfigStore::setCscaSources(std::vector<CscaSource> sources)
 {
     for (const auto& s : sources) {
-        if (!isHttpUrl(s.uri)) {
+        if (!isHttpUrl(s.uri, /*allowPlainHttp=*/false)) {
             return SetResult{false, kErrInvalidValue, "CscaSources entries must be http(s) URLs"};
         }
     }

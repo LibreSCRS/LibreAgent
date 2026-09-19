@@ -201,7 +201,7 @@ TEST_F(ConfigStoreTest, LoadsScalarsAndLists)
     writeConfig("# comment\n"
                 "DefaultLevel = b-lt\n"
                 "TsaUrl = https://tsa.example/a\n"
-                "TsaUrl = http://tsa.example/b\n"
+                "TsaUrl = https://tsa.example/b\n"
                 "TslSource = https://tl.example/lotl.xml|lotl|eager\n"
                 "TslSource = https://tl.example/leaf.xml\n"
                 "DefaultReason = signed via LibreSCRS\n"
@@ -250,7 +250,7 @@ TEST_F(ConfigStoreTest, SetTsaUrlsValidatesAndPersists)
     ASSERT_TRUE(cfg.setTsaUrls({}).ok); // drop the first-run seed; this test is about the validator
     EXPECT_FALSE(cfg.setTsaUrls({"https://ok", "ftp://bad"}).ok);
     EXPECT_TRUE(cfg.tsaUrls().empty()); // rejected wholesale; nothing applied
-    EXPECT_TRUE(cfg.setTsaUrls({"https://a", "http://b"}).ok);
+    EXPECT_TRUE(cfg.setTsaUrls({"https://a", "https://b"}).ok);
     ConfigStore reopened(m_configFile, m_cacheRoot);
     EXPECT_EQ(reopened.tsaUrls().size(), 2u);
 }
@@ -272,7 +272,7 @@ TEST_F(ConfigStoreTest, RejectsSchemeOnlyTsaUrl)
     EXPECT_FALSE(cfg.setTsaUrls({"http:///path"}).ok);
     EXPECT_TRUE(cfg.tsaUrls().empty());
     // A real authority (host, host:port, host/path) stays accepted (regression).
-    EXPECT_TRUE(cfg.setTsaUrls({"https://tsa.example.test/tsr", "http://h:8080/x"}).ok);
+    EXPECT_TRUE(cfg.setTsaUrls({"https://tsa.example.test/tsr", "https://h:8080/x"}).ok);
     EXPECT_EQ(cfg.tsaUrls().size(), 2u);
 }
 
@@ -286,6 +286,86 @@ TEST_F(ConfigStoreTest, SchemeOnlyTsaUrlDroppedOnLoad)
     ConfigStore cfg(m_configFile, m_cacheRoot);
     ASSERT_EQ(cfg.tsaUrls().size(), 1u) << "only the URL with an authority survives";
     EXPECT_EQ(cfg.tsaUrls()[0], "https://good.example/tsr");
+}
+
+// The next four cases are one policy: an endpoint that receives a hash of the
+// document being signed, or that names where trust comes from, is reachable
+// over https only. Each of them asserts the STORE and not just the returned
+// error name -- a validator that refuses and writes anyway refuses nothing.
+//
+// Two things this closes rather than invents. The per-request `tsaUrl` sign
+// option has been https-only since it was written
+// (SignatureParams::isValidTsaUrl, and SignatureParamsTest calls plaintext
+// "never accepted"), so until now the same agent accepted from its
+// configuration exactly what it rejected from a caller. And the trusted-list
+// side is what the middleware already requires of itself, so a source this
+// store accepted could only fail later, further from the person who typed it.
+TEST_F(ConfigStoreTest, LinkLocalPlainHttpTsaUrlIsRefusedAndTheStoreIsUnchanged)
+{
+    ConfigStore cfg(m_configFile, m_cacheRoot);
+    const auto before = cfg.tsaUrls();
+    ASSERT_EQ(before, kSeededTsaUrls) << "fixture must start from the first-run seed";
+
+    // The cloud-metadata address, which is the whole reason the scheme matters
+    // here: a plaintext request to it needs no credentials and answers.
+    const auto refused = cfg.setTsaUrls({"http://169.254.169.254"});
+    EXPECT_FALSE(refused.ok);
+    EXPECT_EQ(refused.errorName, "org.librescrs.Agent.Error.InvalidConfigValue");
+    EXPECT_EQ(cfg.tsaUrls(), before) << "the write was refused and applied anyway";
+
+    // And the refusal survived the file, not just the accessor.
+    ConfigStore reopened(m_configFile, m_cacheRoot);
+    EXPECT_EQ(reopened.tsaUrls(), before);
+}
+
+TEST_F(ConfigStoreTest, PlainHttpTsaUrlIsRefusedEvenForALegitimateHost)
+{
+    // Nothing is wrong with this host; the scheme is the finding. The address
+    // literals are LM's business (one SSRF guard, not two), so this store
+    // judges the scheme and nothing else.
+    ConfigStore cfg(m_configFile, m_cacheRoot);
+    const auto before = cfg.tsaUrls();
+    EXPECT_FALSE(cfg.setTsaUrls({"http://timestamp.example"}).ok);
+    EXPECT_EQ(cfg.tsaUrls(), before);
+    // One plaintext entry refuses the whole write, like any other bad entry.
+    EXPECT_FALSE(cfg.setTsaUrls({"https://ts.example", "http://timestamp.example"}).ok);
+    EXPECT_EQ(cfg.tsaUrls(), before);
+    // https is unaffected: this is a scheme rule, not a new rejection of hosts.
+    EXPECT_TRUE(cfg.setTsaUrls({"https://ts.example"}).ok);
+    ASSERT_EQ(cfg.tsaUrls().size(), 1u);
+    EXPECT_EQ(cfg.tsaUrls()[0], "https://ts.example");
+}
+
+TEST_F(ConfigStoreTest, PlainHttpTslSourceIsRefusedAndTheStoreIsUnchanged)
+{
+    ConfigStore cfg(m_configFile, m_cacheRoot);
+    const auto before = cfg.tslSources();
+    ASSERT_EQ(before, kSeededTslSources) << "fixture must start from the first-run seed";
+    const auto refused = cfg.setTslSources({TslSource{"http://tl.example/tl.xml", false, false}});
+    EXPECT_FALSE(refused.ok);
+    EXPECT_EQ(refused.errorName, "org.librescrs.Agent.Error.InvalidConfigValue");
+    EXPECT_EQ(cfg.tslSources(), before) << "the write was refused and applied anyway";
+
+    // The anchor sources share the predicate, so they share the rule.
+    EXPECT_FALSE(cfg.setCscaSources({CscaSource{"http://pkd.example/anchors.ldif", false}}).ok);
+    EXPECT_TRUE(cfg.cscaSources().empty());
+}
+
+TEST_F(ConfigStoreTest, PlainHttpTsaUrlIsDroppedOnLoadAndTheRestOfTheFileSurvives)
+{
+    // The setter is not the only way in: a hand-edited file reaches the same
+    // list without passing any setter at all, so the load path has to apply the
+    // same rule. The seeded https endpoints are written out alongside the
+    // plaintext one; only the plaintext one may go missing.
+    std::string file;
+    for (const auto& url : kSeededTsaUrls) {
+        file += "TsaUrl = " + url + "\n";
+    }
+    file += "TsaUrl = http://169.254.169.254\n";
+    writeConfig(file);
+
+    ConfigStore cfg(m_configFile, m_cacheRoot);
+    EXPECT_EQ(cfg.tsaUrls(), kSeededTsaUrls) << "the plaintext line was kept, or a good one was lost";
 }
 
 TEST_F(ConfigStoreTest, TslSourcesRoundTrip)
