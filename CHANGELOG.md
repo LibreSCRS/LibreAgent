@@ -225,8 +225,9 @@ Three targets ship, each independently usable:
   be rebuilt; and a `find_package(LibreAgent 4.2 ...)` floor no longer
   resolves this package at all, because the exported package declares
   same-major compatibility. Raise such a floor to `5.0`.
-- **Installed CONFIG package** with three components — `Core`, `Wire`
-  and `ClientQt`. Ask for what you need and nothing else:
+- **Installed CONFIG package** with five components — `Core`, `Wire`,
+  `ClientQt`, `Pkcs11Facade` and `Pkcs11SocketClient`. Ask for what you
+  need and nothing else:
 
   ```cmake
   find_package(LibreAgent 5.0 REQUIRED CONFIG COMPONENTS ClientQt)
