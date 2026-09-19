@@ -1,0 +1,169 @@
+# SPDX-License-Identifier: LGPL-2.1-or-later
+name: CodeQL
+
+# Static analysis over the agent's C++ surface. This is the process that holds
+# the transient secrets — PIN material, cached credentials, the socket and
+# D-Bus surfaces every local caller reaches — and it had no static analysis at
+# all, only compiler warnings.
+#
+# Why this drives the CodeQL CLI by hand instead of using
+# github/codeql-action/init + analyze, which is what the middleware's own
+# codeql.yml does: every build job in this repository runs inside
+# `container: archlinux:latest`, because the agent is built against a rolling
+# distro's pcsclite/OpenSC/Qt6 (ci.yml: build-linux, client, client-lm-less,
+# pkcs11-facade, coverage). github/codeql-action is not supported inside a job
+# container, so "copy the middleware's workflow" is not an option here. The CLI
+# bundle runs fine in the container; only the SARIF upload needs to happen
+# outside one, so it is a second job on a plain runner with the report passed
+# between them as an artifact.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    # Weekly Sunday 04:00 UTC, an hour after the middleware's own run, so a new
+    # query pack is picked up on both without the two competing for runners.
+    - cron: '0 4 * * 0'
+  workflow_dispatch:
+
+jobs:
+  database:
+    name: Build and analyse the database (cpp)
+    # The database build compiles the whole Core+Wire+ClientQt graph after
+    # building LibreMiddleware from source, under CodeQL's tracer — so this is
+    # build-linux's 90 minutes plus the query run, not instead of it.
+    timeout-minutes: 120
+    runs-on: ubuntu-latest
+    container: archlinux:latest
+    env:
+      # Same two knobs build-linux uses, for the same reasons: the core consumes
+      # the installed CONFIG package, and the ref tracks the middleware's trunk
+      # during the development cycle.
+      LM_PREFIX: /opt/libremiddleware
+      MIDDLEWARE_REF: main
+      # Pinned bundle, not `latest`: the bundle carries both the CLI and the
+      # query packs, so an unpinned download would silently change what "the
+      # same analysis" means between two runs of the same commit. Bumping this
+      # is a commit, like every other pin here.
+      CODEQL_BUNDLE: codeql-bundle-v2.27.0
+    steps:
+      - name: Install system dependencies
+        # The same set build-linux installs, plus the two the bundle download
+        # needs. git is required by actions/checkout inside a container.
+        run: |
+          pacman -Syu --noconfirm
+          pacman -S --noconfirm --needed \
+            base-devel cmake ninja git pkgconf \
+            openssl pcsclite opensc \
+            gtest dbus \
+            qt6-base \
+            python-jsonschema \
+            wget tar
+
+      - uses: actions/checkout@v4
+        with:
+          path: LibreAgent
+
+      - name: Checkout LibreMiddleware
+        uses: actions/checkout@v4
+        with:
+          repository: LibreSCRS/LibreMiddleware
+          ref: ${{ env.MIDDLEWARE_REF }}
+          path: LibreMiddleware
+          fetch-depth: 0
+          submodules: recursive   # LM vendors OpenSC as a git submodule
+
+      - name: Build & install LibreMiddleware (Release, SHARED)
+        # Outside the database on purpose: this is the dependency, not the code
+        # under analysis. The middleware has its own CodeQL workflow, and
+        # tracing it here would report its findings on this repository's
+        # security tab.
+        working-directory: LibreMiddleware
+        run: |
+          cmake -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_INSTALL_PREFIX="$LM_PREFIX" \
+            -DLIBREMIDDLEWARE_BUILD_SHARED=ON
+          cmake --build build -j4
+          cmake --install build
+
+      - name: Fetch the CodeQL CLI bundle
+        run: |
+          wget -q "https://github.com/github/codeql-action/releases/download/${CODEQL_BUNDLE}/codeql-bundle-linux64.tar.gz"
+          mkdir -p /opt/codeql
+          tar -xzf codeql-bundle-linux64.tar.gz -C /opt/codeql --strip-components=1
+          /opt/codeql/codeql version
+
+      - name: Configure LibreAgentCore
+        # Configure outside the traced command: CodeQL observes compiler
+        # invocations, and a configure step that runs inside --command makes the
+        # build log harder to read for no extra coverage. WERROR stays ON so
+        # this job compiles the same graph build-linux does.
+        working-directory: LibreAgent
+        run: |
+          cmake -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+            -DCMAKE_PREFIX_PATH="$LM_PREFIX" \
+            -DLIBRESCRS_AGENT_WERROR=ON \
+            -DLIBREAGENT_BUILD_CLIENT_QT=ON
+
+      - name: Create the CodeQL database
+        working-directory: LibreAgent
+        run: |
+          /opt/codeql/codeql database create ../codeql-db \
+            --language=cpp \
+            --source-root=. \
+            --command="cmake --build build -j4"
+
+      - name: Run the security-and-quality queries
+        # security-and-quality is the broader pack (security + lint), the same
+        # one the middleware runs, so the two repositories are judged by one
+        # suite rather than two.
+        run: |
+          /opt/codeql/codeql database analyze codeql-db \
+            codeql/cpp-queries:codeql-suites/cpp-security-and-quality.qls \
+            --format=sarif-latest \
+            --output=codeql-cpp.sarif \
+            --threads=4
+
+      - name: Publish the report for the upload job
+        uses: actions/upload-artifact@v4
+        with:
+          name: codeql-cpp-sarif
+          path: codeql-cpp.sarif
+          retention-days: 7
+
+  upload:
+    name: Publish the SARIF to code scanning
+    # Deliberately NOT in a container: github/codeql-action/upload-sarif is the
+    # one step that cannot run in one, which is the whole reason this workflow
+    # is split in two.
+    needs: database
+    timeout-minutes: 15
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+      security-events: write
+    steps:
+      # The upload needs the ref and commit this report belongs to.
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: codeql-cpp-sarif
+
+      - name: Upload the SARIF
+        # The first runs PUBLISH findings; they do not fail the job. A
+        # security-and-quality pack over a repository that has never been
+        # analysed reports note- and warning-level results in the dozens, and a
+        # gate that goes red on its first run gets turned off rather than
+        # triaged. Neither the CLI's analyze nor this action fails on results,
+        # and no failure threshold is set here on purpose — raising this to
+        # blocking comes after triage, as its own change.
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: codeql-cpp.sarif
+          category: "/language:cpp"
