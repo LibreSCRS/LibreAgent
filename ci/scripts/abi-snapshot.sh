@@ -210,6 +210,39 @@ export LC_ALL=C
 # the per-section refusals then report "broken archive" where the truth is
 # "this host cannot demangle". A missing tool is "I cannot measure", never a
 # pass and never a diagnosis of the artefact.
+# The binding classes this snapshot records, and the ones it deliberately does
+# not. The policy defines the public API as what consumers reach under the
+# LibreSCRS namespaces through the public targets, and says anything else is
+# implementation detail that may change in any release. A vague-linkage entry is
+# not API under that definition: it is how the object model emits a vtable, a
+# typeinfo, an inline member or a template instantiation, and which of them exist
+# is the compiler's decision. Recording them would put inlining into the ABI
+# contract, so one optimisation level would rewrite the baseline.
+#
+# The list is declared here instead of living implicitly inside an awk clause,
+# because a filter nobody can read is an exemption nobody can audit -- and it is
+# falsifiable: a class that is in neither list stops the snapshot instead of
+# being dropped. The shape that matters is an exported DATA symbol, which IS part
+# of a C++ ABI and which the plain T-binding clause discarded without a word.
+NOT_RECORDED_BINDINGS="W V u A"
+
+# refuse_unknown_bindings <label> <nm output>
+refuse_unknown_bindings() {
+    local label="$1" raw="$2" unexpected
+    unexpected="$(printf '%s\n' "$raw" \
+        | awk 'NF >= 3 { print $2 }' \
+        | sort -u \
+        | grep -vxF -e T $(printf -- '-e %s ' $NOT_RECORDED_BINDINGS) || true)"
+    if [[ -n "$unexpected" ]]; then
+        echo "ERROR: $label exports binding class(es) this snapshot has no rule for:" >&2
+        echo "       $(printf '%s' "$unexpected" | tr '\n' ' ')" >&2
+        echo "       T is recorded; $NOT_RECORDED_BINDINGS are deliberately not. A data" >&2
+        echo "       symbol is part of the ABI and has to be recorded; decide, and say" >&2
+        echo "       which in the same change." >&2
+        exit 2
+    fi
+}
+
 for tool in nm c++filt; do
     command -v "$tool" >/dev/null 2>&1 \
         || { echo "FATAL: $tool not found on PATH -- cannot measure the ABI surface" >&2; exit 2; }
@@ -280,6 +313,7 @@ if [[ ${#core_archives[@]} -eq 1 ]]; then
     # truncate every symbol at its first paren argument, collapsing
     # overloads into identical lines and hiding signature drift — exactly
     # what this gate exists to catch.
+    refuse_unknown_bindings "$core_archive" "$(nm -U "$core_archive" 2>/dev/null || true)"
     core_symbols="$(nm -U "$core_archive" 2>/dev/null \
         | awk '$2 == "T" { print $3 }' \
         | c++filt 2>/dev/null \
@@ -313,6 +347,7 @@ if [[ ${#wire_archives[@]} -eq 1 ]]; then
     wire_found=1
     wire_archive="${wire_archives[0]}"
 
+    refuse_unknown_bindings "$wire_archive" "$(nm -U "$wire_archive" 2>/dev/null || true)"
     wire_symbols="$(nm -U "$wire_archive" 2>/dev/null \
         | awk '$2 == "T" { print $3 }' \
         | c++filt 2>/dev/null \

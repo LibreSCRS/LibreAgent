@@ -31,7 +31,7 @@
 set -uo pipefail
 
 HERE="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-SUBJECT="$HERE/abi-snapshot.sh"
+SUBJECT="${SUBJECT:-$HERE/abi-snapshot.sh}"
 [ -f "$SUBJECT" ] || { echo "FATAL: $SUBJECT is missing" >&2; exit 2; }
 
 # A compiler and an archiver are the only way to get an archive whose exported
@@ -171,6 +171,37 @@ rm -f "$SHIM/c++filt"
 rc=$( if ( cd "$root5" && PATH="$SHIM" ./ci/scripts/abi-snapshot.sh --check build ) > "$WORK/out" 2>&1; then echo 0; else echo $?; fi )
 check "c++filt off PATH is 'cannot measure'" 2 "$rc"
 says "c++filt off PATH is 'cannot measure'" "c++filt not found on PATH"
+
+# --- a binding class the snapshot has no rule for ---------------------------
+# The snapshot records T-binding symbols and declares which classes it
+# deliberately does not, because vague-linkage entries are how the object model
+# emits a vtable or an inline member and not what the policy calls the public
+# API. What that must not do is discard something that IS the ABI: an exported
+# data symbol. The plain T-binding clause dropped it without a word.
+rootd="$(stub data-symbol)"
+run "$rootd" --update build >/dev/null
+{
+    printf 'namespace LibreSCRS::Agent {\n'
+    printf 'int selftestAlpha(int x) { return x + 1; }\n'
+    printf 'int selftestBeta(int x) { return x + 2; }\n'
+    printf 'int selftestGamma(int x) { return x + 3; }\n'
+    printf 'int selftestExportedGlobal = 7;\n'
+    printf '}\n'
+} > "$rootd/stub.cpp"
+g++ -std=c++20 -c -fPIC -o "$rootd/stub.o" "$rootd/stub.cpp" 2>"$WORK/gcc.err" \
+    || { echo "FATAL: could not compile the data-symbol stub" >&2; exit 2; }
+rm -f "$rootd/build/libLibreAgentCore.a"
+ar rcs "$rootd/build/libLibreAgentCore.a" "$rootd/stub.o" 2>>"$WORK/gcc.err" \
+    || { echo "FATAL: could not archive the data-symbol stub" >&2; exit 2; }
+# The fixture really does carry one, or the case would pass for another reason.
+if ! nm -U "$rootd/build/libLibreAgentCore.a" \
+        | awk '$2 == "D" || $2 == "B" { found = 1 } END { exit !found }'; then
+    echo "FATAL: the fixture carries no data symbol -- nothing to detect" >&2
+    exit 2
+fi
+rc=$(run "$rootd" --check build)
+check "an exported data symbol is not dropped in silence" 2 "$rc"
+says "an exported data symbol is not dropped in silence" "no rule for"
 
 printf 'selftest: %s cases, %s red-proved\n' "$cases" "$red"
 [ "$fails" = 0 ]
