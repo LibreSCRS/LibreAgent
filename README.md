@@ -30,13 +30,13 @@ refusal means.
 transport-neutral, typed Qt client exposing the agent as live `AgentClient` /
 `AgentReader` / `AgentCard` / `AgentOperation` objects. It is written against
 an internal transport seam with two implementations — D-Bus and the AF_UNIX
-socket wire — so no transport type appears anywhere in the public API. **In
-this release the public API selects D-Bus and offers no way to ask for the
-socket transport**: `AgentClient` has a single constructor, and it builds the
-D-Bus transport on Linux and none elsewhere. The socket implementation is
-complete and tested, but reaching it needs a constructor this release does not
-export. Every call the client makes is bounded by a timeout budget, so a slow
-or wedged agent cannot hang a caller indefinitely — note *bounded*, not
+socket wire — so no transport type appears anywhere in the public API. **This
+release's public API picks the transport per platform and offers no way to
+override it**: `AgentClient` has a single constructor, which builds the D-Bus
+transport on Linux and the App-Group socket transport on macOS; a platform
+with neither yet gets an inert client that is never available. Every call
+the client makes is bounded by a timeout budget, so a slow or wedged agent
+cannot hang a caller indefinitely — note *bounded*, not
 instant: a synchronous call may still block for its budget (3 s by default),
 which is why the operation-entry calls are the ones a GUI should not make from
 its paint path.
