@@ -196,6 +196,13 @@ jobs:
           ./ci/scripts/check-artifact-names.selftest.sh
           ./ci/scripts/check-artifact-names.sh
 
+      # Every self-test in this repository, by pathspec, and each one must
+      # report the cases it ran and how many proved the gate red. A self-test
+      # nothing runs proves as much as no self-test, and a runner that read only
+      # exit codes would accept `exit 0` as a body.
+      - name: Run every self-test
+        run: ./ci/scripts/run-selftests.sh
+
   docs-check:
     # The public-API documentation gate. Self-contained for the same reason
     # format-check is: doxygen only PARSES the headers, so this needs neither

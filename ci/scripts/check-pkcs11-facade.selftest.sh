@@ -36,8 +36,13 @@ TMP="$(mktemp -d "${TMPDIR:-/tmp}/pkcs11-facade-selftest.XXXXXX")"
 trap 'rm -rf "$TMP"' EXIT
 
 fails=0
+cases=0
+red=0
 check() { # <label> <expected-rc> <build-dir>
     local label="$1" want="$2" dir="$3" got
+    cases=$((cases + 1))
+    # red-proved: the case in which the gate returned non-zero on a perturbed input.
+    if [[ "$want" != 0 ]]; then red=$((red + 1)); fi
     "$GATE" "$dir" >"$TMP/out.$$" 2>&1
     got=$?
     if [[ "$got" == "$want" ]]; then
@@ -140,7 +145,9 @@ check "healthy module, suite ${WANT[0]} not registered" 1 "$TMP/nosuite"
 echo "----"
 if [[ "$fails" -eq 0 ]]; then
     echo "check-pkcs11-facade selftest: 6/6 ok"
+    printf 'selftest: %s cases, %s red-proved\n' "$cases" "$red"
     exit 0
 fi
 echo "check-pkcs11-facade selftest: $fails case(s) FAILED" >&2
+printf 'selftest: %s cases, %s red-proved\n' "$cases" "$red"
 exit 1

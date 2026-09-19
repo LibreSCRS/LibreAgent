@@ -10,6 +10,8 @@ subject="$here/check-split.sh"
 
 work=$(mktemp -d); trap 'rm -rf "$work"' EXIT
 fails=0
+cases=0
+red=0
 
 # Each case gets its own copy of the script next to its own payload dir, so the
 # subject reads THAT case's lists rather than the repository's.
@@ -22,6 +24,9 @@ setup() {   # setup <case> ; echo the arch dir
 
 run() {  # run <name> <expected-rc> <case>
     local name=$1 want=$2 c=$3
+    cases=$((cases + 1))
+    # red-proved: the case in which the gate returned non-zero on a perturbed input.
+    if [ "$want" != 0 ]; then red=$((red + 1)); fi
     bash "$work/$c/packaging/arch/check-split.sh" "$work/$c/stage" > "$work/$c.out" 2>&1
     local got=$?
     if [ "$got" -eq "$want" ]; then
@@ -94,5 +99,11 @@ c=case_6; setup $c
 stage_files $c lib/liba.so
 run "case_6 no payload lists is an error, not a pass" 2 $c
 
-if [ "$fails" -eq 0 ]; then echo "check-split selftest: all cases passed"; exit 0; fi
-echo "check-split selftest: $fails case(s) failed"; exit 1
+if [ "$fails" -eq 0 ]; then
+    echo "check-split selftest: all cases passed"
+    printf 'selftest: %s cases, %s red-proved\n' "$cases" "$red"
+    exit 0
+fi
+echo "check-split selftest: $fails case(s) failed"
+printf 'selftest: %s cases, %s red-proved\n' "$cases" "$red"
+exit 1

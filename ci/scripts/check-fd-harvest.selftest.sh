@@ -80,9 +80,14 @@ HELPER="src/wire/FdHarvest.h"
 
 pass=0
 fail=0
+cases=0
+red=0
 
 check() {
     local label="$1" expected="$2" actual="$3"
+    cases=$((cases + 1))
+    # red-proved: the case in which the gate returned non-zero on a perturbed input.
+    if [ "$expected" != 0 ]; then red=$((red + 1)); fi
     if [ "$actual" = 2 ] && [ "$expected" != 2 ]; then
         # rc=2 means the gate could not run. A harness that reads that as a red
         # records a detection that never happened -- one round's evidence file
@@ -696,4 +701,5 @@ check 36 2 "$rc"
 names 36 "this gate did not run" "$out"
 
 echo "selftest: $pass passed, $fail failed"
+printf 'selftest: %s cases, %s red-proved\n' "$cases" "$red"
 [ "$fail" = 0 ]
