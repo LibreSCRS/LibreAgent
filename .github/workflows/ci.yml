@@ -472,8 +472,28 @@ jobs:
             -DCMAKE_PREFIX_PATH="$LM_PREFIX" \
             -DCMAKE_CXX_FLAGS="-fsanitize=thread -g" \
             -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=thread"
+          # One spelling of the selection, used by the build, by the run and by
+          # the count below. Three copies is how one of them stops matching.
+          SUITES="OperationManager|ZombieWorkerDrain|PropertyEmissionThrottler|AgentShutdownUnderLoad|PrompterKeepAliveDrain|SignSeamKeepAliveDrain|RawCryptoCaptureGuard|Watchdog"
           cmake --build build-tsan --target OperationManagerTest ZombieWorkerDrainTest PropertyEmissionThrottlerTest AgentShutdownUnderLoadTest PrompterKeepAliveDrainTest SignSeamKeepAliveDrainTest RawCryptoCaptureGuardTest WatchdogTest -j4
-          ctest --test-dir build-tsan -R "OperationManager|ZombieWorkerDrain|PropertyEmissionThrottler|AgentShutdownUnderLoad|PrompterKeepAliveDrain|SignSeamKeepAliveDrain|RawCryptoCaptureGuard|Watchdog" --output-on-failure --no-tests=error
+          ctest --test-dir build-tsan -R "$SUITES" --output-on-failure --no-tests=error
+          # --no-tests=error fails only when the selection matches NOTHING. The
+          # denominator of a -R leg is the expression, not the build directory,
+          # so renaming one add_test(NAME ...) while leaving the target name
+          # alone still builds, still runs, and covers one suite less. This is
+          # the number; it is regenerated in the change that alters the set.
+          n=$(ctest --test-dir build-tsan -N -R "$SUITES" | grep -c '^ *Test *#' || true)
+          test "$n" = 8 || { echo "the sanitizer leg selected $n suites, not 8"; exit 1; }
+
+      # --no-tests=error above fails only when the regex matches NOTHING. Rename
+      # one add_test(NAME ...) and leave the target name alone and the build still
+      # succeeds, the regex matches seven suites instead of eight, and the leg
+      # reports success having covered one suite less. The denominator here is the
+      # regex, not the build directory, so the committed listing of what this
+      # build directory registers is the only thing that can see the difference.
+      - name: Check the discovered test set (TSan leg)
+        working-directory: LibreAgent
+        run: ./ci/scripts/test-manifest-gate.sh --check build-tsan tsan
 
   client:
     # The Qt client library (LibreAgent::ClientQt), full stack: same
