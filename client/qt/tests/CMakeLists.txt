@@ -128,7 +128,7 @@ target_link_libraries(ClientQtTypesTest PRIVATE
     LibreAgent::ClientQt
     GTest::gtest
     GTest::gtest_main)
-add_test(NAME ClientQtTypesTest COMMAND ClientQtTypesTest)
+gtest_discover_tests(ClientQtTypesTest)
 
 # The annex reading order, which two desktop hosts used to each keep their own
 # byte-identical copy of. Exported from the shared library, so this links it.
@@ -137,7 +137,7 @@ target_link_libraries(ClientQtFieldOrderTest PRIVATE
     LibreAgent::ClientQt
     GTest::gtest
     GTest::gtest_main)
-add_test(NAME ClientQtFieldOrderTest COMMAND ClientQtFieldOrderTest)
+gtest_discover_tests(ClientQtFieldOrderTest)
 
 # The two-shape card-date rule, which both desktop hosts used to write out for
 # themselves. Exported from the shared library, so this links it.
@@ -146,7 +146,7 @@ target_link_libraries(ClientQtCardDateTest PRIVATE
     LibreAgent::ClientQt
     GTest::gtest
     GTest::gtest_main)
-add_test(NAME ClientQtCardDateTest COMMAND ClientQtCardDateTest)
+gtest_discover_tests(ClientQtCardDateTest)
 
 # The security vocabulary's decoders, which used to live in a desktop host
 # where nothing tested them.
@@ -155,7 +155,7 @@ target_link_libraries(ClientQtSecurityVocabularyTest PRIVATE
     LibreAgent::ClientQt
     GTest::gtest
     GTest::gtest_main)
-add_test(NAME ClientQtSecurityVocabularyTest COMMAND ClientQtSecurityVocabularyTest)
+gtest_discover_tests(ClientQtSecurityVocabularyTest)
 
 # TokenMap round-trip coverage. TokenMap.{h,cpp} is an INTERNAL, hidden-
 # visibility TU with no export macro on any of its functions -- linking the
@@ -172,7 +172,7 @@ target_link_libraries(ClientQtTokenMapTest PRIVATE
     LibreAgent::ClientQt
     GTest::gtest
     GTest::gtest_main)
-add_test(NAME ClientQtTokenMapTest COMMAND ClientQtTokenMapTest)
+gtest_discover_tests(ClientQtTokenMapTest)
 
 # Adapted from the KDE client's FakeAgent-free suite: the pure capability /
 # UI-state resolvers plus the new public token vocabulary. Links the shared
@@ -182,7 +182,7 @@ target_link_libraries(ClientQtCapabilitiesTest PRIVATE
     LibreAgent::ClientQt
     GTest::gtest
     GTest::gtest_main)
-add_test(NAME ClientQtCapabilitiesTest COMMAND ClientQtCapabilitiesTest)
+gtest_discover_tests(ClientQtCapabilitiesTest)
 
 # The credential record/result parsers (public, exported) including the
 # contract-verbatim key-set drift guard and the extra pass-through.
@@ -191,7 +191,7 @@ target_link_libraries(ClientQtCredentialTypesTest PRIVATE
     LibreAgent::ClientQt
     GTest::gtest
     GTest::gtest_main)
-add_test(NAME ClientQtCredentialTypesTest COMMAND ClientQtCredentialTypesTest)
+gtest_discover_tests(ClientQtCredentialTypesTest)
 
 # The structural identity-row flatten (public, exported): skip-binary /
 # stringify / empty-retained rules over the canonical Field::extra keys.
@@ -200,7 +200,7 @@ target_link_libraries(ClientQtIdentityRowsTest PRIVATE
     LibreAgent::ClientQt
     GTest::gtest
     GTest::gtest_main)
-add_test(NAME ClientQtIdentityRowsTest COMMAND ClientQtIdentityRowsTest)
+gtest_discover_tests(ClientQtIdentityRowsTest)
 
 # The verdict-group reader (public, exported): one entry per security check,
 # both wire spellings of a check, and the aggregate verdicts carried through
@@ -212,7 +212,7 @@ target_link_libraries(ClientQtSecurityChecksTest PRIVATE
     LibreAgent::ClientQt
     GTest::gtest
     GTest::gtest_main)
-add_test(NAME ClientQtSecurityChecksTest COMMAND ClientQtSecurityChecksTest)
+gtest_discover_tests(ClientQtSecurityChecksTest)
 
 # ConfigKeys.h's isSettableConfigKey() mirror, checked in both directions
 # against the published `settable-config-key` vocabulary in
@@ -235,7 +235,7 @@ target_compile_definitions(ClientQtConfigKeyMirrorTest PRIVATE
     # rather than trusted. A probe list that silently misses a constant would
     # reintroduce, one level down, the drift this whole test exists to catch.
     LIBRESCRS_AGENT_CONFIG_KEYS_HEADER="${CMAKE_CURRENT_SOURCE_DIR}/../src/ConfigKeys.h")
-add_test(NAME ClientQtConfigKeyMirrorTest COMMAND ClientQtConfigKeyMirrorTest)
+gtest_discover_tests(ClientQtConfigKeyMirrorTest)
 
 # The bounded fd-payload reader (public, exported -- so this links the shared
 # library rather than recompiling the TU, unlike the internal-TU suites above
@@ -249,7 +249,7 @@ target_link_libraries(ClientQtSealedPayloadTest PRIVATE
     LibreAgent::ClientQt
     GTest::gtest
     GTest::gtest_main)
-add_test(NAME ClientQtSealedPayloadTest COMMAND ClientQtSealedPayloadTest)
+gtest_discover_tests(ClientQtSealedPayloadTest)
 
 # The bounded reader's two internal decision helpers. They carry branches the
 # public entry point cannot reach on a sane kernel -- a negative reported size,
@@ -276,7 +276,7 @@ target_link_libraries(ClientQtSealedPayloadInternalTest PRIVATE
     LibreAgent::ClientQt
     GTest::gtest
     GTest::gtest_main)
-add_test(NAME ClientQtSealedPayloadInternalTest COMMAND ClientQtSealedPayloadInternalTest)
+gtest_discover_tests(ClientQtSealedPayloadInternalTest)
 
 # The public API driven over a minimal in-process TransportSeam fake (not the
 # FakeAgent): request mapping, entry refusal, terminal recovery, availability
@@ -290,7 +290,7 @@ target_include_directories(ClientQtSeamTest PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/
 target_link_libraries(ClientQtSeamTest PRIVATE
     LibreAgent::ClientQt
     GTest::gtest)
-add_test(NAME ClientQtSeamTest COMMAND ClientQtSeamTest)
+gtest_discover_tests(ClientQtSeamTest)
 
 # The D-Bus error-name -> CallError/ErrorCode mapping table. ErrorNameMap.cpp
 # is an INTERNAL, hidden-visibility TU (no export macro), so it is compiled
@@ -305,7 +305,7 @@ target_link_libraries(ClientQtErrorNameMapTest PRIVATE
     LibreAgent::Wire
     GTest::gtest
     GTest::gtest_main)
-add_test(NAME ClientQtErrorNameMapTest COMMAND ClientQtErrorNameMapTest)
+gtest_discover_tests(ClientQtErrorNameMapTest)
 
 # The sync-error AXIS of that same table: which failures carry a named wire
 # error onward and which carry none. Its own target rather than more cases in
@@ -324,7 +324,7 @@ target_link_libraries(ClientQtSyncErrorTest PRIVATE
     LibreAgent::Wire
     GTest::gtest
     GTest::gtest_main)
-add_test(NAME ClientQtSyncErrorTest COMMAND ClientQtSyncErrorTest)
+gtest_discover_tests(ClientQtSyncErrorTest)
 
 # The token-keyed DER-listener registration bookkeeping (the fix for the
 # cancel + listener-pointer-reuse race that used to silently drop a second
@@ -338,7 +338,7 @@ target_link_libraries(ClientQtDerListenerRegistryTest PRIVATE
     LibreAgent::ClientQt
     GTest::gtest
     GTest::gtest_main)
-add_test(NAME ClientQtDerListenerRegistryTest COMMAND ClientQtDerListenerRegistryTest)
+gtest_discover_tests(ClientQtDerListenerRegistryTest)
 
 # D-Bus integration tests: a REAL DBusTransport driven against an in-process
 # FakeAgent (fakes/FakeAgent.{h,cpp}, lifted from the KDE client's own
@@ -383,9 +383,9 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
             Qt6::DBus
             Qt6::Test
             GTest::gtest)
-        add_test(NAME ${name} COMMAND ${DBUS_RUN_SESSION} -- $<TARGET_FILE:${name}>)
+        libreagent_private_session_bus(${name})
         # A wedged test under dbus-run-session must fail in minutes, not consume the runner's whole wall.
-        set_tests_properties(${name} PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 120)
+        gtest_discover_tests(${name} PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen;${LIBREAGENT_PRIVATE_BUS_ENV}" TIMEOUT 120)
     endfunction()
 
     # Adapted from the lifted KDE suites of the same name (see fakes/FakeAgent.h's
@@ -422,7 +422,7 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
         Qt6::DBus
         GTest::gtest
         GTest::gtest_main)
-    add_test(NAME ClientQtAgentResultSignatureTest COMMAND ClientQtAgentResultSignatureTest)
+    gtest_discover_tests(ClientQtAgentResultSignatureTest)
 
     # The process-wide shared-client accessor. Links ONLY the shared library:
     # sharedAgentClient() and the AgentClient constructor behind it are both
@@ -437,9 +437,8 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     target_link_libraries(ClientQtSharedAgentClientTest PRIVATE
         LibreAgent::ClientQt
         GTest::gtest)
-    add_test(NAME ClientQtSharedAgentClientTest
-        COMMAND ${DBUS_RUN_SESSION} -- $<TARGET_FILE:ClientQtSharedAgentClientTest>)
-    set_tests_properties(ClientQtSharedAgentClientTest PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 120)
+    libreagent_private_session_bus(ClientQtSharedAgentClientTest)
+    gtest_discover_tests(ClientQtSharedAgentClientTest PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen;${LIBREAGENT_PRIVATE_BUS_ENV}" TIMEOUT 120)
 endif() # CMAKE_SYSTEM_NAME STREQUAL "Linux"
 
 # Socket integration tests: the REAL SocketTransport driven against an
@@ -473,16 +472,18 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux" OR CMAKE_SYSTEM_NAME STREQUAL "Darwin")
         LibreAgent::ClientQt
         LibreAgent::Wire
         GTest::gtest)
+    # The real SocketTransport wedges the same way a real DBusTransport does -- same ceiling.
     if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
         # See the file comment above: a production AgentClient here builds a
         # DBusTransport, which needs a session bus to connect to.
-        add_test(NAME ClientQtSocketIntegrationTest
-            COMMAND ${DBUS_RUN_SESSION} -- $<TARGET_FILE:ClientQtSocketIntegrationTest>)
+        libreagent_private_session_bus(ClientQtSocketIntegrationTest)
+        gtest_discover_tests(ClientQtSocketIntegrationTest PROPERTIES
+            ENVIRONMENT "QT_QPA_PLATFORM=offscreen;${LIBREAGENT_PRIVATE_BUS_ENV}"
+            TIMEOUT 120)
     else()
-        add_test(NAME ClientQtSocketIntegrationTest COMMAND ClientQtSocketIntegrationTest)
+        gtest_discover_tests(ClientQtSocketIntegrationTest PROPERTIES
+            ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 120)
     endif()
-    # The real SocketTransport wedges the same way a real DBusTransport does -- same ceiling.
-    set_tests_properties(ClientQtSocketIntegrationTest PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 120)
 endif()
 
 # Transport parity suite: ONE shared gtest-typed-test scenario corpus
@@ -516,8 +517,8 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
         LibreAgent::Wire
         Qt6::DBus
         GTest::gtest)
-    add_test(NAME ClientQtTransportParityTest COMMAND ${DBUS_RUN_SESSION} -- $<TARGET_FILE:ClientQtTransportParityTest>)
-    set_tests_properties(ClientQtTransportParityTest PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 120)
+    libreagent_private_session_bus(ClientQtTransportParityTest)
+    gtest_discover_tests(ClientQtTransportParityTest PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen;${LIBREAGENT_PRIVATE_BUS_ENV}" TIMEOUT 120)
 endif()
 
 # The header-self-sufficiency / no-Qt-DBus-KF6-LM-QCBOR-leak acceptance

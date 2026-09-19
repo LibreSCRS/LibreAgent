@@ -110,7 +110,7 @@ function(agent_core_test name)
     # ${CMAKE_CURRENT_SOURCE_DIR} makes "fakes/Fake*.h" and the local
     # Pkcs11BrokerTestSupport.h resolvable from every test TU.
     target_include_directories(${name} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
-    add_test(NAME ${name} COMMAND ${name})
+    gtest_discover_tests(${name})
 endfunction()
 
 # Compile-and-behaviour lock for the five shared fakes.
@@ -289,8 +289,7 @@ target_link_libraries(CscaAnchorImportTest PRIVATE
     LibreAgent::Core
     SyntheticMasterList
     GTest::gtest_main)
-add_test(NAME CscaAnchorImportTest COMMAND CscaAnchorImportTest)
-set_tests_properties(CscaAnchorImportTest PROPERTIES TIMEOUT 120)
+gtest_discover_tests(CscaAnchorImportTest PROPERTIES TIMEOUT 120)
 
 # --- the card operations' own suites ---------------------------------------
 #
@@ -337,7 +336,7 @@ if(LIBREAGENT_BUILD_WIRE)
         GTest::gtest
         GTest::gtest_main)
     target_include_directories(VisualLayoutServiceTest PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
-    add_test(NAME VisualLayoutServiceTest COMMAND VisualLayoutServiceTest)
+    gtest_discover_tests(VisualLayoutServiceTest)
 endif()
 
 endif() # LIBREAGENT_BUILD_CORE

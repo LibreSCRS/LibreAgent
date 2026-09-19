@@ -402,6 +402,68 @@ if(LIBREAGENT_BUILD_PKCS11_SOCKET_CLIENT)
     endif()
 endif() # LIBREAGENT_BUILD_PKCS11_SOCKET_CLIENT
 
+# --- one ctest entry per GoogleTest case ---------------------------------
+# Before client/qt is added, because the suites there use it, and outside the
+# top-level guard for the same reason the registrations below it are: a
+# consumer that pulls this repository in still builds them.
+include(GoogleTest)
+
+# One ctest entry per GoogleTest case rather than one per binary. With one
+# entry per binary, ctest counts binaries: `ctest -R` cannot select a case,
+# the manifest check compares file names so a case deleted inside a
+# surviving binary passes, and the skip ledger reads the ctest log and
+# therefore records nothing for a binary whose cases all skipped.
+#
+# PRE_TEST, not the default POST_BUILD: POST_BUILD runs each freshly linked
+# binary in the middle of a parallel build, and on a loaded runner that
+# yields an empty test-list and kills the build, naming a different target
+# each time. The failure reads as a regression and is not one.
+set(CMAKE_GTEST_DISCOVER_TESTS_DISCOVERY_MODE PRE_TEST)
+
+# The D-Bus suites each get their own session bus through the target
+# property GoogleTest's discovery module reads. It reads that property only
+# while CMP0158 is unset or OLD; under NEW -- which arrives with the first
+# bump of cmake_minimum_required to 3.29 or later -- the emulator stops
+# being consulted without cross-compiling, the wrapper silently falls off,
+# and those suites go to whatever session bus the runner is on. The guard is
+# required because cmake_policy(SET CMP0158 ...) is an error on the minimum
+# this project declares. The behaviour is asserted separately, because this
+# line cannot fail.
+if(POLICY CMP0158)
+    cmake_policy(SET CMP0158 OLD)
+endif()
+
+# An address no bus can be listening on. ctest hands it to every bus-backed
+# test in both variables below; dbus-run-session overwrites
+# DBUS_SESSION_BUS_ADDRESS with the bus it starts, so the two are equal
+# exactly when the wrapper did not run -- which is what
+# tests/support/PrivateSessionBusTest.cpp asserts against.
+set(LIBREAGENT_PRIVATE_BUS_SENTINEL "unix:path=/nonexistent/librescrs-no-private-bus")
+set(LIBREAGENT_PRIVATE_BUS_ENV
+    "LIBRESCRS_OUTER_BUS=${LIBREAGENT_PRIVATE_BUS_SENTINEL};DBUS_SESSION_BUS_ADDRESS=${LIBREAGENT_PRIVATE_BUS_SENTINEL}")
+# Not under tests/ or client/qt/tests/, and that is deliberate: the fd-harvest
+# check fails a CMake file outside the test roots that NAMES a path under one,
+# and this definition has to be visible before client/qt is added, which is
+# before either test root is. The file is only ever compiled into test binaries,
+# by the function below.
+set(LIBREAGENT_PRIVATE_BUS_SOURCE
+    "${CMAKE_CURRENT_SOURCE_DIR}/testsupport/PrivateSessionBusTest.cpp")
+
+# Wraps <tgt> in its own session bus and compiles in the case that says so.
+# The suite name carries the target's name because every bus-backed binary
+# gets this case, and ctest entries are named after the case alone.
+function(libreagent_private_session_bus tgt)
+    # Resolved at call time, not at the top of this file: dbus-run-session is
+    # required only by the suites that need a bus, and demanding it of every
+    # configuration would fail a build that registers none of them.
+    find_program(DBUS_RUN_SESSION dbus-run-session REQUIRED)
+    set_target_properties(${tgt} PROPERTIES
+        CROSSCOMPILING_EMULATOR "${DBUS_RUN_SESSION};--")
+    target_sources(${tgt} PRIVATE "${LIBREAGENT_PRIVATE_BUS_SOURCE}")
+    target_compile_definitions(${tgt} PRIVATE
+        LIBRESCRS_PRIVATE_BUS_SUITE=${tgt}PrivateSessionBus)
+endfunction()
+
 if(LIBREAGENT_BUILD_CLIENT_QT)
     # Qt enters this whole repo's build HERE and ONLY here: this is the one
     # and only find_package(Qt6 ...) call in this tree, so a WIRE-only or
@@ -467,6 +529,7 @@ if(PROJECT_IS_TOP_LEVEL)
     set(DART_TESTING_TIMEOUT 300 CACHE STRING
         "Default per-test ctest timeout, in seconds")
     include(CTest)
+
 endif()
 
 if((LIBREAGENT_BUILD_CORE OR LIBREAGENT_BUILD_WIRE OR LIBREAGENT_BUILD_PKCS11_FACADE)

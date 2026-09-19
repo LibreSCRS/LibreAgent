@@ -16,5 +16,5 @@
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     add_executable(ScmRightsSpikeTest ScmRightsSpikeTest.cpp)
     target_link_libraries(ScmRightsSpikeTest PRIVATE GTest::gtest GTest::gtest_main)
-    add_test(NAME ScmRightsSpikeTest COMMAND ScmRightsSpikeTest)
+    gtest_discover_tests(ScmRightsSpikeTest)
 endif()

@@ -26,7 +26,7 @@ target_include_directories(WireHeaderPurityCheck PRIVATE ${CMAKE_SOURCE_DIR}/inc
 add_executable(WireHeadersTest ErrorCodeHeaderTest.cpp)
 target_include_directories(WireHeadersTest PRIVATE ${CMAKE_SOURCE_DIR}/include)
 target_link_libraries(WireHeadersTest PRIVATE GTest::gtest GTest::gtest_main)
-add_test(NAME WireHeadersTest COMMAND WireHeadersTest)
+gtest_discover_tests(WireHeadersTest)
 
 # 7. FeatureTokensGuardTest: ties LibreSCRS::Agent::kAgentFeatures
 #    (FeatureTokens.h, std-only, no LM/Qt/sdbus-c++) back to the CDDL comment
@@ -38,7 +38,7 @@ target_include_directories(FeatureTokensGuardTest PRIVATE ${CMAKE_SOURCE_DIR}/in
 target_link_libraries(FeatureTokensGuardTest PRIVATE LibreAgentCddlVocabulary GTest::gtest GTest::gtest_main)
 target_compile_definitions(FeatureTokensGuardTest PRIVATE
     LIBRESCRS_AGENT_WIRE_CDDL="${CMAKE_SOURCE_DIR}/wire/librescrs-agent.cddl")
-add_test(NAME FeatureTokensGuardTest COMMAND FeatureTokensGuardTest)
+gtest_discover_tests(FeatureTokensGuardTest)
 
 # Unit tests for the contract-grammar text helpers themselves. Link-light on
 # purpose: the helpers must stay std-only so the generator can use them.
@@ -50,7 +50,7 @@ target_link_libraries(CddlVocabularyTest PRIVATE
 add_dependencies(CddlVocabularyTest wire-vocabulary-gen)
 target_compile_definitions(CddlVocabularyTest PRIVATE
     LIBRESCRS_WIRE_VOCABULARY_GEN="$<TARGET_FILE:wire-vocabulary-gen>")
-add_test(NAME CddlVocabularyTest COMMAND CddlVocabularyTest)
+gtest_discover_tests(CddlVocabularyTest)
 
 # 8. PropertyChangedVocabGuardTest: ties the CDDL comment documenting the
 #    `property-changed` event's served `iface` vocabulary back to the set
@@ -61,7 +61,7 @@ add_executable(PropertyChangedVocabGuardTest PropertyChangedVocabGuardTest.cpp)
 target_link_libraries(PropertyChangedVocabGuardTest PRIVATE LibreAgentCddlVocabulary GTest::gtest GTest::gtest_main)
 target_compile_definitions(PropertyChangedVocabGuardTest PRIVATE
     LIBRESCRS_AGENT_WIRE_CDDL="${CMAKE_SOURCE_DIR}/wire/librescrs-agent.cddl")
-add_test(NAME PropertyChangedVocabGuardTest COMMAND PropertyChangedVocabGuardTest)
+gtest_discover_tests(PropertyChangedVocabGuardTest)
 
 if(LIBREAGENT_BUILD_WIRE)
     # 3. CborRoundTripTest is the actual behavioural test of the canonical-CBOR
@@ -75,7 +75,7 @@ if(LIBREAGENT_BUILD_WIRE)
         LibreAgent::Wire
         GTest::gtest
         GTest::gtest_main)
-    add_test(NAME CborRoundTripTest COMMAND CborRoundTripTest)
+    gtest_discover_tests(CborRoundTripTest)
 
     # CborRelocationTest: a CborValue holding a Map must survive being moved out
     # of a growing vector. Passes trivially where the library is healthy; its
@@ -86,7 +86,7 @@ if(LIBREAGENT_BUILD_WIRE)
         LibreAgent::Wire
         GTest::gtest
         GTest::gtest_main)
-    add_test(NAME CborRelocationTest COMMAND CborRelocationTest)
+    gtest_discover_tests(CborRelocationTest)
 
     # 4. Framing/FrameReassembler: the length-prefixed + SCM_RIGHTS frame codec
     #    and the non-blocking streaming reassembler, both re-based onto this
@@ -98,7 +98,7 @@ if(LIBREAGENT_BUILD_WIRE)
             LibreAgent::Wire
             GTest::gtest
             GTest::gtest_main)
-        add_test(NAME ${wire_test} COMMAND ${wire_test})
+        gtest_discover_tests(${wire_test})
     endforeach()
 
     # FdHarvestTest: the SCM_RIGHTS length clamp on its own. The two harvest
@@ -116,7 +116,7 @@ if(LIBREAGENT_BUILD_WIRE)
     target_link_libraries(FdHarvestTest PRIVATE
         GTest::gtest
         GTest::gtest_main)
-    add_test(NAME FdHarvestTest COMMAND FdHarvestTest)
+    gtest_discover_tests(FdHarvestTest)
 
     # 5. MessagesRoundTripTest: the typed request/reply/event model over the
     #    Cbor seam, re-based onto this component's std-only wire mirrors
@@ -130,7 +130,7 @@ if(LIBREAGENT_BUILD_WIRE)
     target_link_libraries(MessagesRoundTripTest PRIVATE
         LibreAgent::Wire
         GTest::gtest)
-    add_test(NAME MessagesRoundTripTest COMMAND MessagesRoundTripTest)
+    gtest_discover_tests(MessagesRoundTripTest)
 
     # ClientCodecTest: the client-role inverse of MessagesRoundTripTest --
     # parseReply/parseEvent (decode what the agent sends) and encodeRequest
@@ -143,7 +143,7 @@ if(LIBREAGENT_BUILD_WIRE)
         LibreAgent::Wire
         GTest::gtest
         GTest::gtest_main)
-    add_test(NAME ClientCodecTest COMMAND ClientCodecTest)
+    gtest_discover_tests(ClientCodecTest)
 endif()
 
 if(LIBREAGENT_BUILD_CORE AND LIBREAGENT_BUILD_WIRE)
@@ -168,5 +168,5 @@ if(LIBREAGENT_BUILD_CORE AND LIBREAGENT_BUILD_WIRE)
     # group and compares it value-for-value with the upstream taxonomy.
     target_compile_definitions(WireContractGuardTest PRIVATE
         LIBRESCRS_AGENT_WIRE_CDDL="${CMAKE_SOURCE_DIR}/wire/librescrs-agent.cddl")
-    add_test(NAME WireContractGuardTest COMMAND WireContractGuardTest)
+    gtest_discover_tests(WireContractGuardTest)
 endif()

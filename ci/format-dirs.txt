@@ -1,5 +1,6 @@
+client
 include
 src
 tests
-client
+testsupport
 wire

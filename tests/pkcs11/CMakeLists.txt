@@ -23,7 +23,11 @@ function(agent_pkcs11_test name)
         GTest::gtest
         GTest::gtest_main)
     target_include_directories(${name} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
-    add_test(NAME ${name} COMMAND ${name})
+    # PROPERTIES and anything else ctest takes are forwarded, so a suite that
+    # needs a different ceiling says so where it is declared. Setting them
+    # afterwards is no longer possible: the ctest entries are named after the
+    # cases now, not after the binary.
+    gtest_discover_tests(${name} ${ARGN})
 endfunction()
 
 # A double that stopped resembling an agent takes every suite that uses it with
@@ -45,18 +49,17 @@ if(LIBREAGENT_BUILD_PKCS11_SOCKET_CLIENT)
 
     # The suites that dlopen it.
     function(agent_pkcs11_module_test name)
-        agent_pkcs11_test(${name})
+        agent_pkcs11_test(${name} ${ARGN})
         target_link_libraries(${name} PRIVATE ${CMAKE_DL_LIBS})
         target_compile_definitions(${name} PRIVATE
             LIBRESCRS_PKCS11_MODULE_PATH="$<TARGET_FILE:librescrs-pkcs11-agent>")
         add_dependencies(${name} librescrs-pkcs11-agent)
     endfunction()
 
-    agent_pkcs11_test(SocketAgentClientTest)
-    target_link_libraries(SocketAgentClientTest PRIVATE LibreAgent::Pkcs11SocketClient)
     # A human-paced login is parked behind a delay longer than the public-data
     # budget on purpose; the suite must outlive that, and only that.
-    set_tests_properties(SocketAgentClientTest PROPERTIES TIMEOUT 180)
+    agent_pkcs11_test(SocketAgentClientTest PROPERTIES TIMEOUT 180)
+    target_link_libraries(SocketAgentClientTest PRIVATE LibreAgent::Pkcs11SocketClient)
 
     agent_pkcs11_test(SnapshotParityTest)
     target_link_libraries(SnapshotParityTest PRIVATE LibreAgent::Pkcs11SocketClient)
@@ -79,18 +82,16 @@ if(LIBREAGENT_BUILD_PKCS11_SOCKET_CLIENT)
     agent_pkcs11_module_test(LoadModuleTest)
 
     # Full C_* ABI driven against the built module + the socket double.
-    agent_pkcs11_module_test(ModuleAbiTest)
-    target_link_libraries(ModuleAbiTest PRIVATE LibreAgent::Pkcs11SocketClient)
     # Higher ceiling than the default used elsewhere here: this suite is
     # deliberately slow. One case parks a signature behind a 27 s delay to ride
     # past the budget a single-deadline client would have used, and two more add
     # 3 s and 2 s, so the floor is already around 33 s.
-    set_tests_properties(ModuleAbiTest PROPERTIES TIMEOUT 180)
+    agent_pkcs11_module_test(ModuleAbiTest PROPERTIES TIMEOUT 180)
+    target_link_libraries(ModuleAbiTest PRIVATE LibreAgent::Pkcs11SocketClient)
 
     # Module-side security properties (no-PIN-on-wire, mechanism rejection,
     # non-extractable keys, capability gating) over the real C_* ABI.
-    agent_pkcs11_module_test(SecurityTest)
-    set_tests_properties(SecurityTest PROPERTIES TIMEOUT 120)
+    agent_pkcs11_module_test(SecurityTest PROPERTIES TIMEOUT 120)
 
     # Env-gated MANUAL real-card smoke. Talks to the LIVE agent + card; skips
     # entirely unless LIBRESCRS_HW_SMOKE=1, so it never blocks a CI run and
