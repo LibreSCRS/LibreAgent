@@ -53,7 +53,7 @@ pkgbase=libreagent
 pkgname=('librescrs-agent-common' 'librescrs-agent-core' 'librescrs-agent-client-qt')
 pkgver=5.0.0
 pkgrel=1
-arch=('x86_64' 'aarch64')
+arch=('x86_64')
 url="https://github.com/LibreSCRS/LibreAgent"
 license=('LGPL-2.1-or-later' 'BSD-3-Clause')   # BSD-3 = vendored QCBOR
 # Build host tooling. base-devel ships none of the first three.
