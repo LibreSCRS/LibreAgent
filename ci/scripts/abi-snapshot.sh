@@ -205,6 +205,16 @@ set -euo pipefail
 # in English regardless of the runner's locale.
 export LC_ALL=C
 
+# Tools before anything else. Every section below is read through
+# `nm | awk | c++filt`, and with c++filt absent the pipeline comes back empty:
+# the per-section refusals then report "broken archive" where the truth is
+# "this host cannot demangle". A missing tool is "I cannot measure", never a
+# pass and never a diagnosis of the artefact.
+for tool in nm c++filt; do
+    command -v "$tool" >/dev/null 2>&1 \
+        || { echo "FATAL: $tool not found on PATH -- cannot measure the ABI surface" >&2; exit 2; }
+done
+
 ACTION="check"
 BUILD_DIR="build"
 
