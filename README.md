@@ -2,14 +2,17 @@
 
 The platform-neutral core of the LibreSCRS smart-card agent, the wire
 vocabulary its transports speak, and the Qt client library desktop frontends
-use to talk to it. Three independently usable libraries ship from this
-repository:
+use to talk to it. Five independently usable libraries ship from this
+repository (two more, `TestSupport` and `ClientQtTestSupport`, exist only to
+back the test suites of the ones below and are not meant for outside use):
 
 | Target | Links | Who consumes it |
 | --- | --- | --- |
 | `LibreAgent::Core` | LibreMiddleware, OpenSSL | platform hosts (LibreLinux today, a macOS host to follow) |
 | `LibreAgent::Wire` | nothing first-party | anything speaking the agent protocol |
 | `LibreAgent::ClientQt` | Qt6 | Qt/KDE desktop clients |
+| `LibreAgent::Pkcs11Facade` | nothing | a browser-loadable PKCS#11 module (the host TU that defines `makeAgentClient()` is not part of this library) |
+| `LibreAgent::Pkcs11SocketClient` | `LibreAgent::Pkcs11Facade`, `LibreAgent::Wire` | a PKCS#11 module reaching the agent over the socket transport |
 
 `LibreAgent::Core` holds the Qt-free, backend-agnostic brain of the per-user
 card broker — reader/card presence tracking, operation scheduling, read and

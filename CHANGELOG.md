@@ -242,8 +242,9 @@ Three targets ship, each independently usable:
   drags in dependencies the caller may not want.
 - **Public-ABI snapshot gate** in CI freezing the exported surface;
   minor-version additions are tracked, while removals or signature drift
-  are rejected. It gates the exported symbols of **all three** shipped
-  components, AND the memory layout of the Qt client's public value
+  are rejected. It gates the exported symbols of **the three components
+  whose ABI is snapshotted** (`Core`, `Wire` and `ClientQt`), AND the
+  memory layout of the Qt client's public value
   types — size, alignment, member count and per-member offsets —
   because those types are copied by value into consumers, so a member
   added, removed or reordered breaks an already-built consumer without
