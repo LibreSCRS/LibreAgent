@@ -32,6 +32,8 @@ jobs:
   verify-signature:
     timeout-minutes: 10
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     env:
       # The release key's PRIMARY fingerprint, named once so the import check
       # and the signature check cannot pin different keys across a rotation.
