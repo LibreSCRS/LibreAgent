@@ -3,10 +3,10 @@
 #
 # check-format-scope.selftest.sh — prove the scope check can fail.
 #
-# Here the check passes today, because every tracked source is already under
-# a formatted root. Its whole value is the moment a new shared directory
-# appears, so until that happens this selftest is the only thing that
-# demonstrates the gate works at all.
+# In four of the six repositories here the check passes on the day it lands,
+# because nothing is outside the formatted roots yet. Its whole value is the
+# moment a new shared directory appears, so in those repositories this selftest
+# is the only thing that demonstrates the gate works at all.
 #
 # Every case runs against a throwaway git repository under /var/tmp (never
 # /tmp, which is a RAM filesystem here).
