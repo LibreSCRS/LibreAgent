@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: LGPL-2.1-or-later
 # Runs in a work copy, on the host, before any container starts. Places the
 # fetch-time dependencies the release tarball carries, so the package build
 # itself never reaches the network.

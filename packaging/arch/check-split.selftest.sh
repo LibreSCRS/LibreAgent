@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: LGPL-2.1-or-later
 # Selftest for check-split.sh. Three shapes the split gets wrong by hand, plus
 # the well-formed case so a check that fails everything cannot pass this.
 set -u

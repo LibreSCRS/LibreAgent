@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: LGPL-2.1-or-later
 # Runs INSIDE a fresh container. /pkg holds this repository's packages and
 # /pkg-<Repo> the upstream ones. The claim this file exists to make is
 # coexistence: that the split measured for pacman also holds for dpkg and rpm,

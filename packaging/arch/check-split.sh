@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: LGPL-2.1-or-later
 # check-split.sh <staged-usr-dir>
 #
 # The three packages built from this recipe must, between them, cover the
