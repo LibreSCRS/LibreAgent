@@ -11,6 +11,7 @@
 #include <fstream>
 #include <string>
 #include <sys/wait.h>
+#include <unistd.h>
 
 using LibreSCRS::Wire::Tools::cddlAlternatives;
 using LibreSCRS::Wire::Tools::cddlQuotedTokens;
@@ -90,7 +91,16 @@ struct GeneratorRun
 // Runs the real generator binary over a grammar written to a scratch file.
 GeneratorRun runGenerator(const std::string& cddl)
 {
-    const auto path = std::filesystem::temp_directory_path() / "CddlVocabularyTest-grammar.cddl";
+    // One name per process and per call. Every case in this file used to write the
+    // same path and delete it afterwards, which was safe while the whole suite was
+    // a single ctest entry running its cases in sequence. With one entry per case
+    // two of them run at once: one writes while the other's generator reads, or
+    // deletes underneath it, and the failure reads as a grammar defect
+    // ("contract grammar is empty or unreadable") rather than as interference.
+    static unsigned serial = 0;
+    const auto path = std::filesystem::temp_directory_path()
+        / ("CddlVocabularyTest-grammar-" + std::to_string(static_cast<long>(::getpid()))
+           + "-" + std::to_string(serial++) + ".cddl");
     {
         std::ofstream out(path);
         out << cddl;
