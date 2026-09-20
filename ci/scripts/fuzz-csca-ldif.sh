@@ -71,18 +71,37 @@
 # could point it at the checked-out tests/corpus/csca_ldif/ directly because
 # that whole checkout is thrown away after the job; this script runs against a
 # real, persistent git working tree, so each target fuzzes its own scratch COPY
-# of tests/corpus/csca_ldif/ — the tracked seed corpus is read-only input here,
+# of its seed directory — the tracked seed corpora are read-only input here,
 # never a write target, and the six targets cannot contaminate each other's.
 #
-# The three tracked seeds are named for what they are, because two of them are
-# the only reason two branches are reachable at all from a cold start:
-#   empty.ldif                             — no records, no dn
+# TWO seed corpora, because the targets take two different kinds of input:
+#
+# tests/corpus/csca_ldif/ — whole directory-export text, for the five targets
+# whose input is a file or a field out of one:
+#   empty.ldif                             — no records, no dn. libFuzzer SKIPS
+#                                            a zero-byte file (it generates the
+#                                            empty input itself), so this one is
+#                                            documentary: it says the empty file
+#                                            is a case somebody thought about,
+#                                            and the seed COUNT libFuzzer reports
+#                                            is two, not three.
 #   definite-length-signed-object.ldif     — one userCertificate;binary:: value
 #                                            that IS a short-form ContentInfo
 #   indefinite-length-signed-object.ldif   — the same, in the BER indefinite
 #                                            form isSignedObject has a branch
 #                                            for; a real ICAO collection
 #                                            carries one
+#
+# tests/corpus/csca_der/ — RAW ContentInfo bytes, for the signed_object target
+# only. That target hands its input straight to the BER length decoder, which
+# rejects anything whose first byte is not 0x30 — so an LDIF seed dies on byte
+# one there and the whole decoder starts from nothing. Measured, not assumed:
+# with these two seeds the definite and the indefinite path light up different
+# edge counts under -runs=0.
+#   definite-length-content-info.der       — 30 0B <OID>, short form
+#   indefinite-length-content-info.der     — 30 80 <OID> 00 00, indefinite, the
+#                                            branch closed by the end-of-contents
+#                                            octets rather than by a length
 
 set -euo pipefail
 
@@ -137,16 +156,28 @@ fi
 
 REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 SOURCE_DIR="${REPO_ROOT}/src/trust"
-TRACKED_CORPUS="${REPO_ROOT}/tests/corpus/csca_ldif"
+LDIF_CORPUS="${REPO_ROOT}/tests/corpus/csca_ldif"
+DER_CORPUS="${REPO_ROOT}/tests/corpus/csca_der"
+
+# Which seed directory each target starts from. See the two-corpora note in the
+# header: signed_object is handed raw ContentInfo bytes, everything else text.
+seed_dir_for() {
+    case "$1" in
+        signed_object) printf '%s' "$DER_CORPUS" ;;
+        *)             printf '%s' "$LDIF_CORPUS" ;;
+    esac
+}
 
 if [[ ! -f "${SOURCE_DIR}/CscaAnchorImport.cpp" ]]; then
     echo "ERROR: ${SOURCE_DIR}/CscaAnchorImport.cpp is not there — wrong root?" >&2
     exit 2
 fi
-if [[ ! -d "$TRACKED_CORPUS" ]]; then
-    echo "ERROR: seed corpus ${TRACKED_CORPUS} is missing — a harness with no seed" >&2
-    exit 2
-fi
+for dir in "$LDIF_CORPUS" "$DER_CORPUS"; do
+    if [[ ! -d "$dir" ]]; then
+        echo "ERROR: seed corpus ${dir} is missing — a harness with no seed" >&2
+        exit 2
+    fi
+done
 
 # Headers only. The order is deliberate: an explicit flag wins, then the
 # environment the CI job already sets for LibreMiddleware, then the workspace
@@ -305,12 +336,13 @@ for target in "${TARGETS[@]}"; do
     # tracked seeds are never a write target and the targets cannot feed each
     # other inputs their own grammar never produced.
     corpus="${SCRATCH}/corpus-${target}"
+    seeds="$(seed_dir_for "$target")"
     mkdir -p "$corpus"
     # `command cp -f`, not a bare cp: an interactive `cp -i` alias turns an
     # unattended run into a hang waiting on a prompt nobody will answer.
-    command cp -f "${TRACKED_CORPUS}"/* "$corpus/"
+    command cp -f "${seeds}"/* "$corpus/"
 
-    echo "Running ${target} for ${PER_TARGET}s over ${corpus} ..."
+    echo "Running ${target} for ${PER_TARGET}s over ${corpus} (seeds: ${seeds##*/}) ..."
     "${SCRATCH}/csca-ldif-fuzz-${target}" \
         -max_total_time="$PER_TARGET" -timeout=5 -print_final_stats=1 \
         -artifact_prefix="${SCRATCH}/crash-${target}-" "$corpus"
