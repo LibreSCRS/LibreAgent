@@ -28,6 +28,14 @@ on:
     - cron: '0 4 * * 0'
   workflow_dispatch:
 
+# The floor for every job here, so a job that does not name its own permissions
+# gets a read-only token rather than whatever the repository happens to default
+# to. The job that runs the whole build under a tracer, on pull_request, needs
+# nothing but the source; only the job that publishes the report may write, and
+# it asks for that itself.
+permissions:
+  contents: read
+
 jobs:
   database:
     name: Build and analyse the database (cpp)
@@ -90,8 +98,18 @@ jobs:
           cmake --install build
 
       - name: Fetch the CodeQL CLI bundle
+        # The checksum is verified BEFORE the archive is unpacked, and it is the
+        # one the release publishes beside the archive
+        # (codeql-bundle-linux64.tar.gz.checksum.txt, already in `sha256sum -c`
+        # form). A release tag is a movable ref: without this, the one
+        # fetch-and-execute this whole change introduces would trust whatever
+        # that name resolves to on the day. sha256sum -c fails on a mismatch and
+        # on a missing file, and set -e is on by default in a `run` block.
         run: |
-          wget -q "https://github.com/github/codeql-action/releases/download/${CODEQL_BUNDLE}/codeql-bundle-linux64.tar.gz"
+          base="https://github.com/github/codeql-action/releases/download/${CODEQL_BUNDLE}"
+          wget -q "${base}/codeql-bundle-linux64.tar.gz"
+          wget -q "${base}/codeql-bundle-linux64.tar.gz.checksum.txt"
+          sha256sum -c codeql-bundle-linux64.tar.gz.checksum.txt
           mkdir -p /opt/codeql
           tar -xzf codeql-bundle-linux64.tar.gz -C /opt/codeql --strip-components=1
           /opt/codeql/codeql version
