@@ -311,6 +311,13 @@ TEST_F(ConfigStoreTest, LinkLocalPlainHttpTsaUrlIsRefusedAndTheStoreIsUnchanged)
     const auto refused = cfg.setTsaUrls({"http://169.254.169.254"});
     EXPECT_FALSE(refused.ok);
     EXPECT_EQ(refused.errorName, "org.librescrs.Agent.Error.InvalidConfigValue");
+    // The message is a public, installed surface (SetResult::message), and it is
+    // the only thing that tells the person WHICH rule refused them. It said
+    // "http(s)" while refusing a value for being http, which reads as a refusal
+    // for some other reason; asserted here so the wording cannot drift back.
+    EXPECT_NE(refused.message.find("https"), std::string::npos) << refused.message;
+    EXPECT_EQ(refused.message.find("http(s)"), std::string::npos)
+        << "the message still offers plain http: " << refused.message;
     EXPECT_EQ(cfg.tsaUrls(), before) << "the write was refused and applied anyway";
 
     // And the refusal survived the file, not just the accessor.

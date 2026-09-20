@@ -222,11 +222,14 @@ std::optional<std::uint32_t> parseU32(std::string_view s)
 // took from its own config; the middleware likewise requires https of a
 // trusted-list source, so one accepted here could only fail later.
 //
-// What this does NOT judge: address literals. Loopback, link-local and private
-// ranges are rejected on the middleware's fetch path, where the request is
-// built and where every caller passes — including the ones that never touch
-// this store. A second literal parser here would be a second policy to keep in
-// step with the first.
+// What this judges is the scheme and the presence of an authority, and nothing
+// else. It does NOT look at the address: `https://169.254.169.254/` and
+// `https://localhost/` pass, and an operator who writes one gets it. That is a
+// deliberate boundary rather than an oversight — a literal filter belongs where
+// the request is built, so that it also covers the callers that never pass
+// through this store, and a copy of it here would be a second policy to keep in
+// step with the first. Which callers are covered there is not this file's claim
+// to make: nothing in this store may be read as a promise about them.
 bool isHttpUrl(std::string_view url, bool allowPlainHttp)
 {
     // Require an http(s) scheme AND a non-empty authority after it. A scheme-only
@@ -750,7 +753,7 @@ ConfigStore::SetResult ConfigStore::setTsaUrls(std::vector<std::string> urls)
 {
     for (const auto& u : urls) {
         if (!isHttpUrl(u, /*allowPlainHttp=*/false)) {
-            return SetResult{false, kErrInvalidValue, "TsaUrls entries must be http(s) URLs"};
+            return SetResult{false, kErrInvalidValue, "TsaUrls entries must be https URLs"};
         }
     }
     {
@@ -766,7 +769,7 @@ ConfigStore::SetResult ConfigStore::setTslSources(std::vector<TslSource> sources
 {
     for (const auto& s : sources) {
         if (!isHttpUrl(s.url, /*allowPlainHttp=*/false)) {
-            return SetResult{false, kErrInvalidValue, "TslSources entries must be http(s) URLs"};
+            return SetResult{false, kErrInvalidValue, "TslSources entries must be https URLs"};
         }
     }
     {
@@ -782,7 +785,7 @@ ConfigStore::SetResult ConfigStore::setCscaSources(std::vector<CscaSource> sourc
 {
     for (const auto& s : sources) {
         if (!isHttpUrl(s.uri, /*allowPlainHttp=*/false)) {
-            return SetResult{false, kErrInvalidValue, "CscaSources entries must be http(s) URLs"};
+            return SetResult{false, kErrInvalidValue, "CscaSources entries must be https URLs"};
         }
     }
     {
