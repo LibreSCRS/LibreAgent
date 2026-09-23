@@ -3,11 +3,11 @@ name: Release
 
 # LibreAgent ships only the platform-neutral source library
 # (LibreAgent::Core); it produces no separate binary artifacts (consumers
-# build it from the CONFIG package or via FetchContent). So this workflow is
-# notes-only: on a release tag it verifies the tag's GPG signature against the
-# published key, then creates a GitHub release whose notes come from the
-# matching CHANGELOG section. Binary-artifact signing (cosign) lives in the
-# components that distribute binaries.
+# build it from the CONFIG package or via FetchContent). So on a release tag
+# this workflow verifies the tag's GPG signature against the published key,
+# then creates a GitHub release whose notes come from the matching CHANGELOG
+# section, carrying the deterministic source tarball the packaging recipes
+# fetch and its cosign keyless signature bundle.
 
 on:
   push:
@@ -134,6 +134,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      id-token: write
     steps:
       - uses: actions/checkout@v4
         with:
@@ -151,6 +152,20 @@ jobs:
           name: source-tarball
           path: dist
 
+
+      - name: Install cosign
+        # By commit, not by tag: this job mints a Sigstore identity for the
+        # project, and a moved tag on a third-party action would run its code
+        # here. A pin nobody maintains goes stale; move it deliberately.
+        uses: sigstore/cosign-installer@faadad0cce49287aee09b3a48701e75088a2c6ad  # v4.0.0
+
+      - name: Sign the source tarball with cosign (keyless via Sigstore OIDC)
+        # The packaging recipe fetches this tarball and its checksum is SKIP
+        # until the tag exists, so the signature is the only integrity claim
+        # it carries.
+        run: |
+          find dist -type f ! -name '*.sigstore.json' \
+            -exec sh -c 'cosign sign-blob "$1" --bundle "$1.sigstore.json" --yes' _ {} \;
       - name: Prepare release notes from CHANGELOG
         # One extractor, in ci/scripts/check-release-lockstep.sh, shared with
         # the per-push agreement check. It used to be copied inline into every
@@ -191,7 +206,7 @@ jobs:
               --verify-tag \
               $NOTES_ARG \
               $PRERELEASE_FLAG \
-              dist/*.orig.tar.gz
+              dist/*
 
       - name: The published release is the set this repository declares
         # The release this job just created, read back. A draft is judged too,
