@@ -61,6 +61,7 @@ Multi-Arch: same
 Depends: ${misc:Depends},
          liblibrescrs-agentclient-qt5 (= ${binary:Version}),
          librescrs-agent-common-dev (= ${source:Version}),
+         librescrs-agent-core-dev (= ${source:Version}),
          qt6-base-dev
 Description: Development files for the LibreSCRS agent Qt client library
  Headers, linker symlink and the CMake component targets for building against

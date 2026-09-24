@@ -77,6 +77,9 @@ session-bus interface.
 Summary:        Development files for the LibreSCRS agent Qt client library
 Requires:       librescrs-agent-client-qt%{?_isa} = %{version}-%{release}
 Requires:       librescrs-agent-common-devel = %{version}-%{release}
+# The ClientQtTestSupport component shipped here links LibreAgent::Wire, which
+# the core development package carries.
+Requires:       librescrs-agent-core-devel = %{version}-%{release}
 Requires:       qt6-qtbase-devel
 
 %description -n librescrs-agent-client-qt-devel

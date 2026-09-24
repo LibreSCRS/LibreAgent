@@ -322,10 +322,15 @@ package_librescrs-agent-core() {
 # --- librescrs-agent-client-qt: the Qt client library -------------------------
 package_librescrs-agent-client-qt() {
     pkgdesc="Qt client library for the LibreSCRS smart-card agent (D-Bus and AF_UNIX socket transports)"
-    # No middleware and no OpenSSL here: those enter only through the core
-    # library, which this package deliberately does not depend on.
+    # The core package is a dependency because this one ships the
+    # ClientQtTestSupport CMake component, whose exported target links
+    # LibreAgent::Wire, and Wire is in the core package. Without it
+    # find_package(LibreAgent COMPONENTS ClientQtTestSupport) fails on a
+    # machine with only this package installed. Arch has no separate
+    # development package to carry that edge, so the runtime package does.
     depends=(
         'librescrs-agent-common'
+        'librescrs-agent-core'  # LibreAgent::Wire, linked by ClientQtTestSupport
         'qt6-base'      # Qt6::Core (PUBLIC) and Qt6::DBus (PRIVATE, Linux transport)
         'gcc-libs'
         'glibc'
