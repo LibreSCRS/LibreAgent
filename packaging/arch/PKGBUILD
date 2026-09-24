@@ -72,7 +72,7 @@ makedepends=(
                                  #   its CMake config package at configure time
     'openssl'
 )
-options=('!lto')   # vendored QCBOR static archive + IPO can conflict; keep it simple
+options=('!lto')   # built in a clean chroot with LTO off; not measured to be required
 
 _srcname="LibreAgent-$pkgver"
 # The immutable SHA that QCBOR's (mutable) v1.6.1 tag resolves to. Must stay in
