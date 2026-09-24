@@ -1,10 +1,14 @@
-This file contains the OpenPGP key used to sign LibreSCRS release tags.
-LibreAgent is a source-only library (no separate binary artifacts), so
-only tag verification applies here.
+This file contains the OpenPGP keys used to sign LibreSCRS releases.
 
 Verify a release tag:
     gpg --import KEYS
     git verify-tag <TAG>
+
+Verify a release artifact (cosign keyless, no key import needed):
+    cosign verify-blob <artifact> \
+      --bundle <artifact>.sigstore.json \
+      --certificate-identity-regexp 'https://github\.com/LibreSCRS/.*\.github/workflows/release\.yml@refs/tags/.*' \
+      --certificate-oidc-issuer 'https://token.actions.githubusercontent.com'
 
 Project release signing key (4.0+):
 
