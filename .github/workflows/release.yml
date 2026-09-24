@@ -157,7 +157,6 @@ jobs:
           name: source-tarball
           path: dist
 
-
       - name: Install cosign
         # By commit, not by tag: this job mints a Sigstore identity for the
         # project, and a moved tag on a third-party action would run its code
@@ -171,6 +170,7 @@ jobs:
         run: |
           find dist -type f ! -name '*.sigstore.json' \
             -exec sh -c 'cosign sign-blob "$1" --bundle "$1.sigstore.json" --yes' _ {} \;
+
       - name: Prepare release notes from CHANGELOG
         # One extractor, in ci/scripts/check-release-lockstep.sh, shared with
         # the per-push agreement check. It used to be copied inline into every
