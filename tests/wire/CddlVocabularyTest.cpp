@@ -98,9 +98,9 @@ GeneratorRun runGenerator(const std::string& cddl)
     // deletes underneath it, and the failure reads as a grammar defect
     // ("contract grammar is empty or unreadable") rather than as interference.
     static unsigned serial = 0;
-    const auto path = std::filesystem::temp_directory_path()
-        / ("CddlVocabularyTest-grammar-" + std::to_string(static_cast<long>(::getpid()))
-           + "-" + std::to_string(serial++) + ".cddl");
+    const auto path = std::filesystem::temp_directory_path() /
+                      ("CddlVocabularyTest-grammar-" + std::to_string(static_cast<long>(::getpid())) + "-" +
+                       std::to_string(serial++) + ".cddl");
     {
         std::ofstream out(path);
         out << cddl;
