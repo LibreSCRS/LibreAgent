@@ -143,8 +143,14 @@ write_archive "$TMP/bus"
 echo 'int sdbus_stub(void) { return 0; }' > "$TMP/bus.c"
 cc -shared -fPIC -o "$TMP/bus/libsdbus-c++.so.2" "$TMP/bus.c" \
    -Wl,-soname,libsdbus-c++.so.2
+# --no-as-needed BEFORE the library: it applies to the inputs after it, and a
+# toolchain that links --as-needed by default (Ubuntu's) otherwise drops a
+# library nothing calls, so this case would build a clean module and pass.
 SYMS="C_GetFunctionList" write_module "$TMP/bus" \
-   -L"$TMP/bus" -l:libsdbus-c++.so.2 -Wl,--no-as-needed
+   -Wl,--no-as-needed -L"$TMP/bus" -l:libsdbus-c++.so.2
+# The fixture really carries the dependency, or the case proves nothing.
+readelf -d "$TMP/bus/librescrs-pkcs11-agent.so" | grep -q 'NEEDED.*libsdbus-c++' \
+    || { echo "FATAL: the bus fixture does not need libsdbus-c++" >&2; exit 2; }
 check "module needs libsdbus-c++" 1 "$TMP/bus"
 
 # --- 5. the shape the module is supposed to have ---------------------------
@@ -185,6 +191,15 @@ sed -i "/^add_test(${ENTRIES[0]} /d" "$TMP/noentry/CTestTestfile.cmake"
 write_archive "$TMP/noentry"
 SYMS="C_GetFunctionList" write_module "$TMP/noentry"
 check "healthy module, entry ${ENTRIES[0]} not registered" 1 "$TMP/noentry"
+
+# --- 9. a module file that is not a shared object --------------------------
+# The shape check reads the ELF header. A file of the right name that is not an
+# ELF shared object is "nothing measured", never a verdict on its symbols.
+mkdir -p "$TMP/notelf"
+write_ctestfile "$TMP/notelf"
+write_archive "$TMP/notelf"
+echo 'not an ELF file' > "$TMP/notelf/librescrs-pkcs11-agent.so"
+check "module file is not an ELF shared object" 2 "$TMP/notelf"
 
 echo "----"
 if [[ "$fails" -eq 0 ]]; then

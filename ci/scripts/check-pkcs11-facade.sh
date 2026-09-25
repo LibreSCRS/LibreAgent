@@ -36,7 +36,8 @@
 # Exit codes, and the difference between them is the point:
 #   0  every claim holds
 #   1  the facade is present and broke a claim
-#   2  the facade is ABSENT from this build tree, or a tool is missing --
+#   2  the facade is ABSENT from this build tree, the module is not an ELF
+#      shared object, or a tool is missing --
 #      nothing was measured. A check that cannot tell absence from health
 #      reports success on a build that never happened.
 #
@@ -83,6 +84,15 @@ if [[ -z "$MOD" || -z "$LIB" ]]; then
     exit 2
 fi
 
+# Whether this is a shared object at all is read from the ELF header, not
+# inferred from the NEEDED list: a shared object that calls nothing outside
+# itself has no NEEDED entry, and a toolchain that links with --as-needed by
+# default (Ubuntu's does) produces exactly that. An empty list is a clean one.
+if ! LC_ALL=C readelf -h "$MOD" 2>/dev/null | grep -Eq '^ *Type: +DYN '; then
+    echo "FATAL: $MOD is not an ELF shared object -- nothing was measured." >&2
+    exit 2
+fi
+
 rc=0
 
 # --- 1. one entry point, and it is the right one ---------------------------
@@ -110,11 +120,6 @@ fi
 
 # --- 2. nothing a browser would rather not load ----------------------------
 needed="$(readelf -d "$MOD" 2>/dev/null | sed -n 's/.*NEEDED.*\[\(.*\)\]/\1/p')"
-if [[ -z "$needed" ]]; then
-    echo "FATAL: readelf reported no NEEDED entries for $MOD -- not an ELF" >&2
-    echo "       shared object, so nothing was measured." >&2
-    exit 2
-fi
 forbidden=0
 while IFS= read -r lib; do
     case "$lib" in
