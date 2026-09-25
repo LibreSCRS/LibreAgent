@@ -87,6 +87,7 @@ Pkcs11LeaseInvalidationTest
 Pkcs11SecurityTest
 PresenceModelTest
 PresenceTypesTest
+PromptBudgetChainTest
 PromptFieldWiringTest
 PromptIdMinterTest
 PromptPolicyTest

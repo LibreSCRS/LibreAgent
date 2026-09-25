@@ -164,6 +164,10 @@ public:
     /// @brief The bytes of the most recent PkSignRaw. A canned signature alone
     ///        would pass even if the module had sent the wrong input.
     [[nodiscard]] std::vector<std::uint8_t> lastSignInput() const;
+    /// @brief The most recent Hello this fake served. A client that means to
+    ///        opt out of presence events has to be caught on the wire; a fake
+    ///        that only counted the call would pass either way.
+    [[nodiscard]] Wire::Hello lastHello() const;
 
     /// @brief Take the card out of the first reader that has one.
     void removeCard();
@@ -189,6 +193,7 @@ private:
     std::vector<FakeReader> m_readers;
     std::vector<FakeReader> m_removed; ///< cards taken out, for insertCard()
     std::vector<std::uint8_t> m_lastSignInput;
+    Wire::Hello m_lastHello;
     std::map<Call, std::chrono::milliseconds> m_delays;
     std::map<Call, Wire::SyncError> m_failures;
     std::map<Call, int> m_counts;

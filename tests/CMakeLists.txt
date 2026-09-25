@@ -155,6 +155,7 @@ agent_core_test(OperationManagerTest)
 agent_core_test(OperationPhaseTest)
 agent_core_test(PresenceModelTest)
 agent_core_test(PresenceTypesTest)
+agent_core_test(PromptBudgetChainTest)
 agent_core_test(PromptFieldWiringTest)
 agent_core_test(PromptIdMinterTest)
 agent_core_test(PromptPolicyTest)
@@ -196,6 +197,7 @@ endforeach()
 # LIBRESCRS_INTERNAL_BUILD — the same opt-in LibreMiddleware's own tests use.
 foreach(_internal IN ITEMS
         OperationManagerTest
+        PromptBudgetChainTest
         LmRawCryptoTest
         CardSessionHolderTest
         FakeBackendsTest
@@ -222,6 +224,14 @@ target_compile_definitions(OperationManagerTest PRIVATE LIBRESCRS_AGENT_TESTING)
 target_compile_definitions(RawCryptoCaptureGuardTest PRIVATE
     LIBREAGENT_AGENTCORE_CPP="${CMAKE_CURRENT_SOURCE_DIR}/../src/AgentCore.cpp"
     LIBREAGENT_PKCS11BROKER_CPP="${CMAKE_CURRENT_SOURCE_DIR}/../src/pkcs11/Pkcs11Broker.cpp")
+
+# Source-grep guard (same idiom as above): the prompt-chain budget bounds the
+# three seams this suite drives, which bounds the agent only if they are all of
+# them -- a fourth caller of CredentialCache::requestCredential raises no dialog
+# in the test binary and would sit behind a green run, so the suite counts the
+# call sites on disk.
+target_compile_definitions(PromptBudgetChainTest PRIVATE
+    LIBREAGENT_SRC_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../src")
 
 # Source-grep guard (same idiom as above): reads the shipped LmSeams.cpp so the
 # credential depositor's PURE, no-card-I/O registry lookup survives refactors.

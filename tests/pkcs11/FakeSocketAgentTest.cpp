@@ -71,6 +71,28 @@ TEST(FakeSocketAgent, AnswersGetStateWithTheReadersItWasGiven)
     ::close(fd);
 }
 
+// The event opt-out has to be caught on the WIRE: an agent reading the flag
+// out of its own default rather than out of the frame would behave identically
+// for the client that wants events and wrongly for the one that does not.
+TEST(FakeSocketAgent, HelloCarriesTheEventOptOutAcrossTheSocket)
+{
+    T::FakeSocketAgent fake;
+    fake.addReader("r1", /*hasCard=*/true, "c1");
+    fake.start();
+
+    const int fd = T::connectTo(fake.path());
+    ASSERT_GE(fd, 0);
+    ASSERT_TRUE(roundTrip(fd, W::Hello{W::kProtocolVersion, std::string{"test"}}, 1).has_value());
+    EXPECT_TRUE(fake.lastHello().wantsEvents) << "a Hello that omits the key asks for events";
+    ::close(fd);
+
+    const int fd2 = T::connectTo(fake.path());
+    ASSERT_GE(fd2, 0);
+    ASSERT_TRUE(roundTrip(fd2, W::Hello{W::kProtocolVersion, std::string{"test"}, false}, 1).has_value());
+    EXPECT_FALSE(fake.lastHello().wantsEvents) << "the opt-out survived the frame";
+    ::close(fd2);
+}
+
 TEST(FakeSocketAgent, DeliversAnOperationAsThreeFramesInOrder)
 {
     T::FakeSocketAgent fake;

@@ -72,7 +72,16 @@ req-body = ( hello // get-state // read-identity // get-photo //
   list-credentials // manage-pin // activate-signing-key // layout-visual // get-appearance-font //
   import-csca-master-list // forget-csca-anchors )
 
-hello             = ( t: "Hello", proto: uint, ? client: tstr )
+; wantsEvents: absent means true, which is what every client sent before the
+; key existed. A client that only reads on demand would rather not accumulate
+; presence frames it discards, and says so with false.
+;
+; NOT YET HONOURED: this release's hosts decode the key and no host acts on it,
+; so a client that sends false still receives presence events. The key is
+; published now so the two directions land in either order -- a client may send
+; it against any 5.0 agent without being refused. Until a host reads it, treat
+; the reply as "events may arrive regardless".
+hello             = ( t: "Hello", proto: uint, ? client: tstr, ? wantsEvents: bool )
 get-state         = ( t: "GetState" )
 read-identity     = ( t: "ReadIdentity", card: handle )
 get-photo         = ( t: "GetPhoto", card: handle )

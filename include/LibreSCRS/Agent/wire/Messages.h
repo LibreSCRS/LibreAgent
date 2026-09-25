@@ -153,6 +153,10 @@ struct Hello
 {
     std::uint64_t proto{0};
     std::optional<std::string> client;
+    // Whether this client wants presence events pushed to it. Absent on the
+    // wire means true -- what every client sent before the key existed. LAST
+    // member on purpose: existing positional initialisation keeps compiling.
+    bool wantsEvents{true};
     bool operator==(const Hello&) const = default;
 };
 struct GetState

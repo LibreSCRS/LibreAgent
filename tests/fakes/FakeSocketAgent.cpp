@@ -137,6 +137,12 @@ std::vector<std::uint8_t> FakeSocketAgent::lastSignInput() const
     return m_lastSignInput;
 }
 
+Wire::Hello FakeSocketAgent::lastHello() const
+{
+    const std::lock_guard lock{m_mutex};
+    return m_lastHello;
+}
+
 void FakeSocketAgent::removeCard()
 {
     const std::lock_guard lock{m_mutex};
@@ -357,6 +363,7 @@ bool FakeSocketAgent::answer(int fd, const W::RequestEnvelope& env)
             refuseIt = m_refuseHello;
             m_refuseHello = false;
             feats = m_features;
+            m_lastHello = *hello;
         }
         if (refuseIt || hello->proto != W::kProtocolVersion)
             return refuse(W::SyncError::UnsupportedProtocol);

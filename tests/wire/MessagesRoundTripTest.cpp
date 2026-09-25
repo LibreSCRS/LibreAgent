@@ -120,6 +120,26 @@ TEST(MessagesRoundTrip, EveryRequestType)
     expectStable({19, PkDecrypt{"reader/0", "certid", {0xBE, 0xEF}}});
 }
 
+TEST(MessagesRoundTrip, HelloWantsEventsRoundTripsAndDefaultsTrue)
+{
+    // An explicit opt-out survives the round trip byte-stably.
+    expectStable({7, Hello{7, std::string("x"), false}});
+
+    // A Hello with no such key means the client wants events: that is what
+    // every client sent before the key existed, and what they still send.
+    const std::vector<std::uint8_t> bytes = toCbor(RequestEnvelope{8, Hello{7, std::string("x")}}).encode();
+    const auto parsed = parseRequest(bytes);
+    ASSERT_TRUE(parsed.has_value());
+    const auto* hello = std::get_if<Hello>(&parsed->body);
+    ASSERT_NE(hello, nullptr);
+    EXPECT_TRUE(hello->wantsEvents) << "an absent key decodes as the old behaviour";
+
+    // The encoder omits the key in that case, so a client that wants events
+    // puts no new bytes on the wire.
+    EXPECT_EQ(bytes, toCbor(RequestEnvelope{8, Hello{7, std::string("x"), true}}).encode());
+    EXPECT_NE(bytes, toCbor(RequestEnvelope{8, Hello{7, std::string("x"), false}}).encode());
+}
+
 TEST(MessagesRoundTrip, SetConfigCarriesAnyValue)
 {
     // The `value` field is `any` — an array here — and survives round-trip.

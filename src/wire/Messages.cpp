@@ -526,6 +526,11 @@ CborValue encodeRequestBody(const Request& body)
                 if (r.client) {
                     m.emplace("client", CborValue(*r.client));
                 }
+                // Emitted only to opt OUT: the default puts no new bytes on
+                // the wire, so a client that wants events encodes as before.
+                if (!r.wantsEvents) {
+                    m.emplace("wantsEvents", CborValue(false));
+                }
             } else if constexpr (std::is_same_v<T, GetState>) {
                 m.emplace("t", CborValue("GetState"));
             } else if constexpr (std::is_same_v<T, ReadIdentity>) {
@@ -682,7 +687,11 @@ std::expected<RequestEnvelope, WireError> parseRequest(std::span<const std::uint
         if (!client) {
             return std::unexpected(client.error());
         }
-        env.body = Hello{*proto, std::move(*client)};
+        auto wantsEvents = fOptBool(*m, "wantsEvents");
+        if (!wantsEvents) {
+            return std::unexpected(wantsEvents.error());
+        }
+        env.body = Hello{*proto, std::move(*client), wantsEvents->value_or(true)};
     } else if (t == "GetState") {
         env.body = GetState{};
     } else if (t == "ReadIdentity") {

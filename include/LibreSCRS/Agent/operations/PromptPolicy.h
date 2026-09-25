@@ -45,6 +45,27 @@ enum class PromptKind : std::uint8_t { Pin, Can, Mrz, ChangePin };
 /// @since 5.0
 inline constexpr std::chrono::milliseconds kLongestDeadline{300'000};
 
+/// The longest chain of prompts ONE request may run in sequence, as a single
+/// entry budget: a channel secret and then a PIN form. A transport that
+/// carries a request through its prompting must outlive this, or it times out
+/// under a dialog the holder is still filling in.
+///
+/// It is the sum of the two longest forms a single request is known to run one
+/// after the other, not the sum of every form that exists -- an MRZ followed
+/// by a PIN would not fit, and no path runs that pair. What keeps the number
+/// honest is a test that drives every seam that collects credentials and adds
+/// up the chain each one runs: a new chain that exceeded this breaks that
+/// test, which is where a budget can actually be re-derived, rather than this
+/// constant, which cannot know what the flows do.
+///
+/// @since 5.0
+inline constexpr std::chrono::milliseconds kMaxSequentialPromptBudget =
+    deadlineFor(PromptKind::Can) + deadlineFor(PromptKind::ChangePin); // budget-ms: 300000
+
+// A budget shorter than a single form would expire while the only dialog it
+// ever raised was still open.
+static_assert(kMaxSequentialPromptBudget >= kLongestDeadline);
+
 /// How many times a CAN or MRZ may be collected and rejected before the
 /// operation gives up.
 ///
