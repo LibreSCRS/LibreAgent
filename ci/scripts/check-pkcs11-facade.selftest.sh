@@ -29,8 +29,14 @@ command -v ctest >/dev/null 2>&1 || { echo "FATAL: ctest not found" >&2; exit 2;
 
 # The expected-suite list is read OUT OF THE GATE, never restated here: a
 # second copy would drift and this test would then certify a list nobody uses.
-mapfile -t WANT < <(awk '/^EXPECTED_TESTS=\(/{f=1;next} f&&/^\)/{exit} f{gsub(/[ \t]/,"");if($0!="")print}' "$GATE")
+read_list() { # <array name in the gate>
+    awk -v a="$1" '$0 ~ "^" a "=\\(" {f=1;next} f&&/^\)/{exit} f{gsub(/[ \t]/,"");if($0!="")print}' "$GATE"
+}
+mapfile -t WANT < <(read_list EXPECTED_TESTS)
+mapfile -t ENTRIES < <(read_list EXPECTED_ENTRIES)
 [[ ${#WANT[@]} -gt 0 ]] || { echo "FATAL: could not read EXPECTED_TESTS from the gate" >&2; exit 2; }
+[[ ${#ENTRIES[@]} -gt 0 ]] || { echo "FATAL: could not read EXPECTED_ENTRIES from the gate" >&2; exit 2; }
+CMAKE_BIN="$(command -v cmake)" || { echo "FATAL: cmake not found" >&2; exit 2; }
 
 TMP="$(mktemp -d "${TMPDIR:-/tmp}/pkcs11-facade-selftest.XXXXXX")"
 trap 'rm -rf "$TMP"' EXIT
@@ -56,12 +62,29 @@ check() { # <label> <expected-rc> <build-dir>
 
 # --- shared scaffolding ----------------------------------------------------
 
-# A test registry listing exactly the suites the gate demands.
+# A test registry in the shape per-case discovery writes: two entries per
+# suite binary, named after the CASES, never after the binary. Alternate suites
+# use the two command forms CMake produces -- the binary run directly (older
+# CMake; it has to exist, or ctest prints no program at all) and the binary
+# handed to the launcher script as TEST_EXECUTABLE (current CMake). The script
+# entries are registered by name, as add_test does.
 write_ctestfile() { # <dir>
-    : > "$1/CTestTestfile.cmake"
-    local t
+    local dir="$1" t i=0
+    mkdir -p "$dir/bin"
+    : > "$dir/CTestTestfile.cmake"
     for t in "${WANT[@]}"; do
-        printf 'add_test(%s "/bin/true")\n' "$t" >> "$1/CTestTestfile.cmake"
+        printf '#!/bin/sh\nexit 0\n' > "$dir/bin/$t"
+        chmod +x "$dir/bin/$t"
+        if (( i++ % 2 )); then
+            printf 'add_test(%s.CaseOne "%s" "--gtest_filter=%s.CaseOne")\n' "${t%Test}" "$dir/bin/$t" "${t%Test}"
+            printf 'add_test(%s.CaseTwo "%s" "--gtest_filter=%s.CaseTwo")\n' "${t%Test}" "$dir/bin/$t" "${t%Test}"
+        else
+            printf 'add_test(%s.CaseOne "%s" "-D" "TEST_EXECUTABLE=%s" "-P" "LaunchTest.cmake")\n' "${t%Test}" "$CMAKE_BIN" "$dir/bin/$t"
+            printf 'add_test(%s.CaseTwo "%s" "-D" "TEST_EXECUTABLE=%s" "-P" "LaunchTest.cmake")\n' "${t%Test}" "$CMAKE_BIN" "$dir/bin/$t"
+        fi >> "$dir/CTestTestfile.cmake"
+    done
+    for t in "${ENTRIES[@]}"; do
+        printf 'add_test(%s "/bin/sh" "%s.sh")\n' "$t" "$t" >> "$dir/CTestTestfile.cmake"
     done
 }
 
@@ -142,9 +165,30 @@ write_archive "$TMP/nosuite"
 SYMS="C_GetFunctionList" write_module "$TMP/nosuite"
 check "healthy module, suite ${WANT[0]} not registered" 1 "$TMP/nosuite"
 
+# --- 7. a suite binary that discovery could not list ------------------------
+# What per-case discovery registers for a binary it could not run: one
+# placeholder entry named <binary>_NOT_BUILT, whose program does not exist. The
+# name still contains the suite's; the gate must ask what runs, not what is
+# spelled.
+mkdir -p "$TMP/notbuilt"
+write_ctestfile "$TMP/notbuilt"
+sed -i "/${WANT[1]}/d" "$TMP/notbuilt/CTestTestfile.cmake"
+printf 'add_test(%s_NOT_BUILT "%s_NOT_BUILT")\n' "${WANT[1]}" "${WANT[1]}" >> "$TMP/notbuilt/CTestTestfile.cmake"
+write_archive "$TMP/notbuilt"
+SYMS="C_GetFunctionList" write_module "$TMP/notbuilt"
+check "healthy module, suite ${WANT[1]} only a _NOT_BUILT placeholder" 1 "$TMP/notbuilt"
+
+# --- 8. a script entry that stopped being registered ------------------------
+mkdir -p "$TMP/noentry"
+write_ctestfile "$TMP/noentry"
+sed -i "/^add_test(${ENTRIES[0]} /d" "$TMP/noentry/CTestTestfile.cmake"
+write_archive "$TMP/noentry"
+SYMS="C_GetFunctionList" write_module "$TMP/noentry"
+check "healthy module, entry ${ENTRIES[0]} not registered" 1 "$TMP/noentry"
+
 echo "----"
 if [[ "$fails" -eq 0 ]]; then
-    echo "check-pkcs11-facade selftest: 6/6 ok"
+    echo "check-pkcs11-facade selftest: $cases/$cases ok"
     printf 'selftest: %s cases, %s red-proved\n' "$cases" "$red"
     exit 0
 fi
