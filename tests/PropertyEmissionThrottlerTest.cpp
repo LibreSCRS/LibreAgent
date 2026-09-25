@@ -38,11 +38,58 @@ TEST(PropertyEmissionThrottler, CoalescesBurstWithinWindow)
 
 TEST(PropertyEmissionThrottler, FlushEmitsImmediately)
 {
+    // No schedule() first: the worker has nothing pending, so the one emit
+    // counted here is flush()'s own, and it has to have run on this thread
+    // before flush() returned -- that is what "synchronous" means. Nor may
+    // flush() leave a request behind: the worker would emit it a window later.
+    constexpr auto window = 50ms;
     std::atomic<int> emits{0};
-    PropertyEmissionThrottler throttler([&] { emits.fetch_add(1); }, 100ms);
-    throttler.schedule();
-    throttler.flush(); // synchronous: by the time flush() returns the emit has fired
+    std::atomic<bool> onCaller{false};
+    const auto caller = std::this_thread::get_id();
+    PropertyEmissionThrottler throttler(
+        [&] {
+            emits.fetch_add(1);
+            if (std::this_thread::get_id() == caller) {
+                onCaller.store(true);
+            }
+        },
+        window);
+    throttler.flush();
     EXPECT_EQ(emits.load(), 1);
+    EXPECT_TRUE(onCaller.load()) << "flush() returned before emitting on the calling thread";
+    std::this_thread::sleep_for(4 * window);
+    EXPECT_EQ(emits.load(), 1) << "flush() left a request pending and the worker emitted it";
+}
+
+TEST(PropertyEmissionThrottler, FlushAfterScheduleLeavesNothingPending)
+{
+    // The first schedule() is a leading edge: the worker may emit it at once,
+    // before flush() takes the lock. flush() emits anyway -- its callers use it
+    // after a state change nobody scheduled (a phase, the spinner), so it
+    // cannot skip because the worker just emitted. One emit or two is that
+    // race, and the worker's emit may even run after flush() returns, having
+    // been committed before it. What holds in every order: flush() emitted
+    // once, on this thread, and the worker emitted the one request at most
+    // once -- nothing is left pending for a second, trailing emit.
+    constexpr auto window = 50ms;
+    std::atomic<int> onCaller{0};
+    std::atomic<int> onWorker{0};
+    const auto caller = std::this_thread::get_id();
+    PropertyEmissionThrottler throttler(
+        [&] {
+            if (std::this_thread::get_id() == caller) {
+                onCaller.fetch_add(1);
+            } else {
+                onWorker.fetch_add(1);
+            }
+        },
+        window);
+    throttler.schedule();
+    throttler.flush();
+    EXPECT_EQ(onCaller.load(), 1) << "flush() must emit exactly once, on the calling thread, before it returns";
+    std::this_thread::sleep_for(4 * window);
+    EXPECT_EQ(onCaller.load(), 1);
+    EXPECT_LE(onWorker.load(), 1) << "the worker emitted one schedule() " << onWorker.load() << " times";
 }
 
 TEST(PropertyEmissionThrottler, NoEmitsWithoutSchedule)

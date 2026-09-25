@@ -532,7 +532,7 @@ jobs:
           # The manifest check refuses those, correctly, so
           # the number below is what judges this leg.
           n=$(ctest --test-dir build-tsan -N -R "$SUITES" | grep -c '^ *Test *#' || true)
-          test "$n" = 53 || { echo "the sanitizer leg selected $n cases, not 53"; exit 1; }
+          test "$n" = 54 || { echo "the sanitizer leg selected $n cases, not 54"; exit 1; }
 
   client:
     # The Qt client library (LibreAgent::ClientQt), full stack: same
