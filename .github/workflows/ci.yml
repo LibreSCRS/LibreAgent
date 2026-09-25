@@ -913,6 +913,22 @@ jobs:
     timeout-minutes: 30
     name: wire-asan (macOS)
     runs-on: macos-15
+    env:
+      # detect_container_overflow=0: GTest comes from Homebrew and is not
+      # built with the sanitizer, so a std::vector<std::string> that lives
+      # inside its uninstrumented code and is touched from instrumented code
+      # trips a container-overflow that is not one. The report seen here was
+      # in GTest's own GetTestSuite, at the same address on every run,
+      # including runs of unmodified trunk -- ASan documents disabling this
+      # one check for partially instrumented programs. Every other check
+      # stays on, and the use-after-free this job exists for is found by
+      # them.
+      #
+      # Job-wide, not on the Test step: with one ctest entry per case, the
+      # test binaries are also run to LIST their cases, by every ctest call
+      # including the listing check's `ctest -N`, and a step without this
+      # aborts in the same place before it has listed anything.
+      ASAN_OPTIONS: detect_leaks=0:detect_container_overflow=0
     steps:
       - uses: actions/checkout@v4
 
@@ -940,17 +956,6 @@ jobs:
         # --no-tests=error: ctest exits 0 when it finds nothing at all, so
         # without this a configuration that stopped generating these tests would
         # report success.
-        env:
-          # detect_container_overflow=0: GTest comes from Homebrew and is not
-          # built with the sanitizer, so a std::vector<std::string> that lives
-          # inside its uninstrumented code and is touched from instrumented code
-          # trips a container-overflow that is not one. The report seen here was
-          # in GTest's own GetTestSuite, at the same address on every run,
-          # including runs of unmodified trunk -- ASan documents disabling this
-          # one check for partially instrumented programs. Every other check
-          # stays on, and the use-after-free this job exists for is found by
-          # them.
-          ASAN_OPTIONS: detect_leaks=0:detect_container_overflow=0
         run: ctest --test-dir build-wire-asan --output-on-failure --no-tests=error
 
       - name: Check the discovered test set
