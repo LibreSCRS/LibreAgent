@@ -8,11 +8,24 @@
 
 namespace LibreSCRS::Agent::Operations {
 
+// Both constructors are defined out of line on purpose: an inline body would
+// emit no symbol of its own, and the archive's symbol table is what the ABI
+// baseline records.
 CardSessionHolder::CardSessionHolder(std::string readerName, SessionFactory factory, CandidateResolver resolver,
                                      std::shared_ptr<LibreSCRS::SmartCard::CardMap> sharedMap, Clock clock)
+    : CardSessionHolder(std::move(readerName), std::move(factory), std::move(resolver), std::move(sharedMap),
+                        std::move(clock), SmProbe{})
+{}
+
+CardSessionHolder::CardSessionHolder(std::string readerName, SessionFactory factory, CandidateResolver resolver,
+                                     std::shared_ptr<LibreSCRS::SmartCard::CardMap> sharedMap, Clock clock,
+                                     SmProbe smProbe)
     : m_readerName(std::move(readerName)), m_factory(std::move(factory)), m_resolver(std::move(resolver)),
       m_sharedMap(std::move(sharedMap)),
-      m_clock(clock ? std::move(clock) : Clock{[] { return std::chrono::steady_clock::now(); }})
+      m_clock(clock ? std::move(clock) : Clock{[] { return std::chrono::steady_clock::now(); }}),
+      m_smProbe(smProbe ? std::move(smProbe) : SmProbe{[](const LibreSCRS::SmartCard::CardSession& s) noexcept {
+          return s.hasLiveSecureChannel();
+      }})
 {}
 
 std::expected<AcquiredCard, LibreSCRS::SmartCard::OpenError> CardSessionHolder::acquire()
@@ -61,14 +74,19 @@ void CardSessionHolder::closeIfIdle() noexcept
     // honour the noexcept contract by degrading any escape to a no-op (a missed
     // idle-close is harmless — the next sweep retries).
     try {
-        if (!m_session) {
-            return;
-        }
-        if (m_clock() - m_lastUsed >= kIdleClose) {
-            invalidate(); // noexcept
-        }
+        closeIfIdleAt(m_clock()); // noexcept
     } catch (...) {
         // leave the session held; the next closeIfIdle() will retry
+    }
+}
+
+void CardSessionHolder::closeIfIdleAt(std::chrono::steady_clock::time_point now) noexcept
+{
+    if (!m_session) {
+        return;
+    }
+    if (now - m_lastUsed >= kIdleClose) {
+        invalidate(); // noexcept
     }
 }
 
@@ -144,10 +162,33 @@ void CardSessionHolder::acquireHold() noexcept
     if (m_hold) {
         return;
     }
-    // The injected factory is a std::function and may throw; honour the
-    // noexcept contract by degrading to "no hold" — the worker retries at its
-    // next sweep.
+    // The injected clock is an std::function and may throw; honour the noexcept
+    // contract by degrading to "no hold" — the worker retries at its next sweep.
     try {
+        acquireHoldAt(m_clock()); // noexcept
+    } catch (...) {
+        m_hold.reset();
+    }
+}
+
+void CardSessionHolder::acquireHoldAt(std::chrono::steady_clock::time_point now) noexcept
+{
+    if (m_hold) {
+        return;
+    }
+    // The injected factory and probe are std::functions and may throw; honour
+    // the noexcept contract by degrading to "no hold" — the worker retries at
+    // its next sweep.
+    try {
+        // A second handle buys nothing on a reader whose logical session is
+        // already powered AND mid-secure-channel, so skip it — but only while
+        // that session is still in use. Once it has gone idle the sweep is
+        // about to close it, and the hold is what keeps the card powered
+        // across that close: taking it here, BEFORE closeIfIdle runs in the
+        // same sweep, is what keeps the handle-free window unchanged.
+        if (m_session && m_smProbe(*m_session) && now - m_lastUsed < kIdleClose) {
+            return;
+        }
         auto opened = m_factory(m_readerName);
         if (opened) {
             m_hold = std::move(*opened);
@@ -160,6 +201,25 @@ void CardSessionHolder::acquireHold() noexcept
 void CardSessionHolder::releaseHold() noexcept
 {
     m_hold.reset();
+}
+
+void CardSessionHolder::renewHoldAndCloseIfIdle(bool holdWanted) noexcept
+{
+    // ONE reading, handed to both decisions: they test complementary halves of
+    // the same idle boundary, so two readings could let the boundary fall
+    // between them and answer "no hold" and "close the session" in the same
+    // sweep.
+    std::chrono::steady_clock::time_point now{};
+    try {
+        now = m_clock();
+    } catch (...) {
+        return; // a missed sweep; the next one retries
+    }
+    releaseHold(); // noexcept
+    if (holdWanted) {
+        acquireHoldAt(now); // noexcept
+    }
+    closeIfIdleAt(now); // noexcept
 }
 
 } // namespace LibreSCRS::Agent::Operations

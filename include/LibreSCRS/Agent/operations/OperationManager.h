@@ -178,6 +178,12 @@ public:
     // before the first enqueue for any reader. Production never calls this.
     void setHolderClockForTest(CardSessionHolder::Clock clock);
 
+    // Test seam: the secure-channel probe handed to every holder workerFor
+    // builds, so a bus-less test drives the hold decision without a card. MUST
+    // be called before the first enqueue for any reader. Production never calls
+    // this — the holder defaults to CardSession::hasLiveSecureChannel.
+    void setHolderSmProbeForTest(CardSessionHolder::SmProbe probe);
+
     // Test seam: enqueue a probe that runs ON THE WORKER THREAD with a
     // reference to the reader's CardSessionHolder. Lets a bus-less test drive a
     // worker-thread holder->acquire() (the bus-less enqueueForTest path does NOT
@@ -421,6 +427,7 @@ private:
     // worker at construction like m_testSessionFactory.
     std::chrono::milliseconds m_idleSweep{CardSessionHolder::kIdleClose};
     CardSessionHolder::Clock m_testHolderClock;
+    CardSessionHolder::SmProbe m_testHolderSmProbe;
     std::mutex m_workersMutex;
     // std::map over unordered_map for consistency with the rest of the
     // manager's id-keyed tables; reader churn is low so ordering overhead is

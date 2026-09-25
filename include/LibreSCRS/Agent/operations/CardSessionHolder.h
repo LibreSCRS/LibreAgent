@@ -68,6 +68,20 @@ public:
     ///        steady_clock::now; tests inject a fake, advanceable clock.
     using Clock = std::function<std::chrono::steady_clock::time_point()>;
 
+    /// @brief Secure-channel probe seam: answers whether the given session
+    ///        currently carries a live secure channel. Default wiring is
+    ///        CardSession::hasLiveSecureChannel; tests inject a fixed answer.
+    ///        Read only by acquireHold(), which must not power-cycle a reader
+    ///        whose logical session is mid-channel.
+    /// @note  The default answer is the agent's own record of the channel it
+    ///        established, never a question put to the card: after a
+    ///        suspend/resume or a reset by another PC/SC client it can read
+    ///        live while the card is unpowered. acquireHold() then skips the
+    ///        reconnect that would have re-powered it, which is why the skip
+    ///        is also bounded by the idle window — one window later the hold
+    ///        is taken regardless of what the probe says.
+    using SmProbe = std::function<bool(const LibreSCRS::SmartCard::CardSession&)>;
+
     /// @brief Idle window: a held session untouched for at least this long is
     ///        closed by closeIfIdle(). Also serves as the worker's bounded
     ///        cv wait cap so an idle reader is swept within one window.
@@ -78,6 +92,13 @@ public:
     ///        construction compiling unchanged.
     CardSessionHolder(std::string readerName, SessionFactory factory, CandidateResolver resolver,
                       std::shared_ptr<LibreSCRS::SmartCard::CardMap> sharedMap, Clock clock = {});
+
+    /// @param smProbe Secure-channel probe seam; when empty, defaults to
+    ///        CardSession::hasLiveSecureChannel. Overload rather than a sixth
+    ///        defaulted parameter so the five-argument form above keeps its own
+    ///        symbol and every existing caller links unchanged.
+    CardSessionHolder(std::string readerName, SessionFactory factory, CandidateResolver resolver,
+                      std::shared_ptr<LibreSCRS::SmartCard::CardMap> sharedMap, Clock clock, SmProbe smProbe);
 
     /// @brief Open the session if not already open (or after invalidate()), then
     ///        return the held session together with the resolved candidates and
@@ -97,6 +118,11 @@ public:
     ///        kIdleClose (measured from the last successful acquire). No-op when
     ///        no session is held or the idle window has not yet elapsed. Must be
     ///        called on the owning worker thread, like the other holder methods.
+    /// @note Not to be composed with acquireHold() inside one sweep: the two
+    ///       read the clock separately and test complementary halves of the
+    ///       same idle boundary, so a crossing between the two readings answers
+    ///       both and leaves the reader with no handle.
+    ///       renewHoldAndCloseIfIdle() is that composition, done once.
     void closeIfIdle() noexcept;
 
     /// @brief Full resolution from the held session: candidate plugin list,
@@ -116,12 +142,41 @@ public:
     ///        SessionFactory as the logical session (CardSession::open is a bare
     ///        SCardConnect). A failed open leaves no hold; the caller retries at
     ///        its next sweep. Worker-thread only, like every other method here.
+    /// @note The hold-changed path calls this on its own, which is correct: no
+    ///       idle close follows it. Do not pair it with closeIfIdle() in one
+    ///       sweep — see that method's note and renewHoldAndCloseIfIdle().
     void acquireHold() noexcept;
 
     /// @brief Drop the power hold if present (the CardSession destructor
     ///        disconnects with SCARD_LEAVE_CARD). No-op without a hold.
     ///        Worker-thread only.
     void releaseHold() noexcept;
+
+    /// @brief The idle sweep, as one step: drop the power hold, take it again
+    ///        when @p holdWanted, then close the logical session if it has
+    ///        gone idle — in that order, and judged against ONE reading of the
+    ///        clock.
+    ///
+    /// The order is the point, and the claim it earns is narrow. Renewing the
+    /// hold before the close means the logical session is still standing while
+    /// the new hold opens, so closing the session never adds a moment with no
+    /// handle on the reader. It does NOT mean the reader always has one:
+    /// releaseHold() runs first and unconditionally, so a reader carrying only
+    /// a hold — the ordinary state once its session has idle-closed — is at
+    /// zero handles until the factory returns. That gap is the renewal's own,
+    /// two pcscd calls wide, and is the one the power hold was measured
+    /// against; it is not widened by the close.
+    ///
+    /// The single reading is the other half of the same property. acquireHold()
+    /// declines while the session is younger than kIdleClose and closeIfIdle()
+    /// acts once it is at least that old: complementary against one instant, so
+    /// exactly one of them fires. Read the clock twice and the boundary can
+    /// fall in between — the hold declined AND the session closed, leaving the
+    /// reader with nothing until the next sweep.
+    ///
+    /// Worker-thread only, like every other method here. A throwing clock is
+    /// degraded to a missed sweep; the next one retries.
+    void renewHoldAndCloseIfIdle(bool holdWanted) noexcept;
 
     /// @brief Test seam: whether a power hold is currently held.
     [[nodiscard]] bool hasHoldForTest() const noexcept
@@ -130,6 +185,12 @@ public:
     }
 
 private:
+    /// @brief acquireHold() / closeIfIdle() against a caller-supplied instant,
+    ///        so one sweep can give both the same one. The public no-argument
+    ///        forms read the clock themselves and delegate here.
+    void acquireHoldAt(std::chrono::steady_clock::time_point now) noexcept;
+    void closeIfIdleAt(std::chrono::steady_clock::time_point now) noexcept;
+
     /// @brief Union of all capabilities declared by the held session's candidates.
     ///        Opens the session if not already open. Returns 0 on open failure.
     [[nodiscard]] std::uint32_t capabilities() noexcept;
@@ -151,6 +212,7 @@ private:
     CandidateList m_candidates;
     std::optional<LibreSCRS::Auth::PreReadAuthMethod> m_preReadAuth; // memoized per held session
     Clock m_clock;
+    SmProbe m_smProbe;
     std::chrono::steady_clock::time_point m_lastUsed{}; // stamped on every acquire
     // Power hold (see acquireHold). Deliberately a separate slot from
     // m_session: invalidate()/closeIfIdle() must never drop it, and it must

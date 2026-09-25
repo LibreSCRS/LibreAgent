@@ -175,6 +175,18 @@ Three targets ship, each independently usable:
   cannot express it without stranding agent-side state it is a no-op,
   which no consumer needs to handle: correctness never depends on a warm
   having happened.
+- **The reader's idle sweep as one holder step** (`renewHoldAndCloseIfIdle`):
+  renew the power hold, then close an idle logical session, both judged
+  against a single reading of the clock. The two decisions test
+  complementary halves of one boundary, so two readings could let the
+  boundary fall between them and answer "no hold" and "close the session" in
+  the same sweep, leaving the reader with no connection at all until the next
+  one.
+- **A secure-channel probe seam on the per-reader session holder.**
+  `CardSessionHolder` takes an optional probe through a new constructor and
+  reads it when deciding whether to open a power hold; the existing
+  constructor is unchanged and defaults the probe to the session's own
+  `hasLiveSecureChannel()`.
 
 ### Changed
 
@@ -199,6 +211,28 @@ Three targets ship, each independently usable:
   the login's own idle limit; as inside the old 45 s window, that on-card
   state is visible to any other local shared PC/SC client while the card
   stays powered.
+  The hold is not renewed while the logical session on the same reader
+  carries a live secure channel and is still in use — a second connection
+  buys nothing on a card that is already powered and mid-channel. A hold
+  asked for in that state is taken by the first sweep in which that session
+  goes idle, and a session about to be idle-closed is held first, so the
+  window in which the reader carries no handle at all is the one this
+  feature was measured against. Consequence for an EXCLUSIVE client: on such
+  a reader the refusal above begins one sweep (at most 45 s) after the
+  session stops being used, not immediately.
+  Known limit of that skip: whether a secure channel is live is the agent's
+  own in-process record of the channel it established, not a question put to
+  the card. After a suspend/resume or a reset by another PC/SC client the
+  record can still read live while the card is not powered, and in that state
+  the sweep skips the reconnect that would have re-powered it. The skip lasts
+  only as long as the session is also still in use, so the hold is taken at
+  the following idle sweep: a reader that has gone QUIET recovers by itself,
+  within two sweep windows instead of one — windows of time the machine spent
+  awake, since the sweep is driven by a monotonic clock that does not advance
+  across suspend. A reader still IN USE does not wait for a sweep and does not
+  recover silently either: its next operation reuses the cached session, asks
+  the card nothing, and fails on the card's own answer, which surfaces as a
+  communication error rather than as a repowered card.
 
 ### Security
 

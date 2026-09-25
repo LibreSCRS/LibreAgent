@@ -133,7 +133,7 @@ std::shared_ptr<OperationManager::ReaderWorker> OperationManager::workerFor(Obje
                 }
                 return resolver->resolveCandidates(atr, s);
             },
-            std::make_shared<LibreSCRS::SmartCard::CardMap>(), m_testHolderClock);
+            std::make_shared<LibreSCRS::SmartCard::CardMap>(), m_testHolderClock, m_testHolderSmProbe);
         worker->idleSweep = m_idleSweep;
         auto* raw = worker.get();
         raw->worker = std::jthread([this, raw](std::stop_token st) { workerLoop(*raw, std::move(st)); });
@@ -198,14 +198,13 @@ void OperationManager::workerLoop(ReaderWorker& worker, std::stop_token st)
             //    idle long enough — unconditionally: the hold, not the logical
             //    session, is what keeps the card powered, so secrets stay bounded.
             //    Holder access is worker-thread-only and never under worker.mutex.
+            //    The three steps are ONE holder call so both the hold decision
+            //    and the idle close are judged against a single reading of the
+            //    clock; see CardSessionHolder::renewHoldAndCloseIfIdle.
             const bool hold = worker.hold;
             lock.unlock();
             if (worker.holder) {
-                worker.holder->releaseHold(); // noexcept
-                if (hold) {
-                    worker.holder->acquireHold(); // noexcept
-                }
-                worker.holder->closeIfIdle(); // noexcept
+                worker.holder->renewHoldAndCloseIfIdle(hold); // noexcept
             }
             continue;
         }
@@ -313,6 +312,11 @@ void OperationManager::setIdleSweepForTest(std::chrono::milliseconds sweep)
 void OperationManager::setHolderClockForTest(CardSessionHolder::Clock clock)
 {
     m_testHolderClock = std::move(clock);
+}
+
+void OperationManager::setHolderSmProbeForTest(CardSessionHolder::SmProbe probe)
+{
+    m_testHolderSmProbe = std::move(probe);
 }
 
 void OperationManager::invalidateReaderSession(ObjectId reader)

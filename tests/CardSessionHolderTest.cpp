@@ -333,3 +333,91 @@ TEST(CardSessionHolder, InvalidateLeavesHoldAlone)
     ASSERT_TRUE(h.acquire().has_value());
     EXPECT_EQ(opens, 3) << "logical re-opened after invalidate; the hold was not re-opened";
 }
+
+// ---- Secure-channel probe seam ---------------------------------------------
+
+TEST(CardSessionHolder, SmProbeIsConsultedByAcquireHold)
+{
+    int opens = 0;
+    int probeCalls = 0;
+    CardSessionHolder h{"R",
+                        makeCountingFactory(opens),
+                        makeCannedResolver(),
+                        std::make_shared<LibreSCRS::SmartCard::CardMap>(),
+                        {},
+                        [&probeCalls](const LibreSCRS::SmartCard::CardSession&) {
+                            ++probeCalls;
+                            return false;
+                        }};
+
+    ASSERT_TRUE(h.acquire().has_value());
+    EXPECT_EQ(probeCalls, 0) << "acquire() does not consult the probe";
+
+    h.acquireHold();
+    EXPECT_EQ(probeCalls, 1) << "acquireHold() asks the injected probe about the held session";
+}
+
+// The hold is a SECOND PC/SC connection on the same reader. Opening one while
+// the logical session on that reader is mid-secure-channel puts a second
+// handle on a card that is already powered and already talking, for no gain.
+// The skip is deliberately narrow: only while that session is also still
+// active, so the sweep that is about to idle-close it takes the hold FIRST and
+// the handle-free window stays the one the power-hold design measured.
+
+TEST(CardSessionHolder, HoldIsSkippedWhileSecureChannelLivesOnAnActiveSession)
+{
+    int opens = 0;
+    auto now = std::chrono::steady_clock::time_point{};
+    CardSessionHolder h{"R",
+                        makeCountingFactory(opens),
+                        makeCannedResolver(),
+                        std::make_shared<LibreSCRS::SmartCard::CardMap>(),
+                        [&now] { return now; },
+                        [](const LibreSCRS::SmartCard::CardSession&) { return true; }};
+
+    ASSERT_TRUE(h.acquire().has_value());
+    EXPECT_EQ(opens, 1);
+
+    h.acquireHold();
+    EXPECT_FALSE(h.hasHoldForTest()) << "no second handle while the session carries a live secure channel";
+    EXPECT_EQ(opens, 1) << "the factory was not called a second time";
+}
+
+TEST(CardSessionHolder, HoldIsTakenBeforeIdleCloseEvenWithLiveSecureChannel)
+{
+    int opens = 0;
+    auto now = std::chrono::steady_clock::time_point{};
+    CardSessionHolder h{"R",
+                        makeCountingFactory(opens),
+                        makeCannedResolver(),
+                        std::make_shared<LibreSCRS::SmartCard::CardMap>(),
+                        [&now] { return now; },
+                        [](const LibreSCRS::SmartCard::CardSession&) { return true; }};
+
+    ASSERT_TRUE(h.acquire().has_value());
+    EXPECT_EQ(opens, 1);
+
+    // The session has gone idle: the sweep is about to close it, so the hold
+    // must be taken now or the card loses power between the two.
+    now += CardSessionHolder::kIdleClose;
+    h.acquireHold();
+    EXPECT_TRUE(h.hasHoldForTest()) << "a session about to idle-close is held first";
+    EXPECT_EQ(opens, 2);
+}
+
+TEST(CardSessionHolder, HoldIsTakenWhenNoSecureChannel)
+{
+    int opens = 0;
+    auto now = std::chrono::steady_clock::time_point{};
+    CardSessionHolder h{"R",
+                        makeCountingFactory(opens),
+                        makeCannedResolver(),
+                        std::make_shared<LibreSCRS::SmartCard::CardMap>(),
+                        [&now] { return now; },
+                        [](const LibreSCRS::SmartCard::CardSession&) { return false; }};
+
+    ASSERT_TRUE(h.acquire().has_value());
+    h.acquireHold();
+    EXPECT_TRUE(h.hasHoldForTest()) << "an active session without a secure channel does not block the hold";
+    EXPECT_EQ(opens, 2);
+}

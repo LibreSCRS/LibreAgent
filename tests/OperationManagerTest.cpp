@@ -563,6 +563,12 @@ void probeOnWorker(OperationManager& mgr, std::function<void(CardSessionHolder&)
 // setReaderHold routes to the per-reader worker and the worker applies it on
 // its own thread BEFORE the next queued op, so a probe enqueued after the call
 // observes the hold state deterministically.
+//
+// This case deliberately keeps the DEFAULT secure-channel probe, which reads
+// the held session's own hasLiveSecureChannel(). No session is opened here,
+// and a detached one carries no channel either, so the probe answers false and
+// the hold is taken exactly as it always was: the skip added for live channels
+// does not change what this case asserts.
 TEST(OperationManager, SetReaderHoldRoutesAndApplies)
 {
     // Everything a worker-thread lambda captures by reference is declared
@@ -676,4 +682,398 @@ TEST(OperationManager, CardRemovedReleasesHold)
     EXPECT_TRUE(mgr.isReaderHeldForTest(ObjectId{1}))
         << "the FLAG is the host's to clear (its card-removed hook calls setReaderHold(false) first); "
            "the worker only dropped the handle";
+}
+
+namespace {
+
+// One sweep, observed deterministically. probeOnWorker wakes the worker and
+// restarts its bounded wait, so the sweep can only fire in the quiet stretch
+// after the LAST probe: with a 200 ms period, sleeping 300 ms leaves a 100 ms
+// window in which exactly one sweep has run and the next has not.
+constexpr auto kSweepPeriod = 200ms;
+constexpr auto kAfterOneSweep = 300ms;
+
+// A fake steady clock the test advances, shared by every holder the manager
+// builds. Nanoseconds in an atomic so the worker thread reads it safely.
+struct FakeHolderClock
+{
+    std::atomic<std::int64_t> ns{0};
+    CardSessionHolder::Clock fn()
+    {
+        return [this] { return std::chrono::steady_clock::time_point{std::chrono::nanoseconds{ns.load()}}; };
+    }
+    void advance(std::chrono::nanoseconds d)
+    {
+        ns.fetch_add(d.count());
+    }
+};
+
+} // namespace
+
+// The sweep keeps R4 order (release -> acquire -> close-if-idle), so a session
+// that is about to be idle-closed is held FIRST: the live secure channel does
+// not suppress the hold once that session has stopped being used, and the
+// handle-free window stays the one the power hold was measured against.
+TEST(OperationManager, SweepWithLiveSmAndIdleSessionTakesHoldThenCloses)
+{
+    std::atomic<int> opens{0};
+    FakeHolderClock clock;
+    OperationManager mgr;
+    installCountingFactory(mgr, opens);
+    mgr.setIdleSweepForTest(kSweepPeriod);
+    mgr.setHolderClockForTest(clock.fn());
+    mgr.setHolderSmProbeForTest([](const LibreSCRS::SmartCard::CardSession&) { return true; });
+
+    // Hold requested with no session yet: nothing to skip, so it is taken.
+    probeOnWorker(mgr, [](CardSessionHolder&) {}); // materialise the worker
+    mgr.setReaderHold(ObjectId{1}, true);
+    std::atomic<int> held{-1};
+    probeOnWorker(mgr, [&](CardSessionHolder& h) { held.store(h.hasHoldForTest() ? 1 : 0); });
+    ASSERT_EQ(held.load(), 1);
+
+    // Now a logical session, which this reader's probe reports as carrying a
+    // live secure channel. Keep the AcquiredCard's session alive so its
+    // address cannot be reused by the re-open below.
+    std::shared_ptr<LibreSCRS::SmartCard::CardSession> first;
+    probeOnWorker(mgr, [&](CardSessionHolder& h) {
+        auto a = h.acquire();
+        if (a) {
+            first = a->session;
+        }
+    });
+    ASSERT_NE(first, nullptr);
+
+    // Past the idle window, then exactly one sweep.
+    clock.advance(CardSessionHolder::kIdleClose);
+    std::this_thread::sleep_for(kAfterOneSweep);
+
+    std::shared_ptr<LibreSCRS::SmartCard::CardSession> second;
+    probeOnWorker(mgr, [&](CardSessionHolder& h) {
+        held.store(h.hasHoldForTest() ? 1 : 0);
+        auto b = h.acquire();
+        if (b) {
+            second = b->session;
+        }
+    });
+    EXPECT_EQ(held.load(), 1) << "the idle session was held before it was closed";
+    ASSERT_NE(second, nullptr);
+    EXPECT_NE(second, first) << "the logical session was idle-closed and the next acquire re-opened it";
+}
+
+// The other half of the same predicate: while that session is still ACTIVE the
+// sweep leaves the reader alone — no second handle on a card that is already
+// powered and mid-channel.
+TEST(OperationManager, SweepWithLiveSmAndActiveSessionTakesNoHold)
+{
+    std::atomic<int> opens{0};
+    FakeHolderClock clock;
+    OperationManager mgr;
+    installCountingFactory(mgr, opens);
+    mgr.setIdleSweepForTest(kSweepPeriod);
+    mgr.setHolderClockForTest(clock.fn());
+    mgr.setHolderSmProbeForTest([](const LibreSCRS::SmartCard::CardSession&) { return true; });
+
+    probeOnWorker(mgr, [](CardSessionHolder&) {});
+    mgr.setReaderHold(ObjectId{1}, true);
+    std::atomic<int> held{-1};
+    probeOnWorker(mgr, [&](CardSessionHolder& h) { held.store(h.hasHoldForTest() ? 1 : 0); });
+    ASSERT_EQ(held.load(), 1);
+
+    std::shared_ptr<LibreSCRS::SmartCard::CardSession> first;
+    probeOnWorker(mgr, [&](CardSessionHolder& h) {
+        auto a = h.acquire();
+        if (a) {
+            first = a->session;
+        }
+    });
+    ASSERT_NE(first, nullptr);
+
+    // Well inside the idle window, then exactly one sweep.
+    clock.advance(5s);
+    std::this_thread::sleep_for(kAfterOneSweep);
+
+    std::shared_ptr<LibreSCRS::SmartCard::CardSession> second;
+    probeOnWorker(mgr, [&](CardSessionHolder& h) {
+        held.store(h.hasHoldForTest() ? 1 : 0);
+        auto b = h.acquire();
+        if (b) {
+            second = b->session;
+        }
+    });
+    EXPECT_EQ(held.load(), 0) << "the sweep released the hold and did not renew it under a live channel";
+    EXPECT_EQ(second, first) << "the logical session was not idle-closed";
+}
+
+// The host's own route into the same predicate: setReaderHold applies through
+// the worker's hold-changed branch, not the sweep. A hold asked for while the
+// session is active with a live channel is not taken THEN — it is taken by the
+// first sweep in which that session goes idle.
+TEST(OperationManager, HoldRequestedDuringLiveSmSessionIsAppliedAtIdle)
+{
+    std::atomic<int> opens{0};
+    FakeHolderClock clock;
+    OperationManager mgr;
+    installCountingFactory(mgr, opens);
+    mgr.setIdleSweepForTest(kSweepPeriod);
+    mgr.setHolderClockForTest(clock.fn());
+    mgr.setHolderSmProbeForTest([](const LibreSCRS::SmartCard::CardSession&) { return true; });
+
+    std::shared_ptr<LibreSCRS::SmartCard::CardSession> first;
+    probeOnWorker(mgr, [&](CardSessionHolder& h) {
+        auto a = h.acquire();
+        if (a) {
+            first = a->session;
+        }
+    });
+    ASSERT_NE(first, nullptr);
+
+    mgr.setReaderHold(ObjectId{1}, true);
+    std::atomic<int> held{-1};
+    probeOnWorker(mgr, [&](CardSessionHolder& h) { held.store(h.hasHoldForTest() ? 1 : 0); });
+    EXPECT_EQ(held.load(), 0) << "the requested hold is not taken under a live channel on an active session";
+    EXPECT_TRUE(mgr.isReaderHeldForTest(ObjectId{1})) << "the request itself stands; only the handle waits";
+
+    clock.advance(CardSessionHolder::kIdleClose);
+    std::this_thread::sleep_for(kAfterOneSweep);
+
+    probeOnWorker(mgr, [&](CardSessionHolder& h) { held.store(h.hasHoldForTest() ? 1 : 0); });
+    EXPECT_EQ(held.load(), 1) << "the first sweep with that session idle takes the hold";
+}
+
+namespace {
+
+// Counts the sessions the holder is holding RIGHT NOW, and the fewest it ever
+// held while both a logical session and a power hold were live.
+//
+// The factory is injected, so a test can own what it hands out: each session
+// goes back wrapped in an aliasing shared_ptr whose control block runs a
+// release hook. The holder's own reset() is therefore the event that decrements
+// the count, which makes the count the number of PC/SC handles the reader
+// carries -- the quantity the sweep's order exists to protect.
+class HandleCensus
+{
+public:
+    SessionFactory factory()
+    {
+        return
+            [this](const std::string& r)
+                -> std::expected<std::shared_ptr<LibreSCRS::SmartCard::CardSession>, LibreSCRS::SmartCard::OpenError> {
+                auto owner = std::make_shared<Owned>(LibreSCRS::SmartCard::detail::makeDetachedCardSession(r), this);
+                {
+                    const std::lock_guard lock(m_mutex);
+                    ++m_live;
+                    ++m_opens;
+                }
+                return std::shared_ptr<LibreSCRS::SmartCard::CardSession>{owner, owner->session.get()};
+            };
+    }
+
+    // Start watching from this many live handles. Called once both the logical
+    // session and the hold are up, so the floor below is about the sweep and
+    // not about the way there.
+    void arm()
+    {
+        const std::lock_guard lock(m_mutex);
+        m_armed = true;
+        m_floor = m_live;
+    }
+    [[nodiscard]] int floorWhileArmed() const
+    {
+        const std::lock_guard lock(m_mutex);
+        return m_floor;
+    }
+    [[nodiscard]] int opens() const
+    {
+        const std::lock_guard lock(m_mutex);
+        return m_opens;
+    }
+
+private:
+    struct Owned
+    {
+        Owned(std::shared_ptr<LibreSCRS::SmartCard::CardSession> s, HandleCensus* c) : session(std::move(s)), census(c)
+        {}
+        ~Owned()
+        {
+            census->release();
+        }
+        std::shared_ptr<LibreSCRS::SmartCard::CardSession> session;
+        HandleCensus* census;
+    };
+
+    void release()
+    {
+        const std::lock_guard lock(m_mutex);
+        --m_live;
+        if (m_armed && m_live < m_floor) {
+            m_floor = m_live;
+        }
+    }
+
+    mutable std::mutex m_mutex;
+    int m_live = 0;
+    int m_opens = 0;
+    int m_floor = 0;
+    bool m_armed = false;
+};
+
+} // namespace
+
+// R4: the sweep renews the hold BEFORE it idle-closes the logical session, so
+// the reader is never left with no handle at all. Neither hasHoldForTest() nor
+// an open count can see that: with the order reversed the hold is still taken
+// (by then there is no session for the predicate to skip on) and the factory is
+// still called once. What distinguishes the two is the FLOOR -- how few handles
+// the reader carried at the worst moment of the sweep. Under R4 the logical
+// session is still standing when the new hold opens, so the floor is 1; close
+// first and it is 0.
+TEST(OperationManager, SweepRenewsTheHoldBeforeItClosesTheIdleSession)
+{
+    HandleCensus census;
+    FakeHolderClock clock;
+    OperationManager mgr;
+    mgr.setSessionFactoryForTest(census.factory());
+    mgr.setIdleSweepForTest(kSweepPeriod);
+    mgr.setHolderClockForTest(clock.fn());
+    mgr.setHolderSmProbeForTest([](const LibreSCRS::SmartCard::CardSession&) { return true; });
+
+    probeOnWorker(mgr, [](CardSessionHolder&) {}); // materialise the worker
+    mgr.setReaderHold(ObjectId{1}, true);
+    std::atomic<int> held{-1};
+    probeOnWorker(mgr, [&](CardSessionHolder& h) { held.store(h.hasHoldForTest() ? 1 : 0); });
+    ASSERT_EQ(held.load(), 1);
+
+    // A logical session too, and NOT retained: an AcquiredCard kept alive here
+    // would hold the session open through the sweep and hide the very drop this
+    // case is about.
+    probeOnWorker(mgr, [](CardSessionHolder& h) { (void)h.acquire(); });
+    ASSERT_EQ(census.opens(), 2) << "one logical session and one hold";
+
+    census.arm();
+    clock.advance(CardSessionHolder::kIdleClose);
+    std::this_thread::sleep_for(kAfterOneSweep);
+
+    std::atomic<int> reopened{-1};
+    probeOnWorker(mgr, [&](CardSessionHolder& h) {
+        held.store(h.hasHoldForTest() ? 1 : 0);
+        reopened.store(h.acquire().has_value() ? 1 : 0);
+    });
+
+    // The sweep ran and did its two jobs: it renewed the hold (a third open)
+    // and it closed the idle session (a fourth open, for the probe above).
+    // Without this the floor assertion could pass on a sweep that never fired.
+    ASSERT_EQ(census.opens(), 4) << "the sweep renewed the hold and the session was closed and re-opened";
+    ASSERT_EQ(held.load(), 1);
+    ASSERT_EQ(reopened.load(), 1);
+
+    EXPECT_GE(census.floorWhileArmed(), 1) << "the reader carried at least one handle at every point of the sweep";
+}
+
+namespace {
+
+// A clock that hands out a scripted sequence of instants, one per read, and
+// repeats the last one forever. It exists to make the number of READS visible
+// in the outcome: a sweep that consults the clock twice can be handed two
+// instants that straddle the idle boundary, which a sweep that consults it once
+// cannot see.
+class ScriptedClock
+{
+public:
+    explicit ScriptedClock(std::vector<std::chrono::milliseconds> script) : m_script(std::move(script)) {}
+
+    CardSessionHolder::Clock fn()
+    {
+        return [this] {
+            const std::lock_guard lock(m_mutex);
+            const auto at = std::min(m_next, m_script.size() - 1);
+            ++m_next;
+            return std::chrono::steady_clock::time_point{m_script[at]};
+        };
+    }
+    [[nodiscard]] std::size_t reads() const
+    {
+        const std::lock_guard lock(m_mutex);
+        return m_next;
+    }
+
+private:
+    mutable std::mutex m_mutex;
+    std::vector<std::chrono::milliseconds> m_script;
+    std::size_t m_next = 0;
+};
+
+} // namespace
+
+// One sweep, one instant. The hold skip asks "< kIdleClose" and the idle close
+// asks ">= kIdleClose": complementary tests, so against a SINGLE reading of the
+// clock exactly one of them fires. Read the clock twice and the boundary can
+// fall in between -- the skip sees a session still in use and declines the
+// hold, then the close sees the same session idle and drops it, and the reader
+// is left with no handle at all until the next sweep.
+//
+// Every entry of the script below is spent where the comments say, and the
+// count is asserted: the script is one entry longer than an earlier version of
+// this case, which had the sweep land on entries that straddled nothing and
+// passed with the clock read twice.
+//
+//   read 1  0 ms       acquireHold() on the hold-changed branch. It reads the
+//                      clock BEFORE it can know whether there is a session to
+//                      skip on, so this entry is spent here, not by acquire().
+//   read 2  0 ms       acquire() -> the session's last-used stamp is 0 ms.
+//   read 3  44'999 ms  the sweep. One read: the session is 44'999 ms old, so it
+//                      is still in use -- no hold, and no close.
+//   read 4  45'000 ms  spent ONLY if the sweep reads the clock a second time,
+//                      and then it says the same session is idle -> closed,
+//                      with the hold already declined. Zero handles.
+TEST(OperationManager, SweepDecidesTheHoldAndTheIdleCloseOnOneInstant)
+{
+    // A wider period than the other sweep cases use: this one must observe the
+    // state after EXACTLY one sweep, so the quiet stretch between the first and
+    // the second has to be wide enough to probe in without racing.
+    constexpr auto kWidePeriod = 500ms;
+    constexpr auto kAfterOneWideSweep = 750ms;
+
+    HandleCensus census;
+    ScriptedClock clock{{0ms, 0ms, 44'999ms, 45'000ms}};
+    OperationManager mgr;
+    mgr.setSessionFactoryForTest(census.factory());
+    mgr.setIdleSweepForTest(kWidePeriod);
+    mgr.setHolderClockForTest(clock.fn());
+    mgr.setHolderSmProbeForTest([](const LibreSCRS::SmartCard::CardSession&) { return true; });
+
+    // The hold first, while there is no session yet: nothing for the skip to
+    // decline, so it is taken. This is read 1.
+    probeOnWorker(mgr, [](CardSessionHolder&) {});
+    mgr.setReaderHold(ObjectId{1}, true);
+    std::atomic<int> held{-1};
+    probeOnWorker(mgr, [&](CardSessionHolder& h) { held.store(h.hasHoldForTest() ? 1 : 0); });
+    ASSERT_EQ(held.load(), 1);
+    ASSERT_EQ(clock.reads(), 1U) << "the hold spent the first entry";
+
+    // Then the logical session, not retained: an AcquiredCard kept alive here
+    // would hold it open through the sweep. This is read 2, and it stamps the
+    // session's last-used time at 0 ms.
+    probeOnWorker(mgr, [](CardSessionHolder& h) { (void)h.acquire(); });
+    ASSERT_EQ(census.opens(), 2) << "one hold and one logical session";
+    ASSERT_EQ(clock.reads(), 2U);
+
+    census.arm();
+    std::this_thread::sleep_for(kAfterOneWideSweep);
+
+    std::atomic<std::size_t> readsAfterSweep{0};
+    std::atomic<int> opensBefore{0};
+    std::atomic<int> opensAfter{0};
+    probeOnWorker(mgr, [&](CardSessionHolder& h) {
+        held.store(h.hasHoldForTest() ? 1 : 0);
+        readsAfterSweep.store(clock.reads());
+        opensBefore.store(census.opens());
+        // Re-opens if and only if the sweep closed the session.
+        (void)h.acquire();
+        opensAfter.store(census.opens());
+    });
+
+    EXPECT_EQ(readsAfterSweep.load(), 3U) << "one sweep, and it read the clock once";
+    EXPECT_EQ(held.load(), 0) << "at 44'999 ms the session is still in use, so the hold is declined";
+    EXPECT_EQ(opensAfter.load(), opensBefore.load()) << "and the same instant says it is not idle, so it is not closed";
+    EXPECT_GE(census.floorWhileArmed(), 1) << "so the reader was never left without a handle";
 }
