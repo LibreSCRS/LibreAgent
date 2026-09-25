@@ -28,6 +28,9 @@
 #   5  an empty build tree, --update: refused, baseline untouched   -> 2
 #   6  control: the same run under a PATH shim that HAS c++filt    -> 0
 #   7  c++filt taken off PATH                                      -> 2
+#   8  an external data symbol in the recorded namespace           -> 2
+#   9  internal-linkage functions and data in the archive          -> 0
+#  10  external data outside the recorded namespace                -> 0
 set -uo pipefail
 
 HERE="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
@@ -202,6 +205,72 @@ fi
 rc=$(run "$rootd" --check build)
 check "an exported data symbol is not dropped in silence" 2 "$rc"
 says "an exported data symbol is not dropped in silence" "no rule for"
+
+# --- symbols with internal linkage are not exported -------------------------
+# A static archive is read with `nm -U`, which lists every defined symbol of
+# every member, including the ones a linker outside that object can never bind
+# to: a static function (t), static data (d, b), a constant table (r). Every
+# real archive carries them, the fixture above did not, and so the gate refused
+# every real build tree while its self-test stayed green. The data symbol case
+# above must stay red: only EXTERNAL data is part of the ABI.
+rootl="$(stub internal-linkage)"
+{
+    printf 'namespace LibreSCRS::Agent {\n'
+    printf 'int selftestAlpha(int x) { return x + 1; }\n'
+    printf 'int selftestBeta(int x) { return x + 2; }\n'
+    printf 'int selftestGamma(int x) { return x + 3; }\n'
+    printf '}\n'
+    printf 'namespace {\n'
+    printf 'int localHelper(int x) { return x * 3; }\n'
+    printf 'int localZeroed;\n'
+    printf 'int localInitialised = 5;\n'
+    printf 'const char localTable[] = "abcdefghijklmnopqrstuvwxyz0123456789";\n'
+    printf '}\n'
+    printf 'int selftestUseLocals(int i) { localZeroed += i; localInitialised += i;\n'
+    printf '    return localHelper(localTable[i %% 36] + localZeroed + localInitialised); }\n'
+} > "$rootl/stub.cpp"
+g++ -std=c++20 -O0 -c -fPIC -o "$rootl/stub.o" "$rootl/stub.cpp" 2>"$WORK/gcc.err" \
+    || { echo "FATAL: could not compile the internal-linkage stub" >&2; exit 2; }
+rm -f "$rootl/build/libLibreAgentCore.a"
+ar rcs "$rootl/build/libLibreAgentCore.a" "$rootl/stub.o" 2>>"$WORK/gcc.err" \
+    || { echo "FATAL: could not archive the internal-linkage stub" >&2; exit 2; }
+# The fixture really does carry local symbols, or the case proves nothing.
+if ! nm -U "$rootl/build/libLibreAgentCore.a" \
+        | awk '$2 == "t" { t = 1 } $2 == "b" || $2 == "d" { d = 1 } END { exit !(t && d) }'; then
+    echo "FATAL: the fixture carries no local function and data -- nothing to tolerate" >&2
+    exit 2
+fi
+run "$rootl" --update build >/dev/null
+rc=$(run "$rootl" --check build)
+check "internal-linkage symbols are not an exported class" 0 "$rc"
+
+# --- a bundled library's data is outside the recorded namespace --------------
+# The archives fold in a bundled C codec whose version strings are external
+# read-only data (R). Its functions never entered the snapshot, which records
+# this project's namespace only; its data must not stop it either. The data
+# symbol case above, inside the namespace, stays red.
+rootf="$(stub foreign-data)"
+{
+    printf 'namespace LibreSCRS::Agent {\n'
+    printf 'int selftestAlpha(int x) { return x + 1; }\n'
+    printf 'int selftestBeta(int x) { return x + 2; }\n'
+    printf 'int selftestGamma(int x) { return x + 3; }\n'
+    printf '}\n'
+    printf 'extern "C" { extern const char selftestCodecVersion[]; const char selftestCodecVersion[] = "1.0"; }\n'
+} > "$rootf/stub.cpp"
+g++ -std=c++20 -c -fPIC -o "$rootf/stub.o" "$rootf/stub.cpp" 2>"$WORK/gcc.err" \
+    || { echo "FATAL: could not compile the foreign-data stub" >&2; exit 2; }
+rm -f "$rootf/build/libLibreAgentCore.a"
+ar rcs "$rootf/build/libLibreAgentCore.a" "$rootf/stub.o" 2>>"$WORK/gcc.err" \
+    || { echo "FATAL: could not archive the foreign-data stub" >&2; exit 2; }
+if ! nm -U --extern-only "$rootf/build/libLibreAgentCore.a" \
+        | awk '$2 == "R" && $3 == "selftestCodecVersion" { f = 1 } END { exit !f }'; then
+    echo "FATAL: the fixture carries no external read-only datum -- nothing to scope" >&2
+    exit 2
+fi
+run "$rootf" --update build >/dev/null
+rc=$(run "$rootf" --check build)
+check "data outside the recorded namespace is not classified" 0 "$rc"
 
 printf 'selftest: %s cases, %s red-proved\n' "$cases" "$red"
 [ "$fails" = 0 ]

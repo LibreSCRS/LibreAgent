@@ -224,13 +224,29 @@ export LC_ALL=C
 # falsifiable: a class that is in neither list stops the snapshot instead of
 # being dropped. The shape that matters is an exported DATA symbol, which IS part
 # of a C++ ABI and which the plain T-binding clause discarded without a word.
+#
+# Only EXTERNAL symbols are classified. A static archive read with `nm -U` also
+# lists every member's internal-linkage symbols -- static functions, static
+# data, constant tables (t d b r n) -- which no linker outside that object can
+# bind to, so they are not exported by any definition. The callers therefore
+# pass `nm -U --extern-only`; the classes left are the ones a consumer can reach.
+#
+# And only in the namespace the section records. The archives also carry the
+# bundled CBOR codec's C names, including two read-only version globals; that
+# codec is not this project's API, its T symbols never entered the snapshot, and
+# its data symbols are outside it for the same reason. Classifying them would
+# stop every build over names the policy says nothing about.
 NOT_RECORDED_BINDINGS="W V u A"
 
-# refuse_unknown_bindings <label> <nm output>
+# refuse_unknown_bindings <label> <namespace prefix> <nm output>
 refuse_unknown_bindings() {
-    local label="$1" raw="$2" unexpected
+    local label="$1" prefix="$2" raw="$3" unexpected
+    # Demangled after the class is split off, so a name with spaces in it stays
+    # one field; c++filt rewrites only the mangled token on each line.
     unexpected="$(printf '%s\n' "$raw" \
-        | awk 'NF >= 3 { print $2 }' \
+        | awk 'NF >= 3 { print $2, $3 }' \
+        | c++filt \
+        | awk -v p="$prefix" 'index($2, p) == 1 { print $1 }' \
         | sort -u \
         | grep -vxF -e T $(printf -- '-e %s ' $NOT_RECORDED_BINDINGS) || true)"
     if [[ -n "$unexpected" ]]; then
@@ -313,7 +329,7 @@ if [[ ${#core_archives[@]} -eq 1 ]]; then
     # truncate every symbol at its first paren argument, collapsing
     # overloads into identical lines and hiding signature drift — exactly
     # what this gate exists to catch.
-    refuse_unknown_bindings "$core_archive" "$(nm -U "$core_archive" 2>/dev/null || true)"
+    refuse_unknown_bindings "$core_archive" "LibreSCRS::Agent::" "$(nm -U --extern-only "$core_archive" 2>/dev/null || true)"
     core_symbols="$(nm -U "$core_archive" 2>/dev/null \
         | awk '$2 == "T" { print $3 }' \
         | c++filt 2>/dev/null \
@@ -347,7 +363,7 @@ if [[ ${#wire_archives[@]} -eq 1 ]]; then
     wire_found=1
     wire_archive="${wire_archives[0]}"
 
-    refuse_unknown_bindings "$wire_archive" "$(nm -U "$wire_archive" 2>/dev/null || true)"
+    refuse_unknown_bindings "$wire_archive" "LibreSCRS::Agent::Wire::" "$(nm -U --extern-only "$wire_archive" 2>/dev/null || true)"
     wire_symbols="$(nm -U "$wire_archive" 2>/dev/null \
         | awk '$2 == "T" { print $3 }' \
         | c++filt 2>/dev/null \
