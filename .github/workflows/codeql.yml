@@ -76,7 +76,7 @@ jobs:
 
       # At the commit deps.lock names, like build-linux.
       - name: Checkout LibreMiddleware at the lock
-        uses: LibreSCRS/ci/actions/checkout-deps@bd36eee50ba085ef4f052ea2767cff910e2e62e7
+        uses: LibreSCRS/ci/actions/checkout-deps@ac199ae69bc187a8571c9f29763503c1a966ea2c
         with:
           root: LibreAgent
           names: LibreMiddleware

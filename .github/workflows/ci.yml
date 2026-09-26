@@ -48,7 +48,7 @@ jobs:
           persist-credentials: false
 
       - name: Shared gates
-        uses: LibreSCRS/ci/actions/gates@bd36eee50ba085ef4f052ea2767cff910e2e62e7
+        uses: LibreSCRS/ci/actions/gates@ac199ae69bc187a8571c9f29763503c1a966ea2c
         with:
           gates: check-workflows check-skip-reasons check-version deps-lock selftests check-recipe
           recipe-args: --pin _qcbor_commit=cmake/FetchQCBOR.cmake
@@ -175,7 +175,7 @@ jobs:
       # disk first. SHARED + plugins ON to match how LibreLinux acquires it;
       # native signing backend (the CI default) — DSS is only a test oracle.
       - name: Checkout LibreMiddleware at the lock
-        uses: LibreSCRS/ci/actions/checkout-deps@bd36eee50ba085ef4f052ea2767cff910e2e62e7
+        uses: LibreSCRS/ci/actions/checkout-deps@ac199ae69bc187a8571c9f29763503c1a966ea2c
         with:
           root: LibreAgent
           names: LibreMiddleware
@@ -289,7 +289,7 @@ jobs:
       - name: Every test binary still registers its tests
         # --no-tests=error catches a configuration that registers nothing at
         # all; the floor catches one binary quietly losing its tests.
-        uses: LibreSCRS/ci/actions/gates@bd36eee50ba085ef4f052ea2767cff910e2e62e7
+        uses: LibreSCRS/ci/actions/gates@ac199ae69bc187a8571c9f29763503c1a966ea2c
         with:
           root: LibreAgent
           gates: test-floor
@@ -424,7 +424,7 @@ jobs:
       - name: Every test binary still registers its tests
         # --no-tests=error catches a configuration that registers nothing at
         # all; the floor catches one binary quietly losing its tests.
-        uses: LibreSCRS/ci/actions/gates@bd36eee50ba085ef4f052ea2767cff910e2e62e7
+        uses: LibreSCRS/ci/actions/gates@ac199ae69bc187a8571c9f29763503c1a966ea2c
         with:
           root: LibreAgent
           gates: test-floor
@@ -486,7 +486,7 @@ jobs:
       - name: Every test binary still registers its tests
         # --no-tests=error catches a configuration that registers nothing at
         # all; the floor catches one binary quietly losing its tests.
-        uses: LibreSCRS/ci/actions/gates@bd36eee50ba085ef4f052ea2767cff910e2e62e7
+        uses: LibreSCRS/ci/actions/gates@ac199ae69bc187a8571c9f29763503c1a966ea2c
         with:
           root: LibreAgent
           gates: test-floor
@@ -547,7 +547,7 @@ jobs:
       - name: Every test binary still registers its tests
         # --no-tests=error catches a configuration that registers nothing at
         # all; the floor catches one binary quietly losing its tests.
-        uses: LibreSCRS/ci/actions/gates@bd36eee50ba085ef4f052ea2767cff910e2e62e7
+        uses: LibreSCRS/ci/actions/gates@ac199ae69bc187a8571c9f29763503c1a966ea2c
         with:
           gates: test-floor
           build-dir: build-wire-asan
@@ -608,7 +608,7 @@ jobs:
       - name: Every test binary still registers its tests
         # --no-tests=error catches a configuration that registers nothing at
         # all; the floor catches one binary quietly losing its tests.
-        uses: LibreSCRS/ci/actions/gates@bd36eee50ba085ef4f052ea2767cff910e2e62e7
+        uses: LibreSCRS/ci/actions/gates@ac199ae69bc187a8571c9f29763503c1a966ea2c
         with:
           gates: test-floor
           build-dir: build

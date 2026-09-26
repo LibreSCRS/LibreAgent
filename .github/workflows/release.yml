@@ -66,7 +66,7 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
       - id: pre
-        uses: LibreSCRS/ci/actions/release-preflight@bd36eee50ba085ef4f052ea2767cff910e2e62e7
+        uses: LibreSCRS/ci/actions/release-preflight@ac199ae69bc187a8571c9f29763503c1a966ea2c
         with:
           mode: ${{ inputs.mode || (github.ref_type == 'tag' && 'publish' || 'rehearse') }}
           version-min: '1'
@@ -88,7 +88,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           repository: LibreSCRS/ci
-          ref: bd36eee50ba085ef4f052ea2767cff910e2e62e7
+          ref: ac199ae69bc187a8571c9f29763503c1a966ea2c
           path: .ci
           persist-credentials: false
       - name: Deterministic source tarball
@@ -125,13 +125,13 @@ jobs:
           persist-credentials: false
       - name: Build the packages
         id: build
-        uses: LibreSCRS/ci/actions/pkg-build@bd36eee50ba085ef4f052ea2767cff910e2e62e7
+        uses: LibreSCRS/ci/actions/pkg-build@ac199ae69bc187a8571c9f29763503c1a966ea2c
         with:
           slug: ${{ matrix.slug }}
           upstream: ${{ github.ref_type == 'tag' && 'release' || 'source' }}
           version: ${{ github.ref_type == 'tag' && needs.preflight.outputs.version || '' }}
       - name: Install and judge the stack
-        uses: LibreSCRS/ci/actions/pkg-verify@bd36eee50ba085ef4f052ea2767cff910e2e62e7
+        uses: LibreSCRS/ci/actions/pkg-verify@ac199ae69bc187a8571c9f29763503c1a966ea2c
         with:
           slug: ${{ matrix.slug }}
           packages: ${{ steps.build.outputs.art }}/${{ matrix.slug }}
@@ -175,14 +175,14 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           repository: LibreSCRS/ci
-          ref: bd36eee50ba085ef4f052ea2767cff910e2e62e7
+          ref: ac199ae69bc187a8571c9f29763503c1a966ea2c
           path: .ci
           persist-credentials: false
       - name: Bill of materials
         run: |
           .ci/scripts/make-sbom --root LibreAgent --out artifacts/sbom.cdx.json --require qcbor
           .ci/scripts/check-sbom artifacts/sbom.cdx.json
-      - uses: LibreSCRS/ci/actions/release-seal@bd36eee50ba085ef4f052ea2767cff910e2e62e7
+      - uses: LibreSCRS/ci/actions/release-seal@ac199ae69bc187a8571c9f29763503c1a966ea2c
         with:
           mode: ${{ needs.preflight.outputs.mode }}
           version: ${{ needs.preflight.outputs.version }}
@@ -207,7 +207,7 @@ jobs:
         with:
           name: sealed
           path: artifacts
-      - uses: LibreSCRS/ci/actions/release-publish@bd36eee50ba085ef4f052ea2767cff910e2e62e7
+      - uses: LibreSCRS/ci/actions/release-publish@ac199ae69bc187a8571c9f29763503c1a966ea2c
         with:
           mode: ${{ needs.preflight.outputs.mode }}
           version: ${{ needs.preflight.outputs.version }}
