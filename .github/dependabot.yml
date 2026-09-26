@@ -1,0 +1,15 @@
+# SPDX-License-Identifier: LGPL-2.1-or-later
+#
+# Every action in the workflows is pinned by commit, with the release it is in
+# a comment. Pins nobody moves go stale; this is what moves them, as a pull
+# request that goes through CI like any other change. The LibreSCRS/ci pin is
+# moved the same way, and every reference to it must name the same commit.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns: ['*']
