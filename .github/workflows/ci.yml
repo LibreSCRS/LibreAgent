@@ -5,17 +5,17 @@ name: CI
 # platform-neutral agent core (LibreAgent::Core, LM-backed), the socket-wire
 # protocol library (LibreAgent::Wire, dependency-free), and the Qt client
 # library LibreCelik consumes (LibreAgent::ClientQt, Wire + Qt6 only — no LM).
-# This workflow has: a format gate; the shared gates (LibreSCRS/ci, by the
-# profile of this repository) plus the checks only this repository has;
+# This workflow has: the shared gates (LibreSCRS/ci) plus the checks only
+# this repository has and the format;
 # build-linux, the full Core+Wire+ClientQt stack built against
 # LibreMiddleware from source at the commit deps.lock names, tested with the
 # D-Bus/socket/transport-parity suites included (LibreCelik's build shape),
-# the ABI snapshot of the shipped shared library, the installed CONFIG
-# package smoke and a ThreadSanitizer leg over the concurrency core;
+# the installed CONFIG package smoke and a ThreadSanitizer leg over the
+# concurrency core;
 # client-lm-less, the guarantee that Wire+ClientQt build/test/install
 # standalone where LibreMiddleware is never built or installed at all;
-# pkcs11-facade, the module in the configuration it ships in; the two macOS
-# legs; and the two bounded fuzz runs over the untrusted-input decoders.
+# pkcs11-facade, the module in the configuration it ships in; and the two
+# macOS legs. The fuzz runs are in fuzz.yml (pull requests and weekly).
 
 on:
   push:
@@ -31,69 +31,27 @@ on:
 permissions: {}
 
 jobs:
-  format-check:
-    # Self-contained: the format gate needs neither LibreMiddleware nor any
-    # runtime dependency, so it runs on the runner with the exact
-    # clang-format-21 the rest of the org pins (apt.llvm.org). The build/test
-    # jobs below run in an Arch container instead, because Arch's rolling
-    # `clang` package is ahead of 21 and would reformat against a different
-    # major — the project standard is clang-format 21, not the distro default.
-    #
-    # A job of its own, apart from the gates: a formatting slip used to stop
-    # the job before the twenty-odd gate steps behind it ran, and hid a real
-    # packaging defect for a day.
-    timeout-minutes: 15
-    runs-on: ubuntu-24.04
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
-        with:
-          persist-credentials: false
-
-      - name: Install clang-format-21
-        run: |
-          wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key | sudo gpg --dearmor -o /usr/share/keyrings/llvm.gpg
-          echo "deb [signed-by=/usr/share/keyrings/llvm.gpg] http://apt.llvm.org/noble/ llvm-toolchain-noble-21 main" | sudo tee /etc/apt/sources.list.d/llvm-21.list
-          sudo apt-get update
-          sudo apt-get install -y clang-format-21
-
-      - name: Check clang-format
-        # The roots live in ci/format-dirs.txt, which the shared scope check
-        # reads too: a directory nobody formats cannot appear without one of
-        # the two saying so.
-        #
-        # -print0/-0 for paths with spaces, a parenthesised extension filter so
-        # the -o cannot swallow the directory list, and -r because without it an
-        # empty result makes clang-format read stdin and hang rather than fail.
-        run: |
-          mapfile -t dirs < <(grep -v '^#' ci/format-dirs.txt)
-          find "${dirs[@]}" \
-            \( -name '*.cpp' -o -name '*.h' -o -name '*.hpp' -o -name '*.mm' \) -print0 \
-            | xargs -0 -r clang-format-21 --dry-run --Werror
-
   gates:
-    # The shared gates this repository's profile lists (format scope, skip
-    # reasons, workflow wiring/bounds/order/pins, the canonical-type registry,
-    # duplicate bodies, every self-test this repository ships, and the locked
-    # upstream revisions), then the source-shape checks only this repository
-    # has. Nothing here builds.
+    # The shared gates this step names (LibreSCRS/ci): the workflows' bounds
+    # and pins, a reason on every skip, the version everywhere, the locked
+    # upstream revisions, every self-test this repository ships, and the Arch
+    # recipe; then the source-shape checks only this repository has, and the
+    # format. Nothing here builds.
     timeout-minutes: 20
     runs-on: ubuntu-24.04
     permissions:
       contents: read
     steps:
-      # fetch-tags, deliberately: the recipe check decides one arm on whether
-      # the LOCAL clone holds refs/tags/<pkgver>, and actions/checkout fetches
-      # with --no-tags unless this is set.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           fetch-depth: 0
-          fetch-tags: true
           persist-credentials: false
 
       - name: Shared gates
-        uses: LibreSCRS/ci/actions/gates@373a0f82c9af280b7a8ccc4ee30106c947394ca2
+        uses: LibreSCRS/ci/actions/gates@bd36eee50ba085ef4f052ea2767cff910e2e62e7
+        with:
+          gates: check-workflows check-skip-reasons check-version deps-lock selftests check-recipe
+          recipe-args: --pin _qcbor_commit=cmake/FetchQCBOR.cmake
 
       - name: One clamped SCM_RIGHTS harvest, not two
         # cmsg_len says what the SENDER attached. XNU keeps reporting that
@@ -106,20 +64,27 @@ jobs:
 
       - name: BIGNUM deleters cleanse, and the mirror still names its canonical
         # The master-list fixture's deleter is a marked mirror of the
-        # middleware's, and the registry that pairs them compares names and
-        # sites, never bodies -- so it reported nothing while this one had
-        # stopped cleansing. Checks the call and the marker as two separate
-        # failures, and every other BIGNUM deleter in the checkout as a third.
+        # middleware's, and nothing else compares their bodies. Checks the call
+        # and the marker as two separate failures, and every other BIGNUM
+        # deleter in the checkout as a third.
         run: ./ci/scripts/check-cleansing-deleters.sh
 
-      - name: The Arch recipe builds this project's signed tag
-        # Reads the recipe as text: its own source is this repository's signed
-        # tag, the key it trusts is the one in KEYS, every other source carries
-        # a real checksum, and pkgver and the vendored pin agree with the tree.
-        # No network: `git ls-remote` against an SSH remote hangs on a
-        # developer machine, and a gate that can hang is worse than one that
-        # can fail.
-        run: ./packaging/arch/check-recipe.sh
+      # The exact clang-format-21 the rest of the org uses (apt.llvm.org); the
+      # build jobs' Arch images carry a newer major that formats differently.
+      # Last, so a formatting slip cannot hide a gate finding above.
+      - name: Install clang-format-21
+        run: |
+          wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key | sudo gpg --dearmor -o /usr/share/keyrings/llvm.gpg
+          echo "deb [signed-by=/usr/share/keyrings/llvm.gpg] http://apt.llvm.org/noble/ llvm-toolchain-noble-21 main" | sudo tee /etc/apt/sources.list.d/llvm-21.list
+          sudo apt-get update
+          sudo apt-get install -y clang-format-21
+
+      - name: Check clang-format
+        # Every tracked C++ source; -r because an empty list would make
+        # clang-format read stdin and hang rather than fail.
+        run: |
+          git ls-files -z -- '*.cpp' '*.h' '*.hpp' '*.mm' \
+            | xargs -0 -r clang-format-21 --dry-run --Werror
 
   docs-check:
     # The public-API documentation gate. Self-contained for the same reason
@@ -175,8 +140,7 @@ jobs:
     # Core ON (LM-backed) + Wire ON + ClientQt ON in one build/test pass: this
     # is LibreCelik's actual build shape, and the suite includes
     # HeaderAcceptance plus every D-Bus/socket/parity integration test beside
-    # the plain Core/Wire unit tests. It is also the build the ABI snapshot
-    # reads, because it is the one that produces the shipped shared library.
+    # the plain Core/Wire unit tests.
     timeout-minutes: 90
     runs-on: ubuntu-24.04
     container: archlinux:latest
@@ -211,7 +175,7 @@ jobs:
       # disk first. SHARED + plugins ON to match how LibreLinux acquires it;
       # native signing backend (the CI default) — DSS is only a test oracle.
       - name: Checkout LibreMiddleware at the lock
-        uses: LibreSCRS/ci/actions/checkout-deps@373a0f82c9af280b7a8ccc4ee30106c947394ca2
+        uses: LibreSCRS/ci/actions/checkout-deps@bd36eee50ba085ef4f052ea2767cff910e2e62e7
         with:
           root: LibreAgent
           names: LibreMiddleware
@@ -245,14 +209,6 @@ jobs:
         working-directory: LibreAgent
         run: cmake --build build -j4
 
-      - name: Shared gates after the build
-        uses: LibreSCRS/ci/actions/gates@373a0f82c9af280b7a8ccc4ee30106c947394ca2
-        with:
-          root: LibreAgent
-          phase: build
-          build-dir: build
-          leg: linux
-
       - name: Check the wire vocabulary manifest is current
         # The manifest is generated but committed: CI proves the checked-in
         # copy still matches what the contract grammar produces. Compared by
@@ -270,15 +226,6 @@ jobs:
             git --no-pager diff -- wire/wire-vocabulary.json
             exit 1
           }
-
-      - name: Check the ABI of the shipped shared library
-        # The one shared library this repository ships, the Qt client: its
-        # exported symbols, its SONAME and the layout of its public value
-        # types, against ci/abi/5.x-baseline.txt. What the library must NOT
-        # export is proved by the ctest cases that read its dynamic table
-        # (vendored and wire exports).
-        working-directory: LibreAgent
-        run: ./ci/scripts/abi-snapshot.sh --check build
 
       - name: Test
         working-directory: LibreAgent
@@ -338,6 +285,16 @@ jobs:
           # other binary.)
           n=$(ctest --test-dir build-tsan -N -R "$SUITES" | grep -c '^ *Test *#' || true)
           test "$n" = 54 || { echo "the sanitizer leg selected $n cases, not 54"; exit 1; }
+
+      - name: Every test binary still registers its tests
+        # --no-tests=error catches a configuration that registers nothing at
+        # all; the floor catches one binary quietly losing its tests.
+        uses: LibreSCRS/ci/actions/gates@bd36eee50ba085ef4f052ea2767cff910e2e62e7
+        with:
+          root: LibreAgent
+          gates: test-floor
+          build-dir: build
+          floor: ci/test-floor.linux.txt
 
   client-lm-less:
     # The Wire+ClientQt "no LibreMiddleware anywhere" guarantee: Core stays
@@ -407,14 +364,6 @@ jobs:
         working-directory: LibreAgent
         run: cmake --build build -j4
 
-      - name: Shared gates after the build
-        uses: LibreSCRS/ci/actions/gates@373a0f82c9af280b7a8ccc4ee30106c947394ca2
-        with:
-          root: LibreAgent
-          phase: build
-          build-dir: build
-          leg: client-lm-less
-
       - name: Test
         working-directory: LibreAgent
         env:
@@ -472,6 +421,16 @@ jobs:
             -DPKGSMOKE_COMPONENTS=ClientQt
           cmake --build build-pkgsmoke-clientqt -j4
 
+      - name: Every test binary still registers its tests
+        # --no-tests=error catches a configuration that registers nothing at
+        # all; the floor catches one binary quietly losing its tests.
+        uses: LibreSCRS/ci/actions/gates@bd36eee50ba085ef4f052ea2767cff910e2e62e7
+        with:
+          root: LibreAgent
+          gates: test-floor
+          build-dir: build
+          floor: ci/test-floor.client-lm-less.txt
+
   pkcs11-facade:
     # The PKCS#11 facade in the configuration it actually ships in: no card
     # stack, no crypto library, no bus, no Qt. A build that happens to have
@@ -516,14 +475,6 @@ jobs:
         working-directory: LibreAgent
         run: cmake --build build -j4
 
-      - name: Shared gates after the build
-        uses: LibreSCRS/ci/actions/gates@373a0f82c9af280b7a8ccc4ee30106c947394ca2
-        with:
-          root: LibreAgent
-          phase: build
-          build-dir: build
-          leg: pkcs11-facade
-
       - name: Test
         working-directory: LibreAgent
         run: ctest --test-dir build --output-on-failure --no-tests=error
@@ -531,6 +482,16 @@ jobs:
       - name: One exported symbol, nothing needed
         working-directory: LibreAgent
         run: ./ci/scripts/check-pkcs11-facade.sh build
+
+      - name: Every test binary still registers its tests
+        # --no-tests=error catches a configuration that registers nothing at
+        # all; the floor catches one binary quietly losing its tests.
+        uses: LibreSCRS/ci/actions/gates@bd36eee50ba085ef4f052ea2767cff910e2e62e7
+        with:
+          root: LibreAgent
+          gates: test-floor
+          build-dir: build
+          floor: ci/test-floor.pkcs11-facade.txt
 
   wire-asan-macos:
     # The wire codec on Apple Clang, under AddressSanitizer. It exists because a
@@ -583,15 +544,14 @@ jobs:
       - name: Test
         run: ctest --test-dir build-wire-asan --output-on-failure --no-tests=error
 
-      - name: Shared gates after the build
-        # --no-tests=error above catches a configuration that stopped
-        # generating these tests ALTOGETHER; the listing catches one of them
-        # quietly dropping out.
-        uses: LibreSCRS/ci/actions/gates@373a0f82c9af280b7a8ccc4ee30106c947394ca2
+      - name: Every test binary still registers its tests
+        # --no-tests=error catches a configuration that registers nothing at
+        # all; the floor catches one binary quietly losing its tests.
+        uses: LibreSCRS/ci/actions/gates@bd36eee50ba085ef4f052ea2767cff910e2e62e7
         with:
-          phase: build
+          gates: test-floor
           build-dir: build-wire-asan
-          leg: wire-asan-macos
+          floor: ci/test-floor.wire-asan-macos.txt
 
   client-macos:
     # ClientQt's production transport on Apple platforms: the only place
@@ -645,82 +605,11 @@ jobs:
           QT_QPA_PLATFORM: offscreen
         run: ctest --test-dir build --output-on-failure --no-tests=error
 
-      - name: Shared gates after the build
-        uses: LibreSCRS/ci/actions/gates@373a0f82c9af280b7a8ccc4ee30106c947394ca2
+      - name: Every test binary still registers its tests
+        # --no-tests=error catches a configuration that registers nothing at
+        # all; the floor catches one binary quietly losing its tests.
+        uses: LibreSCRS/ci/actions/gates@bd36eee50ba085ef4f052ea2767cff910e2e62e7
         with:
-          phase: build
+          gates: test-floor
           build-dir: build
-          leg: client-macos
-
-  fuzz-cbor:
-    # Untrusted-decoder fuzz gate: the CBOR decoder parses input from any local
-    # caller over the socket wire (and, on macOS, the browser-extension
-    # facade). AppleClang ships no libFuzzer runtime, so this builds the fuzzer
-    # standalone on Linux clang with -fsanitize=fuzzer,address. It shells out
-    # to ci/scripts/fuzz-cbor.sh — the same script a dev runs locally — so the
-    # two never drift. Bounded run over the seed corpus; any crash/UB/leak
-    # fails the job.
-    timeout-minutes: 30
-    runs-on: ubuntu-24.04
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
-        with:
-          persist-credentials: false
-
-      - name: Install clang-21
-        # The decoder uses std::expected, which libstdc++ gates on
-        # __cpp_concepts >= 202002L — advertised by clang 19+, not the runner
-        # image's older default clang. libclang-rt-21-dev carries the
-        # libFuzzer/ASan runtimes.
-        run: |
-          wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key | sudo gpg --dearmor -o /usr/share/keyrings/llvm.gpg
-          echo "deb [signed-by=/usr/share/keyrings/llvm.gpg] http://apt.llvm.org/noble/ llvm-toolchain-noble-21 main" | sudo tee /etc/apt/sources.list.d/llvm-21.list
-          sudo apt-get update
-          sudo apt-get install -y clang-21 libclang-rt-21-dev
-
-      - name: Run the bounded fuzz
-        run: ci/scripts/fuzz-cbor.sh --time 120 --clang clang++-21
-
-  fuzz-csca-ldif:
-    # The other untrusted-input surface in this repository: the CSCA anchor
-    # import walks a directory export a person downloads from a public ICAO PKD
-    # mirror. Before any signature has been verified it runs an RFC 2849 line
-    # grammar, a base64 decoder, its OWN BER length decoder, and three small
-    # scalar parsers — six readers, all six fuzzed here, through
-    # ci/scripts/fuzz-csca-ldif.sh, the same script a dev runs locally.
-    timeout-minutes: 30
-    runs-on: ubuntu-24.04
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
-        with:
-          path: LibreAgent
-          persist-credentials: false
-
-      # Only the HEADERS of LibreMiddleware are compiled against; nothing of it
-      # is built or linked here. At the commit deps.lock names, like every
-      # other job that reads it.
-      - name: Checkout LibreMiddleware at the lock
-        uses: LibreSCRS/ci/actions/checkout-deps@373a0f82c9af280b7a8ccc4ee30106c947394ca2
-        with:
-          root: LibreAgent
-          names: LibreMiddleware
-          path: .
-
-      - name: Install clang-21
-        # Same LLVM 21 as fuzz-cbor; lld-21 as well: the driver includes the
-        # implementation file, so functions that call into LibreMiddleware are
-        # emitted but never reached, and lld --gc-sections drops them while
-        # still failing the link for anything the fuzzed path does reach.
-        run: |
-          wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key | sudo gpg --dearmor -o /usr/share/keyrings/llvm.gpg
-          echo "deb [signed-by=/usr/share/keyrings/llvm.gpg] http://apt.llvm.org/noble/ llvm-toolchain-noble-21 main" | sudo tee /etc/apt/sources.list.d/llvm-21.list
-          sudo apt-get update
-          sudo apt-get install -y clang-21 libclang-rt-21-dev lld-21
-
-      - name: Run the bounded fuzz
-        working-directory: LibreAgent
-        run: ci/scripts/fuzz-csca-ldif.sh --time 120 --clang clang++-21 --lm-include ../LibreMiddleware/include
+          floor: ci/test-floor.client-macos.txt

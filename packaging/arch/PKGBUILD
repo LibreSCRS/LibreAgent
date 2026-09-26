@@ -31,9 +31,8 @@
 # WHAT EACH PACKAGE HOLDS
 # -----------------------
 # The payload is declared in packaging/payload/*.files rather than spelled out
-# in the package functions, and packaging/arch/check-split.sh compares those
-# lists with a real staged install: everything installed is claimed, nothing is
-# claimed twice, and a pattern that matches nothing is an error. Two things are
+# in the package functions, and _install_payload() below refuses a pattern that
+# matches nothing in the staged install. Two things are
 # easy to leave out by hand and fail only at the CONSUMER, one release later —
 # the per-configuration export files, which the main targets file picks up with
 # a glob where an empty match is not an error, and the vendored codec's licence,
@@ -200,7 +199,7 @@ build() {
     # Every component ON, once. The three packages are carved out of a single
     # staged install below, so a component left OFF here does not produce a
     # smaller package — it produces a package whose payload list matches
-    # nothing, and check-split.sh says so.
+    # nothing, and _install_payload() says so.
     cmake -S . -B build -G Ninja \
         -DCMAKE_BUILD_TYPE=RelWithDebInfo \
         -DCMAKE_INSTALL_PREFIX=/usr \
@@ -225,8 +224,7 @@ check() {
 
 # --- shared staging -----------------------------------------------------------
 # One install tree, carved into three packages by the lists under
-# packaging/payload/. Those are the same lists packaging/arch/check-split.sh
-# compares against a real staged install in both directions.
+# packaging/payload/.
 _stage_once() {
     local stage="$srcdir/stage"
     if [ ! -d "$stage" ]; then

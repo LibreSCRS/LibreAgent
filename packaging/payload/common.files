@@ -12,7 +12,7 @@
 # Nothing here is architecture-dependent, which is why this package is `any`.
 #
 # Prefix-relative paths, one per line; `#` comments and shell globs allowed. A
-# pattern that expands to nothing is an ERROR — see packaging/arch/check-split.sh.
+# pattern that expands to nothing is an ERROR — see _install_payload() in packaging/arch/PKGBUILD.
 # usr/share/licenses/** is installed by the recipe from source trees, not from
 # the staged install, so it is not listed here.
 

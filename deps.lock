@@ -4,5 +4,5 @@
 # `bump-deps to-head|to-tag` (LibreSCRS/ci) and held by `bump-deps check`:
 # move a row with the tool, never by hand.
 #
-# <name>  <url>  <commit>  <main|version>
-LibreMiddleware  https://github.com/LibreSCRS/LibreMiddleware   330730752fa5c83e16e7faee2dd3b2b09e7a64cb  main
+# <name>  <url>  <commit>
+LibreMiddleware  https://github.com/LibreSCRS/LibreMiddleware   330730752fa5c83e16e7faee2dd3b2b09e7a64cb

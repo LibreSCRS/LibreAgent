@@ -1,0 +1,90 @@
+# SPDX-License-Identifier: LGPL-2.1-or-later
+name: Fuzz
+
+# Bounded libFuzzer+ASan runs over the two untrusted-input decoders. On pull
+# requests and weekly rather than on every push: in the history of this
+# repository they have never failed a push, and a finding waits at most a week
+# or until the next pull request.
+
+on:
+  pull_request:
+    branches: [main]
+  schedule:
+    - cron: '17 5 * * 1'
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  fuzz-cbor:
+    # Untrusted-decoder fuzz gate: the CBOR decoder parses input from any local
+    # caller over the socket wire (and, on macOS, the browser-extension
+    # facade). AppleClang ships no libFuzzer runtime, so this builds the fuzzer
+    # standalone on Linux clang with -fsanitize=fuzzer,address. It shells out
+    # to ci/scripts/fuzz-cbor.sh — the same script a dev runs locally — so the
+    # two never drift. Bounded run over the seed corpus; any crash/UB/leak
+    # fails the job.
+    timeout-minutes: 30
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install clang-21
+        # The decoder uses std::expected, which libstdc++ gates on
+        # __cpp_concepts >= 202002L — advertised by clang 19+, not the runner
+        # image's older default clang. libclang-rt-21-dev carries the
+        # libFuzzer/ASan runtimes.
+        run: |
+          wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key | sudo gpg --dearmor -o /usr/share/keyrings/llvm.gpg
+          echo "deb [signed-by=/usr/share/keyrings/llvm.gpg] http://apt.llvm.org/noble/ llvm-toolchain-noble-21 main" | sudo tee /etc/apt/sources.list.d/llvm-21.list
+          sudo apt-get update
+          sudo apt-get install -y clang-21 libclang-rt-21-dev
+
+      - name: Run the bounded fuzz
+        run: ci/scripts/fuzz-cbor.sh --time 120 --clang clang++-21
+
+  fuzz-csca-ldif:
+    # The other untrusted-input surface in this repository: the CSCA anchor
+    # import walks a directory export a person downloads from a public ICAO PKD
+    # mirror. Before any signature has been verified it runs an RFC 2849 line
+    # grammar, a base64 decoder, its OWN BER length decoder, and three small
+    # scalar parsers — six readers, all six fuzzed here, through
+    # ci/scripts/fuzz-csca-ldif.sh, the same script a dev runs locally.
+    timeout-minutes: 30
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          path: LibreAgent
+          persist-credentials: false
+
+      # Only the HEADERS of LibreMiddleware are compiled against; nothing of it
+      # is built or linked here. At the commit deps.lock names, like every
+      # other job that reads it.
+      - name: Checkout LibreMiddleware at the lock
+        uses: LibreSCRS/ci/actions/checkout-deps@bd36eee50ba085ef4f052ea2767cff910e2e62e7
+        with:
+          root: LibreAgent
+          names: LibreMiddleware
+          path: .
+
+      - name: Install clang-21
+        # Same LLVM 21 as fuzz-cbor; lld-21 as well: the driver includes the
+        # implementation file, so functions that call into LibreMiddleware are
+        # emitted but never reached, and lld --gc-sections drops them while
+        # still failing the link for anything the fuzzed path does reach.
+        run: |
+          wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key | sudo gpg --dearmor -o /usr/share/keyrings/llvm.gpg
+          echo "deb [signed-by=/usr/share/keyrings/llvm.gpg] http://apt.llvm.org/noble/ llvm-toolchain-noble-21 main" | sudo tee /etc/apt/sources.list.d/llvm-21.list
+          sudo apt-get update
+          sudo apt-get install -y clang-21 libclang-rt-21-dev lld-21
+
+      - name: Run the bounded fuzz
+        working-directory: LibreAgent
+        run: ci/scripts/fuzz-csca-ldif.sh --time 120 --clang clang++-21 --lm-include ../LibreMiddleware/include

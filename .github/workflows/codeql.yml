@@ -17,9 +17,9 @@ name: CodeQL
 # outside one, so it is a second job on a plain runner with the report passed
 # between them as an artifact.
 
+# On pull requests and weekly, not on every push: the analysis takes half an
+# hour and has never reported anything a push was waiting for.
 on:
-  push:
-    branches: [main, 'ci/**']
   pull_request:
     branches: [main]
   schedule:
@@ -76,7 +76,7 @@ jobs:
 
       # At the commit deps.lock names, like build-linux.
       - name: Checkout LibreMiddleware at the lock
-        uses: LibreSCRS/ci/actions/checkout-deps@373a0f82c9af280b7a8ccc4ee30106c947394ca2
+        uses: LibreSCRS/ci/actions/checkout-deps@bd36eee50ba085ef4f052ea2767cff910e2e62e7
         with:
           root: LibreAgent
           names: LibreMiddleware
