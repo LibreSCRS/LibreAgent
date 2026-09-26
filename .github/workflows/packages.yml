@@ -38,6 +38,14 @@ on:
       - 'LICENSE'
       - '.github/workflows/packages.yml'
   workflow_dispatch:
+    inputs:
+      refs:
+        description: >-
+          Upstream revisions instead of deps.lock, as NAME=REF separated by
+          spaces (e.g. LibreMiddleware=main): the canary for a change that has
+          not landed upstream yet. Empty builds what deps.lock names.
+        type: string
+        default: ''
 
 permissions: {}
 
@@ -66,6 +74,7 @@ jobs:
         with:
           slug: ${{ matrix.slug }}
           upstream: source
+          refs: ${{ inputs.refs }}
 
       - name: Install and judge the stack
         uses: LibreSCRS/ci/actions/pkg-verify@373a0f82c9af280b7a8ccc4ee30106c947394ca2
