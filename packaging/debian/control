@@ -1,7 +1,7 @@
 Source: libreagent
 Section: libdevel
 Priority: optional
-Maintainer: LibreSCRS <packages@librescrs.org>
+Maintainer: LibreSCRS <librescrs@proton.me>
 Build-Depends: debhelper-compat (= 13),
                cmake (>= 3.28),
                ninja-build,
@@ -18,8 +18,8 @@ Homepage: https://github.com/LibreSCRS/LibreAgent
 Rules-Requires-Root: no
 
 Package: librescrs-agent-common-dev
-Architecture: all
-Multi-Arch: foreign
+Architecture: any
+Multi-Arch: same
 Depends: ${misc:Depends}
 Description: Shared CMake package and wire contract for the LibreSCRS agent
  The CMake CONFIG package, the platform-neutral public headers and the wire

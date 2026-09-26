@@ -5,7 +5,7 @@
 Name:           libreagent
 Version:        5.0.0
 Release:        1%{?dist}
-Summary:        Core, wire codec and Qt client library for the LibreSCRS smart-card agent
+Summary:        Core, wire format and Qt client library for the LibreSCRS smart-card agent
 
 License:        LGPL-2.1-or-later AND BSD-3-Clause
 URL:            https://github.com/LibreSCRS/LibreAgent
@@ -31,7 +31,7 @@ BuildRequires:  dbus-daemon
 
 %description
 LibreAgent is the platform-neutral core of the LibreSCRS smart-card agent: the
-agent brain, the CBOR wire codec, the PKCS#11 facade and the Qt client library
+agent brain, the CBOR wire encoder and decoder, the PKCS#11 facade and the Qt client library
 desktop front-ends link against.
 
 This source package produces the component packages below and no package of its
@@ -39,7 +39,8 @@ own name.
 
 %package -n librescrs-agent-common-devel
 Summary:        Shared CMake package and wire contract for the LibreSCRS agent
-BuildArch:      noarch
+# Not noarch: the CMake package lives under the architecture's library
+# directory, where find_package() looks for it.
 
 %description -n librescrs-agent-common-devel
 The CMake CONFIG package, the platform-neutral public headers and the wire
@@ -47,23 +48,23 @@ description shared by the agent and by every client of it.
 
 One package has to own the CMake config and its version file, because they are
 installed from every configuration. Making either component package own them
-would drag Qt into the agent's dependency closure or the middleware into every
-Qt client's, so a third, dependency-free package holds what both need.
+would drag Qt into the agent's dependency closure or the smart-card library into
+every Qt client's, so a third, dependency-free package holds what both need.
 
 %package -n librescrs-agent-core-devel
-Summary:        LibreSCRS agent core, wire codec and PKCS#11 facade (static)
+Summary:        LibreSCRS agent core, wire format and PKCS#11 facade (static)
 Requires:       librescrs-agent-common-devel = %{version}-%{release}
 Requires:       librescrs-middleware-devel%{?_isa} >= 5.0
 
 %description -n librescrs-agent-core-devel
 The platform-neutral agent brain and everything a host links against it: the
-wire codec, the PKCS#11 facade and its socket backend, and the test-support
+wire format, the PKCS#11 facade and its socket transport, and the test-support
 archive.
 
 These are static archives with no shared counterpart, so this package has no
 runtime sibling and a host depends on it only to build. The Fedora guideline
-that static archives belong in a -static subpackage is deliberately not applied
-here: there is no shared library beside them, so a -static subpackage would
+that static archives belong in a -static package is deliberately not applied
+here: there is no shared library beside them, so a -static package would
 leave this development package empty.
 
 %package -n librescrs-agent-client-qt
@@ -83,7 +84,7 @@ Requires:       librescrs-agent-core-devel = %{version}-%{release}
 Requires:       qt6-qtbase-devel
 
 %description -n librescrs-agent-client-qt-devel
-Headers, linker symlink and the CMake component targets for building against
+Headers, the linker's symbolic link and the CMake component targets for building against
 the Qt client library.
 
 %prep
@@ -153,5 +154,5 @@ grep -q '^FETCHCONTENT_SOURCE_DIR_QCBOR:.*/thirdparty/QCBOR$' %{_vpath_builddir}
 %{_includedir}/LibreSCRS/AgentClientTestSupport/
 
 %changelog
-* Fri Sep 04 2026 LibreSCRS <packages@librescrs.org> - 5.0.0-1
+* Fri Sep 04 2026 LibreSCRS <librescrs@proton.me> - 5.0.0-1
 - Initial RPM packaging of the LibreSCRS agent libraries.
