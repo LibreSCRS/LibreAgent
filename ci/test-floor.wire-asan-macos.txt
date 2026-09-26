@@ -1,0 +1,14 @@
+# SPDX-License-Identifier: LGPL-2.1-or-later
+# Test floor, leg wire-asan-macos: <binary> <tests it registers at least>. Raise a
+# line in the change that adds tests; lowering one needs a reason.
+CborRelocationTest 3
+CborRoundTripTest 11
+CddlVocabularyTest 17
+ClientCodecTest 75
+FdHarvestTest 5
+FeatureTokensGuardTest 3
+FrameReassemblerTest 8
+FramingTest 11
+MessagesRoundTripTest 23
+PropertyChangedVocabGuardTest 2
+WireHeadersTest 1

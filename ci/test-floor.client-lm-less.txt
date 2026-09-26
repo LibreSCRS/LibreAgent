@@ -1,0 +1,43 @@
+# SPDX-License-Identifier: LGPL-2.1-or-later
+# Test floor, leg client-lm-less: <binary> <tests it registers at least>. Raise a
+# line in the change that adds tests; lowering one needs a reason.
+CborRelocationTest 3
+CborRoundTripTest 11
+CddlVocabularyTest 17
+ClientCodecTest 75
+ClientQtAgentCardTest 52
+ClientQtAgentDiscoveryTest 17
+ClientQtAgentOperationTest 19
+ClientQtAgentResultSignatureTest 5
+ClientQtCapabilitiesTest 15
+ClientQtCardDateTest 5
+ClientQtConfigKeyMirrorTest 2
+ClientQtCredentialTypesTest 8
+ClientQtDBusIntegrationTest 35
+ClientQtDerListenerRegistryTest 6
+ClientQtErrorNameMapTest 11
+ClientQtFieldOrderTest 5
+ClientQtIdentityRowsTest 5
+ClientQtSealedPayloadInternalTest 8
+ClientQtSealedPayloadTest 14
+ClientQtSeamTest 45
+ClientQtSecurityChecksTest 14
+ClientQtSecurityVocabularyTest 5
+ClientQtSharedAgentClientTest 2
+ClientQtSocketIntegrationTest 52
+ClientQtSyncErrorTest 10
+ClientQtTokenMapTest 14
+ClientQtTransportParityTest 97
+ClientQtTypesTest 16
+FakeAgentWireShapeTest 9
+FdHarvestTest 5
+FeatureTokensGuardTest 3
+FrameReassemblerTest 8
+FramingTest 11
+MessagesRoundTripTest 23
+PropertyChangedVocabGuardTest 2
+RunHeaderAcceptance.cmake 1
+ScmRightsSpikeTest 4
+WireHeadersTest 1
+check-vendored-exports.sh 1
+check-wire-exports.sh 1

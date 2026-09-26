@@ -1,0 +1,26 @@
+# SPDX-License-Identifier: LGPL-2.1-or-later
+# Test floor, leg pkcs11-facade: <binary> <tests it registers at least>. Raise a
+# line in the change that adds tests; lowering one needs a reason.
+CborRelocationTest 3
+CborRoundTripTest 11
+CddlVocabularyTest 17
+ClientCodecTest 75
+FakeSocketAgentTest 5
+FdHarvestTest 5
+FeatureTokensGuardTest 3
+FrameReassemblerTest 8
+FramingTest 11
+LoadModuleTest 4
+MessagesRoundTripTest 23
+ModuleAbiTest 19
+ObjectModelTest 9
+PropertyChangedVocabGuardTest 2
+RealCardCryptoVerifyTest 3
+RealCardSmokeTest 3
+ScmRightsSpikeTest 4
+SecurityTest 6
+SnapshotParityTest 4
+SocketAgentClientContractTest 6
+SocketAgentClientTest 10
+WireHeadersTest 1
+pkcs11_tool_rpc_socket.sh 1
