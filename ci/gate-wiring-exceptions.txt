@@ -2,9 +2,9 @@
 #
 # Scripts CI really runs, but not under a name any workflow spells out, and
 # scripts that are deliberately hand-run. One path per line, then the reason.
-# check-gates-wired.sh treats every line here as a reachability root, so what
-# these scripts call counts as run too. A path that stops being tracked fails.
-packaging/ci/build-deb.sh  run as packaging/ci/build-$FAMILY.sh by packaging/ci/package-gate.sh:142
-packaging/ci/build-rpm.sh  run as packaging/ci/build-$FAMILY.sh by packaging/ci/package-gate.sh:142
-ci/scripts/changelog-to-debian.sh  hand-run when refreshing packaging/debian/changelog; no CI step consumes it
+# The wiring rule of check-workflows (LibreSCRS/ci) treats every line here as a
+# reachability root, so what these scripts call counts as run too. A path that
+# stops being tracked fails.
+packaging/ci/prepare-source.sh  run by LibreSCRS/ci scripts/pkg-gate.sh (actions/pkg-build) as packaging/ci/prepare-source.sh, before the package build
+packaging/ci/verify-installed.sh  run by LibreSCRS/ci scripts/pkg-gate.sh (actions/pkg-build) as packaging/ci/verify-installed.sh, in a clean container after the build
 packaging/arch/check-split.sh  compares packaging/payload/*.files against the tree the recipe stages with makepkg; the throwaway prefixes build-linux installs into are a different configuration and have never been compared against those lists, and wiring one was not attempted

@@ -5,22 +5,17 @@ name: CI
 # platform-neutral agent core (LibreAgent::Core, LM-backed), the socket-wire
 # protocol library (LibreAgent::Wire, dependency-free), and the Qt client
 # library LibreCelik consumes (LibreAgent::ClientQt, Wire + Qt6 only — no LM).
-# This workflow has: a format gate; build-linux, a Core+Wire+ClientQt
-# build+test job that first acquires LibreMiddleware from source (Core's sole
-# external dependency, consumed via find_package(LibreMiddleware CONFIG)),
-# checks the ABI snapshot (ClientQt is built here so that check's ClientQt
-# sections actually see the shared library, not just the archives), plus
-# a ThreadSanitizer gate over the concurrency core (scheduler + throttler);
-# client, the same Core+Wire+ClientQt stack with Qt6 + D-Bus added, running
-# the full suite including the D-Bus/socket/transport-parity integration
-# tests (LibreCelik's actual build shape); client-lm-less, the guarantee that
-# Wire+ClientQt build/test/install standalone on a runner where
-# LibreMiddleware is never built or installed at all (a Qt-only consumer
-# never needs to acquire LM) — also the one job exercising
-# LIBREAGENT_INSTALL_WIRE_ARCHIVE=OFF, the subdir-version smoke, and the
-# tests/pkgsmoke ClientQt / co-installation-stub case; and fuzz-cbor, a
-# libFuzzer+ASan gate over the untrusted-input CBOR decoder both
-# Wire-consuming components share.
+# This workflow has: a format gate; the shared gates (LibreSCRS/ci, by the
+# profile of this repository) plus the checks only this repository has;
+# build-linux, the full Core+Wire+ClientQt stack built against
+# LibreMiddleware from source at the commit deps.lock names, tested with the
+# D-Bus/socket/transport-parity suites included (LibreCelik's build shape),
+# the ABI snapshot of the shipped shared library, the installed CONFIG
+# package smoke and a ThreadSanitizer leg over the concurrency core;
+# client-lm-less, the guarantee that Wire+ClientQt build/test/install
+# standalone where LibreMiddleware is never built or installed at all;
+# pkcs11-facade, the module in the configuration it ships in; the two macOS
+# legs; and the two bounded fuzz runs over the untrusted-input decoders.
 
 on:
   push:
@@ -32,27 +27,29 @@ on:
   # a branch that is not a pull request gets no run at all.
   workflow_dispatch:
 
+# Every job asks for what it needs and nothing more.
+permissions: {}
+
 jobs:
   format-check:
     # Self-contained: the format gate needs neither LibreMiddleware nor any
-    # runtime dependency, so it runs on ubuntu-latest with the exact
+    # runtime dependency, so it runs on the runner with the exact
     # clang-format-21 the rest of the org pins (apt.llvm.org). The build/test
-    # job below runs in an Arch container instead, because Arch's rolling
+    # jobs below run in an Arch container instead, because Arch's rolling
     # `clang` package is ahead of 21 and would reformat against a different
     # major — the project standard is clang-format 21, not the distro default.
+    #
+    # A job of its own, apart from the gates: a formatting slip used to stop
+    # the job before the twenty-odd gate steps behind it ran, and hid a real
+    # packaging defect for a day.
     timeout-minutes: 15
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
     steps:
-      # fetch-tags, deliberately. The recipe check run further down decides
-      # its last arm on whether the LOCAL clone holds refs/tags/<pkgver>: with
-      # a tagless checkout it prints SKIPPED forever, so a sha256sums that is
-      # still a placeholder would outlive the release it waits for and no run
-      # would ever say so. actions/checkout fetches with --no-tags unless this
-      # is set, and a shallow fetch would not carry the tagged commit anyway.
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
-          fetch-depth: 0
-          fetch-tags: true
+          persist-credentials: false
 
       - name: Install clang-format-21
         run: |
@@ -62,25 +59,41 @@ jobs:
           sudo apt-get install -y clang-format-21
 
       - name: Check clang-format
-        # The roots live in ci/format-dirs.txt, which the scope check below
+        # The roots live in ci/format-dirs.txt, which the shared scope check
         # reads too: a directory nobody formats cannot appear without one of
-        # these two steps saying so.
+        # the two saying so.
         #
         # -print0/-0 for paths with spaces, a parenthesised extension filter so
         # the -o cannot swallow the directory list, and -r because without it an
         # empty result makes clang-format read stdin and hang rather than fail.
-        # A wedged job in this project once held a runner until it was cancelled by hand.
         run: |
           mapfile -t dirs < <(grep -v '^#' ci/format-dirs.txt)
           find "${dirs[@]}" \
             \( -name '*.cpp' -o -name '*.h' -o -name '*.hpp' -o -name '*.mm' \) -print0 \
             | xargs -0 -r clang-format-21 --dry-run --Werror
 
-      - name: Check every tracked source is reachable by the formatter
-        run: ./ci/scripts/check-format-scope.sh
+  gates:
+    # The shared gates this repository's profile lists (format scope, skip
+    # reasons, workflow wiring/bounds/order/pins, the canonical-type registry,
+    # duplicate bodies, every self-test this repository ships, and the locked
+    # upstream revisions), then the source-shape checks only this repository
+    # has. Nothing here builds.
+    timeout-minutes: 20
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      # fetch-tags, deliberately: the recipe check decides one arm on whether
+      # the LOCAL clone holds refs/tags/<pkgver>, and actions/checkout fetches
+      # with --no-tags unless this is set.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+          persist-credentials: false
 
-      - name: Prove the fd-harvest gate discriminates
-        run: ./ci/scripts/check-fd-harvest.selftest.sh
+      - name: Shared gates
+        uses: LibreSCRS/ci/actions/gates@373a0f82c9af280b7a8ccc4ee30106c947394ca2
 
       - name: One clamped SCM_RIGHTS harvest, not two
         # cmsg_len says what the SENDER attached. XNU keeps reporting that
@@ -91,11 +104,6 @@ jobs:
         # difference and why this is a source-shape gate rather than a test.
         run: ./ci/scripts/check-fd-harvest.sh
 
-      - name: Check every skip carries a reason
-        # A test that skips without saying why is indistinguishable from a test
-        # that passed. Costs a second and builds nothing.
-        run: ./ci/scripts/check-skip-reasons.sh
-
       - name: BIGNUM deleters cleanse, and the mirror still names its canonical
         # The master-list fixture's deleter is a marked mirror of the
         # middleware's, and the registry that pairs them compares names and
@@ -104,154 +112,28 @@ jobs:
         # failures, and every other BIGNUM deleter in the checkout as a third.
         run: ./ci/scripts/check-cleansing-deleters.sh
 
-      - name: BIGNUM deleter gate can still tell red from green
-        run: ./ci/scripts/check-cleansing-deleters.selftest.sh
-
-      - name: Changelog and version agree on the pending release
-        # Run on every push with the version this tree is heading for, so the
-        # agreement is proved weeks before the tag rather than first on a tag
-        # that cannot be taken back. The release job calls the same script with
-        # the tag's version.
-        run: ci/scripts/check-release-lockstep.sh "$(head -n1 VERSION | tr -d '[:space:]')"
-
-      - name: Every job carries a time bound
-        # An unbounded job that hangs holds a runner for six hours and will
-        # not serve its log until the run is cancelled, so the failing test
-        # cannot even be named. This fails when a new job arrives without a
-        # bound, which is the only moment the omission is cheap to fix.
-        run: ci/scripts/check-job-timeouts.sh
-
-      - name: Every shipped gate is wired into CI
-        # A gate nobody runs is not a gate: this repository shipped
-        # tools/dup-scan.py and tools/canonical-types.py, both self-tested and
-        # both green, and no workflow here named either until the two steps
-        # below arrived with this check.
-        run: ci/scripts/check-gates-wired.sh
-
-      - name: Gate-wiring check self-test
-        run: ci/scripts/check-gates-wired.selftest.sh
-
-      - name: Canonical declaration registry
-        # Single-checkout subset of the workspace scan. The cross-repository
-        # half -- duplicate bodies between two checkouts -- needs every tree
-        # side by side, which no single repository's CI has; this half is the
-        # part one repository can prove on its own.
-        run: python3 tools/canonical-types.py --repo "$(basename "$PWD")"
-
-      - name: Duplicate bodies (this checkout)
-        run: python3 tools/dup-scan.py --repo "$(basename "$PWD")"
-
-      - name: Every first-party version floor names the major in VERSION
-        # Grepping for one spelling of an old floor cannot see the floors
-        # written another way, and a floor a major behind still configures
-        # and still builds. This measures the property instead: every
-        # first-party find_package/find_dependency floor must name the major
-        # the VERSION file names. It reads VERSION and never `git describe`, so
-        # it is decidable before a tag exists -- which is the whole window in
-        # which the mistake is cheap. --min 1 is the vacuum guard: a scan that
-        # matches nothing is unmeasured, not clean.
-        run: ci/scripts/check-version-floors.sh --min 1
-
-      - name: Prove the floor gate still fails when it should
-        # Every case is a fixture tree: no compiler, no build, seconds to
-        # run. A gate nobody has seen fail is a line in a workflow file.
-        run: ./ci/scripts/check-version-floors.selftest.sh
-
-      - name: The version this tree stamps names the major in VERSION
-        # The floor gate reads VERSION and the sources, so it stays green
-        # whatever the version derivation does, and a check that configures
-        # with git switched off is measuring the one input under which a tag
-        # cannot win. Between code freeze and the tag `git describe` still
-        # answers with the PREVIOUS release, and a tree that lets it decide
-        # installs a package whose major contradicts its own VERSION, changelog
-        # and packaging. This configures the real CMakeLists against a stubbed
-        # tag, in both directions, and creates no tag anywhere.
-        run: ci/scripts/check-version-stamp.sh --verbose
-
-      - name: Prove the stamp gate still fails when it should
-        # Seven fixtures, no compiler, no build. Two of them are shapes that
-        # have really been written: the tag deciding unconditionally, and git
-        # being ignored altogether.
-        run: ./ci/scripts/check-version-stamp.selftest.sh
-      - name: The Arch recipe fetches the tarball this project publishes
-        # Two scripts, because a gate nobody proves is a gate nobody trusts:
-        # the selftest perturbs the recipe -- and the tree around it -- and
-        # requires each refusal to name its own arm, then the gate runs over
-        # the committed recipe. It prints how many cases it ran, which is the
-        # only count that cannot go stale.
-        # Neither touches the network — `git ls-remote` against these SSH
-        # remotes hangs on a developer machine, and a gate that can hang is
-        # worse than one that can fail.
-        run: |
-          ./packaging/arch/check-recipe.selftest.sh
-          ./packaging/arch/check-recipe.sh
-
-      - name: The artefact-producer check can still fail
-        run: ./ci/scripts/check-release-artifacts.selftest.sh
-
-      - name: Every artefact a release publishes has a producer in the same run
-        # A release job that collects artefacts by pattern is happy with an
-        # empty match: the release simply carries one asset fewer, and the
-        # first run that could notice is the tag. This reads the pairing
-        # through needs on every push instead.
-        run: ci/scripts/check-release-artifacts.sh
-
-      - name: Prove the version-surface check still fails when it should
-        run: ./ci/scripts/check-version-surfaces.selftest.sh
-
-      - name: Every surface states the version in VERSION
-        # The build's project() stamp, the Debian changelog and the RPM spec,
-        # each against the version file: a package labelled one version must
-        # not install a binary that calls itself another.
-        run: ./ci/scripts/check-version-surfaces.sh
-
-      - name: The release-asset check can still fail
-        run: ./ci/scripts/check-release-assets.selftest.sh
-
-      - name: The release workflow checks its asset set before publishing
-        # Structural only: the job that runs gh release create runs the
-        # --staged check before it. Whether the set is right is measured on
-        # the tag, over the files themselves.
-        run: ./ci/scripts/check-release-assets.sh --wired
-
-      - name: Every uploaded artefact has someone to download it
-        # An artefact whose name no download step can match is built, kept for
-        # ninety days and dropped from the release without a word: the release
-        # simply carries one asset fewer. Names only -- whether the consumer is
-        # ordered after the producer is the needs question, which this
-        # repository answers only if it carries check-release-artifacts.sh.
-        run: |
-          ./ci/scripts/check-artifact-names.selftest.sh
-          ./ci/scripts/check-artifact-names.sh
-
-      # Every self-test in this repository, by pathspec, and each one must
-      # report the cases it ran and how many proved the gate red. A self-test
-      # nothing runs proves as much as no self-test, and a runner that read only
-      # exit codes would accept `exit 0` as a body.
-      - name: Run every self-test
-        run: ./ci/scripts/run-selftests.sh
-
-      # A step can land in a job that does not run on push, or before the
-      # checkout that creates the directory its working-directory names, and
-      # nothing says so: the wiring check sees the name and the timeout check
-      # sees the bound. This reads the workflows as data and fails on both.
-      - name: Every step can run where it was placed
-        run: ./ci/scripts/workflow-step-order.py
+      - name: The Arch recipe builds this project's signed tag
+        # Reads the recipe as text: its own source is this repository's signed
+        # tag, the key it trusts is the one in KEYS, every other source carries
+        # a real checksum, and pkgver and the vendored pin agree with the tree.
+        # No network: `git ls-remote` against an SSH remote hangs on a
+        # developer machine, and a gate that can hang is worse than one that
+        # can fail.
+        run: ./packaging/arch/check-recipe.sh
 
   docs-check:
     # The public-API documentation gate. Self-contained for the same reason
     # format-check is: doxygen only PARSES the headers, so this needs neither
     # LibreMiddleware nor Qt nor a build — the export macro is handled by the
     # Doxyfile's own PREDEFINED, and no include is followed.
-    #
-    # It exists as a job because the gate was previously only ever run by hand.
-    # A documentation rule nothing runs in CI is a rule that holds until the
-    # first person who does not know about it, which for an undocumented public
-    # symbol means it ships.
     timeout-minutes: 20
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Install doxygen
         run: |
@@ -263,11 +145,9 @@ jobs:
         # this gate; WARN_IF_UNDOCUMENTED alone does not reach enum values, and
         # several public types here are enums whose individual values are the
         # contract consumers branch on. A doxygen too old to know the tag would
-        # simply ignore it and this job would still pass — enforcing nothing
-        # while looking green. So confirm the tag survived config parsing
-        # before trusting the run below. `-x_noenv` prints only settings that
-        # DIFFER from the default, and the default is NO, so the tag appears
-        # here if and only if it was understood and applied.
+        # simply ignore it and this job would still pass. `-x_noenv` prints only
+        # settings that DIFFER from the default, and the default is NO, so the
+        # tag appears here if and only if it was understood and applied.
         run: |
           doxygen --version
           doxygen -x_noenv Doxyfile.publicapi | grep '^WARN_IF_UNDOC_ENUM_VAL' \
@@ -277,15 +157,9 @@ jobs:
 
       - name: Check public API documentation
         # Doxyfile.publicapi sets WARN_AS_ERROR = FAIL_ON_WARNINGS, so the EXIT
-        # CODE is the honest check and this step needs nothing more than
-        # running it. Deliberately NOT piped into `grep -i warning`: a pipe
-        # reports the GREP's status, which is 1 when nothing matches — that
-        # spelling fails on success and passes on failure.
-        #
-        # mkdir first: OUTPUT_DIRECTORY is build/doc/publicapi, and doxygen
-        # errors out rather than creating a missing nested path, which on a
-        # fresh checkout (no build/) is exit 1 for a reason unrelated to
-        # documentation.
+        # CODE is the honest check. Deliberately NOT piped into `grep -i
+        # warning`: a pipe reports the GREP's status. mkdir first: doxygen
+        # errors out rather than creating a missing nested OUTPUT_DIRECTORY.
         run: |
           mkdir -p build/doc/publicapi
           doxygen Doxyfile.publicapi
@@ -293,26 +167,24 @@ jobs:
   build-linux:
     # Arch container: a rolling-release distro whose packages track current
     # LibreMiddleware build/runtime deps (pcsclite, OpenSC). pacman provides
-    # openssl, pcsclite, OpenSC (for LibreMiddleware), gtest, and — unlike
-    # this job's older Core+Wire-only shape — qt6-base (Core/DBus/Test in one
-    # package, same as the client job below) and dbus (dbus-run-session,
-    # which client/qt/tests/CMakeLists.txt requires at configure time once
-    # ClientQt builds here). ClientQt is turned ON in this job for one reason
-    # only: the ABI snapshot check below is otherwise blind to
-    # liblibrescrs-agentclient-qt.so, and this is the job that runs that check —
-    # the fuller D-Bus/socket/transport-parity Qt suite still lives in the
-    # client job below.
+    # openssl, pcsclite, OpenSC (for LibreMiddleware), gtest, qt6-base
+    # (Core/DBus/Test in one package) and dbus (dbus-run-session, which
+    # client/qt/tests/CMakeLists.txt requires at configure time and wraps each
+    # D-Bus/socket/transport-parity suite's own add_test() in).
+    #
+    # Core ON (LM-backed) + Wire ON + ClientQt ON in one build/test pass: this
+    # is LibreCelik's actual build shape, and the suite includes
+    # HeaderAcceptance plus every D-Bus/socket/parity integration test beside
+    # the plain Core/Wire unit tests. It is also the build the ABI snapshot
+    # reads, because it is the one that produces the shipped shared library.
     timeout-minutes: 90
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     container: archlinux:latest
+    permissions:
+      contents: read
     env:
       # Where LibreMiddleware is installed and where the core finds it.
       LM_PREFIX: /opt/libremiddleware
-      # Git ref of LibreMiddleware to build against. Track its trunk during the
-      # development cycle (LibreLinux/LibreCelik do the same); pin to a release
-      # tag once LibreMiddleware tags releases. find_package(LibreMiddleware 5.0)
-      # in CMakeLists.txt enforces the required version independently of this ref.
-      MIDDLEWARE_REF: main
     steps:
       - name: Install system dependencies
         run: |
@@ -322,24 +194,29 @@ jobs:
             openssl pcsclite opensc \
             gtest dbus \
             qt6-base \
-            python-jsonschema  # LibreMiddleware's plugin-manifest validation needs it during the build below
+            python python-jsonschema  # LibreMiddleware's plugin-manifest validation needs jsonschema during the build below
+          # The workspace is mounted from the runner and owned by its user;
+          # git refuses to read a repository owned by someone else, and every
+          # check of a checkout's commit below asks git.
+          git config --global --add safe.directory '*'
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           path: LibreAgent
+          persist-credentials: false
 
-      # --- LibreMiddleware: build from source + install to a prefix ---------
+      # --- LibreMiddleware: at the commit deps.lock names, built + installed --
       # The core consumes the installed CONFIG package
       # (find_package(LibreMiddleware 5.0 REQUIRED CONFIG)), so it must exist on
       # disk first. SHARED + plugins ON to match how LibreLinux acquires it;
       # native signing backend (the CI default) — DSS is only a test oracle.
-      - name: Checkout LibreMiddleware
-        uses: actions/checkout@v4
+      - name: Checkout LibreMiddleware at the lock
+        uses: LibreSCRS/ci/actions/checkout-deps@373a0f82c9af280b7a8ccc4ee30106c947394ca2
         with:
-          repository: LibreSCRS/LibreMiddleware
-          ref: ${{ env.MIDDLEWARE_REF }}
-          path: LibreMiddleware
-          fetch-depth: 0
+          root: LibreAgent
+          names: LibreMiddleware
+          path: .
+          fetch-depth: '0'
           submodules: recursive   # LM vendors OpenSC as a git submodule (thirdparty/opensc-source)
 
       - name: Build & install LibreMiddleware (Release, SHARED)
@@ -352,7 +229,9 @@ jobs:
           cmake --build build -j4
           cmake --install build
 
-      # --- LibreAgentCore: configure / build --------------------------
+      # --- LibreAgent (Core+Wire+ClientQt): configure / build -----------------
+      # -DLIBRESCRS_AGENT_WERROR=ON: every warning fails the build, which is
+      # why this repository keeps no warning baseline.
       - name: Configure (RelWithDebInfo, ClientQt ON)
         working-directory: LibreAgent
         run: |
@@ -364,55 +243,24 @@ jobs:
 
       - name: Build
         working-directory: LibreAgent
-        run: |
-          # set -o pipefail is explicit: without it `| tee` reports tee's status
-          # and a failed build becomes a green step, after which the warning
-          # check measures a log that was never produced.
-          set -o pipefail
-          LC_ALL=C cmake --build build -j4 2>&1 | tee build.log
+        run: cmake --build build -j4
 
-      - name: Check the discovered test set
-        working-directory: LibreAgent
-        run: ./ci/scripts/test-manifest-gate.sh --check build linux
-
-      - name: The warning floor is still reachable
-        # warning-gate.py judges the LOG, so a tree that has LOST compile units
-        # makes it refuse every full build and blame the build. This judges the
-        # configured graph instead, so the message names the stale number.
-        working-directory: LibreAgent
-        run: ./ci/scripts/check-warning-floor.sh build
-
-      - name: Warning-floor check self-test
-        working-directory: LibreAgent
-        run: ./ci/scripts/check-warning-floor.selftest.sh
-
-      - name: Check the warning baseline
-        # Counted by the [-Wname] tag, never by the message text: diagnostics
-        # are localised. --require-key means a compiler the baseline has no
-        # section for FAILS rather than being reported: the sentence that used to
-        # stand here -- "an unknown compiler is reported, not failed" -- described
-        # the behaviour this flag removed. The key here is whatever GCC the
-        # archlinux:latest image carries on the day, so this job loses its key the
-        # moment Arch moves the compiler; pinning it means pinning the image by
-        # digest, the way ci/coverage-env.txt pins the environment it records in.
-        working-directory: LibreAgent
-        run: ./ci/scripts/warning-gate.py --check --require-key build.log --build-dir build
+      - name: Shared gates after the build
+        uses: LibreSCRS/ci/actions/gates@373a0f82c9af280b7a8ccc4ee30106c947394ca2
+        with:
+          root: LibreAgent
+          phase: build
+          build-dir: build
+          leg: linux
 
       - name: Check the wire vocabulary manifest is current
-        # The manifest is generated but committed, like the ABI baseline
-        # below: CI proves the checked-in copy still matches what the
-        # contract grammar produces, the same way that check proves the
-        # checked-in symbol list still matches what the build produces.
-        # Compared by hash -- `diff`'s exit code has been seen returning 0
-        # for genuinely different files, so it is not trustworthy here.
-        #
-        # wire-vocabulary-regen (wire/tools/regen-manifest.cmake) writes the
-        # generator's output to a .tmp file and renames it over the
-        # committed manifest only on a successful run, so a generator
-        # refusal already fails this step on its own, via the non-zero exit
-        # from `cmake --build` -- the hash check below is only reached once
-        # regeneration itself succeeded, and it exists to catch the case
-        # where it succeeded with DIFFERENT content than what is committed.
+        # The manifest is generated but committed: CI proves the checked-in
+        # copy still matches what the contract grammar produces. Compared by
+        # hash -- `diff`'s exit code has been seen returning 0 for genuinely
+        # different files. wire-vocabulary-regen renames its output over the
+        # committed manifest only on a successful run, so a generator refusal
+        # already fails this step through `cmake --build`; the hash check
+        # catches a success with DIFFERENT content.
         working-directory: LibreAgent
         run: |
           sha256sum wire/wire-vocabulary.json > /tmp/wire-vocabulary.sha256
@@ -423,67 +271,32 @@ jobs:
             exit 1
           }
 
-      - name: Check ABI snapshot vs 5.x baseline
-        # 5.x baseline — minor-version additions tracked; removals or
-        # signature drift forbidden. Additions land via an intentional
-        # baseline regeneration (`abi-snapshot.sh --update`) reviewed in
-        # the same commit as the new public symbol.
-        #
-        # The snapshot has FOUR sections: the Core archive's symbols, the
-        # Wire archive's symbols, the ClientQt shared library's symbols +
-        # its SONAME, and the ClientQt public value types' LAYOUT. Wire
-        # builds by default, so its section is always present here.
-        # ClientQt ON in the Configure step above is what makes the last
-        # two non-empty here instead of silently absent, and the Build step
-        # above is what produces the layout probe the LAYOUT section reads
-        # (the script fails rather than skipping that section if the probe
-        # is missing). See ci/scripts/abi-snapshot.sh's own header for why
-        # the symbol sections are never merged, which wire symbols the
-        # ClientQt section deliberately does and does not record, and why a
-        # clean symbol diff alone does not mean "no ABI impact".
+      - name: Check the ABI of the shipped shared library
+        # The one shared library this repository ships, the Qt client: its
+        # exported symbols, its SONAME and the layout of its public value
+        # types, against ci/abi/5.x-baseline.txt. What the library must NOT
+        # export is proved by the ctest cases that read its dynamic table
+        # (vendored and wire exports).
         working-directory: LibreAgent
         run: ./ci/scripts/abi-snapshot.sh --check build
 
-      # --- Tests ------------------------------------------------------------
-      # All moved tests are bus-free and run against the five backend fakes, so
-      # no dbus-run-session and no reader are needed. PIN/live-card suites do not
-      # exist in the neutral core.
       - name: Test
         working-directory: LibreAgent
-        run: |
-          # The pipe is removed rather than patched. The runner's default shell
-          # for a `run:` step is `bash -e {0}` WITHOUT pipefail, so
-          # `ctest ... | tee ctest.log` reports the status of tee: a failed
-          # suite showed as a green step, and a check reading that log
-          # afterwards passed too. With no pipe there is no question about what
-          # the default is. Measured: the old shape exits 0 on a ctest that
-          # fails, this one exits 1.
-          set +e
-          ctest --test-dir build --output-on-failure --no-tests=error > ctest.log 2>&1
-          rc=$?
-          set -e
-          cat ctest.log
-          echo "ctest rc=$rc"
-          exit "$rc"
-
-      - name: Check the skip ledger
-        # always(): the ledger's whole point is the run where something did not
-        # run, including runs where something also failed.
-        if: always()
-        working-directory: LibreAgent
-        run: ./ci/scripts/skip-ledger.sh --check ctest.log linux
+        env:
+          QT_QPA_PLATFORM: offscreen
+        # --no-tests=error: ctest exits 0 when it finds nothing at all.
+        run: ctest --test-dir build --output-on-failure --no-tests=error
 
       # --- Installed CONFIG package smoke -----------------------------------
-      # Prove the EXPORTED package actually resolves downstream — nothing the
-      # in-tree build or ctest above exercises. Install the core to a throwaway
-      # prefix, then configure + build the standalone tests/pkgsmoke consumer
-      # against it via find_package(LibreAgent CONFIG). This walks the
-      # install/export rules, the generated LibreAgentConfig.cmake, and its
-      # find_dependency(LibreMiddleware / OpenSSL) re-exposure chain. The consumer's
-      # prefix path carries both the core prefix and $LM_PREFIX so the transitively
-      # re-exposed LibreMiddleware/OpenSSL dependencies resolve. Mirrors how the
-      # LibreMiddleware step above is built + `cmake --install`ed and then consumed
-      # as an installed CONFIG package.
+      # Prove the EXPORTED package actually resolves downstream: install the
+      # tree to a throwaway prefix, then configure + build the standalone
+      # tests/pkgsmoke consumer against it via find_package(LibreAgent CONFIG).
+      # This walks the install/export rules, the generated
+      # LibreAgentConfig.cmake, and its find_dependency(LibreMiddleware /
+      # OpenSSL) re-exposure chain. It is also the only step that installs a
+      # top-level configuration with the exported ClientQt doubles ON, so it
+      # is where LibreAgentClientQtTestSupportTargets.cmake is written and
+      # consumed.
       - name: Installed CONFIG package smoke (tests/pkgsmoke)
         working-directory: LibreAgent
         env:
@@ -497,9 +310,8 @@ jobs:
       # --- Thread-sanitizer gate for the core concurrency invariants --------
       # OperationManager owns the worker pool / bounded queue / zombie-drain and
       # PropertyEmissionThrottler coalesces on a timer; both are plain C++
-      # jthread/mutex/condition_variable and are the concurrency surface that
-      # moved into this repo. A regression that drops a lock still passes the
-      # plain RelWithDebInfo Test step but races under TSan. The installed LM is
+      # jthread/mutex/condition_variable. A regression that drops a lock still
+      # passes the plain Test step but races under TSan. The installed LM is
       # uninstrumented, which is fine — the guarded state is core-owned.
       - name: TSan (core concurrency)
         working-directory: LibreAgent
@@ -520,172 +332,47 @@ jobs:
           # denominator of a -R leg is the expression, not the build directory:
           # renaming or deleting a case the expression names still builds, still
           # runs, and covers less. This is that number, regenerated by whatever
-          # change alters the set.
-          #
-          # A committed listing of the whole build directory cannot serve here,
-          # and that is measured rather than assumed: this leg builds only the
-          # suites it sanitizes, and with one ctest entry per case the discovery
-          # step writes a NOT_BUILT placeholder for every binary the leg does not
-          # build -- 88 of them. (1408 is what `grep -c _NOT_BUILT` returns over that
-          # listing and it is a line count, not a count of entries: ctest prints
-          # sixteen "Looked in the following places" lines per placeholder.)
-          # The manifest check refuses those, correctly, so
-          # the number below is what judges this leg.
+          # change alters the set. (A committed listing of the whole build
+          # directory cannot serve: this leg builds only the suites it
+          # sanitizes, and discovery writes a NOT_BUILT placeholder for every
+          # other binary.)
           n=$(ctest --test-dir build-tsan -N -R "$SUITES" | grep -c '^ *Test *#' || true)
           test "$n" = 54 || { echo "the sanitizer leg selected $n cases, not 54"; exit 1; }
-
-  client:
-    # The Qt client library (LibreAgent::ClientQt), full stack: same
-    # Arch-container LibreMiddleware acquisition as build-linux, plus Qt6
-    # (Arch's qt6-base package bundles QtDBus/QtTest under the one package —
-    # same pattern LibreLinux's own CI uses for its KDE prompter) and dbus
-    # (dbus-run-session, which client/qt/tests/CMakeLists.txt already wraps
-    # each D-Bus/socket/transport-parity suite's own add_test() in — this job
-    # supplies the binary, not an outer ctest wrapper). Core ON (LM-backed) +
-    # Wire ON + ClientQt ON in one build/test pass: this is LibreCelik's
-    # actual build shape, and the full suite here includes HeaderAcceptance
-    # plus every D-Bus/socket/parity integration test alongside the plain
-    # Core/Wire unit tests build-linux already covers on its own.
-    timeout-minutes: 90
-    runs-on: ubuntu-latest
-    container: archlinux:latest
-    env:
-      LM_PREFIX: /opt/libremiddleware
-      MIDDLEWARE_REF: main
-    steps:
-      - name: Install system dependencies
-        run: |
-          pacman -Syu --noconfirm
-          pacman -S --noconfirm --needed \
-            base-devel cmake ninja git pkgconf \
-            openssl pcsclite opensc \
-            gtest dbus \
-            python-jsonschema \
-            qt6-base
-
-      - uses: actions/checkout@v4
-        with:
-          path: LibreAgent
-
-      # --- LibreMiddleware: build from source + install to a prefix ---------
-      # Same as build-linux's own step (Core here needs it too — ClientQt
-      # requires LIBREAGENT_BUILD_WIRE, and this job leaves Core at its
-      # default ON, so it needs LM just like build-linux does).
-      - name: Checkout LibreMiddleware
-        uses: actions/checkout@v4
-        with:
-          repository: LibreSCRS/LibreMiddleware
-          ref: ${{ env.MIDDLEWARE_REF }}
-          path: LibreMiddleware
-          fetch-depth: 0
-          submodules: recursive
-
-      - name: Build & install LibreMiddleware (Release, SHARED)
-        working-directory: LibreMiddleware
-        run: |
-          cmake -B build -G Ninja \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DCMAKE_INSTALL_PREFIX="$LM_PREFIX" \
-            -DLIBREMIDDLEWARE_BUILD_SHARED=ON
-          cmake --build build -j4
-          cmake --install build
-
-      # --- LibreAgent (Core+Wire+ClientQt): configure / build / test --------
-      - name: Configure (RelWithDebInfo, ClientQt ON)
-        working-directory: LibreAgent
-        run: |
-          cmake -B build -G Ninja \
-            -DCMAKE_BUILD_TYPE=RelWithDebInfo \
-            -DCMAKE_PREFIX_PATH="$LM_PREFIX" \
-            -DLIBRESCRS_AGENT_WERROR=ON \
-            -DLIBREAGENT_BUILD_CLIENT_QT=ON
-
-      - name: Build
-        working-directory: LibreAgent
-        run: cmake --build build -j4
-
-      - name: Check the discovered test set
-        working-directory: LibreAgent
-        run: ./ci/scripts/test-manifest-gate.sh --check build client
-
-      - name: Test
-        working-directory: LibreAgent
-        env:
-          QT_QPA_PLATFORM: offscreen
-        run: |
-          # The pipe is removed rather than patched. The runner's default shell
-          # for a `run:` step is `bash -e {0}` WITHOUT pipefail, so
-          # `ctest ... | tee ctest.log` reports the status of tee: a failed
-          # suite showed as a green step, and a check reading that log
-          # afterwards passed too. With no pipe there is no question about what
-          # the default is. Measured: the old shape exits 0 on a ctest that
-          # fails, this one exits 1.
-          set +e
-          ctest --test-dir build --output-on-failure --no-tests=error > ctest.log 2>&1
-          rc=$?
-          set -e
-          cat ctest.log
-          echo "ctest rc=$rc"
-          exit "$rc"
-
-      - name: Check the skip ledger
-        # always(): the ledger's whole point is the run where something did not
-        # run, including runs where something also failed.
-        if: always()
-        working-directory: LibreAgent
-        run: ./ci/scripts/skip-ledger.sh --check ctest.log client
 
   client-lm-less:
     # The Wire+ClientQt "no LibreMiddleware anywhere" guarantee: Core stays
     # OFF and CMAKE_DISABLE_FIND_PACKAGE_LibreMiddleware=ON turns any
     # accidental find_package(LibreMiddleware ...) into a hard configure-time
     # error rather than a silent no-op — this runner never checks out, builds,
-    # or installs LibreMiddleware at all, unlike every other job in this
-    # workflow. Proves a Qt-only ClientQt consumer never has to acquire LM
-    # just to build against this library. Qt6 + dbus are still installed
-    # (ClientQt's own dependency), same packages as the client job above.
+    # or installs LibreMiddleware at all. Proves a Qt-only ClientQt consumer
+    # never has to acquire LM just to build against this library.
     #
     # Also walks the installed CONFIG package end-to-end on this same LM-less
-    # prefix: `cmake --install`, then a standalone find_package(LibreAgent
-    # COMPONENTS ClientQt) consumer project (written here rather than checked
-    # into the tree — this job's LM-less runner is the only place it has
-    # anything to prove; contrast tests/pkgsmoke, which the client-carrying
-    # build-linux job installs alongside a real LM install and so doubles as
-    # a permanent regression fixture) that constructs AgentClient and calls
-    # readers(), proving cmake/InstallExport.cmake's ClientQt component
-    # (library + public headers incl. the generated Export.h +
-    # LibreAgentClientQtTargets) actually resolves and links downstream, not
-    # just in-tree. Needs a live QCoreApplication (DBusTransport's queued
-    # terminal emits deliver through the event loop, same as
-    # client/qt/tests/ClientTestMain.cpp) and a session bus to connect to.
+    # prefix: a standalone find_package(LibreAgent COMPONENTS ClientQt)
+    # consumer that constructs AgentClient and calls readers(), proving
+    # cmake/InstallExport.cmake's ClientQt component resolves and links
+    # downstream, not just in-tree.
     #
     # This is also the one job configured with
     # LIBREAGENT_INSTALL_WIRE_ARCHIVE=OFF: it never carries a real Core
-    # install, so it is the natural place to prove the installed ClientQt
-    # component still resolves downstream with libLibreAgentWire.a left out
-    # of the install tree entirely (Wire is folded into
-    # liblibrescrs-agentclient-qt.so as a static link regardless — see that
-    # option's own comment in cmake/InstallExport.cmake). That is also why the
-    # exported ClientQt doubles are turned off here by hand: their default
-    # follows CLIENT_QT, they name LibreAgent::Wire in their own export, and an
-    # install tree without that archive cannot carry them -- left implicit, the
-    # configure refuses itself before a single file compiles.
+    # install, so it proves the installed ClientQt component still resolves
+    # with libLibreAgentWire.a left out of the install tree entirely (Wire is
+    # folded into liblibrescrs-agentclient-qt.so regardless). That is also why
+    # the exported ClientQt doubles are turned off here by hand: their export
+    # names LibreAgent::Wire, and an install tree without that archive cannot
+    # carry them.
     #
-    # Two more fixtures get their only exercise on this same LM-less,
-    # Core-less prefix: tests/pkgsmoke/subdir-version (add_subdirectory()s
-    # this whole repo beneath its own wrapper project() to prove
-    # GitVersion.cmake resolves LibreAgent's own PROJECT_VERSION rather than
-    # inheriting the enclosing project's — the shape a platform backend like
-    # LibreKDE's client/qt wrapper actually uses), and tests/pkgsmoke itself
-    # run with PKGSMOKE_COMPONENTS=ClientQt against this prefix with
-    # fixtures/LibreAgentCoreTargets.stub.cmake hand-planted into
-    # lib/cmake/LibreAgent/ first, to reproduce a Core package and a
-    # ClientQt-only package sharing one install prefix and prove
-    # LibreAgentConfig.cmake.in's component filtering never include()s the
-    # Core export a ClientQt-only consumer never asked for.
+    # Two more fixtures get their only exercise on this LM-less, Core-less
+    # prefix: tests/pkgsmoke/subdir-version (GitVersion.cmake resolves
+    # LibreAgent's own PROJECT_VERSION beneath an enclosing project) and
+    # tests/pkgsmoke with PKGSMOKE_COMPONENTS=ClientQt over a prefix that also
+    # holds a Core-targets stub, proving the component filtering never
+    # include()s the Core export a ClientQt-only consumer never asked for.
     timeout-minutes: 45
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     container: archlinux:latest
+    permissions:
+      contents: read
     env:
       CLIENTQT_PREFIX: /opt/libreagent-clientqt
     steps:
@@ -695,26 +382,14 @@ jobs:
           pacman -S --noconfirm --needed \
             base-devel cmake ninja git pkgconf \
             gtest dbus \
-            qt6-base
+            qt6-base \
+            python
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           path: LibreAgent
+          persist-credentials: false
 
-      # The exported ClientQt doubles are OFF here and nowhere else: their export
-      # names LibreAgent::Wire, and this job's whole point is an install tree
-      # without the wire archive, so the two options cannot both be on. What this
-      # leg therefore does NOT cover is the doubles' own install/export --
-      # LibreAgentClientQtTestSupportTargets.cmake is not written here. The job
-      # that does write it is build-linux: its "Installed CONFIG package smoke"
-      # step is the only one that runs `cmake --install` on a top-level
-      # configuration with the doubles at their default ON, and then consumes
-      # that prefix through tests/pkgsmoke. (The client job builds the doubles
-      # but never installs the LibreAgent tree -- its only `cmake --install` is
-      # LibreMiddleware's -- so it produces no Targets.cmake at all.)
-      # The file is also named by the three packaging payload lists. The ctest
-      # inventory is unaffected either way, because the doubles are still BUILT
-      # when the project is top level.
       - name: Configure (Core OFF, Wire+ClientQt ON, LibreMiddleware disabled, Wire archive not installed)
         working-directory: LibreAgent
         run: |
@@ -732,36 +407,19 @@ jobs:
         working-directory: LibreAgent
         run: cmake --build build -j4
 
-      - name: Check the discovered test set
-        working-directory: LibreAgent
-        run: ./ci/scripts/test-manifest-gate.sh --check build client-lm-less
+      - name: Shared gates after the build
+        uses: LibreSCRS/ci/actions/gates@373a0f82c9af280b7a8ccc4ee30106c947394ca2
+        with:
+          root: LibreAgent
+          phase: build
+          build-dir: build
+          leg: client-lm-less
 
       - name: Test
         working-directory: LibreAgent
         env:
           QT_QPA_PLATFORM: offscreen
-        run: |
-          # The pipe is removed rather than patched. The runner's default shell
-          # for a `run:` step is `bash -e {0}` WITHOUT pipefail, so
-          # `ctest ... | tee ctest.log` reports the status of tee: a failed
-          # suite showed as a green step, and a check reading that log
-          # afterwards passed too. With no pipe there is no question about what
-          # the default is. Measured: the old shape exits 0 on a ctest that
-          # fails, this one exits 1.
-          set +e
-          ctest --test-dir build --output-on-failure --no-tests=error > ctest.log 2>&1
-          rc=$?
-          set -e
-          cat ctest.log
-          echo "ctest rc=$rc"
-          exit "$rc"
-
-      - name: Check the skip ledger
-        # always(): the ledger's whole point is the run where something did not
-        # run, including runs where something also failed.
-        if: always()
-        working-directory: LibreAgent
-        run: ./ci/scripts/skip-ledger.sh --check ctest.log client-lm-less
+        run: ctest --test-dir build --output-on-failure --no-tests=error
 
       - name: Install ClientQt to a throwaway prefix
         working-directory: LibreAgent
@@ -797,36 +455,12 @@ jobs:
           cmake --build /tmp/clientqt-consumer-build -j4
           QT_QPA_PLATFORM=offscreen dbus-run-session -- /tmp/clientqt-consumer-build/clientqt_consumer_smoke
 
-      # --- Subdirectory-consumption version smoke ----------------------------
-      # tests/pkgsmoke/subdir-version add_subdirectory()s this whole repo
-      # beneath its own wrapper project(wrapper VERSION 0.1.0), forcing Core
-      # OFF (this LM-less runner has no LibreMiddleware to give it) and
-      # Wire+ClientQt ON, then asserts LibreAgent's own PROJECT_VERSION
-      # resolved to this repo's real VERSION rather than being silently
-      # adopted from the enclosing project — the shape a platform backend
-      # (e.g. LibreKDE's client/qt wrapper) actually embeds this repo in.
-      # Runs in its own build tree, unrelated to build/ or $CLIENTQT_PREFIX
-      # above.
       - name: Subdirectory-consumption version smoke (tests/pkgsmoke/subdir-version)
         working-directory: LibreAgent
         run: |
           cmake -S tests/pkgsmoke/subdir-version -B build-subdir-version -G Ninja
           cmake --build build-subdir-version -j4
 
-      # --- tests/pkgsmoke, ClientQt-only + co-installation stub --------------
-      # Reuses this job's own LM-less, Core-less $CLIENTQT_PREFIX install (a
-      # real find_package(LibreAgent COMPONENTS ClientQt) prefix that never
-      # had a real Core package in it) as the one place that can safely carry
-      # fixtures/LibreAgentCoreTargets.stub.cmake — a fixture standing in for
-      # a genuine LibreAgentCoreTargets.cmake, hand-planted into
-      # lib/cmake/LibreAgent/ to reproduce a Core package and a ClientQt-only
-      # package sharing one prefix (e.g. two components of one distribution
-      # unpacked into a common install). The stub's own message(FATAL_ERROR
-      # ...) fires if LibreAgentConfig.cmake.in's component filtering ever
-      # regresses into include()-ing it for a consumer that only asked for
-      # ClientQt; PKGSMOKE_COMPONENTS=ClientQt drives tests/pkgsmoke into
-      # exactly that consumer shape (main_clientqt.cpp, linking only
-      # LibreAgent::ClientQt).
       - name: Installed CONFIG package smoke (tests/pkgsmoke, ClientQt + co-installation stub)
         working-directory: LibreAgent
         run: |
@@ -844,24 +478,27 @@ jobs:
     # those available cannot show that the module does not need them, so this
     # is a separate job rather than one more step in an existing one.
     #
-    # It is also the only job that builds the browser-loadable module itself.
-    # The shared core has no host here, so without a module of its own the two
-    # properties a loader cares about -- what it can see, and what it must find
-    # first -- would only ever be checked on one platform backend's build.
-    runs-on: ubuntu-latest
-    container: archlinux:latest
+    # It is also the only job that builds the browser-loadable module itself,
+    # so the two properties a loader cares about -- what it can see, and what
+    # it must find first -- are checked here.
     timeout-minutes: 20
+    runs-on: ubuntu-24.04
+    container: archlinux:latest
+    permissions:
+      contents: read
     steps:
       - name: Install system dependencies
         run: |
           pacman -Syu --noconfirm
           pacman -S --noconfirm --needed \
             base-devel cmake ninja git pkgconf \
-            gtest opensc
+            gtest opensc \
+            python
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           path: LibreAgent
+          persist-credentials: false
 
       - name: Configure (Core OFF, Wire + both pkcs11 components ON, LibreMiddleware disabled)
         working-directory: LibreAgent
@@ -877,66 +514,57 @@ jobs:
 
       - name: Build
         working-directory: LibreAgent
-        timeout-minutes: 10
         run: cmake --build build -j4
+
+      - name: Shared gates after the build
+        uses: LibreSCRS/ci/actions/gates@373a0f82c9af280b7a8ccc4ee30106c947394ca2
+        with:
+          root: LibreAgent
+          phase: build
+          build-dir: build
+          leg: pkcs11-facade
 
       - name: Test
         working-directory: LibreAgent
-        timeout-minutes: 10
         run: ctest --test-dir build --output-on-failure --no-tests=error
-
-      - name: Prove the facade gate still fails when it should
-        working-directory: LibreAgent
-        run: ./ci/scripts/check-pkcs11-facade.selftest.sh
 
       - name: One exported symbol, nothing needed
         working-directory: LibreAgent
         run: ./ci/scripts/check-pkcs11-facade.sh build
 
-      - name: Check the discovered test set
-        working-directory: LibreAgent
-        # The leg is spelled out, never interpolated: this workflow has no
-        # strategy.matrix, and an empty expression would make the argument
-        # vanish and send the gate looking for ci/test-manifest..txt.
-        run: ./ci/scripts/test-manifest-gate.sh --check build pkcs11-facade
-
   wire-asan-macos:
     # The wire codec on Apple Clang, under AddressSanitizer. It exists because a
     # CborValue holding a Map was left addressing a freed buffer when a growing
-    # vector relocated it, and nothing in this repo could see it: every job here
-    # runs on Linux, where the same code is well-behaved, and the failure only
-    # ever surfaced downstream as a bare "Bus error" from a macOS agent test.
+    # vector relocated it, and nothing in this repo could see it: every other
+    # job runs on Linux, where the same code is well-behaved.
     #
     # Wire-only on purpose -- no Core, so no LibreMiddleware, so no card stack to
-    # build. That keeps this a couple of minutes rather than half an hour, which
-    # is what makes it usable while working on the codec rather than only after.
+    # build. That keeps this a couple of minutes rather than half an hour.
     timeout-minutes: 30
     name: wire-asan (macOS)
     runs-on: macos-15
+    permissions:
+      contents: read
     env:
       # detect_container_overflow=0: GTest comes from Homebrew and is not
       # built with the sanitizer, so a std::vector<std::string> that lives
       # inside its uninstrumented code and is touched from instrumented code
-      # trips a container-overflow that is not one. The report seen here was
-      # in GTest's own GetTestSuite, at the same address on every run,
-      # including runs of unmodified trunk -- ASan documents disabling this
-      # one check for partially instrumented programs. Every other check
-      # stays on, and the use-after-free this job exists for is found by
-      # them.
+      # trips a container-overflow that is not one. ASan documents disabling
+      # this one check for partially instrumented programs; every other check
+      # stays on, and the use-after-free this job exists for is found by them.
       #
-      # Job-wide, not on the Test step: with one ctest entry per case, the
-      # test binaries are also run to LIST their cases, by every ctest call
-      # including the listing check's `ctest -N`, and a step without this
-      # aborts in the same place before it has listed anything.
+      # Job-wide, not on the Test step: the test binaries are also run to LIST
+      # their cases, by every ctest call including the listing check's
+      # `ctest -N`, and a step without this aborts before it has listed anything.
       ASAN_OPTIONS: detect_leaks=0:detect_container_overflow=0
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Install build tools
-        # googletest as well as ninja: this job builds no LibreMiddleware, and
-        # LibreMiddleware is where the other macOS jobs in this stack get their
-        # vendored GTest from. Without it find_package(GTest REQUIRED) stops the
-        # configure before a single test is compiled.
+        # googletest as well as ninja: this job builds no LibreMiddleware, which
+        # is where the other macOS jobs in this stack get their vendored GTest.
         run: brew install ninja googletest
 
       - name: Configure (wire only, ASan)
@@ -953,80 +581,55 @@ jobs:
         run: cmake --build build-wire-asan -j4
 
       - name: Test
-        # --no-tests=error: ctest exits 0 when it finds nothing at all, so
-        # without this a configuration that stopped generating these tests would
-        # report success.
         run: ctest --test-dir build-wire-asan --output-on-failure --no-tests=error
 
-      - name: Check the discovered test set
-        # --no-tests=error above catches a configuration that stopped generating
-        # these tests ALTOGETHER; it says nothing about one of them quietly
-        # dropping out. Every other leg in this workflow commits its listing.
-        run: ./ci/scripts/test-manifest-gate.sh --check build-wire-asan wire-asan-macos
+      - name: Shared gates after the build
+        # --no-tests=error above catches a configuration that stopped
+        # generating these tests ALTOGETHER; the listing catches one of them
+        # quietly dropping out.
+        uses: LibreSCRS/ci/actions/gates@373a0f82c9af280b7a8ccc4ee30106c947394ca2
+        with:
+          phase: build
+          build-dir: build-wire-asan
+          leg: wire-asan-macos
 
   client-macos:
-    # ClientQt's production transport on Apple platforms, actually exercised
-    # here: until this job, nothing in this workflow ever built or ran
-    # ClientQtSocketIntegrationTest on macOS -- LibreCelik's own build-macos
-    # job runs LibreCelik's tests, not this repo's, and wire-asan-macos above
-    # builds no ClientQt at all. Shape follows wire-asan-macos (macos-15,
-    # Homebrew Ninja + GTest -- Core stays OFF so no LibreMiddleware is ever
-    # built here, same reasoning as that job); the Qt install step and the
-    # ClientQt cmake flags follow the client job above and LibreCelik's own
-    # build-macos job (jurplel/install-qt-action@v4, Qt 6.10, clang_64).
+    # ClientQt's production transport on Apple platforms: the only place
+    # ClientQtSocketIntegrationTest and several other targets are built and run
+    # with an Apple toolchain. Shape follows wire-asan-macos (Homebrew Ninja +
+    # GTest, Core OFF so no LibreMiddleware is built here).
     #
-    # Test step runs ClientQt's whole local test package. It once ran two
-    # targets short, on the reasoning that they were pre-existing failures
-    # unrelated to the transport this job exists to prove; both are fixed and
-    # the filter is gone, because a narrowing kept "until later" is one that
-    # outlives the reason for it and quietly shrinks what the job proves.
-    #
-    #   * ClientQtSealedPayloadTest asserted a pipe's st_size reads back zero.
-    #     That is Linux's answer; Darwin reports the bytes buffered. Both are
-    #     right -- st_size describes a file extent and a pipe has none -- so
-    #     the premise was a claim about one platform wearing the clothes of a
-    #     claim about pipes. The case does not rest on it and no longer makes
-    #     it.
-    #   * HeaderAcceptance failed on the harness, not on any header. It passed
-    #     Qt's include directories as -I, so a diagnostic raised inside Qt's
-    #     own headers was fatal to a check about OUR headers, and a framework
-    #     Qt -- what this action installs -- needs a framework search path
-    #     before its umbrella headers resolve at all. It now passes them as
-    #     -isystem plus -iframework, which is what CMake does for the real
-    #     targets and the reason they never saw this.
-    #
-    #     The same change fixed a guard that was passing over nothing: the
-    #     Qt-module allowlist matched /Qt<Name>/ and a framework spells it
-    #     Qt<Name>.framework, so on Apple platforms it found zero modules and
-    #     allowlisted them all. Measured by making a public header reach for
-    #     QtGui: caught now, silently green before.
+    # The Test step runs ClientQt's whole local test package, with no -E: a
+    # narrowing kept "until later" outlives the reason for it and quietly
+    # shrinks what the job proves.
     timeout-minutes: 30
     name: client (macOS)
     runs-on: macos-15
+    permissions:
+      contents: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Install build tools
-        # googletest as well as ninja, same reasoning as wire-asan-macos:
-        # this job builds no LibreMiddleware, and LibreMiddleware is where
-        # the other macOS jobs in this stack get their vendored GTest from.
         run: brew install ninja googletest
 
-      - name: Install Qt 6.10
-        uses: jurplel/install-qt-action@v4
+      - name: Install Qt 6.10.3
+        # An exact version, not 6.10.*: a patch release arriving between two
+        # runs of the same commit is a different build.
+        uses: jurplel/install-qt-action@a9c63c7c123f3069cff414e7e482d95dfa9d8125  # v4.4.1
         with:
-          version: '6.10.*'
+          version: '6.10.3'
           host: mac
           target: desktop
           arch: clang_64
           cache: true
 
       - name: Configure (Core OFF, Wire+ClientQt ON)
-        # No -DLIBRESCRS_AGENT_WERROR=ON, unlike the Linux jobs above --
-        # wire-asan-macos doesn't set it either. -Wshorten-64-to-32 fires on
-        # src/wire/Framing.cpp's CMSG_SPACE/CMSG_LEN use under AppleClang
-        # (a pre-existing warning, not something this job introduces or this
-        # task's job to fix); turning WERROR on here would fail every build.
+        # No -DLIBRESCRS_AGENT_WERROR=ON, unlike the Linux jobs:
+        # -Wshorten-64-to-32 fires on src/wire/Framing.cpp's CMSG_SPACE/CMSG_LEN
+        # use under AppleClang, a pre-existing warning.
         run: |
           cmake -B build -G Ninja \
             -DCMAKE_BUILD_TYPE=RelWithDebInfo \
@@ -1038,49 +641,39 @@ jobs:
         run: cmake --build build -j4
 
       - name: Test (ClientQt package)
-        # --no-tests=error: ctest exits 0 when it finds nothing at all, so
-        # without this a configuration that stopped generating any tests
-        # would report success.
-        #
-        # No -E any more. It named two targets and the job title carried the
-        # exemption, which is the honest way to defer something -- but the
-        # count it left behind, 23 where the package has 25, is exactly the
-        # denominator a passing percentage hides. Both are fixed; see the job
-        # comment above.
         env:
           QT_QPA_PLATFORM: offscreen
         run: ctest --test-dir build --output-on-failure --no-tests=error
 
-      - name: Check the discovered test set
-        # This leg had no listing, and it is the only place several of these
-        # targets are built with an Apple toolchain at all.
-        run: ./ci/scripts/test-manifest-gate.sh --check build client-macos
+      - name: Shared gates after the build
+        uses: LibreSCRS/ci/actions/gates@373a0f82c9af280b7a8ccc4ee30106c947394ca2
+        with:
+          phase: build
+          build-dir: build
+          leg: client-macos
 
   fuzz-cbor:
-    # Untrusted-decoder fuzz gate (moved from LibreDarwin, whose own
-    # ci.yml dropped this job once the wire codec/framing/message model
-    # moved into this repo's own LibreAgent::Wire — see that repo's history
-    # for the original job this is ported from): the CBOR decoder parses
-    # input from any local caller over the socket wire (and, on macOS, the
-    # browser-extension facade) — an untrusted-input surface that must never
-    # crash / invoke UB. AppleClang ships no libFuzzer runtime, so this leg
-    # builds the fuzzer standalone on Linux clang with -fsanitize=fuzzer,address
-    # (the decoder + QCBOR are platform-neutral; nothing macOS-specific is
-    # exercised). This job shells out to ci/scripts/fuzz-cbor.sh — the exact
-    # same script a dev runs locally — rather than duplicating its
-    # QCBOR-pinning / build / run steps inline, so the two never drift.
-    # Bounded run over the seed corpus; any crash/UB/leak fails the job.
+    # Untrusted-decoder fuzz gate: the CBOR decoder parses input from any local
+    # caller over the socket wire (and, on macOS, the browser-extension
+    # facade). AppleClang ships no libFuzzer runtime, so this builds the fuzzer
+    # standalone on Linux clang with -fsanitize=fuzzer,address. It shells out
+    # to ci/scripts/fuzz-cbor.sh — the same script a dev runs locally — so the
+    # two never drift. Bounded run over the seed corpus; any crash/UB/leak
+    # fails the job.
     timeout-minutes: 30
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Install clang-21
         # The decoder uses std::expected, which libstdc++ gates on
-        # __cpp_concepts >= 202002L — advertised by clang 19+, not the
-        # runner image's older default clang. Pin the same LLVM 21 the
-        # format-check job pins; libclang-rt-21-dev carries the
-        # libFuzzer/ASan runtimes ci/scripts/fuzz-cbor.sh needs.
+        # __cpp_concepts >= 202002L — advertised by clang 19+, not the runner
+        # image's older default clang. libclang-rt-21-dev carries the
+        # libFuzzer/ASan runtimes.
         run: |
           wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key | sudo gpg --dearmor -o /usr/share/keyrings/llvm.gpg
           echo "deb [signed-by=/usr/share/keyrings/llvm.gpg] http://apt.llvm.org/noble/ llvm-toolchain-noble-21 main" | sudo tee /etc/apt/sources.list.d/llvm-21.list
@@ -1091,43 +684,34 @@ jobs:
         run: ci/scripts/fuzz-cbor.sh --time 120 --clang clang++-21
 
   fuzz-csca-ldif:
-    # The other untrusted-input surface in this repository, and the one that had
-    # no fuzz cover: the CSCA anchor import walks a directory export a person
-    # downloads from a public ICAO PKD mirror. Before any signature has been
-    # verified it runs an RFC 2849 line grammar, a base64 decoder, its OWN
-    # short/long/indefinite BER length decoder, and the three small scalar
-    # parsers the same path uses for its state file — six readers, all six
-    # fuzzed here. Same standalone shape as fuzz-cbor above and for the same
-    # reason: -fsanitize=fuzzer needs a fuzzer-capable clang, not this repo's
-    # default build compiler. This job shells out to
-    # ci/scripts/fuzz-csca-ldif.sh — the exact same script a dev runs locally —
-    # rather than duplicating its build and run steps inline, so the two never
-    # drift. Bounded run over the seed corpus; any crash/UB/leak fails the job.
+    # The other untrusted-input surface in this repository: the CSCA anchor
+    # import walks a directory export a person downloads from a public ICAO PKD
+    # mirror. Before any signature has been verified it runs an RFC 2849 line
+    # grammar, a base64 decoder, its OWN BER length decoder, and three small
+    # scalar parsers — six readers, all six fuzzed here, through
+    # ci/scripts/fuzz-csca-ldif.sh, the same script a dev runs locally.
     timeout-minutes: 30
-    runs-on: ubuntu-latest
-    env:
-      # Git ref of LibreMiddleware whose HEADERS this compiles against. Tracks
-      # its trunk during the development cycle, like build-linux above. Nothing
-      # of LibreMiddleware is BUILT or linked here: the readers under test are
-      # in an anonymous namespace of one translation unit, and the script's
-      # link drops every section no path from the fuzz entry point reaches.
-      MIDDLEWARE_REF: main
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           path: LibreAgent
+          persist-credentials: false
 
-      - name: Checkout LibreMiddleware headers
-        uses: actions/checkout@v4
+      # Only the HEADERS of LibreMiddleware are compiled against; nothing of it
+      # is built or linked here. At the commit deps.lock names, like every
+      # other job that reads it.
+      - name: Checkout LibreMiddleware at the lock
+        uses: LibreSCRS/ci/actions/checkout-deps@373a0f82c9af280b7a8ccc4ee30106c947394ca2
         with:
-          repository: LibreSCRS/LibreMiddleware
-          ref: ${{ env.MIDDLEWARE_REF }}
-          path: LibreMiddleware
+          root: LibreAgent
+          names: LibreMiddleware
+          path: .
 
       - name: Install clang-21
-        # Same LLVM 21 the fuzz-cbor job pins, for the same std::expected
-        # reason; libclang-rt-21-dev carries the libFuzzer/ASan runtimes. lld-21
-        # is the third requirement here and not there: the driver includes the
+        # Same LLVM 21 as fuzz-cbor; lld-21 as well: the driver includes the
         # implementation file, so functions that call into LibreMiddleware are
         # emitted but never reached, and lld --gc-sections drops them while
         # still failing the link for anything the fuzzed path does reach.
@@ -1140,186 +724,3 @@ jobs:
       - name: Run the bounded fuzz
         working-directory: LibreAgent
         run: ci/scripts/fuzz-csca-ldif.sh --time 120 --clang clang++-21 --lm-include ../LibreMiddleware/include
-
-  coverage:
-    # Arch container: a rolling-release distro whose packages track current
-    # LibreMiddleware build/runtime deps (pcsclite, OpenSC). pacman provides
-    # openssl, pcsclite, OpenSC (for LibreMiddleware), gtest, and — unlike
-    # this job's older Core+Wire-only shape — qt6-base (Core/DBus/Test in one
-    # package, same as the client job below) and dbus (dbus-run-session,
-    # which client/qt/tests/CMakeLists.txt requires at configure time once
-    # ClientQt builds here). ClientQt is turned ON in this job for one reason
-    # only: the ABI snapshot check below is otherwise blind to
-    # liblibrescrs-agentclient-qt.so, and this is the job that runs that check —
-    # the fuller D-Bus/socket/transport-parity Qt suite still lives in the
-    # client job below.
-    runs-on: ubuntu-latest
-    container: archlinux:latest
-    env:
-      # Where LibreMiddleware is installed and where the core finds it.
-      LM_PREFIX: /opt/libremiddleware
-      # Git ref of LibreMiddleware to build against. Track its trunk during the
-      # development cycle (LibreLinux/LibreCelik do the same); pin to a release
-      # tag once LibreMiddleware tags releases. find_package(LibreMiddleware 5.0)
-      # in CMakeLists.txt enforces the required version independently of this ref.
-      MIDDLEWARE_REF: main
-    # Not on pull_request: this pass costs an hour and the moment a
-    # function actually lands is the push to main. Manual only until one
-    # measured run says what it really costs on a hosted runner.
-    if: github.event_name == 'workflow_dispatch'
-    timeout-minutes: 120
-    steps:
-      - name: Install system dependencies
-        run: |
-          pacman -Syu --noconfirm
-          pacman -S --noconfirm --needed \
-            base-devel cmake ninja git pkgconf \
-            openssl pcsclite opensc \
-            gtest dbus \
-            qt6-base \
-            python-jsonschema  # LibreMiddleware's plugin-manifest validation needs it during the build below
-
-      - uses: actions/checkout@v4
-        with:
-          path: LibreAgent
-
-      # --- LibreMiddleware: build from source + install to a prefix ---------
-      # The core consumes the installed CONFIG package
-      # (find_package(LibreMiddleware 5.0 REQUIRED CONFIG)), so it must exist on
-      # disk first. SHARED + plugins ON to match how LibreLinux acquires it;
-      # native signing backend (the CI default) — DSS is only a test oracle.
-      - name: Checkout LibreMiddleware
-        uses: actions/checkout@v4
-        with:
-          repository: LibreSCRS/LibreMiddleware
-          ref: ${{ env.MIDDLEWARE_REF }}
-          path: LibreMiddleware
-          fetch-depth: 0
-          submodules: recursive   # LM vendors OpenSC as a git submodule (thirdparty/opensc-source)
-
-      - name: Build & install LibreMiddleware (Release, SHARED)
-        working-directory: LibreMiddleware
-        run: |
-          cmake -B build -G Ninja \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DCMAKE_INSTALL_PREFIX="$LM_PREFIX" \
-            -DLIBREMIDDLEWARE_BUILD_SHARED=ON
-          cmake --build build -j4
-          cmake --install build
-
-      # --- LibreAgentCore: configure / build --------------------------
-
-      - name: Install gcovr
-        # Pinned: the baseline records the gcovr version it was measured with
-        # and the gate refuses to compare across versions, because the exclude
-        # semantics that decide the denominator have changed between them.
-        run: python3 -m pip install --break-system-packages 'gcovr==8.6'
-
-      - name: Configure (coverage)
-        working-directory: LibreAgent
-        run: cmake --preset coverage -DCMAKE_PREFIX_PATH="$LM_PREFIX"
-
-      - name: Build
-        working-directory: LibreAgent
-        run: cmake --build build-cov -j4
-
-      - name: Test
-        working-directory: LibreAgent
-        run: |
-          set +e
-          ctest --test-dir build-cov --output-on-failure --no-tests=error > ctest.log 2>&1
-          rc=$?
-          set -e
-          cat ctest.log
-          echo "ctest rc=$rc"
-          exit "$rc"
-
-      - name: Check coverage against the baseline
-        working-directory: LibreAgent
-        # The committed baseline was measured with a different compiler than
-        # this runner uses, so the FIRST authorised run of this job is expected
-        # to refuse to compare and say so. Refusing is the design: a coverage
-        # number carries the configuration it was measured under, and comparing
-        # across configurations is how a gap becomes an artefact. Record a
-        # runner-side baseline with --update, review it in the same commit, and
-        # from then on this step is a ratchet.
-        run: ./ci/scripts/coverage-gate.py --check --expect-key GNU-16 build-cov
-
-  package:
-    # Distribution packages, built in the target distribution's own container.
-    #
-    # Containers rather than apt/dnf on the runner: ubuntu-latest is one
-    # distribution in one version and cannot produce a trixie or an fc43
-    # package, and a container makes the same build reproducible with one
-    # `docker run` on a development machine.
-    #
-    # Images are pinned by digest, not by tag. A tag moves under you; a digest
-    # does not.
-    name: package (${{ matrix.slug }})
-    if: vars.PACKAGE_JOB_ENABLED == 'true'
-    runs-on: ubuntu-latest
-    # Measured locally at 30 minutes for the slowest image, times
-    # about 2.5. A job with no limit does not fail when it hangs -- it burns
-    # hours and hands back no log, because /logs answers 404 while it runs.
-    timeout-minutes: 75
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - slug: debian13
-            image: debian@sha256:f324c7ff54321e8d9c588493a20244965938ce0aa50bbd1022d38010e9ffc4b1
-          - slug: ubuntu2604
-            image: ubuntu@sha256:2260313b31c8c011cd2eebe728008efac1b3982be73eb71348ea2648d2c0e09b
-          - slug: fedora43
-            image: fedora@sha256:a651ddf48ea28a06ed4e1e6519f51c9f47e7a5a138722ade87369b8fbb7e5b42
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          submodules: recursive
-          fetch-depth: 0
-
-      - name: Check out the working tree as the gate will read it
-        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
-
-      # Upstream packages come from their own published release. This job is
-      # therefore enabled from the bottom up -- middleware first, then the
-      # agent libraries, then the hosts -- because a job wired to a release
-      # that does not exist yet is a job that has never run, and this project
-      # has paid for one of those before. Set the repository variable
-      # PACKAGE_JOB_ENABLED to true once the upstream release carries packages.
-      - name: Fetch the upstream packages from their releases
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          case "${{ matrix.slug }}" in fedora43) fam=rpm ;; *) fam=deb ;; esac
-          ver=$(tr -d '[:space:]' < VERSION)
-          mkdir -p "$RUNNER_TEMP/librescrs-packages/out/${{ matrix.slug }}/LibreMiddleware/$fam"
-          # The slug is part of the asset name upstream: Debian 13 and
-          # Ubuntu 26.04 build .deb files with identical names, so the
-          # publisher puts the distribution into the name and a consumer that
-          # asked for "*.$fam" would fetch both and install packages built
-          # against another distribution's glibc alongside its own.
-          gh release download "$ver" --repo LibreSCRS/LibreMiddleware \
-            --pattern "*.${{ matrix.slug }}.$fam" \
-            --dir "$RUNNER_TEMP/librescrs-packages/out/${{ matrix.slug }}/LibreMiddleware/$fam"
-
-      - name: Gate
-        run: |
-          # set +e first: the default shell here is `bash -eo pipefail`, so a
-          # failing gate would end the step before its exit code could be read,
-          # and the echo below would be dead text pretending to be a measurement.
-          set +e
-          bash packaging/ci/package-gate.sh "${{ matrix.image }}" "$RUNNER_TEMP/librescrs-packages/out"
-          rc=$?
-          set -e
-          echo "PACKAGE_GATE_RC=$rc"
-          test "$rc" = 0
-
-      - name: Upload the packages
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: packages-${{ matrix.slug }}
-          path: ${{ runner.temp }}/librescrs-packages/out/${{ matrix.slug }}/**
-          if-no-files-found: warn

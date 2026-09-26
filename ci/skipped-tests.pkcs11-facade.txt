@@ -1,7 +1,0 @@
-# LibreAgent — leg 'pkcs11-facade'. Regenerate: ci/scripts/skip-ledger.sh --update <ctest.log> pkcs11-facade
-# Columns: category, glob, expected count. Categories: CARD NETWORK SERVICE PLATFORM DESIGN TAUTOLOGY TOMBSTONE
-# TODO rows are a draft: --check refuses an unknown category, on purpose.
-# Counted here: 6 skipped by ctest, 1 DISABLED_ in the sources.
-DESIGN    IdentityReadFlow.*                                         1
-CARD      RealCardCryptoVerify.*                                     3
-CARD      RealCardSmoke.*                                            3
