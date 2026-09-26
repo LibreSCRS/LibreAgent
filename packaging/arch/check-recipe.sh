@@ -169,17 +169,18 @@ else
               | awk -F: '$1 == "pub" { want = 1; next } want && $1 == "fpr" { print $10; want = 0 }' \
               | sort -u)
   rm -rf "$gh_home"
+  primaries=$(printf '%s\n' "$primaries" | paste -sd' ' -)
   if [ -z "$primaries" ]; then
     bad "arm4: no primary key could be read out of KEYS"
   else
     declared=$(sed -n '/^validpgpkeys=(/,/)/p' "$recipe" | sed 's/#.*//' \
-               | grep -oE "'[^']*'|\"[^\"]*\"" | tr -d "'\"" | sort -u)
+               | grep -oE "'[^']*'|\"[^\"]*\"" | tr -d "'\"" | sort -u | paste -sd' ' -)
     if [ -z "$declared" ]; then
       bad "arm4: the recipe declares no validpgpkeys, so makepkg would trust any key it happens to have"
     elif [ "$declared" != "$primaries" ]; then
-      bad "arm4: validpgpkeys ($(echo $declared)) is not the primary key of KEYS ($(echo $primaries))"
+      bad "arm4: validpgpkeys ($declared) is not the primary key of KEYS ($primaries)"
     else
-      printf 'arm4: validpgpkeys is the primary key of KEYS (%s)\n' "$(echo $primaries)"
+      printf 'arm4: validpgpkeys is the primary key of KEYS (%s)\n' "$primaries"
     fi
   fi
 fi

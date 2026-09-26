@@ -24,6 +24,8 @@
 # passphrase, and the case would hang on the prompt.
 #
 # SPDX-License-Identifier: LGPL-2.1-or-later
+# The sed expressions write the recipe's own literal $pkgver, unexpanded.
+# shellcheck disable=SC2016
 set -u
 
 here=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
