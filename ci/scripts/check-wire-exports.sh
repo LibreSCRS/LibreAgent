@@ -46,32 +46,18 @@ if [[ "$own" -eq 0 ]]; then
     exit 2
 fi
 
-# The allowlist is READ FROM abi-snapshot.sh, which already carries the one list
-# of wire symbols a public client header re-exports. A second hand-kept copy
-# drifts in the direction nothing reports: this gate permitting a symbol the
-# baseline does not record leaves it exported and ungated.
-ABI_SCRIPT="$(cd "$(dirname "$0")" && pwd)/abi-snapshot.sh"
-if [[ ! -f "$ABI_SCRIPT" ]]; then
-    echo "FAIL: cannot find abi-snapshot.sh next to this script ($ABI_SCRIPT)." >&2
-    echo "It holds the allowlist this check reads." >&2
-    exit 2
-fi
-
-ALLOW_RE="$(sed -n "s/^CLIENTQT_WIRE_PUBLIC='\(.*\)'\$/\1/p" "$ABI_SCRIPT")"
-if [[ -z "$ALLOW_RE" ]]; then
-    echo "FAIL: no CLIENTQT_WIRE_PUBLIC='...' assignment found in $ABI_SCRIPT." >&2
-    echo "Teach this script the new spelling rather than letting it fall back to" >&2
-    echo "an empty allowlist, which would pass only a library missing the API." >&2
-    exit 2
-fi
-# Exactly one, or the rest does not mean what it reads like: grep -E takes a
-# pattern containing a newline as an ALTERNATION, so a second assignment would
-# silently WIDEN the allowlist rather than conflict with it.
-assignments="$(printf '%s\n' "$ALLOW_RE" | grep -c .)"
-if [[ "$assignments" -ne 1 ]]; then
-    echo "FAIL: $ABI_SCRIPT has $assignments CLIENTQT_WIRE_PUBLIC assignments; expected one." >&2
-    exit 2
-fi
+# The wire functions the library may export: those declared in a shared header
+# that a public client header re-exports. A consumer that includes the public
+# header sees the declaration, so the library has to export the definition.
+# client/qt/CMakeLists.txt pins the set of re-exported shared headers and stops
+# the configure when it changes, naming this list as one of the things to
+# update, so a new re-export cannot slip past it.
+#
+#   syncErrorName / decodeSyncError
+#       declared in include/LibreSCRS/Agent/wire/SyncError.h, which
+#       client/qt/include/LibreSCRS/AgentClient/SyncError.h re-exports.
+CLIENTQT_WIRE_PUBLIC='^LibreSCRS::Agent::Wire::(syncErrorName|decodeSyncError)\('
+ALLOW_RE="$CLIENTQT_WIRE_PUBLIC"
 
 # The names inside the regex's alternation, so their presence can be asserted
 # below -- derived from the same string rather than listed a second time. The
@@ -87,9 +73,9 @@ if [[ "${#ALLOW_NAMES[@]}" -eq 0 ]]; then
 fi
 for _name in "${ALLOW_NAMES[@]}"; do
     if [[ ! "$_name" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then
-        echo "FAIL: '$_name' is not a plausible function name -- the allowlist in" >&2
-        echo "$ABI_SCRIPT parsed into something this script misread. Refusing to" >&2
-        echo "check against it." >&2
+        echo "FAIL: '$_name' is not a plausible function name -- the allowlist" >&2
+        echo "CLIENTQT_WIRE_PUBLIC parsed into something this script misread." >&2
+        echo "Refusing to check against it." >&2
         exit 2
     fi
 done

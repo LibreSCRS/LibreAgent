@@ -9,8 +9,7 @@
 // written anywhere but here.
 //
 // Internal to the wire target: not under include/, so not installed, and inline,
-// so it emits no T-binding symbol into libLibreAgentWire.a and does not move the
-// ABI baseline.
+// so it emits no T-binding symbol into libLibreAgentWire.a.
 #pragma once
 
 #include <LibreSCRS/Agent/wire/Framing.h>

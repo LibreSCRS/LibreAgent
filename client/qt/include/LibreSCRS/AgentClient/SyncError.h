@@ -28,10 +28,10 @@
 ///       Being unsupported does not make them invisible, and the two facts
 ///       are tracked separately on purpose. This header declares them and the
 ///       shared library exports their definitions, so a consumer CAN bind to
-///       them by accident — which is exactly why the ABI baseline records
-///       them (`CLIENTQT_WIRE_PUBLIC` in ci/scripts/abi-snapshot.sh). That
-///       recording makes a removal or signature change visible; it is not a
-///       promise of support, and does not soften the warning above. The rest
+///       them by accident — which is exactly why the export check names
+///       them (`CLIENTQT_WIRE_PUBLIC` in ci/scripts/check-wire-exports.sh). That
+///       naming makes their removal visible; it is not a promise of support,
+///       and does not soften the warning above. The rest
 ///       of that namespace is NOT exported — the wire library compiles hidden,
 ///       and these two are annotated back in precisely because this header
 ///       declares them.

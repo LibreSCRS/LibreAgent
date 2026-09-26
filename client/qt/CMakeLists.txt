@@ -158,180 +158,10 @@ if(PROJECT_IS_TOP_LEVEL OR LIBREAGENT_BUILD_CLIENT_QT_TEST_SUPPORT)
 endif()
 
 if(PROJECT_IS_TOP_LEVEL)
-    # The public value types' LAYOUT probe, consumed by ci/scripts/abi-snapshot.sh
-    # (see tools/ValueLayoutProbe.cpp for why a symbol diff alone cannot see a
-    # member add/remove/reorder on a by-value type). Not a test and not
-    # installed: it prints one line per type and exits, and the snapshot script
-    # records that output as its own baseline section.
-    #
-    # Gated with the test suite rather than built unconditionally, for the same
-    # reason: a consumer pulling this repo in as a subproject wants the library,
-    # not this repo's CI tooling. The script hard-errors when the shared library
-    # is present but this binary is not, so the gate can never lose the layout
-    # dimension by quietly failing to find it.
-    add_executable(LibreAgentClientQtLayoutProbe tools/ValueLayoutProbe.cpp)
-    set_target_properties(LibreAgentClientQtLayoutProbe PROPERTIES
-        OUTPUT_NAME librescrs-agentclient-qt-layout-probe)
-    target_link_libraries(LibreAgentClientQtLayoutProbe PRIVATE LibreAgent::ClientQt)
-    target_compile_options(LibreAgentClientQtLayoutProbe PRIVATE -Wall -Wextra -Wpedantic)
-    if(LIBRESCRS_AGENT_WERROR)
-        target_compile_options(LibreAgentClientQtLayoutProbe PRIVATE -Werror)
-    endif()
-
-    # ---- drift guard: probe coverage vs the public value types on disk ----
-    #
-    # Same shape as the public-header drift guard in
-    # tests/HeaderAcceptance/CMakeLists.txt, for the same reason: a hand-kept
-    # list that nothing checks is a list that silently stops being complete. A
-    # public value type added WITHOUT being added to the probe would simply
-    # never have its layout recorded, and the ABI gate would keep reporting
-    # success while that type's members moved freely underneath consumers --
-    # the failure this whole dimension exists to prevent, reintroduced one type
-    # at a time.
-    #
-    # "On disk" = every type DEFINITION in the public header tree.
-    #
-    # The pattern deliberately accepts every spelling a definition can take
-    # here -- `struct X`, `class X`, either with the export macro, either with
-    # `final`, either with a base-clause, and any combination -- while still
-    # excluding a forward declaration (`struct SeamError;`), which is what the
-    # no-semicolon anchor does. An earlier, narrower version matched only the
-    # bare `struct X` form, and that is not a theoretical gap: `struct X final`
-    # and `struct X : Base` both slipped past it with configure at exit 0, and
-    # nothing else in the build would have caught them either (the formatter
-    # accepts both spellings happily). A guard whose hole is shaped like the
-    # very declaration a real derived or final aggregate would use is a guard
-    # that passes on the day it matters.
-    #
-    # Classes are matched too, rather than skipped by the pattern, so that
-    # spelling a value type `class` cannot become the next way around this. The
-    # ones that genuinely should not be layout-gated are named in the exemption
-    # list below, where the reason is visible and reviewable -- which is what
-    # that list was for.
+    # The public headers, read by the drift guard below.
     file(GLOB _clientqt_public_header_paths
         CONFIGURE_DEPENDS
         "${CMAKE_CURRENT_SOURCE_DIR}/include/LibreSCRS/AgentClient/*.h")
-
-    # The specifiers that may sit between the introducer and the name: the
-    # export macro, an alignment specifier, and an attribute sequence. Any
-    # number of them, in any order -- which is why the name is found by
-    # STRIPPING them one at a time rather than by one regex trying to spell
-    # every permutation.
-    # The alignas arm allows ONE level of nested parentheses, because the
-    # realistic spelling has some -- `alignas(alignof(double))`. A plain
-    # `[^)]*` stops at the inner paren and lets that form through, which it
-    # did.
-    set(_clientqt_type_specifier
-        "(LIBRESCRS_AGENTCLIENT_EXPORT|alignas\\(([^()]|\\([^()]*\\))*\\)|\\[\\[[^]]*\\]\\])")
-
-    set(_clientqt_value_types_on_disk "")
-    foreach(_hdr IN LISTS _clientqt_public_header_paths)
-        file(STRINGS "${_hdr}" _type_lines
-            REGEX "^(struct|class)( +${_clientqt_type_specifier})* +[A-Za-z_][A-Za-z0-9_]*( final)?( *:[^;]*)?$")
-        foreach(_line IN LISTS _type_lines)
-            string(REGEX REPLACE "^(struct|class) +" "" _rest "${_line}")
-            while(_rest MATCHES "^${_clientqt_type_specifier} +")
-                string(REGEX REPLACE "^${_clientqt_type_specifier} +" "" _rest "${_rest}")
-            endwhile()
-            string(REGEX REPLACE "^([A-Za-z_][A-Za-z0-9_]*).*$" "\\1" _name "${_rest}")
-            list(APPEND _clientqt_value_types_on_disk "${_name}")
-        endforeach()
-    endforeach()
-
-    # Types that are public but deliberately NOT layout-gated.
-    #
-    # Every entry must state the reason it is SAFE, and that reason must be
-    # true when written and checkable by the next reader. This list is a review
-    # surface, and a review surface holding one plausible-but-false reason is
-    # worse than no list -- it teaches the reader that the entries need not be
-    # verified. An earlier version of this list carried exactly that: it
-    # exempted FdHandle "pinned by TypesTest's own contract assertions", and
-    # TypesTest has nine FdHandle tests of which every one is behavioural --
-    # there was no size assertion anywhere in this component. FdHandle is now
-    # covered by the probe (LAYOUT_OPAQUE) instead, which is why it is absent
-    # here.
-    #
-    # "Cover it in the probe" is the preferred resolution when an exemption
-    # turns out to be unjustified. Rewriting the prose to match reality keeps
-    # the type ungated; moving the type into the probe removes the question.
-    set(_clientqt_value_types_exempt
-        # THREE of the four exported QObjects -- deliberately not AgentClient,
-        # which is gated in the probe instead (LAYOUT_OPAQUE).
-        #
-        # The reason these three are safe is that a consumer's compiled code
-        # cannot contain their size: their CONSTRUCTORS ARE PRIVATE (verified:
-        # AgentCard.h:168, AgentOperation.h:239/242, AgentReader.h:53, all
-        # below the `private:` on 165/230/50), so a consumer can never allocate
-        # one and never sees an operator-new argument for it. Copy construction
-        # and copy assignment are deleted on all of them too, so nothing embeds
-        # one by value. Each holds exactly one std::unique_ptr<Private> and no
-        # other member, so there is no member offset to bake in either.
-        #
-        # Private constructibility is the whole test, and AgentClient FAILS it:
-        # AgentClient.h:53 is a public `explicit AgentClient(QObject*)`, the
-        # documented alternative to sharedAgentClient(). Measured: the type is
-        # 24 bytes and a consumer translation unit that says `new AgentClient`
-        # carries `mov $0x18,%edi` in its own object file. So its size does
-        # reach consumer code, and it is gated.
-        #
-        # Two reasons NOT to reach for here, both previously written into this
-        # list and both wrong. "Their layout is fixed by construction" is false
-        # -- each derives QObject, so the size follows Qt's layout, not
-        # anything in this repository. And "gating them would record a
-        # Qt-derived number that churns on a toolkit upgrade" does not hold
-        # either: Qt guarantees QObject's size across 6.x, and the argument
-        # would apply just as much to AgentClient, which must be gated
-        # regardless. The exemption rests on private constructibility alone.
-        AgentCard
-        AgentOperation
-        AgentReader)
-    if(_clientqt_value_types_exempt)
-        list(REMOVE_ITEM _clientqt_value_types_on_disk ${_clientqt_value_types_exempt})
-    endif()
-    list(SORT _clientqt_value_types_on_disk)
-
-    # "Covered" = what the probe actually emits a line for, in EITHER form:
-    # LAYOUT_BEGIN for an aggregate whose members are public, LAYOUT_OPAQUE for
-    # a type whose members are private (size and alignment only). Read from the
-    # probe source itself rather than restated here, so the two cannot
-    # disagree: the four-space indent restricts the match to the call sites in
-    # main() and excludes the macros' own definitions.
-    file(STRINGS "${CMAKE_CURRENT_SOURCE_DIR}/tools/ValueLayoutProbe.cpp" _probe_lines
-        REGEX "^    LAYOUT_(BEGIN|OPAQUE)\\([A-Za-z_][A-Za-z0-9_]*\\)$")
-    set(_clientqt_value_types_covered "")
-    foreach(_line IN LISTS _probe_lines)
-        string(REGEX REPLACE "^    LAYOUT_(BEGIN|OPAQUE)\\((.*)\\)$" "\\2" _name "${_line}")
-        list(APPEND _clientqt_value_types_covered "${_name}")
-    endforeach()
-    list(SORT _clientqt_value_types_covered)
-
-    if(NOT _clientqt_value_types_on_disk STREQUAL _clientqt_value_types_covered)
-        message(FATAL_ERROR
-            "ValueLayoutProbe: the layout-gated type list has drifted from the "
-            "public headers in client/qt/include/LibreSCRS/AgentClient/.\n"
-            "  Value types on disk:   ${_clientqt_value_types_on_disk}\n"
-            "  Covered by the probe:  ${_clientqt_value_types_covered}\n"
-            "Add (or remove) the type in BOTH the public header AND "
-            "client/qt/tools/ValueLayoutProbe.cpp (LAYOUT_BEGIN for an "
-            "aggregate with public members, LAYOUT_OPAQUE when the members are "
-            "private), then regenerate the ABI baseline. A public value type "
-            "cannot dodge the layout dimension of the ABI gate by only doing "
-            "one of the two. If a type genuinely must not be gated, add it to "
-            "_clientqt_value_types_exempt in this file WITH a reason that is "
-            "true and checkable -- covering it in the probe is preferred to "
-            "arguing it away.\n"
-            "KNOWN RESIDUE, precisely: this check reads declarations line by "
-            "line, matching the introducer, any number of the specifiers in "
-            "_clientqt_type_specifier above (export macro, alignas, "
-            "attributes) in any order, and the name -- all on ONE line. Two "
-            "things still escape it. A declaration SPLIT ACROSS LINES is not "
-            "matched. And an alignas carrying MORE THAN ONE level of nested "
-            "parentheses is not matched: the arm above handles one level, "
-            "which covers alignas(alignof(T)), but not a deeper nesting. "
-            "Chasing the remainder turns this into a C++ parser, so it stops "
-            "here -- if you are adding such a declaration, add its type to the "
-            "probe by hand.")
-    endif()
 
     # ---- drift guard: which shared headers the public surface re-exports ----
     #
@@ -347,9 +177,10 @@ if(PROJECT_IS_TOP_LEVEL)
     #     LIBRESCRS_AGENTWIRE_EXPORT. The wire library compiles hidden, so an
     #     un-annotated function is absent from the shared library a consumer
     #     links against, while its public header still declares it.
-    #   * ABI ALLOWLIST -- ci/scripts/abi-snapshot.sh's CLIENTQT_WIRE_PUBLIC
-    #     must name those same functions, or they widen the export table
-    #     without entering the baseline that would report a change to them.
+    #   * EXPORT ALLOWLIST -- ci/scripts/check-wire-exports.sh's
+    #     CLIENTQT_WIRE_PUBLIC must name those same functions: it is the list of
+    #     wire functions the shared library may export, and it fails on any
+    #     other and on a named one gone missing.
     #   * DOXYGEN PREDEFINED -- an export MACRO defined in the header must be
     #     predefined away in Doxyfile.publicapi, or the published reference
     #     carries a build detail as public API.
@@ -357,7 +188,7 @@ if(PROJECT_IS_TOP_LEVEL)
     # None is derivable from another, and no tool notices its own omission, so
     # the checks live here, where the re-export is written. The two Doxygen ones
     # are enforced below; the other two announce themselves loudly enough (a
-    # failed link, a failed ABI check) to need no configure-time twin.
+    # failed link, a failed export check) to need no configure-time twin.
     set(_clientqt_reexported_shared_headers
         OperationPhase.h
         wire/ErrorCode.h
@@ -390,11 +221,10 @@ if(PROJECT_IS_TOP_LEVEL)
             "  DOXYGEN INPUT -- add it to Doxyfile.publicapi's INPUT, or its "
             "members are absent from the published API reference with no "
             "warning (enforced below, so it will tell you again);\n"
-            "  EXPORT ANNOTATION + ABI ALLOWLIST -- if it declares FUNCTIONS "
+            "  EXPORT ANNOTATION + EXPORT ALLOWLIST -- if it declares FUNCTIONS "
             "(an enum/constant-only header emits no symbols and needs "
             "nothing), give each one LIBRESCRS_AGENTWIRE_EXPORT and add it to "
-            "CLIENTQT_WIRE_PUBLIC in ci/scripts/abi-snapshot.sh, then "
-            "regenerate the ABI baseline;\n"
+            "CLIENTQT_WIRE_PUBLIC in ci/scripts/check-wire-exports.sh;\n"
             "  DOXYGEN PREDEFINED -- if it defines an export MACRO, predefine "
             "it away in Doxyfile.publicapi (enforced below too).")
     endif()
@@ -402,7 +232,7 @@ if(PROJECT_IS_TOP_LEVEL)
     # The DOXYGEN INPUT obligation, enforced rather than merely described.
     # Doxygen's INPUT is a plain list of paths in a file we can read, so
     # "every re-exported shared header is in the reference's scope" is a
-    # decidable question at configure time -- unlike the ABI allowlist, where
+    # decidable question at configure time -- unlike the export allowlist, where
     # nothing can tell us which header declared a given exported symbol.
     # Checking it here means the message above is a reminder for the parts that
     # still need a human, not the only thing standing behind any of them.
@@ -450,7 +280,7 @@ if(PROJECT_IS_TOP_LEVEL)
                         "transitively through this header is outside the set it "
                         "pins -- and would therefore be missing from both "
                         "Doxyfile.publicapi's INPUT and, if it declares "
-                        "functions, the ABI allowlist, with nothing reporting "
+                        "functions, the export allowlist, with nothing reporting "
                         "it. Either keep these headers leaf, or extend the "
                         "re-export check to follow the closure.")
                 endif()

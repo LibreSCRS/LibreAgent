@@ -161,7 +161,7 @@ client/qt/                 LibreAgent::ClientQt — public headers under
 tests/                     Core/Wire unit tests + the five backend fakes,
                              pkgsmoke consumer
 cmake/                     CONFIG package template + install/export rules
-ci/                        the public-ABI snapshot gate and its baseline
+ci/                        the checks only this repository has, and the test floors
 ```
 
 ## LibreSCRS
