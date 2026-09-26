@@ -84,8 +84,8 @@ Requires:       librescrs-agent-core-devel = %{version}-%{release}
 Requires:       qt6-qtbase-devel
 
 %description -n librescrs-agent-client-qt-devel
-Headers, the linker's symbolic link and the CMake component targets for building against
-the Qt client library.
+Headers, the symbolic link the linker resolves and the CMake component targets
+for building against the Qt client library.
 
 %prep
 %autosetup -n %{name}-%{version}
