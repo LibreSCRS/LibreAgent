@@ -74,7 +74,7 @@ makedepends=(
 )
 options=('!lto')   # built in a clean chroot with LTO off; not measured to be required
 
-_srcname="LibreAgent-$pkgver"
+_srcname=LibreAgent
 # The immutable SHA that QCBOR's (mutable) v1.6.1 tag resolves to. Must stay in
 # lockstep with GIT_TAG in cmake/FetchQCBOR.cmake — that file is what the build
 # would otherwise fetch, and FETCHCONTENT_SOURCE_DIR_QCBOR below silently
@@ -82,27 +82,25 @@ _srcname="LibreAgent-$pkgver"
 # the source tree pins. prepare() enforces that lockstep; see its comment.
 _qcbor_commit=930708bb86481e88879eb1d87fd4d664f1d69503
 
+# This project's own source is its signed release tag, fetched by git and
+# verified by makepkg against the release key before anything is extracted: the
+# key's fingerprint below is the primary key in this repository's KEYS file,
+# and a tag signed by anything else, or not signed, stops the build. A VCS
+# source has no checksum of its own (makepkg requires SKIP for it); the
+# signature is what holds its bytes, and it holds from the moment the tag
+# exists, so nothing in this file has to change after the release.
+#
+# QCBOR is an upstream archive at an immutable commit, so it carries its real
+# checksum now.
 source=(
-    "$pkgbase-$pkgver.tar.gz::https://github.com/LibreSCRS/LibreAgent/releases/download/$pkgver/libreagent_$pkgver.orig.tar.gz"
+    "$_srcname::git+https://github.com/LibreSCRS/LibreAgent.git#tag=$pkgver?signed"
     "qcbor-$_qcbor_commit.tar.gz::https://github.com/laurencelundblade/QCBOR/archive/$_qcbor_commit.tar.gz"
 )
-# The downloaded name is derived from $pkgbase, not $pkgname: in a split recipe
-# pkgname is an ARRAY, so $pkgname would silently expand to its first element
-# and name the tarball after one of the three packages.
-#
-# LibreAgent's own tarball is 'SKIP': the release that carries it does not
-# exist yet, so there is nothing to fetch or sum. The real sum is filled in at
-# tag time with `makepkg -g` (pacman's own tool; `updpkgsums` needs
-# pacman-contrib), and packaging/arch/check-recipe.sh turns a remaining SKIP
-# into an error once the tag exists. Until then the recipe is smoke-built
-# against a tarball of the working tree placed next to this file under exactly
-# the name above — makepkg reuses an already-present source file instead of
-# downloading it, so the recipe itself needs no edit to be built today.
-# QCBOR's sum is real and pinned now; that tarball exists upstream already.
 sha256sums=(
     'SKIP'
     '0da68ac55f6e67c67e57f4fe4603b850713ce2b0ac95fb76094f446139db4d57'
 )
+validpgpkeys=('6B05889AC9A6A7188DF639B06F27A989C2031D16')  # LibreSCRS release key (KEYS)
 
 # Two values above are hard-coded copies of facts that actually live in the
 # source tree: _qcbor_commit mirrors GIT_TAG in cmake/FetchQCBOR.cmake, and
