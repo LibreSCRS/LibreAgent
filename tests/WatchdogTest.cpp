@@ -178,20 +178,23 @@ private:
 class ConsentCyclingOp final : public OperationBase
 {
 public:
-    ConsentCyclingOp(std::unique_ptr<OperationChannel> a, std::shared_ptr<OperationState> s)
-        : OperationBase(std::move(a), std::move(s))
+    ConsentCyclingOp(std::unique_ptr<OperationChannel> a, std::shared_ptr<OperationState> s, int cycles = 5)
+        : OperationBase(std::move(a), std::move(s)), m_cycles(cycles)
     {}
 
 protected:
     void doWork() override
     {
-        for (int i = 0; i < 5; ++i) {
+        for (int i = 0; i < m_cycles; ++i) {
             setPhase(static_cast<std::uint32_t>(OperationPhase::Authenticating));
             setPhase(static_cast<std::uint32_t>(OperationPhase::AwaitingConsent));
         }
         setPhase(static_cast<std::uint32_t>(OperationPhase::Reading));
         finish(OperationStatus::Ok, ErrorCode::None, "op.ok", "ok");
     }
+
+private:
+    int m_cycles;
 };
 
 } // namespace
@@ -587,4 +590,23 @@ TEST(Watchdog, EachConsentCycleArmsOnceAndTimersNeverStack)
 
     EXPECT_EQ(slot.status.load(std::memory_order_acquire), static_cast<std::uint32_t>(OperationStatus::Ok));
     EXPECT_EQ(op.watchdogArmAttempts(), 6u);
+}
+
+TEST(Watchdog, ADisarmRightAfterAnArmIsNeverATimeout)
+{
+    // Each cycle arms the watchdog and disarms it microseconds later. A disarm
+    // must never read as an expiry: the standard library's stop-token wait can
+    // report "predicate false" when the stop lands inside it, and a watchdog
+    // that trusted that answer fired a spurious timeout on a healthy operation.
+    // Two hundred back-to-back cycles make that window certain to be hit.
+    CapturedFinish slot;
+    auto state = std::make_shared<OperationState>();
+    state->watchdogTimeoutSec.store(60u, std::memory_order_release);
+
+    ConsentCyclingOp op(std::make_unique<CapturingChannel>(slot), state, 200);
+    op.runOnWorker();
+
+    EXPECT_EQ(slot.status.load(std::memory_order_acquire), static_cast<std::uint32_t>(OperationStatus::Ok));
+    EXPECT_EQ(slot.errorCode.load(std::memory_order_acquire), static_cast<std::uint32_t>(ErrorCode::None));
+    EXPECT_EQ(op.watchdogArmAttempts(), 201u);
 }
