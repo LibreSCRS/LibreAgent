@@ -222,10 +222,14 @@ void OperationBase::armWatchdogIfNeeded(std::uint32_t newPhase)
     }
     m_watchdog = std::jthread([this, timeoutSec](std::stop_token st) {
         std::unique_lock lock(m_watchdogMutex);
-        const bool stoppedEarly = m_watchdogCv.wait_for(lock, st, std::chrono::seconds{timeoutSec}, [this, &st] {
+        const auto stoppedOrFinished = [this, &st] {
             return st.stop_requested() || m_finished.load(std::memory_order_acquire);
-        });
-        if (stoppedEarly) {
+        };
+        m_watchdogCv.wait_for(lock, st, std::chrono::seconds{timeoutSec}, stoppedOrFinished);
+        // Re-ask the predicate instead of trusting the return value: libstdc++
+        // returns false, not pred(), when the stop lands between its entry check
+        // and its internal lock, so a disarm would read as an expiry.
+        if (stoppedOrFinished()) {
             return; // op finished or destruction; do not fire timeout.
         }
         lock.unlock();
