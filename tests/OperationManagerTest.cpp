@@ -323,10 +323,14 @@ TEST(OperationManager, InvalidateReaderSessionReopensOnNextAcquire)
     // First acquire on the worker thread: opens the session once and records the
     // handle. Synchronise on a flag the probe sets (no sleep-race).
     std::atomic<void*> firstSession{nullptr};
+    // Held so the allocator cannot hand the freed block to the re-opened session:
+    // without it the address comparison below tests the allocator, not the holder.
+    std::shared_ptr<LibreSCRS::SmartCard::CardSession> keepFirstAlive;
     std::atomic<bool> firstDone{false};
     mgr.enqueueHolderProbeForTest(ObjectId{1}, [&](CardSessionHolder& h) {
         auto a = h.acquire();
         if (a) {
+            keepFirstAlive = a->session;
             firstSession.store(a->session.get());
         }
         firstDone.store(true);
