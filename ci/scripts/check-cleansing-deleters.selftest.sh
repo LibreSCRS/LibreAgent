@@ -147,7 +147,7 @@ expect_text 0 "check-cleansing-deleters: OK" "$out"
 perturb() {
     local label="$1" file="$2" expr="$3"
     cp "$file" "$WORK/pre.tmp"
-    sed -i -e "$expr" "$file"
+    sed -i.orig -e "$expr" "$file" && rm -f "$file.orig"
     if cmp -s "$WORK/pre.tmp" "$file"; then
         echo "case $label: FAIL — perturbation changed nothing in ${file#"$ROOT"/}"
         fail=$((fail + 1))
