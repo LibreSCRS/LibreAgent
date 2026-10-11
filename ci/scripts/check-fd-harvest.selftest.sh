@@ -238,7 +238,8 @@ names 5 "src/wire/EvilWalk2.cpp:5 names 'msg_control'" "$out"
 # file: put the hand-rolled harvest THERE and delete the clamp's one read, and
 # the count of reads drops to zero.
 r="$(tree c6)"
-sed -i 's/^    const std::size_t claimed = c->cmsg_len;$/    const std::size_t claimed = 4096;/' "$r/$HELPER"
+sed -i.orig 's/^    const std::size_t claimed = c->cmsg_len;$/    const std::size_t claimed = 4096;/' "$r/$HELPER"
+rm -f "$r/$HELPER.orig"
 cat >> "$r/$HELPER" <<'EOF'
 
 namespace LibreSCRS::Agent::Wire {

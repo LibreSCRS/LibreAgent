@@ -536,7 +536,7 @@ while IFS=: read -r f ln inc; do
     found=$((found + 1))
     fail=1
 done < <(
-    grep -n -H -E '^[[:space:]]*#[[:space:]]*include[[:space:]]*["<][^">]*(^|/)?tests/' \
+    grep -n -H -E '^[[:space:]]*#[[:space:]]*include[[:space:]]*["<]([^">]*/)?tests/' \
         "${sources[@]}" /dev/null |
         sed -E 's/^([^:]+):([0-9]+):[[:space:]]*#[[:space:]]*include[[:space:]]*["<]([^">]*)[">].*/\1:\2:\3/'
 )
