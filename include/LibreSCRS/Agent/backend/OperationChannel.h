@@ -108,13 +108,10 @@ public:
     virtual void emitFinished(OperationStatus status, ErrorCode code, std::string_view msgKey,
                               std::string_view msgFallback) noexcept = 0;
     // Returns true when the result was delivered (or there is nothing to deliver
-    // for this channel's arm / the channel delivers inline with no seal step);
-    // false ONLY when a REQUIRED large-result sealing step failed — the Linux
-    // Photo1/Sign1 channels seal the raw bytes into a memfd, and a seal failure
-    // MUST fail the op closed rather than emit a half-result. The lifecycle core
-    // (Sign/GetPhoto ops) turns false into finish(Error, CommunicationError,
-    // "op.memfd_failed"); Identity/Certificates deliver inline and always return
-    // true. A future macOS inline impl returns true.
+    // for this channel's arm); false when it could not be: a REQUIRED sealing
+    // step failed (Photo/Sign memfd), or the channel failed to encode or post it
+    // (the macOS socket channel's catch-all, any arm). Every op turns false into
+    // finish(Error, CommunicationError, ...) rather than Finished(Ok) with no result.
     [[nodiscard]] virtual bool emitResult(const ResultPayload& result) noexcept = 0;
     // Emit one progressively-available identity field group, ahead of the
     // eventual emitResult/emitFinished pair (Identity1.Group on Linux; the

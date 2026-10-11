@@ -64,8 +64,9 @@ public:
         if (const auto* snapshot = std::get_if<CardReadSnapshot>(&result)) {
             captured = *snapshot;
         }
-        return true;
+        return deliver;
     }
+    bool deliver = true; ///< false models a channel that fails to encode or post
 
     std::vector<Event> events;
     std::vector<EmittedFinish> finishes;
@@ -271,4 +272,21 @@ TEST(ReadTokenInfoOperation, NullHolderFinishesInternalErrorInsteadOfCrashing)
     EXPECT_EQ(raw->finishes[0].status, static_cast<std::uint32_t>(OperationStatus::Error));
     EXPECT_EQ(raw->finishes[0].errorCode, static_cast<std::uint32_t>(ErrorCode::CommunicationError));
     EXPECT_FALSE(raw->captured.has_value());
+}
+
+// A token-info result the channel fails to deliver must not finish Ok.
+TEST(ReadTokenInfoOperation, UndeliveredResultFinishesError)
+{
+    Harness h;
+    h.reader.group = tokenGroup(/*withField=*/true);
+    auto channel = std::make_unique<FakeOperationChannel>();
+    channel->deliver = false;
+    auto* raw = channel.get();
+
+    ReadTokenInfoOperation op(std::move(channel), h.deps(), std::make_shared<OperationState>());
+    op.runOnWorker();
+
+    ASSERT_EQ(raw->finishes.size(), 1u);
+    EXPECT_EQ(raw->finishes[0].status, static_cast<std::uint32_t>(OperationStatus::Error));
+    EXPECT_EQ(raw->finishes[0].errorCode, static_cast<std::uint32_t>(ErrorCode::CommunicationError));
 }

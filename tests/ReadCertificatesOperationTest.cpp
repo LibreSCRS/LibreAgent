@@ -48,8 +48,9 @@ public:
         if (const auto* certs = std::get_if<std::vector<CertSnapshot>>(&result)) {
             captured = *certs;
         }
-        return true;
+        return deliver;
     }
+    bool deliver = true; ///< false models a channel that fails to encode or post
     std::vector<EmittedFinish> finishes;
     std::optional<std::vector<CertSnapshot>> captured;
 };
@@ -238,4 +239,43 @@ TEST(ReadCertificatesOperation, ColdReadPopulatesTheCache)
     ASSERT_TRUE(cached.has_value()) << "a successful cold read must populate the cache";
     ASSERT_EQ(cached->size(), 1u);
     EXPECT_EQ(cached->front().certId, "abc123");
+}
+
+// A result the channel fails to deliver must not finish Ok, on the cold read
+// and on the cache hit that follows it.
+TEST(ReadCertificatesOperation, UndeliveredResultFinishesErrorOnColdReadAndCacheHit)
+{
+    CardReadCache readCache;
+    auto holder = makeWorkingHolder();
+    OkCertReader certReader(certsFixture());
+    FixedTrustVerifier trustVerifier;
+    UnusedPrompter prompter;
+    PromptSerializer serializer;
+    CredentialCache credCache;
+
+    for (int run = 0; run < 2; ++run) {
+        auto adaptor = std::make_unique<FakeOperationChannel>();
+        adaptor->deliver = false;
+        auto* raw = adaptor.get();
+        ReadCertificatesOperation op(std::move(adaptor),
+                                     ReadCertificatesOperation::Deps{
+                                         .holder = holder.get(),
+                                         .certReader = certReader,
+                                         .trustVerifier = trustVerifier,
+                                         .prompter = prompter,
+                                         .serializer = serializer,
+                                         .credentials = credCache,
+                                         .readCache = readCache,
+                                         .cardKey = "card-A",
+                                         .readerName = "FakeReader",
+                                         .requester = "test",
+                                         .artifact = "certificates",
+                                     },
+                                     std::make_shared<OperationState>());
+        op.runOnWorker();
+        ASSERT_EQ(raw->finishes.size(), 1u) << "run " << run;
+        EXPECT_EQ(raw->finishes[0].status, static_cast<std::uint32_t>(OperationStatus::Error));
+        EXPECT_EQ(raw->finishes[0].errorCode, static_cast<std::uint32_t>(ErrorCode::CommunicationError));
+        EXPECT_TRUE(readCache.getCertificates("card-A").has_value()) << "run " << run;
+    }
 }

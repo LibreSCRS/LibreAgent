@@ -51,7 +51,11 @@ void ReadIdentityOperation::doWork()
         if (shutdownRequested()) {
             return;
         }
-        static_cast<void>(emitResult(ResultPayload{*cached}));
+        if (!emitResult(ResultPayload{*cached})) {
+            finish(OperationStatus::Error, ErrorCode::CommunicationError, "op.result_failed",
+                   "Failed to deliver the operation result");
+            return;
+        }
         finish(OperationStatus::Ok, ErrorCode::None, "op.ok", "Read completed");
         return;
     }
@@ -96,9 +100,13 @@ void ReadIdentityOperation::doWork()
     m_deps.readCache.put(m_deps.cardKey, *result.snapshot);
 
     // Emit the typed identity result BEFORE Finished (strict ordering
-    // contract). It delivers inline (no sealed handoff), so delivery cannot
-    // fail — discard the always-true status.
-    static_cast<void>(emitResult(ResultPayload{*result.snapshot}));
+    // contract). Inline, but a channel can still fail to encode or post it:
+    // fail closed rather than emit Finished(Ok) with no result.
+    if (!emitResult(ResultPayload{*result.snapshot})) {
+        finish(OperationStatus::Error, ErrorCode::CommunicationError, "op.result_failed",
+               "Failed to deliver the operation result");
+        return;
+    }
     finish(OperationStatus::Ok, ErrorCode::None, std::move(result.msgKey), std::move(result.msgFallback));
 }
 

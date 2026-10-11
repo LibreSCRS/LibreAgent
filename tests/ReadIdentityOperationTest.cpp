@@ -44,8 +44,9 @@ public:
         if (const auto* snap = std::get_if<CardReadSnapshot>(&result)) {
             identityEmits.push_back(*snap);
         }
-        return true;
+        return deliver;
     }
+    bool deliver = true; ///< false models a channel that fails to encode or post
     std::vector<EmittedFinish> finishes;
     std::vector<CardReadSnapshot> identityEmits;
 };
@@ -278,4 +279,41 @@ TEST(ReadIdentityOperation, FlowErrorMapsToFinishedError)
     EXPECT_EQ(raw->finishes[0].errorCode, static_cast<std::uint32_t>(ErrorCode::ParseError));
     EXPECT_TRUE(raw->identityEmits.empty()) << "no Identity1.Result on error path";
     EXPECT_FALSE(readCache.get("card-A").has_value()) << "cache not populated on error";
+}
+
+// A result the channel fails to deliver must not finish Ok: the client would
+// get Finished(Ok) with no Result. Both the card walk and the cache hit.
+TEST(ReadIdentityOperation, UndeliveredResultFinishesErrorOnWalkAndCacheHit)
+{
+    auto holder = makeHolder();
+    FakeReader reader;
+    reader.outcome = ReadOutcome{ReadOutcome::Status::Ok, snapshotWithPhoto(), ""};
+    FakePrompter prompter;
+    PromptSerializer serializer;
+    CredentialCache credCache;
+    CardReadCache readCache;
+
+    for (int run = 0; run < 2; ++run) {
+        auto adaptor = std::make_unique<FakeOperationChannel>();
+        adaptor->deliver = false;
+        auto* raw = adaptor.get();
+        ReadIdentityOperation op(std::move(adaptor),
+                                 ReadIdentityOperation::Deps{
+                                     .holder = holder.get(),
+                                     .reader = reader,
+                                     .depositor = depositor,
+                                     .prompter = prompter,
+                                     .serializer = serializer,
+                                     .credentials = credCache,
+                                     .readCache = readCache,
+                                     .cardKey = "card-A",
+                                     .readerName = "FakeReader",
+                                 },
+                                 std::make_shared<OperationState>());
+        op.runOnWorker();
+        ASSERT_EQ(raw->finishes.size(), 1u) << "run " << run;
+        EXPECT_EQ(raw->finishes[0].status, static_cast<std::uint32_t>(OperationStatus::Error));
+        EXPECT_EQ(raw->finishes[0].errorCode, static_cast<std::uint32_t>(ErrorCode::CommunicationError));
+    }
+    EXPECT_EQ(reader.reads, 1) << "the second run was the cache hit";
 }

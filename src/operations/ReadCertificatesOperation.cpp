@@ -42,7 +42,11 @@ void ReadCertificatesOperation::doWork()
         if (shutdownRequested()) {
             return;
         }
-        static_cast<void>(emitResult(ResultPayload{*cached}));
+        if (!emitResult(ResultPayload{*cached})) {
+            finish(OperationStatus::Error, ErrorCode::CommunicationError, "op.result_failed",
+                   "Failed to deliver the operation result");
+            return;
+        }
         finish(OperationStatus::Ok, ErrorCode::None, "op.ok", "Certificates returned");
         return;
     }
@@ -85,9 +89,13 @@ void ReadCertificatesOperation::doWork()
     m_deps.readCache.putCertificates(m_deps.cardKey, result.certs);
 
     // Emit the typed certificate result BEFORE Finished (strict ordering
-    // contract). It delivers inline (no sealed handoff), so delivery cannot
-    // fail — discard the always-true status.
-    static_cast<void>(emitResult(ResultPayload{result.certs}));
+    // contract). Inline, but a channel can still fail to encode or post it:
+    // fail closed rather than emit Finished(Ok) with no result.
+    if (!emitResult(ResultPayload{result.certs})) {
+        finish(OperationStatus::Error, ErrorCode::CommunicationError, "op.result_failed",
+               "Failed to deliver the operation result");
+        return;
+    }
     finish(OperationStatus::Ok, ErrorCode::None, std::move(result.msgKey), std::move(result.msgFallback));
 }
 

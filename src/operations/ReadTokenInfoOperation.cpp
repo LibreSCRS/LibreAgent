@@ -67,9 +67,13 @@ void ReadTokenInfoOperation::doWork()
     // Emit the typed identity result BEFORE Finished (strict ordering contract)
     // — the EXISTING result shape, no new interface: a single "token" group, or
     // an empty one (zero fields) for an unsupported/best-effort-miss plugin,
-    // which is still SUCCESS. It delivers inline (no sealed handoff), so
-    // delivery cannot fail — discard the always-true status.
-    static_cast<void>(emitResult(ResultPayload{*result.snapshot}));
+    // which is still SUCCESS. Inline, but a channel can still fail to encode or
+    // post it: fail closed rather than emit Finished(Ok) with no result.
+    if (!emitResult(ResultPayload{*result.snapshot})) {
+        finish(OperationStatus::Error, ErrorCode::CommunicationError, "op.result_failed",
+               "Failed to deliver the operation result");
+        return;
+    }
     finish(OperationStatus::Ok, ErrorCode::None, std::move(result.msgKey), std::move(result.msgFallback));
 }
 
