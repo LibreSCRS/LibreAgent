@@ -220,12 +220,17 @@ void OperationBase::armWatchdogIfNeeded(std::uint32_t newPhase)
         // Watchdog disabled (0 = no timeout). Do not start the thread.
         return;
     }
-    m_watchdog = std::jthread([this, timeoutSec](std::stop_token st) {
+    m_watchdog = std::jthread([this, timeoutSec, wait = m_watchdogWaitForTest](std::stop_token st) {
         std::unique_lock lock(m_watchdogMutex);
         const auto stoppedOrFinished = [this, &st] {
             return st.stop_requested() || m_finished.load(std::memory_order_acquire);
         };
-        m_watchdogCv.wait_for(lock, st, std::chrono::seconds{timeoutSec}, stoppedOrFinished);
+        const std::chrono::seconds timeout{timeoutSec};
+        if (wait) {
+            wait(lock, st, timeout, stoppedOrFinished);
+        } else {
+            m_watchdogCv.wait_for(lock, st, timeout, stoppedOrFinished);
+        }
         // Re-ask the predicate instead of trusting the return value: libstdc++
         // returns false, not pred(), when the stop lands between its entry check
         // and its internal lock, so a disarm would read as an expiry.

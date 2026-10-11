@@ -197,6 +197,35 @@ private:
     int m_cycles;
 };
 
+// Arms, disarms on consent, re-arms for Reading, with a wait that answers the way
+// libstdc++ can when the stop lands inside it: woken, it still returns false.
+class StopReadsAsExpiryOp final : public OperationBase
+{
+public:
+    StopReadsAsExpiryOp(std::unique_ptr<OperationChannel> a, std::shared_ptr<OperationState> s)
+        : OperationBase(std::move(a), std::move(s))
+    {
+        setWatchdogWaitForTest([](std::unique_lock<std::mutex>& lock, std::stop_token, std::chrono::seconds,
+                                  const std::function<bool()>& stoppedOrFinished) {
+            lock.unlock();
+            while (!stoppedOrFinished()) {
+                std::this_thread::sleep_for(1ms);
+            }
+            lock.lock();
+            return false;
+        });
+    }
+
+protected:
+    void doWork() override
+    {
+        setPhase(static_cast<std::uint32_t>(OperationPhase::Authenticating));
+        setPhase(static_cast<std::uint32_t>(OperationPhase::AwaitingConsent));
+        setPhase(static_cast<std::uint32_t>(OperationPhase::Reading));
+        finish(OperationStatus::Ok, ErrorCode::None, "op.ok", "ok");
+    }
+};
+
 } // namespace
 
 // The regression this file exists to hold: a hung operation the watchdog killed
@@ -598,7 +627,8 @@ TEST(Watchdog, ADisarmRightAfterAnArmIsNeverATimeout)
     // must never read as an expiry: the standard library's stop-token wait can
     // report "predicate false" when the stop lands inside it, and a watchdog
     // that trusted that answer fired a spurious timeout on a healthy operation.
-    // Two hundred back-to-back cycles make that window certain to be hit.
+    // Two hundred cycles give the real library a chance at that window, not a
+    // certainty; the test below forces it on every run.
     CapturedFinish slot;
     auto state = std::make_shared<OperationState>();
     state->watchdogTimeoutSec.store(60u, std::memory_order_release);
@@ -609,4 +639,17 @@ TEST(Watchdog, ADisarmRightAfterAnArmIsNeverATimeout)
     EXPECT_EQ(slot.status.load(std::memory_order_acquire), static_cast<std::uint32_t>(OperationStatus::Ok));
     EXPECT_EQ(slot.errorCode.load(std::memory_order_acquire), static_cast<std::uint32_t>(ErrorCode::None));
     EXPECT_EQ(op.watchdogArmAttempts(), 201u);
+}
+
+TEST(Watchdog, AStopThatTheWaitReportsAsExpiryIsNeverATimeout)
+{
+    CapturedFinish slot;
+    auto state = std::make_shared<OperationState>();
+    state->watchdogTimeoutSec.store(60u, std::memory_order_release);
+
+    StopReadsAsExpiryOp op(std::make_unique<CapturingChannel>(slot), state);
+    op.runOnWorker();
+
+    EXPECT_EQ(slot.status.load(std::memory_order_acquire), static_cast<std::uint32_t>(OperationStatus::Ok));
+    EXPECT_EQ(slot.errorCode.load(std::memory_order_acquire), static_cast<std::uint32_t>(ErrorCode::None));
 }

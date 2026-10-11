@@ -10,11 +10,13 @@
 #include <LibreSCRS/Agent/operations/Seams.h> // OperationPhaseSink
 #include <LibreSCRS/CancelToken.h>
 #include <atomic>
+#include <chrono>
 #include <condition_variable>
 #include <cstdint>
 #include <functional>
 #include <memory>
 #include <mutex>
+#include <stop_token>
 #include <string>
 #include <thread>
 #include <vector>
@@ -201,6 +203,16 @@ protected:
     // Subclass implements the actual work. Runs on the worker thread.
     virtual void doWork() = 0;
 
+    // Test-only: replaces the watchdog timer's stop-token wait. Its return is not
+    // a verdict (libstdc++ can return false when the stop lands inside the wait),
+    // so a test can force that false on every run. Set before the op runs.
+    using WatchdogWait = std::function<bool(std::unique_lock<std::mutex>&, std::stop_token, std::chrono::seconds,
+                                            const std::function<bool()>&)>;
+    void setWatchdogWaitForTest(WatchdogWait wait)
+    {
+        m_watchdogWaitForTest = std::move(wait);
+    }
+
     // True once the agent-wide shutdown-cancel token bound via
     // bindShutdownToken() has fired. doWork() consults it AFTER the flow returns
     // to SKIP the wire completion (finish / Result emit): the reply channel + the
@@ -320,6 +332,7 @@ private:
     std::mutex m_watchdogMutex;
     std::condition_variable_any m_watchdogCv;
     std::jthread m_watchdog;
+    WatchdogWait m_watchdogWaitForTest;
 
     // Agent-wide shutdown-cancel token (default = never-cancellable). Observed by
     // shutdownRequested(); its callback trips this op's cancel source. Declared
