@@ -5,7 +5,27 @@
 
 #include <QDir>
 
+// The team is a compiled constant, never read from the environment: every
+// target that compiles this file must say which team it was built for, even
+// when that is none.
+#ifndef LIBRESCRS_TEAM_ID
+#error "LIBRESCRS_TEAM_ID must be defined (empty for a build without a team)"
+#endif
+
 namespace LibreSCRS::AgentClient {
+
+QString appGroupFor(QStringView team)
+{
+    if (team.isEmpty()) {
+        return QStringLiteral("group.org.librescrs.LibreMac");
+    }
+    return team.toString() + QStringLiteral(".org.librescrs.LibreMac");
+}
+
+QString agentAppGroupIdentifier()
+{
+    return appGroupFor(QStringLiteral(LIBRESCRS_TEAM_ID));
+}
 
 QString resolveAgentSocketPath()
 {
@@ -26,7 +46,7 @@ QString resolveAgentSocketPath()
     // Swift client's last-resort spelling of the same location). Documentation
     // only, not checked by any gate: the Swift client's own path lives in a
     // repository outside this project's canonical-types registry.
-    return QDir::homePath() + QStringLiteral("/Library/Group Containers/") + QLatin1String(kAgentAppGroupIdentifier) +
+    return QDir::homePath() + QStringLiteral("/Library/Group Containers/") + agentAppGroupIdentifier() +
            QStringLiteral("/agent.sock");
 #else
     // No production default on this platform: the socket transport is built

@@ -467,6 +467,7 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux" OR CMAKE_SYSTEM_NAME STREQUAL "Darwin")
         ${CMAKE_CURRENT_SOURCE_DIR}/../src/socket/SocketTransport.h
         ClientTestMain.cpp)
     set_target_properties(ClientQtSocketIntegrationTest PROPERTIES AUTOMOC ON)
+    target_compile_definitions(ClientQtSocketIntegrationTest PRIVATE LIBRESCRS_TEAM_ID="${LIBRESCRS_TEAM_ID}")
     target_include_directories(ClientQtSocketIntegrationTest PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
     target_link_libraries(ClientQtSocketIntegrationTest PRIVATE
         LibreAgent::ClientQt
@@ -511,6 +512,7 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
         ${CMAKE_CURRENT_SOURCE_DIR}/../src/socket/SocketTransport.h
         ClientTestMain.cpp)
     set_target_properties(ClientQtTransportParityTest PROPERTIES AUTOMOC ON)
+    target_compile_definitions(ClientQtTransportParityTest PRIVATE LIBRESCRS_TEAM_ID="${LIBRESCRS_TEAM_ID}")
     target_include_directories(ClientQtTransportParityTest PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
     target_link_libraries(ClientQtTransportParityTest PRIVATE
         LibreAgent::ClientQt

@@ -34,6 +34,7 @@
 #include <QCoreApplication>
 #include <QCryptographicHash>
 #include <QDeadlineTimer>
+#include <QDir>
 #include <QElapsedTimer>
 #include <QEventLoop>
 #include <QMetaObject>
@@ -304,6 +305,30 @@ TEST(SocketIntegration, SocketPathResolutionOrder)
     if (!saved.isEmpty()) {
         qputenv(kAgentSocketEnvVar, saved);
     }
+}
+
+// The App Group is named after the signing team: macOS 27 refuses an
+// unprovisioned "group." container to a sandboxed process. Without a team (CI,
+// tests) it keeps "group.". The expectations are literals on purpose -- the
+// test must not share the rule with the code under test.
+TEST(SocketIntegration, AppGroupIsNamedAfterTheTeam)
+{
+    EXPECT_EQ(appGroupFor(u"").toStdString(), "group.org.librescrs.LibreMac");
+    EXPECT_EQ(appGroupFor(u"ABCDE12345").toStdString(), "ABCDE12345.org.librescrs.LibreMac");
+#if defined(Q_OS_MACOS)
+    const QByteArray saved = qgetenv(kAgentSocketEnvVar);
+    qunsetenv(kAgentSocketEnvVar);
+    // The rule restated from the build's team, not read back from the code under test.
+    const QString group = QStringLiteral(LIBRESCRS_TEAM_ID).isEmpty()
+                              ? QStringLiteral("group.org.librescrs.LibreMac")
+                              : QStringLiteral(LIBRESCRS_TEAM_ID) + QStringLiteral(".org.librescrs.LibreMac");
+    const QString expected =
+        QDir::homePath() + QStringLiteral("/Library/Group Containers/") + group + QStringLiteral("/agent.sock");
+    EXPECT_EQ(resolveAgentSocketPath().toStdString(), expected.toStdString());
+    if (!saved.isEmpty()) {
+        qputenv(kAgentSocketEnvVar, saved);
+    }
+#endif
 }
 
 // ---- production transport selection -------------------------------------------

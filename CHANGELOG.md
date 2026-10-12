@@ -158,6 +158,12 @@ Three targets ship, each independently usable:
   cards. It now opens the same App-Group socket connection the macOS
   agent host listens on, the same way the Linux build already opens a
   D-Bus connection — no application code changes to pick it up.
+  The App Group that holds that socket is named after the Apple team
+  the client is built for, set with the `LIBRESCRS_TEAM_ID` CMake cache
+  variable (`<TEAM>.org.librescrs.LibreMac`; empty, the default, keeps
+  `group.org.librescrs.LibreMac`). macOS 27 refuses an unprovisioned
+  `group.` container to a sandboxed process, so a release build must
+  name the same team as the agent it talks to.
 - **Country-signing (CSCA) trust-anchor import is platform-neutral.**
   Turning a signed ICAO master list into trust anchors — and the
   trust-on-first-use, signer-pinning and rotation judgement that

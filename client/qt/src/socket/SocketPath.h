@@ -18,6 +18,7 @@
 //      environment override — so resolution yields an empty path, which the
 //      transport treats as "no agent socket on this system".
 #include <QString>
+#include <QStringView>
 
 namespace LibreSCRS::AgentClient {
 
@@ -25,9 +26,17 @@ namespace LibreSCRS::AgentClient {
 /// client's AgentSocketPath.environmentOverrideKey).
 inline constexpr const char* kAgentSocketEnvVar = "LIBRESCRS_AGENT_SOCK";
 
-/// The macOS App Group shared by the host application, its CryptoTokenKit
-/// extension, and the agent.
-inline constexpr const char* kAgentAppGroupIdentifier = "group.org.librescrs.LibreMac";
+/// @brief The macOS App Group shared by the host application, its
+///        CryptoTokenKit extension, and the agent, for a signing team.
+///
+/// Named after the team, because macOS 27 refuses an unprovisioned `group.`
+/// container to a sandboxed process; an empty team (CI, tests) keeps the
+/// `group.` spelling. The same rule as the agent's and the Swift client's.
+[[nodiscard]] QString appGroupFor(QStringView team);
+
+/// @brief The App Group of the team this build was configured with
+///        (the LIBRESCRS_TEAM_ID CMake cache variable).
+[[nodiscard]] QString agentAppGroupIdentifier();
 
 /// @brief Resolve the agent socket path in the documented order. Empty when
 ///        no override is set and the platform has no production default.

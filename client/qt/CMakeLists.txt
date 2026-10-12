@@ -49,6 +49,20 @@ target_sources(LibreAgentClientQt PRIVATE
     src/socket/SocketTransport.cpp
     src/socket/SocketTransport.h)
 
+# The Apple team the macOS client is built for: the App Group container that
+# holds the agent's socket is named after it (empty: "group.", a build for CI
+# and tests). A compiled constant, never read from the environment. The same
+# cache variable the macOS agent reads, so a build that pulls both in sets the
+# team once.
+set(LIBRESCRS_TEAM_ID "" CACHE STRING
+    "Apple Team ID the App Group holding the agent socket is named after (empty: group.)")
+if(NOT LIBRESCRS_TEAM_ID STREQUAL "" AND NOT LIBRESCRS_TEAM_ID MATCHES "^[A-Z0-9]+$")
+    message(FATAL_ERROR "LIBRESCRS_TEAM_ID must be upper-case letters and digits, got '${LIBRESCRS_TEAM_ID}'")
+endif()
+# PRIVATE: no header carries the macro. The test binaries that compile
+# SocketPath.cpp directly set the same definition (client/qt/tests/).
+target_compile_definitions(LibreAgentClientQt PRIVATE LIBRESCRS_TEAM_ID="${LIBRESCRS_TEAM_ID}")
+
 # The D-Bus transport: Linux-only, matching the Linux-only Qt6::DBus
 # dependency below (the socket transport above is the macOS production path).
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
