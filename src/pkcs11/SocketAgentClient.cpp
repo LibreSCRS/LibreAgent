@@ -8,6 +8,7 @@
 #include <LibreSCRS/Agent/wire/Messages.h>
 #include <LibreSCRS/Agent/wire/SyncError.h>
 
+#include <fcntl.h>
 #include <sys/socket.h>
 #include <sys/time.h>
 #include <sys/un.h>
@@ -137,6 +138,9 @@ struct SocketAgentClient::Impl
         const int s = ::socket(AF_UNIX, SOCK_STREAM, 0);
         if (s < 0)
             return false;
+        // The module lives inside whatever process loaded it; a child that
+        // process spawns must not inherit a connection holding its lease.
+        (void)::fcntl(s, F_SETFD, FD_CLOEXEC);
         sockaddr_un addr{};
         addr.sun_family = AF_UNIX;
         if (path.empty() || path.size() >= sizeof(addr.sun_path)) {
@@ -150,7 +154,15 @@ struct SocketAgentClient::Impl
         }
         // Who is at the other end is decided before anything is sent: a
         // refusal here costs the peer nothing it could learn from.
-        if (peerCheck && !peerCheck(s)) {
+        bool accepted = !peerCheck;
+        if (peerCheck) {
+            try {
+                accepted = peerCheck(s);
+            } catch (...) {
+                accepted = false;
+            }
+        }
+        if (!accepted) {
             ::close(s);
             return false;
         }

@@ -47,6 +47,9 @@ struct SocketTimeouts
 /// connects and asks again, so a refusal never outlives the connection it was
 /// about. Empty: no check. A snapshot already cached stays: it came from a
 /// connection that was checked.
+///
+/// It may run with the client's call lock held, so it must not call back into
+/// the client. An exception it throws counts as a refusal.
 using PeerCheck = std::function<bool(int connectedFd)>;
 
 /// @brief Blocking, single-threaded AgentClient over the framed CBOR wire.

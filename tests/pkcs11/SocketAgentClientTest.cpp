@@ -10,7 +10,10 @@
 #include <gtest/gtest.h>
 
 #include <chrono>
+#include <stdexcept>
 #include <string>
+
+#include <fcntl.h>
 
 #if defined(__linux__)
 #include <dirent.h>
@@ -276,6 +279,38 @@ TEST(SocketAgentClient, APeerCheckThatRefusesSendsNothingAndReportsDeviceRemoved
     // Refused before the handshake: the peer never saw a request.
     EXPECT_EQ(fake.callCount(T::Call::Hello), 0);
     EXPECT_EQ(fake.callCount(T::Call::PkSignRaw), 0);
+}
+
+TEST(SocketAgentClient, APeerCheckThatThrowsIsARefusal)
+{
+    T::FakeSocketAgent fake;
+    fake.addReader("r1", /*hasCard=*/true, "c1");
+    fake.addCert("c1", "certid-1");
+    fake.start();
+
+    P::SocketAgentClient client{fake.path(), kFastBudgets,
+                                [](int) -> bool { throw std::runtime_error{"peer lookup failed"}; }};
+    EXPECT_FALSE(client.connected());
+    EXPECT_EQ(client.login("r1").status, P::Status::DeviceRemoved);
+    EXPECT_EQ(fake.callCount(T::Call::Hello), 0);
+}
+
+TEST(SocketAgentClient, TheAgentSocketIsNotInheritedByAChildProcess)
+{
+    T::FakeSocketAgent fake;
+    fake.addReader("r1", /*hasCard=*/true, "c1");
+    fake.start();
+
+    // The peer check is handed the connected descriptor, which is the one
+    // place a test can see it.
+    int fdFlags = -1;
+    P::SocketAgentClient client{fake.path(), kFastBudgets, [&fdFlags](int fd) {
+                                    fdFlags = ::fcntl(fd, F_GETFD);
+                                    return true;
+                                }};
+    ASSERT_TRUE(client.connected());
+    ASSERT_GE(fdFlags, 0);
+    EXPECT_NE(fdFlags & FD_CLOEXEC, 0);
 }
 
 TEST(SocketAgentClient, APeerCheckRunsOnEveryConnectAndARefusalDoesNotStick)

@@ -4,8 +4,8 @@
 // librescrs-pkcs11-agent — a standalone, Qt-free, libcrypto-free PKCS#11
 // v2.40 module that implements the C_* ABI by brokering to the per-user
 // librescrs-agent through an AgentClient (D-Bus on Linux, a Unix socket on
-// macOS). It holds NO card connection and NO
-// secret: every real crypto operation is performed on-card by the agent.
+// macOS). It holds NO card connection and NO secret: every real crypto
+// operation is performed on-card by the agent.
 //
 // PIN/CAN are collected by the agent's prompter, so every token advertises
 // CKF_PROTECTED_AUTHENTICATION_PATH and the application PIN passed to C_Login is
