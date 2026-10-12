@@ -512,7 +512,10 @@ jobs:
 
       - name: Install build tools
         # bash: the test scripts use bash 4 features and macOS ships 3.2.
-        run: brew install ninja googletest bash opensc openssl@3
+        # pkcs11-tool: without it the RPC smoke test skips instead of failing.
+        run: |
+          brew install ninja googletest bash opensc openssl@3
+          command -v pkcs11-tool
 
       - name: Configure (Core OFF, Wire + both pkcs11 components ON, LibreMiddleware disabled)
         # No -DLIBRESCRS_AGENT_WERROR=ON, unlike the Linux job:
