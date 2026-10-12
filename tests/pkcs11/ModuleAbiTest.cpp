@@ -95,6 +95,7 @@ TEST(ModuleAbi, GetTokenInfoReportsProtectedAuthPathAndPresent)
     ASSERT_EQ(m.fn->C_GetTokenInfo(slot, &ti), CKR_OK);
     EXPECT_TRUE(ti.flags & CKF_PROTECTED_AUTHENTICATION_PATH);
     EXPECT_TRUE(ti.flags & CKF_LOGIN_REQUIRED);
+    EXPECT_TRUE(ti.flags & CKF_USER_PIN_INITIALIZED); // NSS offers only "set password" without it
 
     CK_SLOT_INFO si{};
     ASSERT_EQ(m.fn->C_GetSlotInfo(slot, &si), CKR_OK);

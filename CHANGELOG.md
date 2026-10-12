@@ -251,6 +251,9 @@ Three targets ship, each independently usable:
 
 ### Fixed
 
+- **Firefox showed the PKCS#11 tokens as uninitialized and would not log in.** The
+  token info now reports the user PIN as initialized.
+
 - **A refused handshake no longer leaves the client unable to reconnect for the
   rest of the process.** The socket stayed open after the agent refused the
   handshake, so every later attempt failed on it; it is now closed.

@@ -345,7 +345,10 @@ CK_DECLARE_FUNCTION(CK_RV, C_GetTokenInfo)(CK_SLOT_ID slotID, CK_TOKEN_INFO_PTR 
     padField(pInfo->serialNumber, sizeof(pInfo->serialNumber), slot->tokenSerial);
     // The agent prompter is the protected authentication path; login is required
     // before any private-key op. Token present is implicit (checked above).
-    pInfo->flags = CKF_TOKEN_INITIALIZED | CKF_LOGIN_REQUIRED | CKF_PROTECTED_AUTHENTICATION_PATH;
+    // The issuer initialized the card's PIN; without CKF_USER_PIN_INITIALIZED NSS
+    // treats the token as needing a user PIN set and disables login.
+    pInfo->flags =
+        CKF_TOKEN_INITIALIZED | CKF_USER_PIN_INITIALIZED | CKF_LOGIN_REQUIRED | CKF_PROTECTED_AUTHENTICATION_PATH;
     pInfo->ulMaxSessionCount = CK_EFFECTIVELY_INFINITE;
     pInfo->ulSessionCount = CK_UNAVAILABLE_INFORMATION;
     pInfo->ulMaxRwSessionCount = CK_EFFECTIVELY_INFINITE;
