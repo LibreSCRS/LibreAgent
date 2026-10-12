@@ -14,10 +14,6 @@ Notable user-visible changes per release. Format follows
   credential or a request reaches it. Without the check, behaviour is as
   before.
 
-- **A refused handshake no longer leaves the client unable to reconnect for the
-  rest of the process.** The socket stayed open after the agent refused the
-  handshake, so every later attempt failed on it; it is now closed.
-
 - **The PKCS#11 facade is built and tested on macOS in CI**, alongside Linux.
 
 - **Every release carries a source tarball this project built.** The Arch
@@ -252,6 +248,17 @@ Three targets ship, each independently usable:
   recover silently either: its next operation reuses the cached session, asks
   the card nothing, and fails on the card's own answer, which surfaces as a
   communication error rather than as a repowered card.
+
+### Fixed
+
+- **A refused handshake no longer leaves the client unable to reconnect for the
+  rest of the process.** The socket stayed open after the agent refused the
+  handshake, so every later attempt failed on it; it is now closed.
+
+- **The PKCS#11 module's agent socket is no longer inherited by a child of
+  the process that loaded it**, so a spawned helper cannot keep alive a
+  connection that holds the loader's lease. A peer check that throws now
+  counts as a refusal instead of leaking the socket.
 
 ### Security
 
