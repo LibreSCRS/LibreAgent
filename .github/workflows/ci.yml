@@ -493,6 +493,54 @@ jobs:
           build-dir: build
           floor: ci/test-floor.pkcs11-facade.txt
 
+  pkcs11-facade-macos:
+    # The PKCS#11 facade on Apple Clang: the Apple branch of
+    # cmake/Pkcs11ModuleExport.cmake, which the module macOS ships is built
+    # from, is otherwise never configured in CI. Same shape as pkcs11-facade
+    # (no card stack, no Qt, no bus), on the same runner image as client-macos.
+    #
+    # check-pkcs11-facade.sh is not run: it reads ELF, and the Linux job keeps it.
+    timeout-minutes: 20
+    name: pkcs11-facade (macOS)
+    runs-on: macos-15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install build tools
+        # bash: the test scripts use bash 4 features and macOS ships 3.2.
+        run: brew install ninja googletest bash opensc openssl@3
+
+      - name: Configure (Core OFF, Wire + both pkcs11 components ON, LibreMiddleware disabled)
+        # No -DLIBRESCRS_AGENT_WERROR=ON, unlike the Linux job:
+        # -Wshorten-64-to-32 fires on src/wire/Framing.cpp's CMSG_SPACE/CMSG_LEN
+        # use under AppleClang, a pre-existing warning.
+        run: |
+          cmake -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+            -DLIBREAGENT_BUILD_CORE=OFF \
+            -DLIBREAGENT_BUILD_WIRE=ON \
+            -DLIBREAGENT_BUILD_PKCS11_FACADE=ON \
+            -DLIBREAGENT_BUILD_PKCS11_SOCKET_CLIENT=ON \
+            -DCMAKE_DISABLE_FIND_PACKAGE_LibreMiddleware=ON \
+            -DOPENSSL_ROOT_DIR="$(brew --prefix openssl@3)"
+
+      - name: Build
+        run: cmake --build build -j4
+
+      - name: Test
+        run: ctest --test-dir build --output-on-failure --no-tests=error
+
+      - name: Every test binary still registers its tests
+        uses: LibreSCRS/ci/actions/gates@261a41fb5b6dc060ab18e0ead6dd2b065755ed8e
+        with:
+          gates: test-floor
+          build-dir: build
+          floor: ci/test-floor.pkcs11-facade-macos.txt
+
   wire-asan-macos:
     # The wire codec on Apple Clang, under AddressSanitizer. It exists because a
     # CborValue holding a Map was left addressing a freed buffer when a growing
