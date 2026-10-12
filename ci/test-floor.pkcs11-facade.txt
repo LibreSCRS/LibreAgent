@@ -21,6 +21,6 @@ ScmRightsSpikeTest 4
 SecurityTest 6
 SnapshotParityTest 4
 SocketAgentClientContractTest 6
-SocketAgentClientTest 10
+SocketAgentClientTest 14
 WireHeadersTest 1
 pkcs11_tool_rpc_socket.sh 1

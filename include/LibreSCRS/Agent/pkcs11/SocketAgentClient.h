@@ -12,6 +12,7 @@
 #include <LibreSCRS/Agent/pkcs11/AgentClient.h>
 
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <string>
 
@@ -39,6 +40,15 @@ struct SocketTimeouts
     int interactiveSecs = kInteractiveTimeoutSecs;
 };
 
+/// @brief Asked about every newly connected socket before a byte is sent on it.
+///
+/// Receives the connected descriptor; returning false closes that socket and the
+/// call fails as if no agent were running (Status::DeviceRemoved). The next call
+/// connects and asks again, so a refusal never outlives the connection it was
+/// about. Empty: no check. A snapshot already cached stays: it came from a
+/// connection that was checked.
+using PeerCheck = std::function<bool(int connectedFd)>;
+
 /// @brief Blocking, single-threaded AgentClient over the framed CBOR wire.
 ///
 /// Deliberately has NO reader thread and NO event subscription: presence is
@@ -55,7 +65,8 @@ public:
     ///        container really is) is resolved by the host that already knows
     ///        it, and a default here would be a second, wrong answer on exactly
     ///        that platform.
-    explicit SocketAgentClient(std::string socketPath, SocketTimeouts timeouts = {});
+    /// @param peerCheck optional; see PeerCheck.
+    explicit SocketAgentClient(std::string socketPath, SocketTimeouts timeouts = {}, PeerCheck peerCheck = {});
     ~SocketAgentClient() override;
 
     [[nodiscard]] bool connected() const noexcept override;

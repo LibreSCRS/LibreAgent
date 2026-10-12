@@ -83,6 +83,7 @@ struct SocketAgentClient::Impl
 {
     std::string path;
     SocketTimeouts budgets;
+    PeerCheck peerCheck;
     int fd = -1;
     bool handshakeOk = false;
     std::uint64_t nextRequestId = 1;
@@ -144,6 +145,12 @@ struct SocketAgentClient::Impl
         }
         std::memcpy(addr.sun_path, path.c_str(), path.size() + 1);
         if (::connect(s, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0) {
+            ::close(s);
+            return false;
+        }
+        // Who is at the other end is decided before anything is sent: a
+        // refusal here costs the peer nothing it could learn from.
+        if (peerCheck && !peerCheck(s)) {
             ::close(s);
             return false;
         }
@@ -271,10 +278,12 @@ struct SocketAgentClient::Impl
     }
 };
 
-SocketAgentClient::SocketAgentClient(std::string socketPath, SocketTimeouts timeouts) : m_impl(std::make_unique<Impl>())
+SocketAgentClient::SocketAgentClient(std::string socketPath, SocketTimeouts timeouts, PeerCheck peerCheck)
+    : m_impl(std::make_unique<Impl>())
 {
     m_impl->path = std::move(socketPath);
     m_impl->budgets = timeouts;
+    m_impl->peerCheck = std::move(peerCheck);
     (void)m_impl->connect();
 }
 

@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 // SPDX-FileCopyrightText: 2026 hirashix0
 //
-// librescrs-pkcs11-agent.so — a standalone, Qt-free, libcrypto-free PKCS#11
+// librescrs-pkcs11-agent — a standalone, Qt-free, libcrypto-free PKCS#11
 // v2.40 module that implements the C_* ABI by brokering to the per-user
-// librescrs-agent over D-Bus (sdbus-c++). It holds NO card connection and NO
+// librescrs-agent through an AgentClient (D-Bus on Linux, a Unix socket on
+// macOS). It holds NO card connection and NO
 // secret: every real crypto operation is performed on-card by the agent.
 //
 // PIN/CAN are collected by the agent's prompter, so every token advertises
@@ -14,7 +15,7 @@
 //
 // Layout: this file owns the C ABI surface + the static function-list table;
 // SessionState owns the session/object/cursor bookkeeping; AgentClient is the
-// bus proxy; ObjectModel is the pure slot/token/object/mechanism mapping.
+// transport to the agent; ObjectModel is the pure slot/token/object/mechanism mapping.
 
 #include <LibreSCRS/Agent/pkcs11/AgentClient.h>
 #include <LibreSCRS/Agent/pkcs11/AgentClientFactory.h>

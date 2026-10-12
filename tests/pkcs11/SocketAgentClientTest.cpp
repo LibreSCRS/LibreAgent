@@ -256,6 +256,63 @@ TEST(SocketAgentClient, ARefusedHandshakeIsRetriedOnTheNextCall)
     EXPECT_TRUE(client.connected());
 }
 
+TEST(SocketAgentClient, APeerCheckThatRefusesSendsNothingAndReportsDeviceRemoved)
+{
+    T::FakeSocketAgent fake;
+    fake.addReader("r1", /*hasCard=*/true, "c1");
+    fake.addCert("c1", "certid-1");
+    fake.start();
+
+    int seenFd = -1;
+    P::SocketAgentClient client{fake.path(), kFastBudgets, [&seenFd](int fd) {
+                                    seenFd = fd;
+                                    return false;
+                                }};
+    EXPECT_FALSE(client.connected());
+    EXPECT_GE(seenFd, 0);
+    EXPECT_TRUE(client.snapshot().readers.empty());
+    EXPECT_EQ(client.login("r1").status, P::Status::DeviceRemoved);
+    EXPECT_EQ(client.signRaw("r1", "certid-1", std::vector<std::uint8_t>{1, 2, 3}).status, P::Status::DeviceRemoved);
+    // Refused before the handshake: the peer never saw a request.
+    EXPECT_EQ(fake.callCount(T::Call::Hello), 0);
+    EXPECT_EQ(fake.callCount(T::Call::PkSignRaw), 0);
+}
+
+TEST(SocketAgentClient, APeerCheckRunsOnEveryConnectAndARefusalDoesNotStick)
+{
+    T::FakeSocketAgent fake;
+    fake.addReader("r1", /*hasCard=*/true, "c1");
+    fake.addCert("c1", "certid-1");
+    fake.start();
+
+    int calls = 0;
+    bool allow = false;
+    P::SocketAgentClient client{fake.path(), kFastBudgets, [&](int) {
+                                    ++calls;
+                                    return allow;
+                                }};
+    EXPECT_FALSE(client.connected());
+    EXPECT_EQ(calls, 1);
+
+    allow = true;
+    EXPECT_EQ(client.snapshot().readers.size(), 1U);
+    EXPECT_EQ(calls, 2);
+    EXPECT_TRUE(client.connected());
+}
+
+TEST(SocketAgentClient, APeerCheckThatAcceptsLeavesTheCallsAsTheyWere)
+{
+    T::FakeSocketAgent fake;
+    fake.addReader("r1", /*hasCard=*/true, "c1");
+    fake.addCert("c1", "certid-1");
+    fake.start();
+
+    P::SocketAgentClient client{fake.path(), kFastBudgets, [](int) { return true; }};
+    ASSERT_TRUE(client.connected());
+    EXPECT_EQ(client.snapshot().readers.size(), 1U);
+    EXPECT_EQ(fake.callCount(T::Call::Hello), 1);
+}
+
 TEST(SocketAgentClient, MapsEveryRefusalTheWireHasANameFor)
 {
     // The refusal table is the part with no compiler holding it, so every
