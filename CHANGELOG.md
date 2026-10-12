@@ -7,6 +7,19 @@ Notable user-visible changes per release. Format follows
 
 ### Added
 
+- **`SocketAgentClient` can check who serves the agent socket.** It takes an
+  optional check of the serving process, run on every connect before any byte
+  is sent, so a host that knows what the agent should look like (a code
+  signature, say) can refuse an impostor listening on the socket before a
+  credential or a request reaches it. Without the check, behaviour is as
+  before.
+
+- **A refused handshake no longer leaves the client unable to reconnect for the
+  rest of the process.** The socket stayed open after the agent refused the
+  handshake, so every later attempt failed on it; it is now closed.
+
+- **The PKCS#11 facade is built and tested on macOS in CI**, alongside Linux.
+
 - **Every release carries a source tarball this project built.** The Arch
   recipe fetches that asset instead of the archive GitHub generates for a tag:
   the generated one omits every submodule tree, and its bytes are not ours to
