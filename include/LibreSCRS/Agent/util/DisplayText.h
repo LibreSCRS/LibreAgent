@@ -1,8 +1,10 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 // SPDX-FileCopyrightText: 2026 hirashix0
 #pragma once
+#include <cstddef>
 #include <cstdint>
 #include <span>
+#include <string_view>
 
 namespace LibreSCRS::Agent {
 
@@ -59,6 +61,22 @@ namespace LibreSCRS::Agent {
         i += cont + 1;
     }
     return true;
+}
+
+// Length of the longest prefix of @p text that fits in @p maxBytes without
+// splitting a UTF-8 code point: a cut that would land inside a multi-byte
+// sequence backs off to that sequence's lead byte, so a truncated label never
+// ends in a mojibake tail. Text that already fits is returned whole.
+[[nodiscard]] inline std::size_t utf8PrefixLength(std::string_view text, std::size_t maxBytes) noexcept
+{
+    if (text.size() <= maxBytes) {
+        return text.size();
+    }
+    std::size_t cut = maxBytes;
+    while (cut > 0 && (static_cast<unsigned char>(text[cut]) & 0xC0) == 0x80) {
+        --cut;
+    }
+    return cut;
 }
 
 } // namespace LibreSCRS::Agent

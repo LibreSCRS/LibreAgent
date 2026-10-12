@@ -71,6 +71,55 @@ TEST(SocketAgentClient, MapsGetStateOntoOneSlotPerReader)
     EXPECT_TRUE(snap.readers[1].certs.empty());
 }
 
+// Two cards in two readers must read as two tokens: a loader keys a token on
+// its label and serial, and two tokens that agree on both are one token to it.
+// The label is the holder the signing certificate names, or the reader's name
+// for a card with none; the serial is the card handle's tail.
+TEST(SocketAgentClient, NamesEachSeatedCardsTokenApart)
+{
+    T::FakeSocketAgent fake;
+    fake.addReader("obj/1", /*hasCard=*/true, "obj/3");
+    fake.addReader("obj/2", /*hasCard=*/true, "obj/4");
+    fake.addReader("obj/6", /*hasCard=*/true, "obj/7");
+    fake.addReader("obj/5");
+    fake.setReaderName("obj/6", "Reader Three");
+    fake.addCert("obj/3", "cert-1", /*signingCapable=*/true, kKeyEncipherment, "Holder One");
+    fake.addCert("obj/4", "cert-2", /*signingCapable=*/true, kKeyEncipherment, "Holder Two");
+    fake.start();
+
+    P::SocketAgentClient client{fake.path(), kFastBudgets};
+    const auto snap = client.snapshot();
+    ASSERT_EQ(snap.readers.size(), 4U);
+
+    EXPECT_EQ(snap.readers[0].tokenLabel, "Holder One");
+    EXPECT_EQ(snap.readers[0].tokenSerial, "3");
+    EXPECT_EQ(snap.readers[1].tokenLabel, "Holder Two");
+    EXPECT_EQ(snap.readers[1].tokenSerial, "4");
+    EXPECT_EQ(snap.readers[2].tokenLabel, "Reader Three") << "no certificate: the reader names the token";
+    EXPECT_EQ(snap.readers[2].tokenSerial, "7");
+
+    EXPECT_TRUE(snap.readers[3].tokenSerial.empty()) << "an empty reader has no token to name";
+}
+
+// Every reader, seated or not, carries the name the agent reports for it, and
+// keeps the handle as the key calls are addressed by.
+TEST(SocketAgentClient, CarriesEachReadersName)
+{
+    T::FakeSocketAgent fake;
+    fake.addReader("obj/1", /*hasCard=*/true, "obj/3");
+    fake.addReader("obj/2", "Empty Reader");
+    fake.setReaderName("obj/1", "Seated Reader");
+    fake.start();
+
+    P::SocketAgentClient client{fake.path(), kFastBudgets};
+    const auto snap = client.snapshot();
+    ASSERT_EQ(snap.readers.size(), 2U);
+    EXPECT_EQ(snap.readers[0].readerName, "Seated Reader");
+    EXPECT_EQ(snap.readers[0].readerPath, "obj/1");
+    EXPECT_EQ(snap.readers[1].readerName, "Empty Reader");
+    EXPECT_EQ(snap.readers[1].readerPath, "obj/2");
+}
+
 TEST(SocketAgentClient, DrivesReadCertificatesToOpFinishedAndKeepsTheList)
 {
     T::FakeSocketAgent fake;

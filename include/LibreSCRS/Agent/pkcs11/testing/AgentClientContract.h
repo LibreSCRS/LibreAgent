@@ -31,11 +31,21 @@
 //       // A reader/card the agent serves, and the id of a cert on it.
 //       static std::string reader();
 //       static std::string certId();
+//       // That reader's display name, the subject CN of that cert, and the
+//       // token serial the card's handle yields (tokenSerialFor() over the
+//       // handle the double mints).
+//       static std::string readerName();
+//       static std::string holderName();
+//       static std::string tokenSerial();
 //
 //       // An agent that serves that reader and refuses login() with `r`.
 //       static std::unique_ptr<Harness> refusingLogin(Refusal r);
 //       // An agent that serves that reader and refuses nothing.
 //       static std::unique_ptr<Harness> serving();
+//       // The same reader and card, with no certificate on the card.
+//       static std::unique_ptr<Harness> servingCardWithoutCertificate();
+//       // The same, with the signing cert's subject carrying no CN.
+//       static std::unique_ptr<Harness> servingCertWithoutCommonName();
 //       // A client with nothing on the other end at all.
 //       static std::unique_ptr<Harness> unreachable();
 //
@@ -244,9 +254,83 @@ TYPED_TEST_P(AgentClientContract, AServingAgentEnumeratesItsCard)
     EXPECT_EQ(reader->certs.front().certId, TypeParam::certId());
 }
 
+// A loader tells two seated cards apart by their token's label and serial, so
+// both transports owe the same two answers from what their agent already sends:
+// the holder named by the card's signing certificate, and the tail of the
+// card's handle as the serial. Without these, two cards both read "LibreSCRS
+// Token" with no serial, and a loader such as NSS cannot keep them apart.
+TYPED_TEST_P(AgentClientContract, ACardIsNamedAfterItsCertificateHolder)
+{
+    auto harness = TypeParam::serving();
+    ASSERT_NE(harness, nullptr);
+    const AgentSnapshot snap = harness->client().snapshot();
+
+    const std::string want = TypeParam::reader();
+    const auto reader = std::find_if(snap.readers.begin(), snap.readers.end(),
+                                     [&want](const ReaderState& r) { return r.readerPath == want; });
+    ASSERT_NE(reader, snap.readers.end()) << "the served reader is missing from the snapshot";
+    EXPECT_EQ(reader->tokenLabel, TypeParam::holderName());
+    EXPECT_EQ(reader->tokenSerial, TypeParam::tokenSerial());
+    EXPECT_FALSE(reader->tokenSerial.empty()) << "a seated card with no serial is indistinguishable from another";
+}
+
+// ...and a card with no certificate to name it after is named after the reader
+// it sits in, on both transports alike. The serial does not depend on the
+// certificates.
+TYPED_TEST_P(AgentClientContract, ACardWithoutACertificateIsNamedAfterItsReader)
+{
+    auto harness = TypeParam::servingCardWithoutCertificate();
+    ASSERT_NE(harness, nullptr);
+    const AgentSnapshot snap = harness->client().snapshot();
+
+    const std::string want = TypeParam::reader();
+    const auto reader = std::find_if(snap.readers.begin(), snap.readers.end(),
+                                     [&want](const ReaderState& r) { return r.readerPath == want; });
+    ASSERT_NE(reader, snap.readers.end()) << "the served reader is missing from the snapshot";
+    EXPECT_TRUE(reader->certs.empty());
+    EXPECT_EQ(reader->tokenLabel, TypeParam::readerName());
+    EXPECT_EQ(reader->tokenSerial, TypeParam::tokenSerial());
+}
+
+// A signing certificate whose subject has no CN names nobody: its CKA_LABEL
+// falls back to the certificate's hex id, and that is not a name to show a
+// user. The token is named after its reader, as if there were no certificate,
+// while the certificate itself still arrives.
+TYPED_TEST_P(AgentClientContract, ACertWithoutACommonNameDoesNotNameTheToken)
+{
+    auto harness = TypeParam::servingCertWithoutCommonName();
+    ASSERT_NE(harness, nullptr);
+    const AgentSnapshot snap = harness->client().snapshot();
+
+    const std::string want = TypeParam::reader();
+    const auto reader = std::find_if(snap.readers.begin(), snap.readers.end(),
+                                     [&want](const ReaderState& r) { return r.readerPath == want; });
+    ASSERT_NE(reader, snap.readers.end()) << "the served reader is missing from the snapshot";
+    ASSERT_FALSE(reader->certs.empty()) << "the served card carries no certificate";
+    EXPECT_TRUE(reader->certs.front().holderName.empty());
+    EXPECT_EQ(reader->tokenLabel, TypeParam::readerName());
+}
+
+// The reader's own name reaches the snapshot for display, beside the handle
+// every call is addressed by, on both transports alike.
+TYPED_TEST_P(AgentClientContract, AReaderCarriesItsName)
+{
+    auto harness = TypeParam::serving();
+    ASSERT_NE(harness, nullptr);
+    const AgentSnapshot snap = harness->client().snapshot();
+
+    const std::string want = TypeParam::reader();
+    const auto reader = std::find_if(snap.readers.begin(), snap.readers.end(),
+                                     [&want](const ReaderState& r) { return r.readerPath == want; });
+    ASSERT_NE(reader, snap.readers.end()) << "the served reader is missing from the snapshot";
+    EXPECT_EQ(reader->readerName, TypeParam::readerName());
+}
+
 REGISTER_TYPED_TEST_SUITE_P(AgentClientContract, EveryRefusalReachesItsOwnStatus,
                             TheRefusalsStayDistinguishableFromEachOther, ACancelledPromptIsNotAFailedOne,
                             WithNoAgentEveryCallIsDeviceRemoved, AServingAgentAnswersALease,
-                            AServingAgentEnumeratesItsCard);
+                            AServingAgentEnumeratesItsCard, ACardIsNamedAfterItsCertificateHolder,
+                            ACardWithoutACertificateIsNamedAfterItsReader, ACertWithoutACommonNameDoesNotNameTheToken,
+                            AReaderCarriesItsName);
 
 } // namespace LibreSCRS::Pkcs11Agent::Testing

@@ -89,6 +89,21 @@ struct SocketContractTraits
     {
         return "certid-1";
     }
+    // The carded addReader() names every reader alike.
+    static std::string readerName()
+    {
+        return "Fake reader";
+    }
+    // addCert()'s default subject CN.
+    static std::string holderName()
+    {
+        return "Fake Subject";
+    }
+    // The card's handle is "c1", which has no '/' to cut at.
+    static std::string tokenSerial()
+    {
+        return "c1";
+    }
 
     // PkLogin's reply is a bare ack: this wire has no lease-duration field.
     static bool carriesLeaseDuration()
@@ -99,6 +114,16 @@ struct SocketContractTraits
     static std::unique_ptr<Harness> serving()
     {
         return make({});
+    }
+
+    static std::unique_ptr<Harness> servingCardWithoutCertificate()
+    {
+        return make({}, /*withCert=*/false);
+    }
+
+    static std::unique_ptr<Harness> servingCertWithoutCommonName()
+    {
+        return make({}, /*withCert=*/true, /*subjectCn=*/"");
     }
 
     static std::unique_ptr<Harness> refusingLogin(Refusal r)
@@ -118,12 +143,15 @@ struct SocketContractTraits
     }
 
 private:
-    static std::unique_ptr<Harness> make(const std::function<void(T::FakeSocketAgent&)>& script)
+    static std::unique_ptr<Harness> make(const std::function<void(T::FakeSocketAgent&)>& script, bool withCert = true,
+                                         const std::string& subjectCn = holderName())
     {
         auto h = std::make_unique<Harness>();
         h->fake = std::make_unique<T::FakeSocketAgent>();
         h->fake->addReader(reader(), /*hasCard=*/true, "c1");
-        h->fake->addCert("c1", certId(), /*signingCapable=*/true, kKeyEncipherment);
+        if (withCert) {
+            h->fake->addCert("c1", certId(), /*signingCapable=*/true, kKeyEncipherment, subjectCn);
+        }
         if (script) {
             script(*h->fake);
         }

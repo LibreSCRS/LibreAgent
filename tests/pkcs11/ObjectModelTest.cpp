@@ -21,6 +21,7 @@
 #include <LibreSCRS/Agent/pkcs11/pkcs11.h>
 
 #include <algorithm>
+#include <string>
 #include <gtest/gtest.h>
 
 using namespace LibreSCRS::Pkcs11Agent;
@@ -226,4 +227,77 @@ TEST(ObjectModel, NonSigningCertProducesNoKeyObjects)
     s.readers[0].certs[0].signingCapable = false;
     auto m = ObjectModel::build(s);
     EXPECT_TRUE(m.slots[0].objects.empty());
+}
+
+// A loader shows the user the token label, so it names the holder the card's
+// signing certificate names, and the reader the card sits in when there is no
+// such certificate. A certificate that cannot sign does not name the token.
+TEST(ObjectModel, TokenLabelIsTheSigningCertHolderElseTheReaderName)
+{
+    CertEntry auth;
+    auth.label = auth.holderName = "Auth Only";
+    auth.signingCapable = false;
+    CertEntry holder;
+    holder.label = holder.holderName = "Petar Petrović";
+    holder.signingCapable = true;
+    CertEntry second;
+    second.label = second.holderName = "Second Holder";
+    second.signingCapable = true;
+    // A signing cert whose subject has no CN: its CKA_LABEL falls back to the
+    // hex cert id, which must never become the token's name.
+    CertEntry noCn;
+    noCn.label = "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08";
+    noCn.signingCapable = true;
+
+    EXPECT_EQ(tokenLabelFor({auth, holder, second}, "ACS ACR39U ICC Reader"), "Petar Petrović");
+    EXPECT_EQ(tokenLabelFor({noCn, holder}, "ACS ACR39U ICC Reader"), "Petar Petrović");
+    EXPECT_EQ(tokenLabelFor({noCn}, "ACS ACR39U ICC Reader"), "ACS ACR39U ICC Reader");
+    EXPECT_EQ(tokenLabelFor({auth}, "ACS ACR39U ICC Reader"), "ACS ACR39U ICC Reader");
+    EXPECT_EQ(tokenLabelFor({}, "ACS ACR39U ICC Reader"), "ACS ACR39U ICC Reader");
+    EXPECT_EQ(tokenLabelFor({}, ""), "");
+}
+
+// The serial is what tells two seated cards apart. It is the counter at the end
+// of the agent's handle, on either transport, and when it has to be shortened
+// to the field's 16 bytes it keeps the END, where two counters differ.
+TEST(ObjectModel, TokenSerialIsTheHandleTailAndFitsTheField)
+{
+    EXPECT_EQ(tokenSerialFor("/org/librescrs/Agent/card/7"), "7");
+    EXPECT_EQ(tokenSerialFor("obj/12"), "12");
+    EXPECT_EQ(tokenSerialFor("c1"), "c1");
+
+    const std::string a = tokenSerialFor("obj/1234567890123456781");
+    const std::string b = tokenSerialFor("obj/1234567890123456782");
+    EXPECT_EQ(a.size(), kTokenSerialMaxBytes);
+    EXPECT_EQ(a, "4567890123456781");
+    EXPECT_NE(a, b) << "two cards whose counters differ at the end collided";
+}
+
+// The serial the transport filled reaches the slot unchanged, and two readers'
+// cards reach two different slots with two different serials.
+TEST(ObjectModel, EachSlotCarriesItsOwnTokenSerial)
+{
+    AgentSnapshot s = oneCardOneCert();
+    s.readers[0].tokenSerial = "3";
+    ReaderState second = namCard().readers[0];
+    second.tokenSerial = "5";
+    s.readers.push_back(second);
+
+    const auto m = ObjectModel::build(s);
+    ASSERT_EQ(m.slots.size(), 2u);
+    EXPECT_EQ(m.slots[0].tokenSerial, "3");
+    EXPECT_EQ(m.slots[1].tokenSerial, "5");
+    EXPECT_EQ(m.slots[0].tokenLabel, "LibreSCRS PKS");
+    EXPECT_EQ(m.slots[1].tokenLabel, "LibreSCRS NAM");
+}
+
+// The reader's name rides to the slot for display; the handle stays the key.
+TEST(ObjectModel, EachSlotCarriesItsReaderName)
+{
+    AgentSnapshot s = oneCardOneCert();
+    s.readers[0].readerName = "ACS ACR39U ICC Reader";
+    const auto m = ObjectModel::build(s);
+    ASSERT_EQ(m.slots.size(), 1u);
+    EXPECT_EQ(m.slots[0].readerName, "ACS ACR39U ICC Reader");
+    EXPECT_EQ(m.slots[0].readerPath, "/org/librescrs/Agent/reader/0");
 }

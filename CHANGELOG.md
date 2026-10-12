@@ -260,6 +260,17 @@ Three targets ship, each independently usable:
   connection that holds the loader's lease. A peer check that throws now
   counts as a refusal instead of leaking the socket.
 
+- **Two cards seated at once now show up as two PKCS#11 tokens.** Every token
+  was labelled "LibreSCRS Token" with an empty serial number, so a loader such
+  as Firefox could not tell one from the other. The label is now the holder
+  named by the card's signing certificate, or the reader's name for a card
+  whose certificate names no holder; the serial number is the agent's
+  per-insertion handle for the card. A label longer than the 32-byte field is
+  cut where a character starts, never inside one.
+
+- **A PKCS#11 slot is described by its reader's name**, not by the agent's
+  internal handle for the reader (`obj/1`).
+
 ### Security
 
 - **Secrets never outlive the card.** The credential cache holds no

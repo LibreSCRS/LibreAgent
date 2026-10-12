@@ -22,6 +22,7 @@
 #include <LibreSCRS/Agent/pkcs11/ObjectModel.h>
 #include <LibreSCRS/Agent/pkcs11/SessionState.h>
 #include <LibreSCRS/Agent/pkcs11/pkcs11.h>
+#include <LibreSCRS/Agent/util/DisplayText.h> // utf8PrefixLength
 
 #include <chrono>
 #include <condition_variable>
@@ -164,12 +165,13 @@ CK_RV ckrFromStatus(Status s)
 }
 
 // Copy a padded C-string field (CK_TOKEN_INFO / CK_SLOT_INFO are space-padded,
-// NOT null-terminated). Truncates to the field length.
+// NOT null-terminated). Truncates to the field length on a UTF-8 character
+// boundary: these fields are CK_UTF8CHAR, and a holder name or reader name cut
+// mid-character would hand the loader an invalid string to display.
 void padField(CK_UTF8CHAR* dst, std::size_t len, const std::string& src)
 {
     std::memset(dst, ' ', len);
-    const std::size_t n = src.size() < len ? src.size() : len;
-    std::memcpy(dst, src.data(), n);
+    std::memcpy(dst, src.data(), LibreSCRS::Agent::utf8PrefixLength(src, len));
 }
 
 // Copy the caller's ready-to-sign block into the wire buffer VERBATIM. The
@@ -307,7 +309,10 @@ CK_DECLARE_FUNCTION(CK_RV, C_GetSlotInfo)(CK_SLOT_ID slotID, CK_SLOT_INFO_PTR pI
         return CKR_SLOT_ID_INVALID;
 
     *pInfo = CK_SLOT_INFO{};
-    padField(pInfo->slotDescription, sizeof(pInfo->slotDescription), slot->readerPath);
+    // The reader's own name is what a user recognises; the agent's handle for
+    // it is only a key, and shown only when the agent reported no name.
+    padField(pInfo->slotDescription, sizeof(pInfo->slotDescription),
+             slot->readerName.empty() ? slot->readerPath : slot->readerName);
     padField(pInfo->manufacturerID, sizeof(pInfo->manufacturerID), "LibreSCRS");
     pInfo->flags = CKF_REMOVABLE_DEVICE | CKF_HW_SLOT;
     if (slot->tokenPresent)
@@ -337,7 +342,7 @@ CK_DECLARE_FUNCTION(CK_RV, C_GetTokenInfo)(CK_SLOT_ID slotID, CK_TOKEN_INFO_PTR 
     padField(pInfo->label, sizeof(pInfo->label), slot->tokenLabel.empty() ? "LibreSCRS Token" : slot->tokenLabel);
     padField(pInfo->manufacturerID, sizeof(pInfo->manufacturerID), "LibreSCRS");
     padField(pInfo->model, sizeof(pInfo->model), "agent-proxy");
-    padField(pInfo->serialNumber, sizeof(pInfo->serialNumber), "");
+    padField(pInfo->serialNumber, sizeof(pInfo->serialNumber), slot->tokenSerial);
     // The agent prompter is the protected authentication path; login is required
     // before any private-key op. Token present is implicit (checked above).
     pInfo->flags = CKF_TOKEN_INITIALIZED | CKF_LOGIN_REQUIRED | CKF_PROTECTED_AUTHENTICATION_PATH;

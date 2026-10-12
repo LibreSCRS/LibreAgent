@@ -122,9 +122,13 @@ public:
     /// @brief Add a reader with a card seated in it.
     void addReader(std::string handle, bool hasCard, std::string card,
                    Wire::PreReadAuth preAuth = Wire::PreReadAuth::None);
-    /// @brief Attach a signing certificate to a card.
+    /// @brief Rename a reader. The carded overload names every reader alike,
+    ///        and two tokens are only told apart by what differs.
+    void setReaderName(const std::string& handle, std::string name);
+    /// @brief Attach a signing certificate to a card. An empty @p subjectCn
+    ///        serves a subject with no CN.
     void addCert(const std::string& card, std::string certId, bool signingCapable = true,
-                 std::uint32_t keyUsageBits = 0);
+                 std::uint32_t keyUsageBits = 0, std::string subjectCn = "Fake Subject");
 
     /// @brief Make @p call sleep before it answers.
     void delayCall(Call call, std::chrono::milliseconds d);

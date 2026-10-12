@@ -83,13 +83,24 @@ void FakeSocketAgent::addReader(std::string handle, bool hasCard, std::string ca
     m_readers.push_back(FakeReader{std::move(handle), "Fake reader", hasCard, std::move(card), preAuth, {}});
 }
 
+void FakeSocketAgent::setReaderName(const std::string& handle, std::string name)
+{
+    const std::lock_guard lock{m_mutex};
+    for (auto& r : m_readers) {
+        if (r.handle == handle) {
+            r.name = std::move(name);
+            return;
+        }
+    }
+}
+
 void FakeSocketAgent::addCert(const std::string& card, std::string certId, bool signingCapable,
-                              std::uint32_t keyUsageBits)
+                              std::uint32_t keyUsageBits, std::string subjectCn)
 {
     const std::lock_guard lock{m_mutex};
     for (auto& r : m_readers) {
         if (r.card == card) {
-            r.certs.push_back(FakeCert{std::move(certId), "Fake Subject", signingCapable, keyUsageBits, 255});
+            r.certs.push_back(FakeCert{std::move(certId), std::move(subjectCn), signingCapable, keyUsageBits, 255});
             return;
         }
     }
@@ -318,7 +329,9 @@ std::vector<W::CertInfo> FakeSocketAgent::buildCerts(const std::string& card) co
             // The subject CN is the label the module shows, and it rides the
             // grouped `fields` dict rather than a field of its own -- the same
             // shape the bus surface uses, so the two clients read one place.
-            ci.fields["subject"]["cn"] = W::CertField{"subject.cn", "Subject", c.subjectCn};
+            // An empty CN is a subject without one, and is left out.
+            if (!c.subjectCn.empty())
+                ci.fields["subject"]["cn"] = W::CertField{"subject.cn", "Subject", c.subjectCn};
             out.push_back(std::move(ci));
         }
     }

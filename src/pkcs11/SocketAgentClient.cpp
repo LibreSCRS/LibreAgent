@@ -341,6 +341,7 @@ AgentSnapshot SocketAgentClient::snapshot()
     for (const auto& r : state->readers) {
         ReaderState reader;
         reader.readerPath = r.handle;
+        reader.readerName = r.name;
         reader.hasCard = r.hasCard;
         if (!r.hasCard || !r.card.has_value()) {
             snap.readers.push_back(std::move(reader));
@@ -368,8 +369,10 @@ AgentSnapshot SocketAgentClient::snapshot()
             ce.ckaId = {ckaId++};
             ce.label = e.certId;
             if (const auto sg = e.fields.find("subject"); sg != e.fields.end()) {
-                if (const auto cn = sg->second.find("cn"); cn != sg->second.end())
-                    ce.label = cn->second.value;
+                if (const auto cn = sg->second.find("cn"); cn != sg->second.end()) {
+                    ce.holderName = cn->second.value;
+                    ce.label = ce.holderName;
+                }
             }
             const bool keyUsagePermitsDecrypt = (e.keyUsageBits & (kKeyEnciphermentBit | kDataEnciphermentBit)) != 0;
             ce.canSign = canDriveSigning;
@@ -377,6 +380,9 @@ AgentSnapshot SocketAgentClient::snapshot()
             ce.signsHashOnCard = hashesOnCard;
             reader.certs.push_back(std::move(ce));
         }
+        // What a loader shows for the token, and what tells two of them apart.
+        reader.tokenLabel = tokenLabelFor(reader.certs, r.name);
+        reader.tokenSerial = tokenSerialFor(*r.card);
         snap.readers.push_back(std::move(reader));
     }
     {

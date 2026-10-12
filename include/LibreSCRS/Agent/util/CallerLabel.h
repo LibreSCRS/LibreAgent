@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 // SPDX-FileCopyrightText: 2026 hirashix0
 #pragma once
+#include <LibreSCRS/Agent/util/DisplayText.h> // utf8PrefixLength
+
 #include <cstddef>
 #include <filesystem>
 #include <string>
@@ -77,15 +79,7 @@ inline constexpr std::size_t kMaxCallerLabelLength = 128;
             raw.replace(pos, seq.size(), " ");
         }
     }
-    if (raw.size() > kMaxCallerLabelLength) {
-        // Back off any UTF-8 continuation bytes at the cut so truncation cannot
-        // split a multi-byte code point and leave a mojibake tail.
-        std::size_t cut = kMaxCallerLabelLength;
-        while (cut > 0 && (static_cast<unsigned char>(raw[cut]) & 0xC0) == 0x80) {
-            --cut;
-        }
-        raw.resize(cut);
-    }
+    raw.resize(utf8PrefixLength(raw, kMaxCallerLabelLength));
     return raw;
 }
 

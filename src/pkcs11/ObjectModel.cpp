@@ -13,9 +13,11 @@ ObjectModel ObjectModel::build(const AgentSnapshot& snapshot)
     for (const auto& reader : snapshot.readers) {
         Slot slot;
         slot.readerPath = reader.readerPath;
+        slot.readerName = reader.readerName;
         slot.tokenPresent = reader.hasCard;
         slot.protectedAuthPath = true; // the agent prompter is the protected auth path
         slot.tokenLabel = reader.tokenLabel;
+        slot.tokenSerial = reader.tokenSerial;
 
         if (!reader.hasCard) {
             model.slots.push_back(std::move(slot));

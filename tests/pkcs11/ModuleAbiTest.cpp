@@ -101,6 +101,116 @@ TEST(ModuleAbi, GetTokenInfoReportsProtectedAuthPathAndPresent)
     EXPECT_TRUE(si.flags & CKF_TOKEN_PRESENT);
 }
 
+namespace {
+
+// The space-padded field as the string a loader would display.
+std::string trimmedField(const CK_UTF8CHAR* field, std::size_t len)
+{
+    std::string out(reinterpret_cast<const char*>(field), len);
+    out.erase(out.find_last_not_of(' ') + 1);
+    return out;
+}
+
+} // namespace
+
+// Two cards seated at once are two tokens to a loader only if their label or
+// serial differ; NSS in particular shows one when both agree. Each token is
+// named after the holder its signing certificate names, or after its reader
+// when it has none, and carries the card handle's tail as its serial.
+TEST(ModuleAbi, SeatedCardsReadAsDistinctTokens)
+{
+    constexpr const char* kReader1 = "/org/librescrs/Agent/reader/1";
+    constexpr const char* kCard1 = "/org/librescrs/Agent/card/1";
+    constexpr const char* kReader2 = "/org/librescrs/Agent/reader/2";
+    constexpr const char* kCard2 = "/org/librescrs/Agent/card/2";
+    // The fixture seats kCard0 with a cert under the default CN; the other two
+    // are a second holder and a card with no certificate at all.
+    SocketFixture agent(/*hasCard=*/true, "None", [&](FakeSocketAgent& fake) {
+        fake.addReader(kReader1, /*hasCard=*/true, kCard1);
+        fake.addCert(kCard1, "cert-def", /*signingCapable=*/true, kDecryptableKeyUsage, "Second Holder");
+        fake.addReader(kReader2, /*hasCard=*/true, kCard2);
+        fake.setReaderName(kReader2, "Reader Two");
+    });
+    LoadedModule m;
+    ASSERT_NE(m.fn, nullptr);
+    ASSERT_EQ(m.fn->C_Initialize(nullptr), CKR_OK);
+
+    CK_SLOT_ID slots[8];
+    CK_ULONG n = 8;
+    ASSERT_EQ(m.fn->C_GetSlotList(CK_TRUE, slots, &n), CKR_OK);
+    ASSERT_EQ(n, 3u);
+
+    CK_TOKEN_INFO ti[3]{};
+    for (CK_ULONG i = 0; i < 3; ++i)
+        ASSERT_EQ(m.fn->C_GetTokenInfo(slots[i], &ti[i]), CKR_OK);
+
+    EXPECT_EQ(trimmedField(ti[0].label, sizeof(ti[0].label)), "Fake Subject");
+    EXPECT_EQ(trimmedField(ti[0].serialNumber, sizeof(ti[0].serialNumber)), "0");
+    EXPECT_EQ(trimmedField(ti[1].label, sizeof(ti[1].label)), "Second Holder");
+    EXPECT_EQ(trimmedField(ti[1].serialNumber, sizeof(ti[1].serialNumber)), "1");
+    EXPECT_EQ(trimmedField(ti[2].label, sizeof(ti[2].label)), "Reader Two");
+    EXPECT_EQ(trimmedField(ti[2].serialNumber, sizeof(ti[2].serialNumber)), "2");
+}
+
+// The label field is 32 bytes of UTF-8. A holder's name longer than that is cut
+// where a character starts, never inside one: a loader handed half a character
+// shows a replacement glyph or rejects the string.
+TEST(ModuleAbi, ALongHolderNameIsCutOnACharacterBoundary)
+{
+    const std::string name = "Јовановић-Петровић, Александра";
+    SocketFixture agent(/*hasCard=*/false, "None", [&](FakeSocketAgent& fake) {
+        fake.addReader("/org/librescrs/Agent/reader/9", /*hasCard=*/true, "/org/librescrs/Agent/card/9");
+        fake.addCert("/org/librescrs/Agent/card/9", kCertId, /*signingCapable=*/true, kDecryptableKeyUsage, name);
+    });
+    // The name is chosen so byte 32 falls inside a two-byte character; a name
+    // that happened to break cleanly would prove nothing.
+    ASSERT_GT(name.size(), 32u);
+    ASSERT_EQ(static_cast<unsigned char>(name[32]) & 0xC0, 0x80);
+
+    LoadedModule m;
+    ASSERT_NE(m.fn, nullptr);
+    ASSERT_EQ(m.fn->C_Initialize(nullptr), CKR_OK);
+
+    CK_TOKEN_INFO ti{};
+    ASSERT_EQ(m.fn->C_GetTokenInfo(firstPresentSlot(m.fn), &ti), CKR_OK);
+    EXPECT_EQ(trimmedField(ti.label, sizeof(ti.label)), name.substr(0, 31));
+    EXPECT_EQ(ti.label[31], ' ') << "the byte the split character would have taken is padding";
+}
+
+// A loader shows the slot description next to the token, so it is the reader's
+// own name rather than the agent's handle for it. The two interfaces of one
+// dual-interface reader have names that differ only at the end, and the
+// 64-byte field keeps that end. A reader the agent names nothing is still
+// described, by its handle.
+TEST(ModuleAbi, SlotDescriptionIsTheReaderName)
+{
+    constexpr const char* kReader1 = "/org/librescrs/Agent/reader/1";
+    constexpr const char* kReader2 = "/org/librescrs/Agent/reader/2";
+    const std::string contact = "HID Global OMNIKEY 5422 Smartcard Reader";
+    const std::string contactless = "HID Global OMNIKEY 5422CL Smartcard Reader";
+    SocketFixture agent(/*hasCard=*/true, "None", [&](FakeSocketAgent& fake) {
+        fake.setReaderName(kReader0, contact);
+        fake.addReader(kReader1, contactless);
+        fake.addReader(kReader2, "");
+    });
+    LoadedModule m;
+    ASSERT_NE(m.fn, nullptr);
+    ASSERT_EQ(m.fn->C_Initialize(nullptr), CKR_OK);
+
+    CK_SLOT_ID slots[8];
+    CK_ULONG n = 8;
+    ASSERT_EQ(m.fn->C_GetSlotList(CK_FALSE, slots, &n), CKR_OK);
+    ASSERT_EQ(n, 3u);
+
+    CK_SLOT_INFO si[3]{};
+    for (CK_ULONG i = 0; i < 3; ++i)
+        ASSERT_EQ(m.fn->C_GetSlotInfo(slots[i], &si[i]), CKR_OK);
+
+    EXPECT_EQ(trimmedField(si[0].slotDescription, sizeof(si[0].slotDescription)), contact);
+    EXPECT_EQ(trimmedField(si[1].slotDescription, sizeof(si[1].slotDescription)), contactless);
+    EXPECT_EQ(trimmedField(si[2].slotDescription, sizeof(si[2].slotDescription)), kReader2);
+}
+
 TEST(ModuleAbi, MechanismListHasRawRsaPkcsOnly_NoHashCombosNoPss)
 {
     SocketFixture agent;
