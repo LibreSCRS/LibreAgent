@@ -161,10 +161,12 @@ struct SocketAgentClient::Impl
         // DeviceRemoved rather than as a quiet zero slots.
         const auto reply =
             call(W::Hello{W::kProtocolVersion, std::string{"librescrs-pkcs11-agent"}}, budgets.publicDataSecs);
-        if (!reply.has_value())
+        // A refused or failed handshake closes the socket, so the next call
+        // connects afresh instead of reading this verdict back for ever.
+        if (!reply.has_value() || !std::holds_alternative<W::HelloAck>(*reply)) {
+            closeSocket();
             return false;
-        if (!std::holds_alternative<W::HelloAck>(*reply))
-            return false;
+        }
         handshakeOk = true;
         return true;
     }

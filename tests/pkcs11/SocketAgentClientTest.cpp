@@ -238,6 +238,24 @@ TEST(SocketAgentClient, ReportsDeviceRemovedWhenTheHandshakeIsRefused)
     EXPECT_FALSE(client.connected());
 }
 
+TEST(SocketAgentClient, ARefusedHandshakeIsRetriedOnTheNextCall)
+{
+    // A refusal is an answer about that connection, not about the agent: the
+    // loader keeps the module for the life of the process, and an agent that
+    // restarted must be reachable again without the application restarting.
+    T::FakeSocketAgent fake;
+    fake.addReader("r1", /*hasCard=*/true, "c1");
+    fake.addCert("c1", "certid-1");
+    fake.refuseNextHello();
+    fake.start();
+
+    P::SocketAgentClient client{fake.path(), kFastBudgets};
+    EXPECT_FALSE(client.connected());
+
+    EXPECT_EQ(client.snapshot().readers.size(), 1U);
+    EXPECT_TRUE(client.connected());
+}
+
 TEST(SocketAgentClient, MapsEveryRefusalTheWireHasANameFor)
 {
     // The refusal table is the part with no compiler holding it, so every
