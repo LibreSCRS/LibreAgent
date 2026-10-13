@@ -25,6 +25,14 @@ namespace LibreSCRS::Agent::Operations {
 // the gate is contended only when a dialog actually has to be raised; the
 // per-reader card I/O stays fully parallel.
 //
+// Every secret prompt passes through here, so this is also where an Ok answer
+// with nothing typed becomes what it is: a dismissed prompt (Cancelled, no
+// secret). An empty secret is never a credential -- handed to a plugin an
+// empty PIN erases its deposit and the card runs on whatever the session is
+// already verified for, an empty VERIFY is only a status query, an empty CAN
+// or MRZ opens no channel -- and each flow already handles a dismissal
+// without touching the card.
+//
 // The references (serializer, inner) must outlive this decorator; in
 // production both are agent-owned and live for the whole operation. The token
 // is held by value (cheap LM handle) and shares cancellation state with the
@@ -65,7 +73,7 @@ public:
         return gated([&] {
             const PromptOptions stamped = stamp(options, PromptKind::Pin);
             const auto live = m_serializer.registerLivePrompt(m_cardKey, stamped.promptId);
-            return m_inner.requestPin(stamped);
+            return dismissIfEmpty(m_inner.requestPin(stamped));
         });
     }
     [[nodiscard]] PromptResult requestCan(const PromptOptions& options) override
@@ -73,7 +81,7 @@ public:
         return gatedWithStillWanted([&] {
             const PromptOptions stamped = stamp(options, PromptKind::Can);
             const auto live = m_serializer.registerLivePrompt(m_cardKey, stamped.promptId);
-            return m_inner.requestCan(stamped);
+            return dismissIfEmpty(m_inner.requestCan(stamped));
         });
     }
     [[nodiscard]] PromptResult requestMrz(const PromptOptions& options) override
@@ -81,7 +89,7 @@ public:
         return gatedWithStillWanted([&] {
             const PromptOptions stamped = stamp(options, PromptKind::Mrz);
             const auto live = m_serializer.registerLivePrompt(m_cardKey, stamped.promptId);
-            return m_inner.requestMrz(stamped);
+            return dismissIfEmpty(m_inner.requestMrz(stamped));
         });
     }
     // The two-secret change prompt is gated identically: it holds THIS CARD's
@@ -96,7 +104,7 @@ public:
             [&] {
                 const PromptOptions stamped = stamp(options, PromptKind::ChangePin);
                 const auto live = m_serializer.registerLivePrompt(m_cardKey, stamped.promptId);
-                return m_inner.requestPinChange(stamped);
+                return dismissIfEmpty(m_inner.requestPinChange(stamped));
             },
             [] {
                 PinChangePromptResult r;
@@ -114,6 +122,26 @@ public:
     }
 
 private:
+    [[nodiscard]] static PromptResult dismissIfEmpty(PromptResult r)
+    {
+        if (r.status == PromptStatus::Ok && r.secret.has_value() && r.secret->empty()) {
+            return PromptResult{PromptStatus::Cancelled, std::nullopt, ""};
+        }
+        return r;
+    }
+    // Either secret empty: an empty current PIN is a status query, an empty
+    // new PIN is no PIN.
+    [[nodiscard]] static PinChangePromptResult dismissIfEmpty(PinChangePromptResult r)
+    {
+        if (r.status == PromptStatus::Ok &&
+            ((r.current.has_value() && r.current->empty()) || (r.newPin.has_value() && r.newPin->empty()))) {
+            PinChangePromptResult dismissed;
+            dismissed.status = PromptStatus::Cancelled;
+            return dismissed;
+        }
+        return r;
+    }
+
     // The ONE writer of a prompt's id and deadline. Every prompt passes through
     // this decorator, so the six PromptOptions construction sites cannot forget
     // -- a site that forgot would ship a dialog that never expires, silently.

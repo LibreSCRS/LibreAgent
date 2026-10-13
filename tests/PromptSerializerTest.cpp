@@ -19,6 +19,8 @@
 #include <LibreSCRS/Agent/backend/PrompterClientBase.h>
 #include <LibreSCRS/Agent/operations/SerializingPrompter.h>
 
+#include "fakes/FakePrompter.h"
+
 #include <LibreSCRS/CancelToken.h>
 #include <gtest/gtest.h>
 #include <atomic>
@@ -519,4 +521,47 @@ TEST(PromptSerializer, StillWantedPredicateNeverConsultedForPin)
     auto r = gated.requestPin(opts);
     EXPECT_EQ(r.status, PromptStatus::Ok) << "requestPin must never consult the still-wanted predicate";
     EXPECT_EQ(inner.totalCalls.load(), 1);
+}
+
+// -- an Ok answer with nothing typed ----------------------------------------
+//
+// Every secret prompt passes through SerializingPrompter. An empty secret is
+// never a credential (an empty PIN handed to a plugin erases its deposit, an
+// empty VERIFY is a status query, an empty CAN or MRZ opens no channel), so
+// the decorator reports it exactly as a dismissed dialog.
+
+TEST(PromptSerializer, AnEmptyAnswerIsADismissedPrompt)
+{
+    PromptSerializer serializer;
+    LibreSCRS::Agent::Operations::FakePrompter inner;
+    LibreSCRS::CancelSource src;
+    SerializingPrompter gated{serializer, inner, src.token(), "card-A"};
+    const PromptOptions opts;
+    const PromptResult empty{PromptStatus::Ok, LibreSCRS::Secure::String{}, ""};
+
+    inner.pinResult = empty;
+    inner.canResult = empty;
+    inner.mrzResult = empty;
+    for (const auto& r : {gated.requestPin(opts), gated.requestCan(opts), gated.requestMrz(opts)}) {
+        EXPECT_EQ(r.status, PromptStatus::Cancelled);
+        EXPECT_FALSE(r.secret.has_value());
+    }
+
+    inner.pinChangeResult =
+        PinChangePromptResult{PromptStatus::Ok, LibreSCRS::Secure::String{}, LibreSCRS::Secure::String{"2222"}, ""};
+    auto change = gated.requestPinChange(opts);
+    EXPECT_EQ(change.status, PromptStatus::Cancelled) << "an empty current PIN";
+    EXPECT_FALSE(change.current.has_value());
+    EXPECT_FALSE(change.newPin.has_value());
+
+    inner.pinChangeResult =
+        PinChangePromptResult{PromptStatus::Ok, LibreSCRS::Secure::String{"1111"}, LibreSCRS::Secure::String{}, ""};
+    EXPECT_EQ(gated.requestPinChange(opts).status, PromptStatus::Cancelled) << "an empty new PIN";
+
+    // Control: a typed answer passes through untouched.
+    inner.pinResult = PromptResult{PromptStatus::Ok, LibreSCRS::Secure::String{"1234"}, ""};
+    const auto typed = gated.requestPin(opts);
+    EXPECT_EQ(typed.status, PromptStatus::Ok);
+    ASSERT_TRUE(typed.secret.has_value());
+    EXPECT_EQ(typed.secret->view(), "1234");
 }

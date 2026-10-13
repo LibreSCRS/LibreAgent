@@ -40,8 +40,9 @@ class CardSessionHolder;
 //                  surfaces RawCryptoStatus::AuthFailed. This is the FIRST op
 //                  of a lease (or after a prior auth fail / recovery), and
 //                  every op with a key the card marks for consent per
-//                  operation. Never empty: the flow treats an empty answer as
-//                  a dismissed prompt, and the op refuses one as AuthFailed.
+//                  operation. Never empty: an empty answer arrives as a
+//                  dismissed prompt (SerializingPrompter), and the op refuses
+//                  one as AuthFailed.
 //   * null      -> the PIN is already verified for this held channel (a
 //                  subsequent op within the same lease); the op signs /
 //                  deciphers directly — or, for a key the card marks for

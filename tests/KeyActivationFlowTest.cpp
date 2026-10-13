@@ -297,6 +297,22 @@ TEST(KeyActivationFlow, PromptCancelledSkipsTheSeam)
     EXPECT_FALSE(calledSeam(h.credentials)) << "a cancelled prompt must not reach the seam";
 }
 
+// (6b) The prompter answered Ok with nothing typed. That is a dismissal, not a
+// PIN: an empty VERIFY is only a status query, which a card already verified
+// for this PIN answers as success. Nothing is sent and nothing cached is dropped.
+TEST(KeyActivationFlow, AnEmptyPinIsADismissalAndSendsNoVerify)
+{
+    Harness h;
+    h.seedCaches();
+    h.prompter.pinResult = PromptResult{PromptStatus::Ok, LibreSCRS::Secure::String{}, ""};
+
+    const auto result = h.run();
+
+    EXPECT_EQ(result.outcome, CredentialOutcome::UserCancelled);
+    EXPECT_FALSE(calledSeam(h.credentials)) << "an empty PIN must not reach the card";
+    EXPECT_TRUE(h.snapshotPresent()) << "no card contact, so nothing is invalidated";
+}
+
 // (7) A non-CardRemoved session-OPEN failure never reached the card: the outcome
 // is the non-invalidating, non-card Unspecified (SAME as PinChangeFlow), and the
 // snapshot + read caches are PRESERVED.

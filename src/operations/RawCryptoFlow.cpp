@@ -149,15 +149,11 @@ RawCryptoFlow::Result RawCryptoFlow::run(Op op, std::span<const std::uint8_t> by
         opts.requester = requester;
         opts.artifact = "pkcs11";
         phaseSink.setPhase(static_cast<std::uint32_t>(OperationPhase::AwaitingConsent));
+        // SerializingPrompter reports an empty answer as Cancelled, so a PIN
+        // that gets past here is never empty.
         auto prompt = gated.requestPin(opts);
         if (prompt.status != PromptStatus::Ok || !prompt.secret.has_value()) {
             return {prompt.status, std::nullopt};
-        }
-        if (prompt.secret->empty()) {
-            // Nothing typed is a dismissed prompt, not a PIN. Handed to the
-            // plugin, an empty value erases its deposit and the card runs the
-            // operation on whatever the held session is already verified for.
-            return {PromptStatus::Cancelled, std::nullopt};
         }
         // PIN collected: arm the watchdog (Authenticating) and surface the on-card
         // op phase (Signing — the wire-stable enum has no separate Decrypting

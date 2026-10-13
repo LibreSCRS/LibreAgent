@@ -66,7 +66,7 @@ FramingTest 11
 GetPhotoOperationTest 4
 IdentityReadFlowTest 49
 IdentityTest 3
-KeyActivationFlowTest 9
+KeyActivationFlowTest 10
 LeaseManagerTest 18
 LmCertReaderKatTest 16
 LmRawCryptoTest 29
@@ -91,7 +91,7 @@ PromptBudgetChainTest 6
 PromptFieldWiringTest 11
 PromptIdMinterTest 4
 PromptPolicyTest 4
-PromptSerializerTest 9
+PromptSerializerTest 10
 PromptStampTest 9
 PrompterConformanceTest 4
 PrompterKeepAliveDrainTest 8
