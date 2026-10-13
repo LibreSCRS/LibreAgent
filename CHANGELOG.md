@@ -7,6 +7,10 @@ Notable user-visible changes per release. Format follows
 
 ### Added
 
+- **`CertificateInfo::alwaysAuthenticate` and the `cert-info` wire key
+  `alwaysAuthenticate`:** whether the card asks for the PIN before every
+  operation with a certificate's key.
+
 - **`SocketAgentClient` can check who serves the agent socket.** It takes an
   optional check of the serving process, run on every connect before any byte
   is sent, so a host that knows what the agent should look like (a code
@@ -204,6 +208,18 @@ Three targets ship, each independently usable:
   `hasLiveSecureChannel()`.
 
 ### Changed
+
+- **The PKCS#11 module advertises `CKA_ALWAYS_AUTHENTICATE` per key, from the
+  card,** instead of TRUE on every private key. The agent asks for the PIN
+  again for every raw signature or decryption with a key the card marks,
+  whatever the client does (document batch signing still asks once per
+  batch), and every PIN prompt counts against the caller's prompt budget. A
+  session the agent refuses as not logged in reads as public again.
+  The `Certificates1` D-Bus result gained a trailing boolean.
+
+- **An empty answer to a PIN, CAN, MRZ or PIN-change prompt is a dismissed
+  prompt.** Nothing reaches the card; key activation used to send an empty
+  VERIFY.
 
 - **Minimum CMake is now 3.28** (was 3.24), for
   `FetchContent_Declare(... EXCLUDE_FROM_ALL)` — which is what keeps the
