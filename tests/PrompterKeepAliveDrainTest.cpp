@@ -420,6 +420,7 @@ void driveTerminalWedge(RawCryptoStatus wedgeStatus, Latch& latch, std::atomic<b
                 .isPinVerified = pinState.isVerified,
                 .markPinVerified = pinState.markVerified,
                 .clearPinVerified = pinState.clearVerified,
+                .allowPrompt = pinState.allowPrompt,
             }};
             static_cast<void>(flow.runSign(kWedgeInput));
             completed.store(true, std::memory_order_release);

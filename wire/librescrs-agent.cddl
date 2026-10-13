@@ -114,7 +114,8 @@ batch-document    = { name: tstr, fdIndex: fd-index }
 ; Pkcs11_1 seam — ALL methods reader-addressed (the canonical Pkcs11_1 interface takes
 ; a reader object path + certId; the resolution seams are reader-path-keyed and
 ; the login lease is per-token/per-reader-slot). NO PIN args (protected-auth);
-; Login raises the agent prompter on the first cold-lease SignRaw/Decrypt.
+; Login raises the agent prompter on the first cold-lease SignRaw/Decrypt,
+; and on every SignRaw/Decrypt with a key the card marks for consent per op.
 get-cert-der      = ( t: "GetCertDer", reader: handle, cert: cert-id )   ; public, no consent/lease
 get-config        = ( t: "GetConfig" )                                  ; -> config (typed entries)
 ; Config1.ImportCscaMasterList: install country-signing trust anchors from a

@@ -88,6 +88,9 @@ Pkcs11Broker::CryptoResult runRawCrypto(bool isSign, Operations::CardSessionHold
     case FO::CardError:
         outcome = HO::CardError;
         break;
+    case FO::RateLimited:
+        outcome = HO::RateLimited;
+        break;
     }
     return Pkcs11Broker::CryptoResult{.outcome = outcome, .bytes = r.bytes};
 }

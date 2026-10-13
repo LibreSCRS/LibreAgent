@@ -13,7 +13,7 @@ CardKeyTrackerTest 9
 CardPluginRoutingTest 5
 CardReadCacheTest 19
 CardReadSnapshotTest 4
-CardSessionHolderTest 16
+CardSessionHolderTest 17
 CardTypeArbitrationTest 8
 CborRelocationTest 3
 CborRoundTripTest 11
@@ -69,7 +69,7 @@ IdentityTest 3
 KeyActivationFlowTest 9
 LeaseManagerTest 18
 LmCertReaderKatTest 16
-LmRawCryptoTest 9
+LmRawCryptoTest 29
 LmSeamsCompileTest 1
 LmSeamsRoutingTest 14
 LmSigningRequestBuilderTest 8
@@ -81,7 +81,7 @@ ObjectRegistryTest 12
 OperationBaseTest 7
 OperationManagerTest 17
 OperationPhaseTest 2
-PinChangeFlowTest 29
+PinChangeFlowTest 31
 Pkcs11BrokerTest 32
 Pkcs11LeaseInvalidationTest 4
 Pkcs11SecurityTest 8
@@ -99,7 +99,7 @@ PropertyChangedVocabGuardTest 2
 PropertyEmissionThrottlerTest 5
 RateLimiterTest 4
 RawCryptoCaptureGuardTest 9
-RawCryptoFlowTest 13
+RawCryptoFlowTest 21
 ReadCertificatesOperationTest 2
 ReadIdentityOperationTest 3
 ReadTokenInfoOperationTest 5

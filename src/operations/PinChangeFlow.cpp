@@ -8,6 +8,7 @@
 #include <LibreSCRS/Agent/operations/CardPluginRouting.h> // filterByCapability, CandidateList
 #include <LibreSCRS/Agent/operations/CardSessionHolder.h>
 #include <LibreSCRS/Agent/operations/FlowPrelude.h>
+#include <LibreSCRS/Agent/operations/LmRawCrypto.h>         // eraseDepositedPin
 #include <LibreSCRS/Agent/operations/SerializingPrompter.h> // gate the change modal through the single prompt slot
 #include <LibreSCRS/Agent/OperationPhase.h>                 // OperationPhase
 #include <LibreSCRS/Plugin/CardPlugin.h>                    // CardCapabilities
@@ -238,6 +239,13 @@ CredentialOpResult runPinManage(PinManageFlowDeps& deps, const PinManageRequest&
         // stale snapshot below.
         if (session->isDead()) {
             return resultWith(CredentialOutcome::CardRemoved);
+        }
+        if (lmResult.outcome == LibreSCRS::Plugin::PINResultOutcome::Ok) {
+            // A signing PIN a plugin keeps deposited for this session is now
+            // the old one; presented again it would cost a retry per
+            // operation. Erase it (only the PIN; the CAN stays) so the next
+            // signature asks for the new one.
+            eraseDepositedPin(opened.candidates, *session);
         }
         return mapPinResult(lmResult);
     }();

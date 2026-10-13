@@ -49,11 +49,13 @@ public:
     [[nodiscard]] bool touch(const LeaseKey& key, std::chrono::steady_clock::time_point now);
 
     // PIN-as-consent verified state, scoped to the lease (NOT the PIN itself —
-    // only a boolean). The raw-crypto flow prompts + verifies the PIN on the
-    // first op of a lease, then calls markPinVerified; subsequent ops query
-    // isPinVerified and skip the re-prompt (the held channel persists the on-card
-    // verified state). Reset to false on grant/revoke so a fresh login always
-    // re-verifies. Returns false for an absent lease.
+    // only a boolean). The raw-crypto flow prompts for the PIN on the first op
+    // of a lease, then calls markPinVerified; subsequent ops query
+    // isPinVerified and skip the re-prompt (the card keeps its verified state
+    // on the held session, and for an ordinary key the plugin keeps the PIN
+    // deposited for that session; this boolean decides who may use either).
+    // Reset to false on grant/revoke so a fresh login always re-verifies.
+    // Returns false for an absent lease.
     [[nodiscard]] bool isPinVerified(const LeaseKey& key);
     void markPinVerified(const LeaseKey& key);
     // Reset the lease's verified flag WITHOUT dropping the lease — used by the

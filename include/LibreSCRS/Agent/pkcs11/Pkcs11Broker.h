@@ -89,10 +89,11 @@ public:
 
     // Hermetic outcome of a raw crypto op, mirroring RawCryptoFlow::Outcome but
     // kept wire/LM-free here so the host stays unit-testable. The seam produces
-    // the first six values; UnknownCard / UserNotLoggedIn / RateLimited are
-    // broker-synthesized GATE outcomes (no card / no live lease / prompt-flood
-    // cap) — a CryptoResult never sets them. The backend (dbus/Pkcs11OutcomeNames)
-    // maps each to its wire error name.
+    // the first six values and RateLimited (a PIN prompt the per-caller budget
+    // refused); UnknownCard / UserNotLoggedIn are broker-synthesized GATE
+    // outcomes (no card / no live lease) that a CryptoResult from the seam never
+    // sets. The backend (dbus/Pkcs11OutcomeNames) maps each to its wire error
+    // name.
     enum class CryptoOutcome : std::uint8_t {
         Ok,
         Cancelled,
@@ -100,11 +101,12 @@ public:
         AuthFailed,
         NotSupported,
         CardError,
-        // broker gates (not seam-produced):
+        // broker gates (UnknownCard / UserNotLoggedIn; RateLimited is both):
         UnknownCard,
         UserNotLoggedIn,
-        /// The caller exceeded the per-caller budget for PIN-prompt-raising
-        /// cold-lease first ops (anti-phishing throttle, RateLimiter policy);
+        /// The caller exceeded the per-caller budget for PIN prompts
+        /// (anti-phishing throttle, RateLimiter policy). Unlike the two gates
+        /// above, the seam produces it too: the flow asks before every prompt;
         /// the backend maps it to the same wire error as the Card1.Sign
         /// throttle (Error.RateLimited). Append-only: added after
         /// UserNotLoggedIn, never reordered.

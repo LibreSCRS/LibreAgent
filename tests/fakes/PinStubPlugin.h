@@ -31,6 +31,8 @@ struct PinOpsRecorder
     LibreSCRS::Secure::String lastNewPin;
     LibreSCRS::Secure::String lastTransportValue;
     LibreSCRS::Secure::String lastSignPin;
+    // (key, the value was empty) per setCredentials call, in order.
+    std::vector<std::pair<std::string, bool>> credentialWrites;
 };
 
 // Plugin that overrides NONE of the PIN entry points: calls reach the LM base
@@ -121,6 +123,12 @@ public:
         }
         m_rec->lastSignPin = signPin;
         return mutationResult;
+    }
+
+    void setCredentials(LibreSCRS::SmartCard::CardSession&, std::string_view key,
+                        const LibreSCRS::Secure::String& value) override
+    {
+        m_rec->credentialWrites.emplace_back(std::string{key}, value.empty());
     }
 
 private:

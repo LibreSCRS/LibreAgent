@@ -99,6 +99,12 @@ public:
         }
         return m_method;
     }
+    void clearCredentials(LibreSCRS::SmartCard::CardSession& /*session*/) noexcept override
+    {
+        ++m_clearCalls;
+    }
+
+    int m_clearCalls = 0;
 
 protected:
     LibreSCRS::Plugin::ReadResult doReadCard(LibreSCRS::SmartCard::CardSession& /*session*/,
@@ -420,4 +426,24 @@ TEST(CardSessionHolder, HoldIsTakenWhenNoSecureChannel)
     h.acquireHold();
     EXPECT_TRUE(h.hasHoldForTest()) << "an active session without a secure channel does not block the hold";
     EXPECT_EQ(opens, 2);
+}
+
+TEST(CardSessionHolder, ClosingTheSessionErasesWhatThePluginsHeldForIt)
+{
+    // A plugin may keep a PIN deposited for the session's lease; closing the
+    // session (card removal, idle close) is where it is forgotten.
+    int opens = 0;
+    auto now = std::chrono::steady_clock::time_point{};
+    auto plugin = std::make_shared<PreReadStubPlugin>("pkcs15", Cap::PKI, PreReadAuthMethod::None, nullptr);
+    CardSessionHolder h{"R", makeCountingFactory(opens), makeCandidateResolver(CandidateList{plugin}),
+                        std::make_shared<LibreSCRS::SmartCard::CardMap>(), [&now] { return now; }};
+
+    ASSERT_TRUE(h.acquire().has_value());
+    h.invalidate();
+    EXPECT_EQ(plugin->m_clearCalls, 1) << "invalidate() erases the plugin's per-session credentials";
+
+    ASSERT_TRUE(h.acquire().has_value());
+    now += CardSessionHolder::kIdleClose;
+    h.closeIfIdle();
+    EXPECT_EQ(plugin->m_clearCalls, 2) << "and so does the idle close";
 }

@@ -751,3 +751,45 @@ TEST(RunPinManageActivatePin, ShortCircuitsUnsupportedWithoutPrompting)
     EXPECT_TRUE(h.prompter.calls.empty());
     EXPECT_TRUE(h.credentialManager.calls.empty());
 }
+
+// The plugin keeps an ordinary key's signing PIN deposited for the lease. Once
+// the card's PIN has changed that deposit is the OLD PIN: presented again it
+// would cost a retry per signature. A successful change erases it (only the
+// PIN); the next signature asks for the new one.
+TEST(RunPinManageChange, ASuccessfulChangeErasesThePinDepositedForSigning)
+{
+    Harness h;
+    auto rec = std::make_shared<PinOpsRecorder>();
+    auto plugin = std::make_shared<PinStubPlugin>("listing-plugin", rec);
+    plugin->mutationResult = pinResult(LibreSCRS::Plugin::PINResultOutcome::Ok, 3);
+    h.candidates = {plugin};
+    h.snapshot.listPluginId = "listing-plugin";
+    LmCredentialManager realSeam;
+    h.seamOverride = &realSeam;
+    h.prompter.pinChangeResult = PinChangePromptResult{PromptStatus::Ok, LibreSCRS::Secure::String{"1111"},
+                                                       LibreSCRS::Secure::String{"2222"}, ""};
+
+    auto d = h.deps();
+    ASSERT_EQ(runPinManage(d, changeReq()).outcome, CredentialOutcome::Ok);
+    ASSERT_EQ(rec->credentialWrites.size(), 1u);
+    EXPECT_EQ(rec->credentialWrites[0], (std::pair<std::string, bool>{"pin", true}));
+}
+
+TEST(RunPinManageChange, ARefusedChangeLeavesTheDepositedPinAlone)
+{
+    // The card kept its PIN, so the deposit still matches it.
+    Harness h;
+    auto rec = std::make_shared<PinOpsRecorder>();
+    auto plugin = std::make_shared<PinStubPlugin>("listing-plugin", rec);
+    plugin->mutationResult = pinResult(LibreSCRS::Plugin::PINResultOutcome::InvalidPin, 2);
+    h.candidates = {plugin};
+    h.snapshot.listPluginId = "listing-plugin";
+    LmCredentialManager realSeam;
+    h.seamOverride = &realSeam;
+    h.prompter.pinChangeResult = PinChangePromptResult{PromptStatus::Ok, LibreSCRS::Secure::String{"1111"},
+                                                       LibreSCRS::Secure::String{"2222"}, ""};
+
+    auto d = h.deps();
+    ASSERT_EQ(runPinManage(d, changeReq()).outcome, CredentialOutcome::InvalidPin);
+    EXPECT_TRUE(rec->credentialWrites.empty());
+}

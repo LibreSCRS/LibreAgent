@@ -31,6 +31,7 @@
 #include <gtest/gtest.h>
 #include <cstdint>
 #include <expected>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <span>
@@ -76,10 +77,13 @@ inline std::shared_ptr<const LibreSCRS::Plugin::CardPlugin> mkSigning(std::strin
 }
 
 inline std::unique_ptr<CardSessionHolder> makeHolder(std::optional<LibreSCRS::SmartCard::OpenError> failWith,
-                                                     CandidateList candidates = {})
+                                                     CandidateList candidates = {}, std::function<void()> onOpen = {})
 {
-    auto factory = [failWith = std::move(failWith)](const std::string& r)
+    auto factory = [failWith = std::move(failWith), onOpen = std::move(onOpen)](const std::string& r)
         -> std::expected<std::shared_ptr<LibreSCRS::SmartCard::CardSession>, LibreSCRS::SmartCard::OpenError> {
+        if (onOpen) {
+            onOpen();
+        }
         if (failWith) {
             return std::unexpected{*failWith};
         }
@@ -96,9 +100,13 @@ class FakePrompter final : public PrompterClientBase
 public:
     int pinCalls = 0;
     PromptResult pinResult{PromptStatus::Ok, LibreSCRS::Secure::String{"1234"}, ""};
+    std::function<void()> onPin; // runs while the human is "typing"
     PromptResult requestPin(const PromptOptions&) override
     {
         ++pinCalls;
+        if (onPin) {
+            onPin();
+        }
         return pinResult;
     }
     PromptResult requestCan(const PromptOptions&) override
@@ -132,12 +140,13 @@ struct Harness
     RecordingPhaseSink phaseSink;
     LibreSCRS::CancelSource source;
 
-    // Injected terminal raw-crypto op. Models the PRODUCTION verify->op path: it
-    // receives the PIN the flow collected from the prompter (non-null on the
-    // first op of a lease, null once verified) and models a card that
-    // verifies the PIN before the PSO — exactly what LmRawCrypto::signRaw does
-    // (plugin->verifyPIN then plugin->sign). This pins the consent contract to
-    // the real flow path, not to a fake that re-reads the provider.
+    // Injected terminal raw-crypto op. Models the PRODUCTION path: it receives
+    // the PIN the flow collected from the prompter (non-null on the first op
+    // of a lease and for a key the card marks, null once verified) and models
+    // a card that checks the PIN inside the operation — LmRawCrypto::signRaw
+    // deposits it with the plugin, which presents it in the same card
+    // transaction as the PSO. This pins the consent contract to the real flow
+    // path, not to a fake that re-reads the provider.
     RawCryptoResult opResult{RawCryptoStatus::Ok, {'S', 'I', 'G'}};
     std::string cardPin = "1234"; // the PIN the modeled card accepts
     int opCalls = 0;
@@ -162,12 +171,24 @@ struct Harness
     // before evaluating, so the op sees an unverified channel and CardErrors.
     bool dropChannelOnNextNullPinOp = false;
 
+    // The card marks this key for consent per operation: a null-PIN op is
+    // answered ConsentRequired without using the key, as LmRawCrypto does.
+    bool keyAlwaysAuthenticates = false;
+    // The host's prompt gate (the broker's per-caller limiter in production).
+    bool promptAllowed = true;
+    int allowPromptCalls = 0;
+    bool wireGate = true; // false: the host hands the flow no prompt gate at all
+    int sessionOpens = 0; // card-session opens the holder's factory served
+
     RawCryptoOp op()
     {
         return [this](const CandidateList&, const std::string&, std::span<const std::uint8_t>,
                       const LibreSCRS::Secure::String* pin, LibreSCRS::SmartCard::CardSession&,
                       LibreSCRS::CancelToken) -> RawCryptoResult {
             ++opCalls;
+            if (keyAlwaysAuthenticates && pin == nullptr) {
+                return RawCryptoResult{RawCryptoStatus::ConsentRequired, {}, true};
+            }
             if (pin != nullptr) {
                 ++verifyCalls;
                 sawPin = !pin->empty();
@@ -189,13 +210,15 @@ struct Harness
                     return RawCryptoResult{RawCryptoStatus::CardError, {}};
                 }
             }
-            return opResult;
+            RawCryptoResult r = opResult;
+            r.alwaysAuthenticate = keyAlwaysAuthenticates;
+            return r;
         };
     }
 
     RawCryptoFlow make()
     {
-        holder = makeHolder(failWith, candidates);
+        holder = makeHolder(failWith, candidates, [this] { ++sessionOpens; });
         return RawCryptoFlow{RawCryptoFlowDeps{
             .holder = *holder,
             .prompter = prompter,
@@ -211,6 +234,11 @@ struct Harness
             .isPinVerified = [this]() { return pinVerified; },
             .markPinVerified = [this]() { pinVerified = true; },
             .clearPinVerified = [this]() { pinVerified = false; },
+            .allowPrompt = wireGate ? std::function<bool()>{[this]() {
+                ++allowPromptCalls;
+                return promptAllowed;
+            }}
+                                    : std::function<bool()>{},
         }};
     }
 };
@@ -353,6 +381,163 @@ TEST(RawCryptoFlow, RecoveryRetryThatStillFailsSurfacesTheError)
     EXPECT_EQ(r.outcome, RawCryptoFlow::Outcome::CardError);
     EXPECT_EQ(h.prompter.pinCalls, 1) << "exactly one recovery prompt, then give up";
     EXPECT_FALSE(h.pinVerified) << "the lease was cleared on the verify-state-loss path";
+}
+
+TEST(RawCryptoFlow, AKeyTheCardMarksAsksForThePinOnEverySignature)
+{
+    // The card wants the PIN before every use of this key. The first signature
+    // presents it and must NOT warm the lease; the second asks again.
+    Harness h;
+    h.keyAlwaysAuthenticates = true;
+    EXPECT_EQ(h.make().runSign(kInput).outcome, RawCryptoFlow::Outcome::Ok);
+    EXPECT_FALSE(h.pinVerified) << "a per-operation key must not mark the lease verified";
+    EXPECT_EQ(h.make().runSign(kInput).outcome, RawCryptoFlow::Outcome::Ok);
+    EXPECT_EQ(h.prompter.pinCalls, 2) << "two signatures, two prompts";
+    EXPECT_EQ(h.verifyCalls, 2);
+}
+
+TEST(RawCryptoFlow, AKeyTheCardMarksAsksEvenUnderAWarmLease)
+{
+    // Another key of the card warmed the lease. The marked key still asks, and
+    // the lease stays warm for the others: nothing about it was wrong.
+    Harness h;
+    h.pinVerified = true;
+    h.channelVerified = true;
+    h.keyAlwaysAuthenticates = true;
+    const auto r = h.make().runSign(kInput);
+    EXPECT_EQ(r.outcome, RawCryptoFlow::Outcome::Ok);
+    EXPECT_EQ(h.prompter.pinCalls, 1);
+    EXPECT_EQ(h.verifyCalls, 1) << "the retry carried this operation's PIN";
+    EXPECT_TRUE(h.pinVerified) << "consent for one key is not a lost channel";
+}
+
+TEST(RawCryptoFlow, AMarkedKeyNeverReArmsALeaseResetDuringItsConsent)
+{
+    // The lease is reset while the human sits in the marked key's consent
+    // prompt (a re-grant, a context-specific login). The marked key's
+    // successful retry must not arm it again: the next ordinary-key op would
+    // otherwise run with no prompt after an explicit reset.
+    Harness h;
+    h.pinVerified = true;
+    h.channelVerified = true;
+    h.keyAlwaysAuthenticates = true;
+    h.prompter.onPin = [&h] { h.pinVerified = false; };
+    EXPECT_EQ(h.make().runSign(kInput).outcome, RawCryptoFlow::Outcome::Ok);
+    EXPECT_EQ(h.prompter.pinCalls, 1);
+    EXPECT_FALSE(h.pinVerified) << "a marked key never arms the lease, not even on the retry";
+}
+
+TEST(RawCryptoFlow, EveryPromptAsksTheHostFirst)
+{
+    // Charged per prompt, wherever it is raised.
+    Harness marked; // a marked key under a warm lease prompts
+    marked.pinVerified = true;
+    marked.channelVerified = true;
+    marked.keyAlwaysAuthenticates = true;
+    EXPECT_EQ(marked.make().runSign(kInput).outcome, RawCryptoFlow::Outcome::Ok);
+    EXPECT_EQ(marked.allowPromptCalls, 1);
+
+    Harness ordinary; // an ordinary key under the same lease prompts for nothing
+    ordinary.pinVerified = true;
+    ordinary.channelVerified = true;
+    EXPECT_EQ(ordinary.make().runSign(kInput).outcome, RawCryptoFlow::Outcome::Ok);
+    EXPECT_EQ(ordinary.allowPromptCalls, 0);
+
+    Harness lost; // the recovery re-prompt is a prompt too
+    lost.pinVerified = true;
+    lost.channelVerified = false;
+    EXPECT_EQ(lost.make().runSign(kInput).outcome, RawCryptoFlow::Outcome::Ok);
+    EXPECT_EQ(lost.allowPromptCalls, 1);
+
+    Harness cold; // and so is the first prompt of a lease
+    EXPECT_EQ(cold.make().runSign(kInput).outcome, RawCryptoFlow::Outcome::Ok);
+    EXPECT_EQ(cold.allowPromptCalls, 1);
+}
+
+TEST(RawCryptoFlow, ARefusedPromptRaisesNothingAndSaysRateLimited)
+{
+    Harness h;
+    h.promptAllowed = false;
+    const auto r = h.make().runSign(kInput);
+    EXPECT_EQ(r.outcome, RawCryptoFlow::Outcome::RateLimited);
+    EXPECT_EQ(h.prompter.pinCalls, 0) << "a refused prompt is never shown";
+    EXPECT_EQ(h.opCalls, 0) << "and the card is never touched";
+    EXPECT_EQ(h.sessionOpens, 0) << "a refused cold prompt does not even open the card session";
+
+    // A refused re-prompt under a warm lease: the marked key is never used.
+    Harness warm;
+    warm.pinVerified = true;
+    warm.channelVerified = true;
+    warm.keyAlwaysAuthenticates = true;
+    warm.promptAllowed = false;
+    EXPECT_EQ(warm.make().runSign(kInput).outcome, RawCryptoFlow::Outcome::RateLimited);
+    EXPECT_EQ(warm.prompter.pinCalls, 0);
+    EXPECT_EQ(warm.verifyCalls, 0) << "no PIN reached the card";
+}
+
+TEST(RawCryptoFlow, AFlowHandedNoPromptGateRaisesNoPrompt)
+{
+    // A host that forgets to wire its per-caller budget must not get free
+    // prompts: no gate is a refusal, never an unlimited budget.
+    Harness h;
+    h.wireGate = false;
+    EXPECT_EQ(h.make().runSign(kInput).outcome, RawCryptoFlow::Outcome::RateLimited);
+    EXPECT_EQ(h.prompter.pinCalls, 0);
+    EXPECT_EQ(h.sessionOpens, 0);
+
+    Harness warm; // the re-prompt for a marked key is refused the same way
+    warm.wireGate = false;
+    warm.pinVerified = true;
+    warm.channelVerified = true;
+    warm.keyAlwaysAuthenticates = true;
+    EXPECT_EQ(warm.make().runSign(kInput).outcome, RawCryptoFlow::Outcome::RateLimited);
+    EXPECT_EQ(warm.prompter.pinCalls, 0);
+    EXPECT_EQ(warm.verifyCalls, 0);
+}
+
+TEST(RawCryptoFlow, AnEmptyPinIsADismissedPromptNotAPin)
+{
+    // A prompter that answers Ok with nothing typed. An empty PIN handed to the
+    // plugin erases its deposit, and the card would then run the operation on
+    // whatever state the held session already carries. It must stop here, as a
+    // dismissed prompt does: nothing reaches the card, the lease stays cold, and
+    // the one prompt it cost is charged once.
+    Harness h;
+    h.prompter.pinResult = PromptResult{PromptStatus::Ok, LibreSCRS::Secure::String{}, ""};
+    EXPECT_EQ(h.make().runSign(kInput).outcome, RawCryptoFlow::Outcome::Cancelled);
+    EXPECT_EQ(h.opCalls, 0) << "no operation without a PIN";
+    EXPECT_FALSE(h.pinVerified) << "an empty answer never warms the lease";
+    EXPECT_EQ(h.allowPromptCalls, 1);
+    EXPECT_FALSE(contains(h.phaseSink.phases, kSigning));
+
+    // A marked key under a warm lease: the consent re-prompt answered empty.
+    Harness warm;
+    warm.pinVerified = true;
+    warm.channelVerified = true;
+    warm.keyAlwaysAuthenticates = true;
+    warm.prompter.pinResult = PromptResult{PromptStatus::Ok, LibreSCRS::Secure::String{}, ""};
+    EXPECT_EQ(warm.make().runDecrypt(kInput).outcome, RawCryptoFlow::Outcome::Cancelled);
+    EXPECT_EQ(warm.opCalls, 1) << "only the PIN-less probe that asked for consent";
+    EXPECT_EQ(warm.verifyCalls, 0) << "no PIN, empty or not, reached the card";
+    EXPECT_EQ(warm.allowPromptCalls, 1);
+}
+
+TEST(RawCryptoFlow, AMarkedKeyThenAnOrdinaryKeyCostsAtMostOnePrompt)
+{
+    // A hash-on-card plugin holds no PIN after a marked key's operation. The
+    // ordinary key's next op under the warm lease then fails on the card, and
+    // the recovery asks once: one extra prompt, never a failed signature.
+    Harness h;
+    ASSERT_EQ(h.make().runSign(kInput).outcome, RawCryptoFlow::Outcome::Ok); // ordinary key: prompt, lease warm
+    ASSERT_TRUE(h.pinVerified);
+    h.keyAlwaysAuthenticates = true;
+    ASSERT_EQ(h.make().runSign(kInput).outcome, RawCryptoFlow::Outcome::Ok); // marked key: its own prompt
+    h.keyAlwaysAuthenticates = false;
+    h.dropChannelOnNextNullPinOp = true; // the erased deposit, as the card sees it
+    const auto r = h.make().runSign(kInput);
+    EXPECT_EQ(r.outcome, RawCryptoFlow::Outcome::Ok);
+    EXPECT_EQ(h.prompter.pinCalls, 3) << "first, marked, and exactly one recovery";
+    EXPECT_TRUE(h.pinVerified) << "the recovered ordinary key re-arms the lease";
 }
 
 TEST(RawCryptoFlow, DecryptRoutesToDecryptOp)

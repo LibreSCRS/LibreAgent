@@ -17,6 +17,7 @@
 #include <memory>
 #include <optional>
 #include <utility>
+#include <variant>
 
 namespace LibreSCRS::Agent::Operations {
 
@@ -32,11 +33,9 @@ RawCryptoFlow::Result makeCancelled()
     return RawCryptoFlow::Result{.outcome = RawCryptoFlow::Outcome::Cancelled, .bytes = {}, .msgFallback = "cancelled"};
 }
 
-// LmRawCrypto hermetic status -> the flow's hermetic Outcome. AuthFailed is kept
-// distinct so the host can revoke the lease + raise AuthFailed on the wire even
-// though the current LM raw-sign/decipher outcome folds auth failures into
-// CardError (see LmRawCrypto.h) — this mapping is ready for when LM grows the
-// distinction.
+// LmRawCrypto hermetic status -> the flow's hermetic Outcome. AuthFailed (the
+// card refused the PIN presented for this operation) is kept distinct so the
+// host can revoke the lease + raise AuthFailed on the wire.
 RawCryptoFlow::Outcome mapStatus(RawCryptoStatus s) noexcept
 {
     switch (s) {
@@ -49,6 +48,10 @@ RawCryptoFlow::Outcome mapStatus(RawCryptoStatus s) noexcept
     case RawCryptoStatus::NotSupported:
         return RawCryptoFlow::Outcome::NotSupported;
     case RawCryptoStatus::CardError:
+        return RawCryptoFlow::Outcome::CardError;
+    case RawCryptoStatus::ConsentRequired:
+        // Only meaningful for an op given no PIN, which run() handles before
+        // mapping. Reaching here means an op with a PIN answered it: fail closed.
         return RawCryptoFlow::Outcome::CardError;
     }
     return RawCryptoFlow::Outcome::CardError;
@@ -70,6 +73,17 @@ RawCryptoFlow::Result RawCryptoFlow::runDecrypt(std::span<const std::uint8_t> ci
 
 RawCryptoFlow::Result RawCryptoFlow::run(Op op, std::span<const std::uint8_t> bytes)
 {
+    // A cold lease always prompts. Charge that prompt before anything is
+    // opened, so a refused caller costs no session, no channel, no card I/O
+    // (an open that then fails, or a cancel before the prompt, still counts).
+    // No gate wired is a refusal: a host that forgets its budget gets no
+    // prompts rather than unlimited ones.
+    const auto promptAllowed = [this] { return m_deps.allowPrompt && m_deps.allowPrompt(); };
+    const bool alreadyVerified = m_deps.isPinVerified && m_deps.isPinVerified();
+    if (!alreadyVerified && !promptAllowed()) {
+        return makeError(Outcome::RateLimited, "pkcs11: PIN prompt refused by the per-caller limit");
+    }
+
     // Open the held session (shared with the read/sign flows via FlowPrelude).
     auto opened = FlowPrelude::openSession(m_deps.holder, m_deps.token);
     if (opened.status == FlowPrelude::OpenStatus::Cancelled) {
@@ -88,9 +102,10 @@ RawCryptoFlow::Result RawCryptoFlow::run(Op op, std::span<const std::uint8_t> by
     // (where libresign's Pkcs11Token drives an internal PIN callback), the raw
     // CardPlugin::sign / decipher backends do NOT consult the installed provider
     // — they call sc_pkcs15_compute_signature / decipher directly. So the PIN
-    // must be collected up front by THIS flow and verified on-card by the
-    // terminal op (plugin->verifyPIN) before the PSO; otherwise the on-card op
-    // fails security-status and the prompter never fires. PIN/CAN are
+    // must be collected up front by THIS flow and handed to the terminal op,
+    // which deposits it with the plugin for the card to verify inside the
+    // operation's own transaction; otherwise the on-card op fails
+    // security-status and the prompter never fires. PIN/CAN are
     // collected ONLY by the agent prompter — never off the RPC socket.
     auto& cache = m_deps.cache;
     auto& prompter = m_deps.prompter;
@@ -138,6 +153,12 @@ RawCryptoFlow::Result RawCryptoFlow::run(Op op, std::span<const std::uint8_t> by
         if (prompt.status != PromptStatus::Ok || !prompt.secret.has_value()) {
             return {prompt.status, std::nullopt};
         }
+        if (prompt.secret->empty()) {
+            // Nothing typed is a dismissed prompt, not a PIN. Handed to the
+            // plugin, an empty value erases its deposit and the card runs the
+            // operation on whatever the held session is already verified for.
+            return {PromptStatus::Cancelled, std::nullopt};
+        }
         // PIN collected: arm the watchdog (Authenticating) and surface the on-card
         // op phase (Signing — the wire-stable enum has no separate Decrypting
         // phase; Signing covers the on-card PSO for both ops). Both happen AFTER
@@ -147,15 +168,14 @@ RawCryptoFlow::Result RawCryptoFlow::run(Op op, std::span<const std::uint8_t> by
         return {PromptStatus::Ok, std::move(*prompt.secret)};
     };
 
-    // PIN-as-consent: collect + verify the PIN on the FIRST op of a lease only.
-    // A subsequent op within the same lease (isPinVerified() == true) skips the
-    // prompt and relies on the persisted on-card verified state of the held
-    // channel — the PIN itself is NEVER cached, only the lease-scoped boolean.
-    // When the host wires no lease state, isPinVerified is empty -> we prompt +
-    // verify every op (fail-safe, never caches).
-    const bool alreadyVerified = m_deps.isPinVerified && m_deps.isPinVerified();
-    std::optional<LibreSCRS::Secure::String> pin;
-    if (!alreadyVerified) {
+    // Every PIN prompt this flow raises is charged to the host's per-caller
+    // budget before it is raised: the cold one at the top of run(), a
+    // re-prompt here (@p charge). A refusal raises nothing. Yields the PIN, or
+    // the Result to hand back as it is.
+    auto obtainPin = [&](bool charge) -> std::variant<LibreSCRS::Secure::String, Result> {
+        if (charge && !promptAllowed()) {
+            return makeError(Outcome::RateLimited, "pkcs11: PIN prompt refused by the per-caller limit");
+        }
         auto [status, secret] = collectPin();
         if (status == PromptStatus::Cancelled) {
             // A user-declined consent is never a card fault.
@@ -165,7 +185,25 @@ RawCryptoFlow::Result RawCryptoFlow::run(Op op, std::span<const std::uint8_t> by
             // A broken/absent prompter (not the card) prevented PIN collection.
             return makeError(Outcome::CardError, "pkcs11: prompter unavailable for PIN consent");
         }
-        pin = std::move(secret);
+        return std::move(*secret);
+    };
+
+    // PIN-as-consent: collect the PIN on the FIRST op of a lease, and on every
+    // op with a key the card marks for consent per operation. Any other
+    // subsequent op within the same lease (isPinVerified() == true) skips the
+    // prompt; it rides the card's verified state on the held session, or for
+    // an ordinary key the PIN the plugin keeps deposited for that session. The
+    // flow itself keeps only the lease-scoped boolean, and the lease decides
+    // who may use what the plugin holds. When the host wires no lease state,
+    // isPinVerified is empty -> we prompt every op (fail-safe). alreadyVerified
+    // was read, and the cold prompt charged, at the top of run().
+    std::optional<LibreSCRS::Secure::String> pin;
+    if (!alreadyVerified) {
+        auto got = obtainPin(/*charge=*/false);
+        if (auto* done = std::get_if<Result>(&got)) {
+            return std::move(*done);
+        }
+        pin = std::move(std::get<LibreSCRS::Secure::String>(got));
     } else {
         // Verified lease: no human consent, just the on-card PSO phase.
         phaseSink.setPhase(static_cast<std::uint32_t>(OperationPhase::Signing));
@@ -175,59 +213,66 @@ RawCryptoFlow::Result RawCryptoFlow::run(Op op, std::span<const std::uint8_t> by
         return makeCancelled();
     }
 
-    // Terminal per-family raw op (CardPlugin::verifyPIN + sign / decipher inside
-    // the production seam). A non-null @p pin tells the op to verify the PIN
-    // on-card before the PSO (first op of a lease); a null @p pin means the held
-    // channel is already verified and the op signs/deciphers directly.
+    // Terminal per-family raw op (PIN deposit + sign / decipher inside the
+    // production seam). A non-null @p pin is presented by the plugin in the
+    // operation's own card transaction (first op of a lease); a null @p pin
+    // means the held channel is already verified and the op signs/deciphers
+    // directly -- unless the card marks the key for consent per operation,
+    // which the op answers with ConsentRequired before using the key.
     const RawCryptoOp& terminal = (op == Op::Sign) ? m_deps.signOp : m_deps.decryptOp;
     const LibreSCRS::Secure::String* pinPtr = pin ? &*pin : nullptr;
     RawCryptoResult result = terminal(signCands, m_deps.certId, bytes, pinPtr, *session, m_deps.token);
     Outcome outcome = mapStatus(result.status);
 
-    // DESYNC RECOVERY: the lease idle-timeout (10 min) outlives the
-    // holder's proactive idle-close (~45s), so a verify-SKIPPED op can run against
-    // a FRESH, unverified channel that was silently reacquired under a still-
-    // "verified" lease. The on-card PSO then fails security-status, which the
-    // current LM ABI folds to CardError (NOT AuthFailed — see LmRawCrypto.h), so
-    // the host's AuthFailed-only revoke never fires and the lease wedges forever
-    // (the ssh-agent idle pattern). When a verify-skipped op returns CardError we
-    // cannot tell verify-state-loss from a genuine card fault (the ABI fold), so
-    // the pragmatic recovery is: clear the lease's verified state, raise ONE fresh
-    // PIN prompt, re-verify + retry the op ONCE. If the retry (now with a real
-    // verify) still fails we surface the error — one extra prompt at worst.
-    if (alreadyVerified && outcome == Outcome::CardError) {
-        if (m_deps.clearPinVerified) {
+    // Two reasons a verify-skipped op needs the PIN after all, one retry for both:
+    //  * the card marks this key for consent per operation (ConsentRequired;
+    //    no PIN was presented) -- the lease's verified state is right for the
+    //    card's other keys, so it stays;
+    //  * DESYNC RECOVERY: the lease idle-timeout (10 min) outlives the holder's
+    //    idle-close (~45 s), so a verify-skipped op can meet a fresh, unverified
+    //    channel -- or, after an op with a key the card marks, a plugin that no
+    //    longer holds the ordinary key's PIN. The card's security-status
+    //    failure surfaces as CardError, which cannot be told from a genuine
+    //    card fault, so the verified state is cleared, the PIN asked for once
+    //    more and the op retried ONCE. A second failure is surfaced below: one
+    //    extra prompt at worst, never a wedged lease.
+    const bool consentAsked = alreadyVerified && result.status == RawCryptoStatus::ConsentRequired;
+    const bool channelLost = alreadyVerified && !consentAsked && outcome == Outcome::CardError;
+    if (consentAsked || channelLost) {
+        if (channelLost && m_deps.clearPinVerified) {
             m_deps.clearPinVerified();
         }
         if (m_deps.token.isCancelled()) {
             return makeCancelled();
         }
-        auto [status, secret] = collectPin();
-        if (status == PromptStatus::Cancelled) {
-            return makeCancelled();
-        }
-        if (status != PromptStatus::Ok || !secret.has_value()) {
-            return makeError(Outcome::CardError, "pkcs11: prompter unavailable for PIN consent");
+        auto got = obtainPin(/*charge=*/true);
+        if (auto* done = std::get_if<Result>(&got)) {
+            return std::move(*done);
         }
         if (m_deps.token.isCancelled()) {
             return makeCancelled();
         }
-        pin = std::move(secret);
-        // Retry ONCE with a real verify (non-null PIN). No further retry: a
-        // second failure is surfaced below.
+        pin = std::move(std::get<LibreSCRS::Secure::String>(got));
         result = terminal(signCands, m_deps.certId, bytes, &*pin, *session, m_deps.token);
         outcome = mapStatus(result.status);
-        if (outcome == Outcome::Ok && m_deps.markPinVerified) {
-            // The retry re-verified + succeeded: re-arm the lease boolean.
+        if (outcome == Outcome::Ok && !result.alwaysAuthenticate && m_deps.markPinVerified) {
+            // The retry presented the PIN and succeeded: re-arm the lease
+            // boolean -- never for a key the card marks. The human may have
+            // spent minutes in that consent prompt while the lease was reset
+            // (re-grant, a context-specific login); the card may still hold
+            // the PIN just presented, and arming here would let the next
+            // ordinary-key op sign with no prompt after an explicit reset.
             m_deps.markPinVerified();
         }
-    } else if (outcome == Outcome::Ok && !alreadyVerified && m_deps.markPinVerified) {
-        // First op of the lease succeeded (verify + PSO): remember the verified
-        // state so subsequent ops of the lease skip the re-prompt. What carries
-        // that state is the card itself, on a session the holder keeps open —
-        // NOT a channel or a lock spanning the two plugin calls, because none
-        // spans them; that is why clearPinVerified above has to exist. Only the
-        // boolean is remembered — the PIN above is cleansed when `pin` drops.
+    } else if (outcome == Outcome::Ok && !alreadyVerified && !result.alwaysAuthenticate && m_deps.markPinVerified) {
+        // First op of the lease succeeded (PIN + PSO): remember the verified
+        // state so subsequent ops of the lease skip the re-prompt -- unless the
+        // card marks this key for consent per operation. What carries that
+        // state is the card, on a session the holder keeps open, or the
+        // ordinary key's PIN the plugin keeps deposited for that session --
+        // either can be lost while the lease lives, which is why
+        // clearPinVerified above has to exist. The flow's own copy of the PIN
+        // is cleansed when `pin` drops.
         m_deps.markPinVerified();
     }
 
