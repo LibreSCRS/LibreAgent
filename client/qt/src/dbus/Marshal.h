@@ -70,7 +70,7 @@ using CertFieldGroupsWire = QMap<QString, CertFieldGroupWire>;
 QDBusArgument& operator<<(QDBusArgument& arg, const CertFieldWire& f);
 const QDBusArgument& operator>>(const QDBusArgument& arg, CertFieldWire& f);
 
-/// One Certificates1 entry — the wire struct `(s b a{sa{s(ssv)}} u as as u)`.
+/// One Certificates1 entry — the wire struct `(s b a{sa{s(ssv)}} u as as u b)`.
 /// No DER crosses the wire: the agent parses X.509 and the client renders
 /// only.
 struct CertInfoWire
@@ -85,6 +85,7 @@ struct CertInfoWire
     QStringList extendedKeyUsageOids; ///< `as` EKU OIDs (dotted).
     QStringList chainSubjectCns;      ///< `as` ordered leaf..root subject CNs (display only).
     quint32 trustStatus = 255;        ///< `u` 0 Trusted .. 4 Expired, 5 Revoked, 6 OfflineUnverified, 255 Unknown.
+    bool alwaysAuthenticate = false;  ///< `b` the card asks for the PIN before every use of this key.
     /// Closed-vocabulary tokens mirroring trustStatus ("trusted",
     /// "untrusted-root", "broken-chain", "invalid", "expired", "revoked",
     /// "offline-unverified"). NOT its own struct member on the wire — carried

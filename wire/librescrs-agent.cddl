@@ -481,9 +481,10 @@ reader-state = { handle: handle, name: tstr, hasCard: bool, ? card: handle }
 ; both degrade to empty strings, never a decode failure.
 card-state   = { handle: handle, reader: handle, caps: capabilities, preAuth: pre-read-auth,
                  ? cardType: tstr, ? atr: tstr }
-; Mirror the canonical Certificates1.Result a(sba{sa{s(ssv)}}uasasu) grouped
+; Mirror the canonical Certificates1.Result a(sba{sa{s(ssv)}}uasasub) grouped
 ; shape — grouped fields (group -> field -> [labelKey, labelFallback, value]) plus
-; keyUsageBits, ekus, chainSubjectCns, trustStatus. No DER on the wire.
+; keyUsageBits, ekus, chainSubjectCns, trustStatus, alwaysAuthenticate. No DER
+; on the wire.
 ; `fields` group keys (dict-key growth is lawful and append-only on this
 ; map): subject | issuer | validity | publicKey | cert | ext |
 ; basicConstraints | san | ian | crlDp | aia | certificatePolicies | eku |

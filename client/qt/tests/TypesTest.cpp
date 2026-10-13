@@ -195,6 +195,7 @@ TEST(CertificateInfoValueType, DefaultsAreUnknownTrustAndNotSigningCapable)
 {
     CertificateInfo info;
     EXPECT_FALSE(info.signingCapable);
+    EXPECT_FALSE(info.alwaysAuthenticate);
     EXPECT_EQ(info.trust, TrustStatus::Unknown);
     EXPECT_TRUE(info.securityStatus.isEmpty());
     EXPECT_TRUE(info.extra.isEmpty());

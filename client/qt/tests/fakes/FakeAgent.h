@@ -423,7 +423,7 @@ private:
 
 /// @brief One scripted certificate the FakeAgent's Certificates1.Result emits.
 ///        Carries the full real-wire field-set so the cert Result can be
-///        hand-marshalled into the raw (sba{sa{s(ssv)}}uasasu) struct.
+///        hand-marshalled into the raw (sba{sa{s(ssv)}}uasasub) struct.
 struct FakeCert
 {
     QString certId;
@@ -436,6 +436,7 @@ struct FakeCert
     QStringList extendedKeyUsageOids = {}; ///< as EKU OIDs
     QStringList chainSubjectCns = {};      ///< as ordered leaf..root CN chain
     uint trustStatus = 255;                ///< u trustStatus (255 = Unknown; 5 = Revoked, 6 = OfflineUnverified)
+    bool alwaysAuthenticate = false;       ///< b: the card asks for the PIN before every use
     /// Tokens riding the "security" fields-group (dict-key growth), mirroring
     /// trustStatus -- e.g. {"revoked"} for trustStatus=5, {"offline-unverified"}
     /// for trustStatus=6. Empty by default (matches the wire from before the
@@ -515,7 +516,7 @@ private:
     ///        m_photoEmptyMap is set, emits a genuinely EMPTY map (no entries) to
     ///        exercise the consumer's empty-map guard rather than the empty-fd one.
     void emitPhotoResult();
-    /// @brief Hand-marshal the cert script into the raw a(sba{sa{s(ssv)}}uasasu)
+    /// @brief Hand-marshal the cert script into the raw a(sba{sa{s(ssv)}}uasasub)
     ///        struct and send it as a Certificates1.Result signal, bypassing the
     ///        client's operator<< so the client's operator>> is tested against a
     ///        payload it did NOT itself produce.

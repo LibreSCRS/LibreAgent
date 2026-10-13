@@ -423,6 +423,7 @@ QList<CertificateInfo> toCertificateInfos(const std::vector<Wire::CertInfo>& cer
         CertificateInfo info;
         info.id = fromStd(cert.certId);
         info.signingCapable = cert.signingCapable;
+        info.alwaysAuthenticate = cert.alwaysAuthenticate;
         info.subject = certFieldValue(cert, "subject", "cn");
         info.issuer = certFieldValue(cert, "issuer", "cn");
         info.notBefore = QDateTime::fromString(certFieldValue(cert, "validity", "notBefore"), Qt::ISODate);

@@ -783,7 +783,7 @@ void DBusTransport::subscribeOperation(const QString& operationId, OperationKind
                              SLOT(onIdentityGroup(QString, LibreSCRS::AgentClient::IdentityFieldGroupWire)));
         break;
     case OperationKind::Certificates:
-        // a(sba{sa{s(ssv)}}uasasu) demarshaled into the registered CertListWire.
+        // a(sba{sa{s(ssv)}}uasasub) demarshaled into the registered CertListWire.
         m_connection.connect(m_service, operationId, QLatin1String(kCertificatesIface), QStringLiteral("Result"), watch,
                              SLOT(onCertificatesResult(LibreSCRS::AgentClient::CertListWire)));
         break;

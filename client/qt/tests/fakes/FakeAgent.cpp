@@ -255,7 +255,7 @@ private:
 };
 
 // --- Certificates1 adaptor -------------------------------------------------
-// Emits the real wire struct a(sba{sa{s(ssv)}}uasasu); the marshaller below
+// Emits the real wire struct a(sba{sa{s(ssv)}}uasasub); the marshaller below
 // builds it from the scripted FakeCertList so the client's CertInfoWire
 // demarshaller (the production code under test) parses it exactly as it would
 // a real agent's payload — subject/cn drives the chooser label.
@@ -267,7 +267,7 @@ public:
     explicit FakeCertificatesAdaptor(FakeOperation* op) : QDBusAbstractAdaptor(op), m_op(op) {}
 
 public Q_SLOTS:
-    // GetResult()->a(sba{sa{s(ssv)}}uasasu): re-serve the retained certificate
+    // GetResult()->a(sba{sa{s(ssv)}}uasasub): re-serve the retained certificate
     // list (the late-subscriber recovery pull). NoResult is a D-Bus error,
     // mirroring the frozen contract + FakeSignAdaptor.
     LibreSCRS::AgentClient::CertListWire GetResult()
@@ -531,7 +531,7 @@ void FakeOperation::fire()
 
 void FakeOperation::emitRawCertResult()
 {
-    // Hand-build a(sba{sa{s(ssv)}}uasasu) with raw beginStructure/beginMap calls
+    // Hand-build a(sba{sa{s(ssv)}}uasasub) with raw beginStructure/beginMap calls
     // — deliberately NOT the client's operator<<, so operator>> is exercised
     // against a foreign-marshalled payload. Sent over the real bus so Qt's
     // marshaller produces a genuine demarshalable message (a standalone
@@ -577,7 +577,7 @@ void FakeOperation::emitRawCertResult()
     QDBusArgument arg;
     arg.beginArray(qMetaTypeId<LibreSCRS::AgentClient::CertInfoWire>());
     for (const FakeCert& fc : m_certScript) {
-        arg.beginStructure(); // ( s b a{sa{s(ssv)}} u as as u )
+        arg.beginStructure(); // ( s b a{sa{s(ssv)}} u as as u b )
         arg << fc.certId;
         arg << fc.signingCapable;
 
@@ -627,6 +627,7 @@ void FakeOperation::emitRawCertResult()
         arg << fc.extendedKeyUsageOids;
         arg << fc.chainSubjectCns;
         arg << fc.trustStatus;
+        arg << fc.alwaysAuthenticate;
         arg.endStructure();
     }
     arg.endArray();
@@ -720,6 +721,7 @@ LibreSCRS::AgentClient::CertListWire FakeOperation::buildCertificateList() const
         ci.extendedKeyUsageOids = fc.extendedKeyUsageOids;
         ci.chainSubjectCns = fc.chainSubjectCns;
         ci.trustStatus = fc.trustStatus;
+        ci.alwaysAuthenticate = fc.alwaysAuthenticate;
         ci.securityStatus = fc.securityStatus;
         // The scripted groups go in FIRST; operator<< then overlays the four
         // cells it derives from the typed members above, so a script that

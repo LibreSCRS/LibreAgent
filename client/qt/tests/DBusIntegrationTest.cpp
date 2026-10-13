@@ -464,12 +464,15 @@ TEST(DBusIntegration, CertificatesEndToEnd)
     cfg.operationDelayMs = 15;
     FakeCert fc;
     fc.certId = QStringLiteral("cert-integration-1");
-    fc.signingCapable = true;
+    // The struct's two booleans differ on purpose, so a decoder that swapped
+    // them is visibly wrong.
+    fc.signingCapable = false;
     fc.subjectCn = QStringLiteral("Integration Signer");
     fc.issuerCn = QStringLiteral("Integration CA");
     fc.notBefore = QStringLiteral("2021-06-01T00:00:00Z");
     fc.notAfter = QStringLiteral("2031-06-01T00:00:00Z");
     fc.trustStatus = 0u; // Trusted
+    fc.alwaysAuthenticate = true;
     cfg.certScript = FakeCertList{fc};
     Harness h(cfg);
 
@@ -486,12 +489,13 @@ TEST(DBusIntegration, CertificatesEndToEnd)
     ASSERT_EQ(certs.size(), 1);
     const CertificateInfo& c = certs.constFirst();
     EXPECT_EQ(c.id, QStringLiteral("cert-integration-1"));
-    EXPECT_TRUE(c.signingCapable);
+    EXPECT_FALSE(c.signingCapable);
     EXPECT_EQ(c.subject, QStringLiteral("Integration Signer"));
     EXPECT_EQ(c.issuer, QStringLiteral("Integration CA"));
     EXPECT_EQ(c.notBefore, QDateTime::fromString(QStringLiteral("2021-06-01T00:00:00Z"), Qt::ISODate));
     EXPECT_EQ(c.notAfter, QDateTime::fromString(QStringLiteral("2031-06-01T00:00:00Z"), Qt::ISODate));
     EXPECT_EQ(c.trust, TrustStatus::Trusted);
+    EXPECT_TRUE(c.alwaysAuthenticate);
 }
 
 // ---- best-effort certificate warm ------------------------------------------

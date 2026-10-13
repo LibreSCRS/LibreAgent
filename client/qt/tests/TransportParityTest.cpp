@@ -276,8 +276,9 @@ struct ParityCert
     QString issuerCn;
     QString notBefore;
     QString notAfter;
-    quint32 trustStatus = 0;    // 0 = Trusted, matching both fakes' CertTrustStatus wire numbering
-    QStringList securityStatus; // tokens riding the "security" fields-group, mirroring trustStatus
+    quint32 trustStatus = 0;         // 0 = Trusted, matching both fakes' CertTrustStatus wire numbering
+    bool alwaysAuthenticate = false; // the card asks for the PIN before every use of this key
+    QStringList securityStatus;      // tokens riding the "security" fields-group, mirroring trustStatus
     // The certificate-metadata trailing members, scripted identically on both
     // fakes so the typed CertificateInfo members they land in can be asserted
     // by ONE scenario body against BOTH wires. chainSubjectCns is scripted
@@ -535,6 +536,7 @@ private:
             fc.notBefore = c.notBefore;
             fc.notAfter = c.notAfter;
             fc.trustStatus = c.trustStatus;
+            fc.alwaysAuthenticate = c.alwaysAuthenticate;
             fc.securityStatus = c.securityStatus;
             fc.keyUsageBits = c.keyUsageBits;
             fc.extendedKeyUsageOids = c.extendedKeyUsageOids;
@@ -784,6 +786,7 @@ private:
             fc.notBefore = c.notBefore;
             fc.notAfter = c.notAfter;
             fc.trustStatus = c.trustStatus;
+            fc.alwaysAuthenticate = c.alwaysAuthenticate;
             fc.securityStatus = c.securityStatus;
             fc.keyUsageBits = c.keyUsageBits;
             fc.extendedKeyUsageOids = c.extendedKeyUsageOids;
@@ -1172,6 +1175,7 @@ TYPED_TEST(TransportParity, CertificatesEndToEnd)
     pc.notBefore = QStringLiteral("2021-06-01T00:00:00Z");
     pc.notAfter = QStringLiteral("2031-06-01T00:00:00Z");
     pc.trustStatus = 0; // Trusted
+    pc.alwaysAuthenticate = true;
     // Certificate metadata: two KeyUsage bits set (nonRepudiation ordinal 1 +
     // keyEncipherment ordinal 2 -> 0x06), so a marshaller that shipped a
     // constant, a truncated value or a single bit is visibly wrong; a
@@ -1212,6 +1216,7 @@ TYPED_TEST(TransportParity, CertificatesEndToEnd)
         << "EKU OIDs must arrive complete and in the agent-supplied order";
     EXPECT_EQ(c.chainSubjectCns, (QStringList{QStringLiteral("Parity Signer"), QStringLiteral("Parity CA")}))
         << "the leaf..root chain must arrive complete and in order";
+    EXPECT_TRUE(c.alwaysAuthenticate) << "the card's consent rule must reach the client on both wires";
 
     // One source of truth: the three members above no longer ALSO ride the
     // untyped pass-through map. `trustStatusWire` still does -- no typed

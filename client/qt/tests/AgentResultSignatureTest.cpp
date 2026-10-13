@@ -5,7 +5,7 @@
 // the frozen agent XML, independent of any FakeAgent/bus (no dbus-run-session
 // needed — QDBusMetaType::typeToSignature works off the registered type alone).
 // The agent's org.librescrs.Agent.Operation.Certificates1.Result emits
-// a(sba{sa{s(ssv)}}uasasu) and Identity1.Result emits a{sa{s(sssv)}}; if a
+// a(sba{sa{s(ssv)}}uasasub) and Identity1.Result emits a{sa{s(sssv)}}; if a
 // client struct member drifts (e.g. a cert field value silently demarshaled as
 // a plain string instead of a variant `v`) the typed Result never demarshals
 // against the real agent and signing never proceeds. These asserts catch that
@@ -25,14 +25,14 @@
 using namespace LibreSCRS::AgentClient;
 
 // The certificates Result demarshals into CertListWire; its registered
-// signature MUST equal the frozen Certificates1.xml `a(sba{sa{s(ssv)}}uasasu)`.
+// signature MUST equal the frozen Certificates1.xml `a(sba{sa{s(ssv)}}uasasub)`.
 // The field tuple's third member is a variant `v`, NOT a string `s` — emitting
 // (sss) here would make the real agent's payload undemarshalable.
 TEST(AgentResultSignature, CertificateListMatchesXml)
 {
     ensureDBusMetatypes();
     const QByteArray sig = QDBusMetaType::typeToSignature(QMetaType::fromType<CertListWire>());
-    EXPECT_EQ(sig, QByteArray("a(sba{sa{s(ssv)}}uasasu)"));
+    EXPECT_EQ(sig, QByteArray("a(sba{sa{s(ssv)}}uasasub)"));
 }
 
 // The identity Result demarshals into IdentityFieldsWire; its registered
@@ -83,5 +83,5 @@ TEST(AgentResultSignature, CredentialRecordsMatchXml)
 // (DemarshalRealShapedCertPayload): a standalone QDBusArgument does not
 // round-trip write->read without going through the bus marshaller, so the
 // real-shaped-payload demarshal test is bus-backed there, with the FakeAgent
-// hand-marshalling the (sba{sa{s(ssv)}}uasasu) struct via a raw signal (NOT
+// hand-marshalling the (sba{sa{s(ssv)}}uasasub) struct via a raw signal (NOT
 // the client's operator<<).

@@ -55,7 +55,8 @@ struct FakeSocketCert
     quint32 keyUsageBits = 0;
     QStringList extendedKeyUsageOids;
     QStringList chainSubjectCns;
-    quint32 trustStatus = 255; ///< 255 = Unknown; 5 = Revoked, 6 = OfflineUnverified.
+    quint32 trustStatus = 255;       ///< 255 = Unknown; 5 = Revoked, 6 = OfflineUnverified.
+    bool alwaysAuthenticate = false; ///< b: the card asks for the PIN before every use
     /// Tokens riding the "security" fields-group, mirroring trustStatus (e.g.
     /// {"revoked"} for trustStatus=5). Empty by default.
     QStringList securityStatus;

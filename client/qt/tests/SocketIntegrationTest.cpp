@@ -972,12 +972,15 @@ TEST(SocketIntegration, CertificatesEndToEnd)
     cfg.operationDelayMs = 15;
     FakeSocketCert fc;
     fc.certId = QStringLiteral("cert-socket-1");
-    fc.signingCapable = true;
+    // The struct's two booleans differ on purpose, so a decoder that swapped
+    // them is visibly wrong.
+    fc.signingCapable = false;
     fc.subjectCn = QStringLiteral("Socket Signer");
     fc.issuerCn = QStringLiteral("Socket CA");
     fc.notBefore = QStringLiteral("2021-06-01T00:00:00Z");
     fc.notAfter = QStringLiteral("2031-06-01T00:00:00Z");
     fc.trustStatus = 0U; // Trusted
+    fc.alwaysAuthenticate = true;
     cfg.certScript = {fc};
     SocketHarness h(cfg);
 
@@ -994,12 +997,13 @@ TEST(SocketIntegration, CertificatesEndToEnd)
     ASSERT_EQ(certs.size(), 1);
     const CertificateInfo& c = certs.constFirst();
     EXPECT_EQ(c.id, QStringLiteral("cert-socket-1"));
-    EXPECT_TRUE(c.signingCapable);
+    EXPECT_FALSE(c.signingCapable);
     EXPECT_EQ(c.subject, QStringLiteral("Socket Signer"));
     EXPECT_EQ(c.issuer, QStringLiteral("Socket CA"));
     EXPECT_EQ(c.notBefore, QDateTime::fromString(QStringLiteral("2021-06-01T00:00:00Z"), Qt::ISODate));
     EXPECT_EQ(c.notAfter, QDateTime::fromString(QStringLiteral("2031-06-01T00:00:00Z"), Qt::ISODate));
     EXPECT_EQ(c.trust, TrustStatus::Trusted);
+    EXPECT_TRUE(c.alwaysAuthenticate);
 }
 
 // The certificate warm is a DELIBERATE no-op on this wire, and this is the

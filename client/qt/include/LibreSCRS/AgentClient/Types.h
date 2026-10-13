@@ -105,6 +105,26 @@ struct CertificateInfo
     ///        `keyUsageBits` for why this is typed rather than an `extra`
     ///        entry.
     QStringList chainSubjectCns;
+    /// @brief Whether the card asks for the PIN before EVERY operation with
+    ///        this certificate's key (PKCS#15 `userConsent`; PKCS#11
+    ///        `CKA_ALWAYS_AUTHENTICATE`).
+    ///
+    /// Read off the card by the agent and forwarded verbatim. The agent
+    /// enforces it itself -- it asks for the PIN again for every raw
+    /// signature or decryption with such a key; document batch signing asks
+    /// once per batch -- so a client uses it to tell the user what to expect,
+    /// never to decide whether to ask. See `keyUsageBits` for why
+    /// this is typed rather than an `extra` entry.
+    ///
+    /// @code
+    /// for (const CertificateInfo& cert : op->certificatesResult()) {
+    ///     if (cert.signingCapable && cert.alwaysAuthenticate)
+    ///         hint = tr("The card may ask for the PIN again for each use of this certificate.");
+    /// }
+    /// @endcode
+    ///
+    /// @since 5.0
+    bool alwaysAuthenticate = false;
     /// @brief Forward-compatible pass-through, as on every result struct, plus
     ///        two entries this type always carries.
     ///

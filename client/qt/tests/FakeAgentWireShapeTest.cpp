@@ -78,8 +78,8 @@ TEST(FakeAgentWireShape, IdentityShapesMatchAgentXml)
 }
 
 // Certificates1: the field tuple is (ssv) — one member SHORTER than Identity1's,
-// with no type string. The entry struct is (s b a{sa{s(ssv)}} u as as u): seven
-// members, the display strings riding inside the field map rather than being
+// with no type string. The entry struct is (s b a{sa{s(ssv)}} u as as u b):
+// eight members, the display strings riding inside the field map rather than being
 // appended to the struct.
 TEST(FakeAgentWireShape, CertificateShapesMatchAgentXml)
 {
@@ -87,8 +87,8 @@ TEST(FakeAgentWireShape, CertificateShapesMatchAgentXml)
     EXPECT_EQ(registeredSignature<CertFieldWire>(), QByteArray("(ssv)"));
     EXPECT_EQ(registeredSignature<CertFieldGroupWire>(), QByteArray("a{s(ssv)}"));
     EXPECT_EQ(registeredSignature<CertFieldGroupsWire>(), QByteArray("a{sa{s(ssv)}}"));
-    EXPECT_EQ(registeredSignature<CertInfoWire>(), QByteArray("(sba{sa{s(ssv)}}uasasu)"));
-    EXPECT_EQ(registeredSignature<CertListWire>(), QByteArray("a(sba{sa{s(ssv)}}uasasu)"));
+    EXPECT_EQ(registeredSignature<CertInfoWire>(), QByteArray("(sba{sa{s(ssv)}}uasasub)"));
+    EXPECT_EQ(registeredSignature<CertListWire>(), QByteArray("a(sba{sa{s(ssv)}}uasasub)"));
 }
 
 // Photo1 hands out sealed memfds keyed "groupKey:fieldKey", so the value is `h`

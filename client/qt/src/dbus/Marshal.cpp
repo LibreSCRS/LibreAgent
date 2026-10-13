@@ -48,7 +48,7 @@ const QDBusArgument& operator>>(const QDBusArgument& arg, CertFieldWire& f)
     return arg;
 }
 
-// Certificates1 cert struct `(s b a{sa{s(ssv)}} u as as u)`. The nested
+// Certificates1 cert struct `(s b a{sa{s(ssv)}} u as as u b)`. The nested
 // field-group maps are the registered CertFieldGroupsWire type, so Qt derives
 // the exact `a{sa{s(ssv)}}` signature in both directions (a fake agent reuses
 // the `<<` to emit a faithful payload; the client uses `>>`). Both must exist
@@ -94,6 +94,7 @@ QDBusArgument& operator<<(QDBusArgument& arg, const CertInfoWire& c)
     arg << c.extendedKeyUsageOids;            // extendedKeyUsageOids
     arg << chain;                             // chainSubjectCns
     arg << static_cast<uint>(c.trustStatus);  // trustStatus
+    arg << c.alwaysAuthenticate;              // alwaysAuthenticate
     arg.endStructure();
     return arg;
 }
@@ -105,12 +106,12 @@ const QDBusArgument& operator>>(const QDBusArgument& arg, CertInfoWire& c)
     arg >> c.certId >> c.signingCapable >> fields;
 
     // Trailing members: u keyUsageBits, as EKU OIDs, as chainSubjectCns,
-    // u trustStatus. keyUsageBits/trustStatus are `u`; the client localizes
-    // the KeyUsage bitmask and renders the trust verdict (Unknown until
-    // evaluated).
+    // u trustStatus, b alwaysAuthenticate. keyUsageBits/trustStatus are `u`;
+    // the client localizes the KeyUsage bitmask and renders the trust verdict
+    // (Unknown until evaluated).
     uint keyUsageBits = 0;
     uint trustStatus = 0;
-    arg >> keyUsageBits >> c.extendedKeyUsageOids >> c.chainSubjectCns >> trustStatus;
+    arg >> keyUsageBits >> c.extendedKeyUsageOids >> c.chainSubjectCns >> trustStatus >> c.alwaysAuthenticate;
     c.keyUsageBits = keyUsageBits;
     c.trustStatus = trustStatus;
     arg.endStructure();
@@ -308,6 +309,7 @@ QList<CertificateInfo> toCertificateInfos(const CertListWire& certs)
         CertificateInfo info;
         info.id = wire.certId;
         info.signingCapable = wire.signingCapable;
+        info.alwaysAuthenticate = wire.alwaysAuthenticate;
         info.subject = wire.subjectCn;
         info.issuer = wire.issuerCn;
         info.notBefore = QDateTime::fromString(wire.notBefore, Qt::ISODate);

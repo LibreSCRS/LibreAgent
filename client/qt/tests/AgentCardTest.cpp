@@ -330,7 +330,7 @@ TEST(AgentCard, PropertiesChangedInvalidatedTakesGetAllFallback)
 }
 
 // the client's CertInfoWire operator>> must demarshal a REAL-shaped,
-// foreign-marshalled (sba{sa{s(ssv)}}uasasu) payload — built by the FakeAgent
+// foreign-marshalled (sba{sa{s(ssv)}}uasasub) payload — built by the FakeAgent
 // with raw beginStructure/beginMap, NOT the client's own operator<< — carrying
 // issuer + notBefore/notAfter field-groups, a non-empty EKU list, a
 // multi-entry CN chain, and a non-Trusted trust verdict. operator>> must
@@ -345,7 +345,9 @@ TEST(AgentCard, DemarshalRealShapedCertPayload)
     cfg.rawCertResult = true;  // hand-marshalled raw signal, bypasses operator<<
     FakeCert fc;
     fc.certId = QStringLiteral("sha256-handle");
-    fc.signingCapable = true;
+    // Unlike alwaysAuthenticate below: the struct's two booleans differ, so a
+    // decoder that swapped them is visibly wrong.
+    fc.signingCapable = false;
     fc.subjectCn = QStringLiteral("Ana Anić");
     fc.issuerCn = QStringLiteral("MUP CA Građani");
     fc.notBefore = QStringLiteral("2020-01-01T00:00:00Z");
@@ -354,6 +356,7 @@ TEST(AgentCard, DemarshalRealShapedCertPayload)
     fc.extendedKeyUsageOids = QStringList{QStringLiteral("1.3.6.1.5.5.7.3.4")};
     fc.chainSubjectCns = QStringList{QStringLiteral("Ana Anić"), QStringLiteral("MUP CA Građani")};
     fc.trustStatus = 2u; // BrokenChain (non-Trusted, non-Unknown)
+    fc.alwaysAuthenticate = true;
     cfg.certScript = FakeCertList{fc};
     Harness h(cfg);
 
@@ -370,7 +373,7 @@ TEST(AgentCard, DemarshalRealShapedCertPayload)
     ASSERT_EQ(certs.size(), 1);
     const CertificateInfo& c = certs.constFirst();
     EXPECT_EQ(c.id, QStringLiteral("sha256-handle"));
-    EXPECT_TRUE(c.signingCapable);
+    EXPECT_FALSE(c.signingCapable);
     EXPECT_EQ(c.subject, QStringLiteral("Ana Anić"));
     EXPECT_EQ(c.issuer, QStringLiteral("MUP CA Građani"));
     EXPECT_EQ(c.notBefore, QDateTime::fromString(QStringLiteral("2020-01-01T00:00:00Z"), Qt::ISODate));
@@ -385,6 +388,8 @@ TEST(AgentCard, DemarshalRealShapedCertPayload)
     EXPECT_EQ(c.keyUsageBits, 0x80u);
     EXPECT_EQ(c.extendedKeyUsageOids, (QStringList{QStringLiteral("1.3.6.1.5.5.7.3.4")}));
     EXPECT_EQ(c.chainSubjectCns, (QStringList{QStringLiteral("Ana Anić"), QStringLiteral("MUP CA Građani")}));
+    // The struct's last member: the card asks for the PIN before every use.
+    EXPECT_TRUE(c.alwaysAuthenticate);
     // Those three keys are GONE from `extra` -- one source of truth, so a
     // consumer cannot read a stale duplicate that nothing keeps in step.
     EXPECT_FALSE(c.extra.contains(QStringLiteral("keyUsageBits")));

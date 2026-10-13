@@ -577,6 +577,7 @@ std::vector<Wire::CertInfo> FakeSocketAgent::buildCertList() const
             }
         }
         cert.trustStatus = scripted.trustStatus;
+        cert.alwaysAuthenticate = scripted.alwaysAuthenticate;
         for (const QString& token : scripted.securityStatus) {
             cert.fields["security"][token.toStdString()] =
                 Wire::CertField{"cert.security." + token.toStdString(), token.toStdString(), token.toStdString()};
