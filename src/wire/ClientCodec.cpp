@@ -445,6 +445,7 @@ std::optional<CertInfo> decodeCertInfo(const Map& m)
     const Array* ekus = r.array("ekus");
     const Array* chainSubjectCns = r.array("chainSubjectCns");
     ci.trustStatus = r.u32("trustStatus");
+    ci.alwaysAuthenticate = r.boolean("alwaysAuthenticate");
     if (!r.ok()) {
         return std::nullopt;
     }

@@ -521,6 +521,7 @@ CertInfo makeSampleCertInfo()
     ci.ekus = {"clientAuth"};
     ci.chainSubjectCns = {"Root CA"};
     ci.trustStatus = 0;
+    ci.alwaysAuthenticate = true;
     return ci;
 }
 

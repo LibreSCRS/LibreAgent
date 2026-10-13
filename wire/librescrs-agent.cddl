@@ -538,9 +538,15 @@ card-state   = { handle: handle, reader: handle, caps: capabilities, preAuth: pr
 ; append-only like error-code above; a value past OfflineUnverified=6 --
 ; a verdict a newer agent appended -- decodes through raw and the client
 ; maps it to Unknown at the mapping layer, never failing the decode.
+; alwaysAuthenticate: the card asks for the PIN before EVERY operation with
+; this certificate's key (PKCS#15 CommonObjectAttributes.userConsent != 0;
+; PKCS#11 CKA_ALWAYS_AUTHENTICATE). Read off the card by the agent, which
+; enforces it on every raw sign and decrypt itself, so a client never decides
+; on it. Required, like every key of this map.
 cert-info    = { certId: cert-id, signingCapable: bool,
                  fields: { * tstr => { * tstr => cert-field } },
-                 keyUsageBits: uint, ekus: [* tstr], chainSubjectCns: [* tstr], trustStatus: uint }
+                 keyUsageBits: uint, ekus: [* tstr], chainSubjectCns: [* tstr], trustStatus: uint,
+                 alwaysAuthenticate: bool }
 cert-field   = [ labelKey: tstr, labelFallback: tstr, value: tstr ]   ; (ssv): value is UTF-8
 
 ; ---- events (agent -> client, unsolicited) ----

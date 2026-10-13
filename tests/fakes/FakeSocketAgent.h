@@ -95,6 +95,7 @@ struct FakeCert
     bool signingCapable = true;
     std::uint32_t keyUsageBits = 0;
     std::uint32_t trustStatus = 255;
+    bool alwaysAuthenticate = false;
 };
 
 /// @brief One scripted reader, and the card (if any) seated in it.
@@ -129,6 +130,10 @@ public:
     ///        serves a subject with no CN.
     void addCert(const std::string& card, std::string certId, bool signingCapable = true,
                  std::uint32_t keyUsageBits = 0, std::string subjectCn = "Fake Subject");
+
+    /// @brief Mark a served certificate's key as one the card asks the PIN for
+    ///        before every use (cert-info `alwaysAuthenticate`).
+    void setAlwaysAuthenticate(const std::string& certId, bool on = true);
 
     /// @brief Make @p call sleep before it answers.
     void delayCall(Call call, std::chrono::milliseconds d);

@@ -135,6 +135,9 @@ struct CertInfo
     std::vector<std::string> ekus;
     std::vector<std::string> chainSubjectCns;
     std::uint32_t trustStatus{0};
+    // The card asks for the PIN before every operation with this key.
+    // Required on the wire, like every cert-info key.
+    bool alwaysAuthenticate{false};
     bool operator==(const CertInfo&) const = default;
 };
 

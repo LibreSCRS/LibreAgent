@@ -4,7 +4,7 @@
 CborRelocationTest 3
 CborRoundTripTest 11
 CddlVocabularyTest 17
-ClientCodecTest 75
+ClientCodecTest 77
 ClientQtAgentCardTest 52
 ClientQtAgentDiscoveryTest 17
 ClientQtAgentOperationTest 19

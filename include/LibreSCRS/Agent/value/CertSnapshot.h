@@ -46,6 +46,11 @@ struct CertSnapshot
     std::vector<std::string> ekuOids;
     std::vector<std::string> chainSubjectCns{}; // leaf..root subject CNs (display); currently just [leaf CN]
     std::uint32_t trustStatus{static_cast<std::uint32_t>(CertTrustStatus::Unknown)};
+    // The card asks for the PIN before EVERY operation with this key (PKCS#15
+    // userConsent; PKCS#11 CKA_ALWAYS_AUTHENTICATE), as LM read it off the
+    // card. Display and the PKCS#11 attribute only: the raw sign/decrypt path
+    // re-reads it from the card it operates on, never from this snapshot.
+    bool alwaysAuthenticate{false};
     // Closed-vocabulary tokens mirroring trustStatus (see the CertTrustStatus
     // comment above for the pairing): "trusted", "untrusted-root",
     // "broken-chain", "invalid", "expired", "revoked", "offline-unverified".

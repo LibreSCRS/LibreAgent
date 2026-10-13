@@ -256,6 +256,32 @@ TEST(LmCertReaderKat, NoPairedKeyIsNotSigningCapable)
     EXPECT_FALSE(s.signingCapable) << "no on-card private key paired";
 }
 
+TEST(LmCertReaderKat, CarriesTheCardsConsentRuleForTheKey)
+{
+    const auto der = makeSelfSignedV3Der("Consent Holder", "critical,digitalSignature");
+    ASSERT_FALSE(der.empty());
+    LibreSCRS::Plugin::CertificateData cd;
+    cd.derBytes = der;
+    cd.keyFID = std::uint16_t{0x9C};
+
+    EXPECT_FALSE(certSnapshotFromDer(cd).alwaysAuthenticate) << "a key the card does not mark arrives unmarked";
+    cd.alwaysAuthenticate = true;
+    EXPECT_TRUE(certSnapshotFromDer(cd).alwaysAuthenticate)
+        << "the card's per-operation consent rule must reach the snapshot";
+}
+
+TEST(LmCertReaderKat, AnUnparseableCertStillCarriesTheConsentRule)
+{
+    // The rule belongs to the key; a certificate the parser rejects does not
+    // change it. The entry stays non-signing either way.
+    LibreSCRS::Plugin::CertificateData cd;
+    cd.derBytes = {0x30, 0x03, 0x02, 0x01, 0x00};
+    cd.alwaysAuthenticate = true;
+    const CertSnapshot s = certSnapshotFromDer(cd);
+    EXPECT_FALSE(s.signingCapable);
+    EXPECT_TRUE(s.alwaysAuthenticate);
+}
+
 TEST(LmCertReaderKat, GarbageDerYieldsDiagnosticNotCrash)
 {
     LibreSCRS::Plugin::CertificateData cd;

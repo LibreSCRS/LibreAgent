@@ -431,6 +431,9 @@ CertSnapshot toCertSnapshot(const LibreSCRS::Plugin::CertificateData& cd)
 {
     CertSnapshot snap;
     snap.certId = sha256Hex(cd.derBytes);
+    // The card's rule for the key, not the certificate's: it holds even when
+    // the DER below does not parse.
+    snap.alwaysAuthenticate = cd.alwaysAuthenticate;
     snap.trustStatus = static_cast<std::uint32_t>(CertTrustStatus::Unknown); // chain verdict not yet wired
     // signingCapable is set AFTER parsing (it needs the keyUsage); it defaults
     // false so an unparseable cert is never reported as a usable signing handle.

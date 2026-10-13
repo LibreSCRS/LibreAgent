@@ -226,6 +226,42 @@ TEST(ClientCodec, CertListReplyRoundTrips)
     expectReplyRoundTrip(4, certList, [](std::uint64_t r, const CertListReply& a) { return makeReply(r, a); });
 }
 
+// Both values of the card's consent rule survive the client decode: a decoder
+// that defaulted the key would re-encode the marked entry as unmarked.
+TEST(ClientCodec, CertListReplyKeepsBothConsentValues)
+{
+    CertListReply certList;
+    CertInfo marked = makeSampleCertInfo();
+    marked.certId = "marked";
+    marked.alwaysAuthenticate = true;
+    CertInfo ordinary = makeSampleCertInfo();
+    ordinary.certId = "ordinary";
+    certList.certs = {marked, ordinary};
+    expectReplyRoundTrip(4, certList, [](std::uint64_t r, const CertListReply& a) { return makeReply(r, a); });
+}
+
+// Every cert-info key is required, this one included: an entry without it is
+// malformed. A decoder that read "absent" as "no consent per operation" would
+// tell a client a key is ordinary on the word of an agent that never said so.
+TEST(ClientCodec, CertInfoWithoutTheConsentFlagIsRejected)
+{
+    CborValue::Map cert;
+    cert.emplace("certId", CborValue("deadbeef"));
+    cert.emplace("signingCapable", CborValue(true));
+    cert.emplace("fields", CborValue(CborValue::Map{}));
+    cert.emplace("keyUsageBits", CborValue::uint(1));
+    cert.emplace("ekus", CborValue(CborValue::Array{}));
+    cert.emplace("chainSubjectCns", CborValue(CborValue::Array{}));
+    cert.emplace("trustStatus", CborValue::uint(0));
+    CborValue::Array certs;
+    certs.push_back(CborValue(std::move(cert)));
+    CborValue::Map reply;
+    reply.emplace("t", CborValue("Reply"));
+    reply.emplace("req", CborValue::uint(4));
+    reply.emplace("certs", CborValue(std::move(certs)));
+    EXPECT_FALSE(parseReply(CborValue(std::move(reply)).encode(), {}).has_value());
+}
+
 TEST(ClientCodec, CertDerReplyRoundTrips)
 {
     expectReplyRoundTrip(5, CertDerReply{{0xDE, 0xAD, 0xBE, 0xEF}},

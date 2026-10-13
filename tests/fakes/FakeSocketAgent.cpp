@@ -106,6 +106,17 @@ void FakeSocketAgent::addCert(const std::string& card, std::string certId, bool 
     }
 }
 
+void FakeSocketAgent::setAlwaysAuthenticate(const std::string& certId, bool on)
+{
+    const std::lock_guard lock{m_mutex};
+    for (auto& r : m_readers) {
+        for (auto& c : r.certs) {
+            if (c.certId == certId)
+                c.alwaysAuthenticate = on;
+        }
+    }
+}
+
 void FakeSocketAgent::delayCall(Call call, std::chrono::milliseconds d)
 {
     const std::lock_guard lock{m_mutex};
@@ -326,6 +337,7 @@ std::vector<W::CertInfo> FakeSocketAgent::buildCerts(const std::string& card) co
             ci.signingCapable = c.signingCapable;
             ci.keyUsageBits = c.keyUsageBits;
             ci.trustStatus = c.trustStatus;
+            ci.alwaysAuthenticate = c.alwaysAuthenticate;
             // The subject CN is the label the module shows, and it rides the
             // grouped `fields` dict rather than a field of its own -- the same
             // shape the bus surface uses, so the two clients read one place.

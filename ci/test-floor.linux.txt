@@ -20,7 +20,7 @@ CborRoundTripTest 11
 CddlVocabularyTest 17
 CertDerExportTest 1
 CertReadFlowTest 24
-ClientCodecTest 75
+ClientCodecTest 77
 ClientQtAgentCardTest 52
 ClientQtAgentDiscoveryTest 17
 ClientQtAgentOperationTest 19
@@ -68,7 +68,7 @@ IdentityReadFlowTest 49
 IdentityTest 3
 KeyActivationFlowTest 9
 LeaseManagerTest 18
-LmCertReaderKatTest 14
+LmCertReaderKatTest 16
 LmRawCryptoTest 9
 LmSeamsCompileTest 1
 LmSeamsRoutingTest 14

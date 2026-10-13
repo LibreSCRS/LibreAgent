@@ -296,6 +296,7 @@ CborValue encodeCertInfo(const CertInfo& ci)
     m.emplace("ekus", arrOfText(ci.ekus));
     m.emplace("chainSubjectCns", arrOfText(ci.chainSubjectCns));
     m.emplace("trustStatus", CborValue::uint(ci.trustStatus));
+    m.emplace("alwaysAuthenticate", CborValue(ci.alwaysAuthenticate));
     return CborValue(std::move(m));
 }
 

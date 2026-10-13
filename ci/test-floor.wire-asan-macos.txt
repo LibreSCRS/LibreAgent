@@ -4,7 +4,7 @@
 CborRelocationTest 3
 CborRoundTripTest 11
 CddlVocabularyTest 17
-ClientCodecTest 75
+ClientCodecTest 77
 FdHarvestTest 5
 FeatureTokensGuardTest 3
 FrameReassemblerTest 8
