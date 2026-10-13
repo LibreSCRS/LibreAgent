@@ -60,6 +60,7 @@ ObjectModel ObjectModel::build(const AgentSnapshot& snapshot)
             privObj.modulusBits = cert.modulusBits;
             privObj.sign = cert.canSign;
             privObj.decrypt = cert.canDecrypt;
+            privObj.alwaysAuthenticate = cert.alwaysAuthenticate;
             slot.objects.push_back(std::move(privObj));
 
             anySign = anySign || cert.canSign;

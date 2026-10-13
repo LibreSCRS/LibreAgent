@@ -37,6 +37,7 @@ struct DecryptCursor
     bool active = false;
     std::string reader;
     std::string certId;
+    std::uint32_t modulusBits = 0;
     std::vector<std::uint8_t> accumulated; ///< For the C_DecryptUpdate multi-part path.
 };
 

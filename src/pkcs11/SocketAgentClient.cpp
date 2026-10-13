@@ -378,6 +378,7 @@ AgentSnapshot SocketAgentClient::snapshot()
             ce.canSign = canDriveSigning;
             ce.canDecrypt = canDriveDecrypt && keyUsagePermitsDecrypt;
             ce.signsHashOnCard = hashesOnCard;
+            ce.alwaysAuthenticate = e.alwaysAuthenticate;
             reader.certs.push_back(std::move(ce));
         }
         // What a loader shows for the token, and what tells two of them apart.

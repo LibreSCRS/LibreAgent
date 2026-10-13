@@ -164,6 +164,36 @@ CK_RV ckrFromStatus(Status s)
     }
 }
 
+// The agent answers UserNotLoggedIn when the lease is gone (idle, lifetime,
+// card removed). The session is PUBLIC again from that answer on, so a loader
+// that reads the state logs in afresh instead of being told it still is.
+void dropLoginOnLapsedLease(Status s, CK_SESSION_HANDLE hSession)
+{
+    if (s != Status::UserNotLoggedIn)
+        return;
+    std::lock_guard lk(g_mutex);
+    if (!g_lib)
+        return;
+    if (Session* sess = g_lib->state.session(hSession))
+        sess->loggedIn = false;
+}
+
+// The key's RSA modulus in bits: @p known when the cursor already has it, else
+// read from the public key (public data, cached by the client). 0 when neither
+// says. Called with g_mutex RELEASED, under the caller's RpcInFlightGuard.
+// It lets a length question be answered without the card: for a key the card
+// marks for consent per operation, every call that reaches the card is a PIN
+// prompt, so one spent on a length would cost the user a second PIN.
+std::uint32_t modulusBitsFor(const std::string& reader, const std::string& certId, std::uint32_t known)
+{
+    if (known != 0)
+        return known;
+    const auto pk = g_lib->client->publicKey(reader, certId);
+    if (pk.status == Status::Ok && !pk.modulus.empty())
+        return static_cast<std::uint32_t>(pk.modulus.size()) * 8;
+    return 0;
+}
+
 // Copy a padded C-string field (CK_TOKEN_INFO / CK_SLOT_INFO are space-padded,
 // NOT null-terminated). Truncates to the field length on a UTF-8 character
 // boundary: these fields are CK_UTF8CHAR, and a holder name or reader name cut
@@ -577,12 +607,15 @@ CK_DECLARE_FUNCTION(CK_RV, C_Login)
         std::lock_guard lk(g_mutex);
         if (!g_lib)
             return CKR_CRYPTOKI_NOT_INITIALIZED;
-        // CKU_USER: the normal per-card login. CKU_CONTEXT_SPECIFIC (PKCS#11
-        // §5.6.6): the per-operation re-authentication a consumer (ssh-pkcs11,
-        // NSS, Firefox) issues between C_SignInit and C_Sign because every
-        // private key advertises CKA_ALWAYS_AUTHENTICATE — without accepting it
-        // those apps cannot sign at all. Both refresh the agent login lease via
-        // the prompter (protected authentication path); CKU_SO is unsupported.
+        // CKU_USER: the per-card login. CKU_CONTEXT_SPECIFIC (PKCS#11 v2.40
+        // §4.9, §5.6): what a loader sends between C_SignInit and C_Sign for a
+        // key whose CKA_ALWAYS_AUTHENTICATE is TRUE. Both refresh the agent
+        // lease; the PIN itself is asked for by the agent, which enforces the
+        // card's rule on every operation with such a key. The standard answers
+        // CKR_OPERATION_NOT_INITIALIZED to CKU_CONTEXT_SPECIFIC when no
+        // operation on such a key is active; this module accepts it anyway,
+        // because the agent, not the module, decides when the PIN is due and a
+        // refusal here would gain nothing. CKU_SO is unsupported.
         if (userType != CKU_USER && userType != CKU_CONTEXT_SPECIFIC)
             return CKR_USER_TYPE_INVALID;
         Session* s = g_lib->state.session(hSession);
@@ -771,12 +804,14 @@ CK_RV serveAttribute(const Slot& slot, const Object& obj, CK_ATTRIBUTE& attr)
             return CKR_ATTRIBUTE_TYPE_INVALID;
         return give(&ckTrue, sizeof(ckTrue));
     case CKA_ALWAYS_AUTHENTICATE:
-        // NSS/Firefox re-authenticate before each private-key op when this is
-        // set; paired with the agent's CKR_USER_NOT_LOGGED_IN-on-expiry this
-        // yields a clean per-signature re-prompt.
+        // The card's per-operation PIN rule for this key (PKCS#15 userConsent,
+        // PIV PIN-always), as the agent reads it. The agent enforces it
+        // whatever a loader does -- it asks for the PIN again for every
+        // operation with such a key -- so this tells a loader what to expect;
+        // it gates nothing here.
         if (obj.cls != CKO_PRIVATE_KEY)
             return CKR_ATTRIBUTE_TYPE_INVALID;
-        return give(&ckTrue, sizeof(ckTrue));
+        return give(obj.alwaysAuthenticate ? &ckTrue : &ckFalse, sizeof(CK_BBOOL));
     case CKA_MODULUS: {
         // RSA modulus (big-endian, unpadded) for key objects. Fetched lazily
         // from the agent — the module holds no crypto.
@@ -1003,6 +1038,7 @@ CK_DECLARE_FUNCTION(CK_RV, C_DecryptInit)
     s->decrypt.active = true;
     s->decrypt.reader = slot->readerPath;
     s->decrypt.certId = obj->certId;
+    s->decrypt.modulusBits = obj->modulusBits;
     return CKR_OK;
     PKCS11_CATCH
 }
@@ -1026,6 +1062,7 @@ CK_RV doDecrypt(CK_SESSION_HANDLE hSession, const std::uint8_t* ct, std::size_t 
     // --- under lock: validate + capture (reader, certId), mark in-flight ----
     std::string reader;
     std::string certId;
+    std::uint32_t modulusBits = 0;
     std::vector<std::uint8_t> accumulated; // the C_DecryptFinal multi-part buffer
     std::optional<RpcInFlightGuard> guard;
     {
@@ -1041,6 +1078,7 @@ CK_RV doDecrypt(CK_SESSION_HANDLE hSession, const std::uint8_t* ct, std::size_t 
             return CKR_OPERATION_ACTIVE;
         reader = s->decrypt.reader;
         certId = s->decrypt.certId;
+        modulusBits = s->decrypt.modulusBits;
         if (useAccumulated)
             accumulated = s->decrypt.accumulated; // snapshot before releasing the lock
         // RAII: sets s->rpcInFlight + bumps the global in-flight count; cleared on
@@ -1067,10 +1105,28 @@ CK_RV doDecrypt(CK_SESSION_HANDLE hSession, const std::uint8_t* ct, std::size_t 
     };
 
     // --- lock RELEASED for the blocking on-card decrypt ----------------------
+    // Size query: answer the modulus length, which bounds any PKCS#1 v1.5
+    // plaintext (PKCS#11 lets a length answer be somewhat larger than the
+    // result), without decrypting. A non-NULL buffer still goes to the card:
+    // the plaintext's length is known only once decrypted, and a buffer
+    // shorter than the modulus may well hold it. With the modulus unknown the
+    // size query falls through to a real decrypt, as it always did.
+    if (pData == NULL_PTR) {
+        modulusBits = modulusBitsFor(reader, certId, modulusBits);
+        if (modulusBits != 0) {
+            *pulDataLen = (modulusBits + 7) / 8;
+            std::lock_guard lk(g_mutex);
+            if (g_lib)
+                if (Session* s = g_lib->state.session(hSession))
+                    s->decrypt.modulusBits = modulusBits; // the operation stays active
+            return CKR_OK;
+        }
+    }
     std::vector<std::uint8_t> ciphertext(ct, ct + ctLen);
     auto res = g_lib->client->decrypt(reader, certId, ciphertext);
     if (res.status != Status::Ok) {
         clearCursorIf(/*clearCursor=*/true);
+        dropLoginOnLapsedLease(res.status, hSession);
         return ckrFromStatus(res.status);
     }
     if (pData == NULL_PTR) {
@@ -1291,34 +1347,34 @@ CK_RV doSign(CK_SESSION_HANDLE hSession, const std::uint8_t* data, std::size_t l
     };
 
     // --- lock RELEASED for the blocking RPCs --------------------------------
-    // Size query: derive the signature length from the modulus (RSA sig == k).
-    // Prefer the cursor's modulusBits; otherwise fetch the public-key modulus
-    // (public data, cached) so a size query NEVER triggers a real on-card sign.
-    if (pSignature == NULL_PTR) {
-        if (modulusBits == 0) {
-            auto pk = g_lib->client->publicKey(reader, certId);
-            if (pk.status == Status::Ok && !pk.modulus.empty())
-                modulusBits = static_cast<std::uint32_t>(pk.modulus.size()) * 8;
-        }
-        if (modulusBits != 0) {
-            *pulSignatureLen = (modulusBits + 7) / 8;
-            // Persist the learned size; keep the operation active (the guard
-            // clears rpcInFlight + the count on return).
+    // Length questions: an RSA signature is exactly the modulus length, so a
+    // size query (NULL buffer) and a buffer shorter than that are both
+    // answered from the modulus and NEVER trigger a real on-card sign; the
+    // operation stays active either way. Modulus unavailable (non-RSA /
+    // error): fall through to a real call, as before.
+    modulusBits = modulusBitsFor(reader, certId, modulusBits);
+    if (modulusBits != 0) {
+        const auto sigLen = static_cast<CK_ULONG>((modulusBits + 7) / 8);
+        if (pSignature == NULL_PTR || *pulSignatureLen < sigLen) {
+            const bool sizeQuery = (pSignature == NULL_PTR);
+            *pulSignatureLen = sigLen;
+            // Persist the learned size (the guard clears rpcInFlight + the
+            // count on return).
             {
                 std::lock_guard lk(g_mutex);
                 if (g_lib)
                     if (Session* s = g_lib->state.session(hSession))
                         s->sign.modulusBits = modulusBits;
             }
-            return CKR_OK;
+            return sizeQuery ? CKR_OK : CKR_BUFFER_TOO_SMALL;
         }
-        // Modulus unavailable (non-RSA / error): fall through to a real call.
     }
 
     std::vector<std::uint8_t> input = buildSignInput(data, len);
     auto res = g_lib->client->signRaw(reader, certId, input);
     if (res.status != Status::Ok) {
         clearCursorIf(/*clearCursor=*/true);
+        dropLoginOnLapsedLease(res.status, hSession);
         return ckrFromStatus(res.status);
     }
     if (pSignature == NULL_PTR) {

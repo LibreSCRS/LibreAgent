@@ -343,9 +343,9 @@ TEST(ModuleAbi, SignSizeQueryReturnsModulusBytes)
     CK_OBJECT_HANDLE key = findPrivateKey(m.fn, session);
     ASSERT_NE(key, CK_INVALID_HANDLE);
 
-    // The fake cert reports no modulusBits (0) -> size query falls through to a
-    // real SignRaw and returns the canned-signature length. Either way, a
-    // NULL-buffer size query must not error.
+    // The fake cert reports no modulusBits (0), so the module reads the length
+    // from the public key's modulus. Either way, a NULL-buffer size query must
+    // not error.
     CK_MECHANISM mech{CKM_RSA_PKCS, nullptr, 0};
     ASSERT_EQ(m.fn->C_SignInit(session, &mech, key), CKR_OK);
     std::vector<CK_BYTE> data(32, 0x11);
@@ -506,24 +506,41 @@ TEST(ModuleAbi, PublicKeyServesModulusAndExponent)
     EXPECT_EQ(m.fn->C_CloseSession(session), CKR_OK);
 }
 
-// NSS/Firefox use CKA_ALWAYS_AUTHENTICATE to re-authenticate before each
-// private-key op; paired with CKR_USER_NOT_LOGGED_IN-on-expiry this gives a
-// clean per-signature re-prompt.
-TEST(ModuleAbi, PrivateKeyAlwaysAuthenticate)
+// A loader re-authenticates before an operation only for a key whose
+// CKA_ALWAYS_AUTHENTICATE is TRUE, and that attribute is the card's own rule
+// for the key: unmarked reads FALSE, marked reads TRUE.
+TEST(ModuleAbi, AnOrdinaryKeyIsNotAlwaysAuthenticate)
 {
     SocketFixture agent;
     LoadedModule m;
+    ASSERT_NE(m.fn, nullptr);
     ASSERT_EQ(m.fn->C_Initialize(nullptr), CKR_OK);
-    CK_SLOT_ID slot = firstPresentSlot(m.fn);
     CK_SESSION_HANDLE session = 0;
-    ASSERT_EQ(m.fn->C_OpenSession(slot, CKF_SERIAL_SESSION, nullptr, nullptr, &session), CKR_OK);
+    ASSERT_EQ(m.fn->C_OpenSession(firstPresentSlot(m.fn), CKF_SERIAL_SESSION, nullptr, nullptr, &session), CKR_OK);
+    CK_OBJECT_HANDLE key = findPrivateKey(m.fn, session);
+    ASSERT_NE(key, CK_INVALID_HANDLE);
+
+    CK_BBOOL always = CK_TRUE; // the module must WRITE false, not leave this
+    CK_ATTRIBUTE attr[] = {{CKA_ALWAYS_AUTHENTICATE, &always, sizeof(always)}};
+    ASSERT_EQ(m.fn->C_GetAttributeValue(session, key, attr, 1), CKR_OK);
+    EXPECT_EQ(always, CK_FALSE);
+}
+
+TEST(ModuleAbi, AKeyTheCardMarksIsAlwaysAuthenticate)
+{
+    SocketFixture agent(/*hasCard=*/true, "None", [](FakeSocketAgent& f) { f.setAlwaysAuthenticate(kCertId); });
+    LoadedModule m;
+    ASSERT_NE(m.fn, nullptr);
+    ASSERT_EQ(m.fn->C_Initialize(nullptr), CKR_OK);
+    CK_SESSION_HANDLE session = 0;
+    ASSERT_EQ(m.fn->C_OpenSession(firstPresentSlot(m.fn), CKF_SERIAL_SESSION, nullptr, nullptr, &session), CKR_OK);
     CK_OBJECT_HANDLE key = findPrivateKey(m.fn, session);
     ASSERT_NE(key, CK_INVALID_HANDLE);
 
     CK_BBOOL always = CK_FALSE;
     CK_ATTRIBUTE attr[] = {{CKA_ALWAYS_AUTHENTICATE, &always, sizeof(always)}};
     ASSERT_EQ(m.fn->C_GetAttributeValue(session, key, attr, 1), CKR_OK);
-    EXPECT_EQ(always, CK_TRUE) << "private key must require per-op re-authentication";
+    EXPECT_EQ(always, CK_TRUE);
 }
 
 // The module must NOT hold the global lock across the blocking
@@ -629,12 +646,12 @@ TEST(ModuleAbi, SecondLoginReturnsAlreadyLoggedIn)
     EXPECT_EQ(m.fn->C_Login(session, CKU_USER, nullptr, 0), CKR_USER_ALREADY_LOGGED_IN);
 }
 
-// PKCS#11 §5.6.6: every private key advertises CKA_ALWAYS_AUTHENTICATE, so
-// consumers (ssh-pkcs11, NSS, Firefox) re-authenticate per signing operation via
-// C_Login(CKU_CONTEXT_SPECIFIC) between C_SignInit and C_Sign. That re-auth must
-// SUCCEED (lease refresh) even while already CKU_USER-logged-in — NOT be rejected
-// the way a repeat CKU_USER login is (cf. SecondLoginReturnsAlreadyLoggedIn).
-// Without this, third-party PKCS#11 signing fails outright.
+// A loader (ssh-pkcs11, NSS, Firefox) re-authenticates a key whose
+// CKA_ALWAYS_AUTHENTICATE is TRUE with C_Login(CKU_CONTEXT_SPECIFIC) between
+// C_SignInit and C_Sign. That re-auth must SUCCEED (lease refresh) even while
+// already CKU_USER-logged-in — NOT be rejected the way a repeat CKU_USER login
+// is (cf. SecondLoginReturnsAlreadyLoggedIn). Without this, such a loader
+// cannot sign with a key the card marks at all.
 TEST(ModuleAbi, ContextSpecificLoginAcceptedForReauth)
 {
     SocketFixture agent;
@@ -648,6 +665,114 @@ TEST(ModuleAbi, ContextSpecificLoginAcceptedForReauth)
     EXPECT_EQ(m.fn->C_Login(session, CKU_CONTEXT_SPECIFIC, nullptr, 0), CKR_OK);
     EXPECT_EQ(m.fn->C_Login(session, CKU_CONTEXT_SPECIFIC, nullptr, 0), CKR_OK)
         << "repeated per-operation re-auth must keep succeeding";
+}
+
+// The agent refuses a signature or a decryption with "not logged in" once the
+// lease is gone (idle, lifetime, card removed). From that answer on the
+// session is PUBLIC again, so a loader that reads the state logs in afresh --
+// and that login is accepted rather than refused as already logged in.
+TEST(ModuleAbi, AnExpiredLeaseReturnsTheSessionToPublic)
+{
+    SocketFixture agent;
+    LoadedModule m;
+    ASSERT_NE(m.fn, nullptr);
+    ASSERT_EQ(m.fn->C_Initialize(nullptr), CKR_OK);
+    CK_SESSION_HANDLE session = 0;
+    ASSERT_EQ(m.fn->C_OpenSession(firstPresentSlot(m.fn), CKF_SERIAL_SESSION, nullptr, nullptr, &session), CKR_OK);
+    CK_OBJECT_HANDLE key = findPrivateKey(m.fn, session);
+    ASSERT_NE(key, CK_INVALID_HANDLE);
+    CK_SESSION_INFO info{};
+
+    // Sign.
+    ASSERT_EQ(m.fn->C_Login(session, CKU_USER, nullptr, 0), CKR_OK);
+    agent.fake->failCall(Call::PkSignRaw, W::SyncError::UserNotLoggedIn);
+    CK_MECHANISM mech{CKM_RSA_PKCS, nullptr, 0};
+    ASSERT_EQ(m.fn->C_SignInit(session, &mech, key), CKR_OK);
+    std::vector<CK_BYTE> data(32, 0x11);
+    CK_BYTE sig[512];
+    CK_ULONG sigLen = sizeof(sig);
+    EXPECT_EQ(m.fn->C_Sign(session, data.data(), data.size(), sig, &sigLen), CKR_USER_NOT_LOGGED_IN);
+    ASSERT_EQ(m.fn->C_GetSessionInfo(session, &info), CKR_OK);
+    EXPECT_EQ(info.state, CKS_RO_PUBLIC_SESSION) << "a lapsed lease must not leave the session reading as logged in";
+
+    // Decrypt, after a fresh login the module must accept.
+    ASSERT_EQ(m.fn->C_Login(session, CKU_USER, nullptr, 0), CKR_OK);
+    agent.fake->failCall(Call::PkDecrypt, W::SyncError::UserNotLoggedIn);
+    ASSERT_EQ(m.fn->C_DecryptInit(session, &mech, key), CKR_OK);
+    std::vector<CK_BYTE> ct(256, 0x22);
+    CK_BYTE plain[512];
+    CK_ULONG plainLen = sizeof(plain);
+    EXPECT_EQ(m.fn->C_Decrypt(session, ct.data(), ct.size(), plain, &plainLen), CKR_USER_NOT_LOGGED_IN);
+    ASSERT_EQ(m.fn->C_GetSessionInfo(session, &info), CKR_OK);
+    EXPECT_EQ(info.state, CKS_RO_PUBLIC_SESSION);
+}
+
+// For a key the card marks, every call that reaches the card is a PIN prompt.
+// So asking how long the signature will be -- with no buffer, or with one too
+// small -- is answered from the key's modulus and never reaches the agent's
+// sign; the operation stays active, and the call that does sign signs once.
+TEST(ModuleAbi, SignLengthQueriesNeverReachTheCard)
+{
+    SocketFixture agent;
+    LoadedModule m;
+    ASSERT_NE(m.fn, nullptr);
+    ASSERT_EQ(m.fn->C_Initialize(nullptr), CKR_OK);
+    CK_SESSION_HANDLE session = 0;
+    ASSERT_EQ(m.fn->C_OpenSession(firstPresentSlot(m.fn), CKF_SERIAL_SESSION, nullptr, nullptr, &session), CKR_OK);
+    CK_OBJECT_HANDLE key = findPrivateKey(m.fn, session);
+    ASSERT_NE(key, CK_INVALID_HANDLE);
+    const CK_ULONG modulusBytes = cannedModulus().size();
+
+    CK_MECHANISM mech{CKM_RSA_PKCS, nullptr, 0};
+    ASSERT_EQ(m.fn->C_SignInit(session, &mech, key), CKR_OK);
+    std::vector<CK_BYTE> data(32, 0x11);
+
+    CK_ULONG len = 0;
+    EXPECT_EQ(m.fn->C_Sign(session, data.data(), data.size(), nullptr, &len), CKR_OK);
+    EXPECT_EQ(len, modulusBytes);
+    EXPECT_EQ(agent.fake->callCount(Call::PkSignRaw), 0) << "a length query signed on the card";
+
+    CK_BYTE small[8];
+    len = sizeof(small);
+    EXPECT_EQ(m.fn->C_Sign(session, data.data(), data.size(), small, &len), CKR_BUFFER_TOO_SMALL);
+    EXPECT_EQ(len, modulusBytes);
+    EXPECT_EQ(agent.fake->callCount(Call::PkSignRaw), 0) << "a too-small buffer signed on the card";
+
+    CK_BYTE sig[512];
+    len = sizeof(sig);
+    EXPECT_EQ(m.fn->C_Sign(session, data.data(), data.size(), sig, &len), CKR_OK)
+        << "the operation must still be active after the two length answers";
+    EXPECT_EQ(agent.fake->callCount(Call::PkSignRaw), 1);
+}
+
+// The same for a decryption: with no buffer the module answers the modulus
+// length, which bounds any PKCS#1 v1.5 plaintext, without decrypting.
+TEST(ModuleAbi, DecryptLengthQueryNeverReachesTheCard)
+{
+    SocketFixture agent;
+    LoadedModule m;
+    ASSERT_NE(m.fn, nullptr);
+    ASSERT_EQ(m.fn->C_Initialize(nullptr), CKR_OK);
+    CK_SESSION_HANDLE session = 0;
+    ASSERT_EQ(m.fn->C_OpenSession(firstPresentSlot(m.fn), CKF_SERIAL_SESSION, nullptr, nullptr, &session), CKR_OK);
+    CK_OBJECT_HANDLE key = findPrivateKey(m.fn, session);
+    ASSERT_NE(key, CK_INVALID_HANDLE);
+
+    CK_MECHANISM mech{CKM_RSA_PKCS, nullptr, 0};
+    ASSERT_EQ(m.fn->C_DecryptInit(session, &mech, key), CKR_OK);
+    std::vector<CK_BYTE> ct(256, 0x22);
+
+    CK_ULONG len = 0;
+    EXPECT_EQ(m.fn->C_Decrypt(session, ct.data(), ct.size(), nullptr, &len), CKR_OK);
+    EXPECT_EQ(len, static_cast<CK_ULONG>(cannedModulus().size()));
+    EXPECT_EQ(agent.fake->callCount(Call::PkDecrypt), 0) << "a length query decrypted on the card";
+
+    CK_BYTE plain[512];
+    len = sizeof(plain);
+    EXPECT_EQ(m.fn->C_Decrypt(session, ct.data(), ct.size(), plain, &len), CKR_OK)
+        << "the operation must still be active after the length answer";
+    EXPECT_EQ(len, static_cast<CK_ULONG>(kCannedPlain.size()));
+    EXPECT_EQ(agent.fake->callCount(Call::PkDecrypt), 1);
 }
 
 // The widened userType check must NOT become a blanket accept: CKU_SO

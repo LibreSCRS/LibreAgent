@@ -126,10 +126,21 @@ struct SocketContractTraits
         return make({}, /*withCert=*/true, /*subjectCn=*/"");
     }
 
+    static std::unique_ptr<Harness> servingAlwaysAuthenticateCert()
+    {
+        return make([](T::FakeSocketAgent& fake) { fake.setAlwaysAuthenticate(certId()); });
+    }
+
     static std::unique_ptr<Harness> refusingLogin(Refusal r)
     {
         const W::SyncError e = wireNameFor(r);
         return make([e](T::FakeSocketAgent& fake) { fake.failCall(T::Call::PkLogin, e); });
+    }
+
+    static std::unique_ptr<Harness> refusingSign(Refusal r)
+    {
+        const W::SyncError e = wireNameFor(r);
+        return make([e](T::FakeSocketAgent& fake) { fake.failCall(T::Call::PkSignRaw, e); });
     }
 
     static std::unique_ptr<Harness> unreachable()

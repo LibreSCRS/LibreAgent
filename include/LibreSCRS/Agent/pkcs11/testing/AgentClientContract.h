@@ -40,12 +40,16 @@
 //
 //       // An agent that serves that reader and refuses login() with `r`.
 //       static std::unique_ptr<Harness> refusingLogin(Refusal r);
+//       // An agent that serves that reader and refuses signRaw() with r.
+//       static std::unique_ptr<Harness> refusingSign(Refusal r);
 //       // An agent that serves that reader and refuses nothing.
 //       static std::unique_ptr<Harness> serving();
 //       // The same reader and card, with no certificate on the card.
 //       static std::unique_ptr<Harness> servingCardWithoutCertificate();
 //       // The same, with the signing cert's subject carrying no CN.
 //       static std::unique_ptr<Harness> servingCertWithoutCommonName();
+//       // The same reader and card, its cert's key marked by the card for consent per operation.
+//       static std::unique_ptr<Harness> servingAlwaysAuthenticateCert();
 //       // A client with nothing on the other end at all.
 //       static std::unique_ptr<Harness> unreachable();
 //
@@ -71,6 +75,7 @@
 #include <algorithm>
 #include <array>
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -326,11 +331,49 @@ TYPED_TEST_P(AgentClientContract, AReaderCarriesItsName)
     EXPECT_EQ(reader->readerName, TypeParam::readerName());
 }
 
+// The card's per-operation consent rule reaches the module the same way on
+// both transports: a key it marks arrives marked, one it does not arrives
+// unmarked. The PKCS#11 attribute a loader reads is built from this one bit.
+TYPED_TEST_P(AgentClientContract, TheCardsConsentRuleReachesTheEntry)
+{
+    const std::string want = TypeParam::reader();
+    const auto firstCertFlag = [&want](const AgentSnapshot& snap) -> std::optional<bool> {
+        const auto reader = std::find_if(snap.readers.begin(), snap.readers.end(),
+                                         [&want](const ReaderState& r) { return r.readerPath == want; });
+        if (reader == snap.readers.end() || reader->certs.empty())
+            return std::nullopt;
+        return reader->certs.front().alwaysAuthenticate;
+    };
+    {
+        auto harness = TypeParam::serving();
+        ASSERT_NE(harness, nullptr);
+        EXPECT_EQ(firstCertFlag(harness->client().snapshot()), std::optional<bool>{false});
+    }
+    {
+        auto harness = TypeParam::servingAlwaysAuthenticateCert();
+        ASSERT_NE(harness, nullptr);
+        EXPECT_EQ(firstCertFlag(harness->client().snapshot()), std::optional<bool>{true});
+    }
+}
+
+// An agent whose lease has lapsed refuses the next signature as "not logged
+// in". Both transports owe the module that one Status for it -- the answer it
+// turns back into a public session -- not the generic error a transport that
+// mapped only login() refusals would give.
+TYPED_TEST_P(AgentClientContract, ASignWithoutALeaseIsNotLoggedIn)
+{
+    auto harness = TypeParam::refusingSign(Refusal::UserNotLoggedIn);
+    ASSERT_NE(harness, nullptr);
+    const std::vector<std::uint8_t> payload{0x30, 0x31};
+    EXPECT_EQ(harness->client().signRaw(TypeParam::reader(), TypeParam::certId(), payload).status,
+              Status::UserNotLoggedIn);
+}
+
 REGISTER_TYPED_TEST_SUITE_P(AgentClientContract, EveryRefusalReachesItsOwnStatus,
                             TheRefusalsStayDistinguishableFromEachOther, ACancelledPromptIsNotAFailedOne,
                             WithNoAgentEveryCallIsDeviceRemoved, AServingAgentAnswersALease,
                             AServingAgentEnumeratesItsCard, ACardIsNamedAfterItsCertificateHolder,
                             ACardWithoutACertificateIsNamedAfterItsReader, ACertWithoutACommonNameDoesNotNameTheToken,
-                            AReaderCarriesItsName);
+                            AReaderCarriesItsName, TheCardsConsentRuleReachesTheEntry, ASignWithoutALeaseIsNotLoggedIn);
 
 } // namespace LibreSCRS::Pkcs11Agent::Testing

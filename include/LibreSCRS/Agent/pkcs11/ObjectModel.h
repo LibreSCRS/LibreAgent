@@ -41,6 +41,8 @@ struct CertEntry
     bool signsHashOnCard = false;    ///< Card hashes on-card (NAM/IAS-ECC): advertise
                                      ///< CKM_SHA256_RSA_PKCS (raw message in), not
                                      ///< CKM_RSA_PKCS (caller-built DigestInfo).
+    bool alwaysAuthenticate = false; ///< The card's per-operation PIN rule for this key
+                                     ///< (PKCS#15 userConsent, PIV PIN-always).
     std::uint32_t modulusBits = 0;   ///< RSA modulus size in bits (0 if unknown).
 };
 
@@ -138,10 +140,11 @@ struct Object
     CK_OBJECT_CLASS cls = CKO_DATA;
     std::vector<std::uint8_t> ckaId;
     std::string label;
-    std::string certId;            ///< Owning cert id (for lazy CKA_VALUE / agent calls).
-    std::uint32_t modulusBits = 0; ///< For key objects: RSA modulus bits.
-    bool sign = false;             ///< CKA_SIGN (private key).
-    bool decrypt = false;          ///< CKA_DECRYPT (private key).
+    std::string certId;              ///< Owning cert id (for lazy CKA_VALUE / agent calls).
+    std::uint32_t modulusBits = 0;   ///< For key objects: RSA modulus bits.
+    bool sign = false;               ///< CKA_SIGN (private key).
+    bool decrypt = false;            ///< CKA_DECRYPT (private key).
+    bool alwaysAuthenticate = false; ///< CKA_ALWAYS_AUTHENTICATE (private key): the card's rule.
 };
 
 /// @brief A PKCS#11 slot (one per reader) + its token state.

@@ -301,3 +301,28 @@ TEST(ObjectModel, EachSlotCarriesItsReaderName)
     EXPECT_EQ(m.slots[0].readerName, "ACS ACR39U ICC Reader");
     EXPECT_EQ(m.slots[0].readerPath, "/org/librescrs/Agent/reader/0");
 }
+
+// The card's per-operation consent rule for a key lands on that key's private
+// object, and only where the card set it.
+TEST(ObjectModel, PrivateKeyCarriesTheCardsConsentRule)
+{
+    auto snap = oneCardOneCert();
+    snap.readers[0].certs[0].alwaysAuthenticate = true;
+    const auto m = ObjectModel::build(snap);
+    ASSERT_EQ(m.slots.size(), 1u);
+    int seen = 0;
+    for (const auto& o : m.slots[0].objects) {
+        if (o.cls == CKO_PRIVATE_KEY) {
+            EXPECT_TRUE(o.alwaysAuthenticate);
+            ++seen;
+        }
+    }
+    EXPECT_EQ(seen, 1);
+
+    const auto plain = ObjectModel::build(oneCardOneCert());
+    ASSERT_EQ(plain.slots.size(), 1u);
+    for (const auto& o : plain.slots[0].objects) {
+        if (o.cls == CKO_PRIVATE_KEY)
+            EXPECT_FALSE(o.alwaysAuthenticate) << "an unmarked key's private object stays unmarked";
+    }
+}
