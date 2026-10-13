@@ -64,6 +64,7 @@ Pkcs11Broker::CryptoResult runRawCrypto(bool isSign, Operations::CardSessionHold
         .isPinVerified = pinState.isVerified,
         .markPinVerified = pinState.markVerified,
         .clearPinVerified = pinState.clearVerified,
+        .allowPrompt = pinState.allowPrompt,
     }};
     const auto r = isSign ? flow.runSign(bytes) : flow.runDecrypt(bytes);
     using FO = Operations::RawCryptoFlow::Outcome;

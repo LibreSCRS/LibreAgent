@@ -84,7 +84,7 @@ OperationPhaseTest 2
 PinChangeFlowTest 31
 Pkcs11BrokerTest 32
 Pkcs11LeaseInvalidationTest 4
-Pkcs11SecurityTest 8
+Pkcs11SecurityTest 9
 PresenceModelTest 21
 PresenceTypesTest 2
 PromptBudgetChainTest 6
@@ -98,7 +98,7 @@ PrompterKeepAliveDrainTest 8
 PropertyChangedVocabGuardTest 2
 PropertyEmissionThrottlerTest 5
 RateLimiterTest 4
-RawCryptoCaptureGuardTest 9
+RawCryptoCaptureGuardTest 11
 RawCryptoFlowTest 21
 ReadCertificatesOperationTest 2
 ReadIdentityOperationTest 3

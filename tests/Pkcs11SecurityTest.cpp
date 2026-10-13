@@ -12,10 +12,12 @@
 //   - no PIN / no plaintext in audit logs: std::clog is captured across a full
 //     Login + SignRaw + Decrypt and asserted to contain the app label + a certId
 //     PREFIX but NONE of the secret/plaintext byte material;
-//   - first-op prompt rate limit: rapid Login -> cold-first-op cycles from ONE
-//     caller hit RateLimited after the per-caller cap (Login itself stays
-//     un-throttled); warm-lease silent ops are neither throttled nor budgeted,
-//     and the injected clock recovers a throttled caller deterministically.
+//   - PIN-prompt rate limit: every prompt the crypto seam raises asks the
+//     broker's per-caller gate first -- rapid Login -> cold-first-op cycles from
+//     ONE caller hit RateLimited after the per-caller cap (Login itself stays
+//     un-throttled), and so do repeated prompts for a key the card marks under a
+//     warm lease; warm-lease silent ops are neither throttled nor budgeted, and
+//     the injected clock recovers a throttled caller deterministically.
 
 #include <LibreSCRS/Agent/backend/Authorizer.h>
 #include <LibreSCRS/Agent/backend/Logging.h>
@@ -89,9 +91,12 @@ struct Harness
     int decryptCalls{0};
     // When set, a successful crypto seam call marks the lease PIN-verified via
     // the pinState callback — exactly what the production RawCryptoFlow does
-    // after the first op's prompt + on-card verify succeed — so a test can put
+    // after the first op's prompt + PIN-presenting op succeed — so a test can put
     // the lease into the WARM (silent, no-prompt) state.
     bool markVerifiedOnCryptoOk{false};
+    // PIN prompts the crypto seams raised (each one past the broker's prompt gate).
+    int promptCount{0};
+    bool promptEveryOp{false}; // the card marks the key: it prompts even under a warm lease
 
     Pkcs11Broker make(Authorizer& a)
     {
@@ -112,8 +117,16 @@ struct Harness
             }),
             .signRaw = cryptoSeam([this](const std::string&, const std::string&, std::span<const std::uint8_t>,
                                          const std::string&, const Pkcs11Broker::LeasePinState& pinState) {
-                ++signCalls;
-                if (markVerifiedOnCryptoOk && signResult.outcome == Pkcs11Broker::CryptoOutcome::Ok &&
+                // Emulates RawCryptoFlow: a prompt is raised on a cold lease, or
+                // for a key the card marks, and every prompt asks the broker first.
+                if (promptEveryOp || !pinState.isVerified()) {
+                    if (!pinState.allowPrompt()) {
+                        return Pkcs11Broker::CryptoResult{Pkcs11Broker::CryptoOutcome::RateLimited, {}};
+                    }
+                    ++promptCount;
+                }
+                ++signCalls; // the card is reached only past the prompt
+                if (markVerifiedOnCryptoOk && !promptEveryOp && signResult.outcome == Pkcs11Broker::CryptoOutcome::Ok &&
                     pinState.markVerified) {
                     pinState.markVerified();
                 }
@@ -121,9 +134,16 @@ struct Harness
             }),
             .decrypt = cryptoSeam([this](const std::string&, const std::string&, std::span<const std::uint8_t>,
                                          const std::string&, const Pkcs11Broker::LeasePinState& pinState) {
-                ++decryptCalls;
-                if (markVerifiedOnCryptoOk && decryptResult.outcome == Pkcs11Broker::CryptoOutcome::Ok &&
-                    pinState.markVerified) {
+                // Same prompt emulation as signRaw above.
+                if (promptEveryOp || !pinState.isVerified()) {
+                    if (!pinState.allowPrompt()) {
+                        return Pkcs11Broker::CryptoResult{Pkcs11Broker::CryptoOutcome::RateLimited, {}};
+                    }
+                    ++promptCount;
+                }
+                ++decryptCalls; // the card is reached only past the prompt
+                if (markVerifiedOnCryptoOk && !promptEveryOp &&
+                    decryptResult.outcome == Pkcs11Broker::CryptoOutcome::Ok && pinState.markVerified) {
                     pinState.markVerified();
                 }
                 return decryptResult;
@@ -267,14 +287,16 @@ TEST(Pkcs11Security, AuditLogsCarryNoSecretOrPlaintextBytes)
     EXPECT_FALSE(containsBytes(log, kInput)) << "operation input bytes leaked into the audit log";
 }
 
-// --- first-op PIN-prompt rate limit -----------------------------------------
-// The cold-lease FIRST SignRaw/Decrypt of a lease is what raises the PIN-as-
-// consent prompt, so a peer looping Login -> first-op could otherwise pop an
-// unbounded series of PIN dialogs. The broker gates exactly that prompt-raising
-// path through a per-caller RateLimiter (same policy + unique-bus-name key as
-// the Card1.Sign throttle). Login itself must stay un-throttled
-// (CKA_ALWAYS_AUTHENTICATE consumers legitimately re-login before every sign),
-// and warm-lease silent ops must neither be throttled nor consume budget.
+// --- PIN-prompt rate limit ----------------------------------------------------
+// A PIN prompt is raised by the cold-lease FIRST SignRaw/Decrypt of a lease and
+// by every op with a key the card marks for consent per operation, so a peer
+// looping Login -> first-op could otherwise pop an unbounded series of PIN
+// dialogs. Every prompt asks the broker's per-caller gate (LeasePinState::
+// allowPrompt; same policy + unique-bus-name key as the Card1.Sign throttle)
+// first; the harness seams emulate the flow asking it. Login itself must stay
+// un-throttled (a consumer re-logs in with CKU_CONTEXT_SPECIFIC before every
+// operation with a key whose CKA_ALWAYS_AUTHENTICATE is TRUE), and warm-lease
+// silent ops must neither be throttled nor consume budget.
 
 using Operations::RateLimiter;
 
@@ -293,17 +315,19 @@ TEST(Pkcs11Security, ColdFirstOpFloodHitsRateLimitWhileLoginStaysUnthrottled)
     // rate-limited (a login cap would reject legitimate multi-sign sessions).
     EXPECT_NO_THROW(static_cast<void>(callLogin(obj, kReader, appCaller())));
     EXPECT_EQ(h.loginCalls, static_cast<int>(RateLimiter::kMaxPerWindow) + 1);
-    // ...but its cold first-op is over the cap: rejected RateLimited BEFORE the
-    // seam runs (no prompt raised, no card I/O enqueued).
+    // ...but its cold first-op is over the cap: refused RateLimited by the
+    // prompt gate the flow asks first: no prompt is raised and the card is not
+    // reached (in production the cold prompt is charged before the card session
+    // is opened).
     try {
         static_cast<void>(callSignRaw(obj, kReader, kCertId, kInput, appCaller()));
         FAIL() << "expected RateLimited for the over-cap cold first-op";
     } catch (Pkcs11Broker::CryptoOutcome oc) {
         EXPECT_EQ(oc, Pkcs11Broker::CryptoOutcome::RateLimited);
     }
-    EXPECT_EQ(h.signCalls, static_cast<int>(RateLimiter::kMaxPerWindow)) << "the denied op must never reach the seam";
+    EXPECT_EQ(h.signCalls, static_cast<int>(RateLimiter::kMaxPerWindow)) << "the denied op must never reach the card";
     // Decrypt raises the same PIN prompt on a cold lease, so it shares the gate:
-    // the same over-budget caller is denied there too, before the seam.
+    // the same over-budget caller is denied there too, before the card.
     try {
         static_cast<void>(callDecrypt(obj, kReader, kCertId, kInput, appCaller()));
         FAIL() << "expected RateLimited for the cold-lease Decrypt of a throttled caller";
@@ -374,6 +398,29 @@ TEST(Pkcs11Security, ThrottledCallerRecoversAfterWindowAndBackoff)
     // deterministic — no sleeps.
     h.clockNow += RateLimiter::kWindow + RateLimiter::kMaxBackoff + seconds(1);
     EXPECT_NO_THROW(static_cast<void>(callSignRaw(obj, kReader, kCertId, kInput, appCaller())));
+}
+
+TEST(Pkcs11Security, EveryPromptIsChargedNotOnlyALeasesFirst)
+{
+    // A key the card marks asks for the PIN on every use, warm lease or not.
+    // Each of those prompts is one a looping peer could raise, so each is
+    // charged: past the per-caller cap the next one is refused unraised.
+    Harness h;
+    h.markVerifiedOnCryptoOk = true;
+    auto obj = h.make();
+    static_cast<void>(callLogin(obj, kReader, appCaller()));
+    EXPECT_NO_THROW(static_cast<void>(callSignRaw(obj, kReader, kCertId, kInput, appCaller()))); // warms the lease
+    h.promptEveryOp = true;
+    for (std::size_t i = 1; i < RateLimiter::kMaxPerWindow; ++i) {
+        EXPECT_NO_THROW(static_cast<void>(callSignRaw(obj, kReader, kCertId, kInput, appCaller()))) << "prompt " << i;
+    }
+    try {
+        static_cast<void>(callSignRaw(obj, kReader, kCertId, kInput, appCaller()));
+        FAIL() << "expected RateLimited for a prompt past the cap under a warm lease";
+    } catch (Pkcs11Broker::CryptoOutcome oc) {
+        EXPECT_EQ(oc, Pkcs11Broker::CryptoOutcome::RateLimited);
+    }
+    EXPECT_EQ(h.promptCount, static_cast<int>(RateLimiter::kMaxPerWindow));
 }
 
 // NOTE: the per-app decrypt-confirm knob was REMOVED — it was a

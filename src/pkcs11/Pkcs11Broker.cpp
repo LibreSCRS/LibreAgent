@@ -22,11 +22,11 @@ std::string certIdPrefix(const std::string& certId)
 
 Pkcs11Broker::Pkcs11Broker(Deps deps)
     : m_deps(std::move(deps)),
-      // The first-op prompt limiter shares the broker's injected clock seam so
-      // tests drive the window/backoff deterministically; production leaves the
-      // seam empty and both run on steady_clock.
-      m_rateLimiter(m_deps.now ? m_deps.now
-                               : Operations::RateLimiter::Clock{[] { return std::chrono::steady_clock::now(); }})
+      // The PIN-prompt limiter shares the broker's injected clock seam so tests
+      // drive the window/backoff deterministically; production leaves the seam
+      // empty and both run on steady_clock.
+      m_rateLimiter(std::make_shared<Operations::RateLimiter>(
+          m_deps.now ? m_deps.now : Operations::RateLimiter::Clock{[] { return std::chrono::steady_clock::now(); }}))
 {}
 
 std::chrono::steady_clock::time_point Pkcs11Broker::nowOr() const
@@ -91,10 +91,11 @@ void Pkcs11Broker::login(const std::string& reader, const Caller& caller, Reply<
     // the unique bus name, BEFORE raising any card op. Login is deliberately NOT
     // rate-limited: it is optimistic + non-prompting (the login seam
     // only opens the channel — no PIN prompt), so there is no reflexive-PIN
-    // surface to throttle here; and CKA_ALWAYS_AUTHENTICATE makes consumers issue
-    // a Login(CKU_CONTEXT_SPECIFIC) before every sign, so a per-window login cap
-    // would reject legitimate multi-sign sessions with CKR_FUNCTION_REJECTED. The
-    // anti-phishing flood throttle lives on the consent surface (Card1.Sign).
+    // surface to throttle here; and a consumer issues Login(CKU_CONTEXT_SPECIFIC)
+    // before every operation with a key whose CKA_ALWAYS_AUTHENTICATE is TRUE,
+    // so a per-window login cap would reject legitimate multi-sign sessions with
+    // CKR_FUNCTION_REJECTED. The anti-phishing flood throttle lives on the
+    // consent surfaces (Card1.Sign, and every PIN prompt of a crypto op).
     //
     // Undecided folds into the same refusal here -- default-allow means polkit
     // answers without a dialog, there is no human waiting on this leg, and the
@@ -197,29 +198,11 @@ void Pkcs11Broker::runCrypto(const char* opName, std::initializer_list<Mechanism
         return;
     }
 
-    // Anti-phishing throttle on the PKCS#11 PIN-prompt surface (parity with the
-    // Card1.Sign throttle; same reuse-immune unique-bus-name key). ONLY the
-    // cold-lease FIRST op is gated: that is the op that raises the PIN-as-consent
-    // prompt (the flow prompts iff the lease is not yet PIN-verified), and it is
-    // what a malicious peer loops via Login -> first-op to pop unbounded PIN
-    // dialogs — Login itself stays un-throttled (see login()). Warm-lease ops are
-    // silent, so they are never throttled and consume no budget (the
-    // short-circuit keeps allow() unconsulted). Placed AFTER the lease gate so a
-    // lease-less call is a plain UserNotLoggedIn (it raises no prompt) and never
-    // charges the budget. The verified flag is read on the dispatch thread while
-    // a worker may flip it; that race is benign for a throttle (at worst one
-    // budget slot charged to an op that turned warm in flight).
-    if (!m_deps.lease->isPinVerified(key) && !m_rateLimiter.allow(caller.busName)) {
-        // Over the cap: fail closed BEFORE the seam runs — no prompt is raised,
-        // no card I/O is enqueued, and the flood surfaces as a hard error.
-        reply.fail(CryptoOutcome::RateLimited);
-        return;
-    }
-
-    // Lease-scoped PIN-verified state (PIN-as-consent): the seam prompts +
-    // verifies the PIN only on the FIRST op of the lease, then marks it verified;
-    // subsequent ops skip the re-prompt. Only the boolean crosses this boundary —
-    // never the PIN. Bound to THIS call's LeaseKey.
+    // Lease-scoped PIN-verified state (PIN-as-consent): the seam prompts for the
+    // PIN on the FIRST op of the lease, then marks it verified; subsequent ops
+    // skip the re-prompt unless the card marks the key for consent per
+    // operation. Only the boolean and the prompt gate cross this boundary —
+    // never the PIN. Bound to THIS call's LeaseKey and caller.
     //
     // Each callback CO-OWNS the lease (captures a shared_ptr copy, NOT the broker
     // `this`): the raw-crypto worker value-captures this pinState, so a worker
@@ -232,6 +215,11 @@ void Pkcs11Broker::runCrypto(const char* opName, std::initializer_list<Mechanism
         .isVerified = [lease = m_deps.lease, key]() { return lease->isPinVerified(key); },
         .markVerified = [lease = m_deps.lease, key]() { lease->markPinVerified(key); },
         .clearVerified = [lease = m_deps.lease, key]() { lease->clearPinVerified(key); },
+        // Every PIN prompt the flow raises -- a cold lease's first, a key the
+        // card marks for consent per operation, the recovery re-prompt -- asks
+        // this first, on the worker, so each prompt is charged and none is
+        // raised over the cap. Co-owns the limiter (see m_rateLimiter).
+        .allowPrompt = [limiter = m_rateLimiter, caller = caller.busName]() { return limiter->allow(caller); },
     };
 
     // Thread the caller's display label as the prompt requester so the
@@ -272,9 +260,9 @@ void Pkcs11Broker::runCrypto(const char* opName, std::initializer_list<Mechanism
                  log::infof("pkcs11: {} auth-failed card={} caller={} (lease revoked)", opName, card.value(), label);
              }
              // Forward the seam outcome 1:1 (KeyNotFound / AuthFailed / NotSupported
-             // / Cancelled / CardError). A CryptoResult is seam output, so it never
-             // carries a broker-gate value (UnknownCard / UserNotLoggedIn /
-             // RateLimited).
+             // / Cancelled / CardError, and RateLimited when the flow's prompt gate
+             // refused a prompt). A CryptoResult never carries a broker-gate value
+             // (UnknownCard / UserNotLoggedIn).
              reply.fail(result.outcome);
          });
 }

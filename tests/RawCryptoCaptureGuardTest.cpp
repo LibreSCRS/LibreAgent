@@ -8,7 +8,7 @@
 // abandoned worker that unblocks after the aggregate is gone touches only co-owned
 // memory and never drives its completion into a torn-down broker / reply channel.
 // The broker's PIN-state callbacks AND its login continuation must co-own the lease
-// SHARE, never the broker `this`. Reads the shipped source so the ownership
+// SHARE, and its prompt gate the rate-limiter share, never the broker `this`. Reads the shipped source so the ownership
 // invariant survives refactors, mirroring TransportCaptureGuardTest.
 //
 // Matching is STRUCTURAL, not free-text: the source is comment-stripped (string
@@ -436,6 +436,32 @@ TEST(RawCryptoCaptureGuard, BrokerPinStateCoOwnsTheLeaseShare)
                                          << " must co-own the lease share, not capture the broker `this`; got "
                                          << fmtCaptures(*captures);
     }
+}
+
+TEST(RawCryptoCaptureGuard, BrokerPromptGateCoOwnsTheLimiterShare)
+{
+    const std::string raw = slurp(LIBREAGENT_PKCS11BROKER_CPP);
+    ASSERT_FALSE(raw.empty()) << "Pkcs11Broker source path not wired";
+    const std::string code = codeText(raw);
+    // The prompt gate runs on the worker before every PIN prompt, and an
+    // abandoned worker may run it after the broker is gone: it co-owns the
+    // limiter and holds the caller by value, never the broker `this`.
+    const auto captures = capturesAfter(code, ".allowPrompt =");
+    ASSERT_TRUE(captures.has_value()) << ".allowPrompt callback not found exactly once in the broker";
+    EXPECT_EQ(*captures, (std::vector<std::string>{"limiter = m_rateLimiter", "caller = caller.busName"}))
+        << "got " << fmtCaptures(*captures);
+}
+
+TEST(RawCryptoCaptureGuard, AgentCoreHandsThePromptGateToTheFlow)
+{
+    const std::string raw = slurp(LIBREAGENT_AGENTCORE_CPP);
+    ASSERT_FALSE(raw.empty()) << "AgentCore source path not wired";
+    const std::string code = codeText(raw);
+    // The broker's gate reaches the flow only through runRawCrypto. Without
+    // this hand-over the flow sees no gate and refuses every prompt
+    // (RateLimited), while the broker and flow suites both stay green.
+    EXPECT_EQ(countOf(code, ".allowPrompt = pinState.allowPrompt"), 1u)
+        << "runRawCrypto must hand the broker's prompt gate to RawCryptoFlow";
 }
 
 TEST(RawCryptoCaptureGuard, LoginContinuationCoOwnsTheLeaseShareNotTheBroker)

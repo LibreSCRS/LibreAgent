@@ -29,8 +29,9 @@ class Authorizer;
 // here).
 //
 // ASYNC HANDOFF: every card-touching method is an async backend method. This
-// class does the cheap bus-thread validation SYNCHRONOUSLY (authz / rate-limit /
-// card-resolve / lease gate) and, on failure, fulfils the Reply with an error
+// class does the cheap bus-thread validation SYNCHRONOUSLY (authz /
+// card-resolve / lease gate; the PIN-prompt budget is asked on the worker, see
+// below) and, on failure, fulfils the Reply with an error
 // inline — still off the dispatch thread instantly. The actual card I/O is run
 // by the injected seam on the per-reader WORKER thread; the seam invokes a
 // continuation (built here, capturing the Reply + lease key) on completion that
@@ -51,22 +52,23 @@ class Authorizer;
 //  - CertDer / PublicKey are public data: no consent, no lease, audited at info.
 //  - Login is authorization-gated (kActionPkcs11Login); it establishes a lease for
 //    (caller, card). It is OPTIMISTIC + non-prompting (only opens the channel);
-//    PIN-as-consent is collected on the FIRST crypto op of the lease. It is NOT
-//    rate-limited: it raises no consent prompt, and CKA_ALWAYS_AUTHENTICATE makes
-//    consumers issue a Login(CKU_CONTEXT_SPECIFIC) before EVERY sign, so a
-//    per-window login cap would reject legitimate multi-sign sessions. The
-//    anti-phishing flood throttle lives on the consent surfaces: Card1.Sign and
-//    the cold-lease first op below.
+//    PIN-as-consent is collected by the crypto ops (see below). It is NOT
+//    rate-limited: it raises no consent prompt, and a consumer issues
+//    Login(CKU_CONTEXT_SPECIFIC) before every operation with a key whose
+//    CKA_ALWAYS_AUTHENTICATE is TRUE, so a per-window login cap would reject
+//    legitimate multi-sign sessions. The anti-phishing flood throttle lives on
+//    the consent surfaces: Card1.Sign and the PIN prompts below.
 //  - SignRaw / Decrypt are lease-gated (touch() else UserNotLoggedIn), NOT
 //    re-authorized (the lease IS the grant) but EVERY call is audited.
-//  - The COLD-LEASE FIRST op (lease not yet PIN-verified — the one op that
-//    raises the PIN-as-consent prompt) is additionally rate-limited per caller
+//  - Every PIN prompt the raw-crypto flow raises is rate-limited per caller
 //    (RateLimiter policy, keyed on the reuse-immune unique bus name, same as the
-//    Card1.Sign throttle). This bounds the Login -> first-op loop a malicious
-//    same-user peer could otherwise drive to pop unbounded PIN dialogs.
-//    Warm-lease silent ops are never throttled and consume no budget; an
-//    over-cap call fails closed with CryptoOutcome::RateLimited before any
-//    prompt or card I/O.
+//    Card1.Sign throttle) through LeasePinState::allowPrompt, asked on the
+//    worker immediately before the prompt: the first op of a lease, every op
+//    with a key the card marks for consent per operation, and the recovery
+//    re-prompt. A refused prompt is never raised: a cold-lease prompt is
+//    refused before the card session is even opened, a re-prompt before the
+//    operation is retried; either way the op fails RateLimited. Ops that raise
+//    no prompt are never throttled and consume no budget.
 //  - The lease key's caller component is the unique bus name (reuse-immune for
 //    the connection lifetime); the requester label is display/audit only.
 class Pkcs11Broker
@@ -101,15 +103,15 @@ public:
         AuthFailed,
         NotSupported,
         CardError,
-        // broker gates (UnknownCard / UserNotLoggedIn; RateLimited is both):
+        // broker gates:
         UnknownCard,
         UserNotLoggedIn,
         /// The caller exceeded the per-caller budget for PIN prompts
-        /// (anti-phishing throttle, RateLimiter policy). Unlike the two gates
-        /// above, the seam produces it too: the flow asks before every prompt;
-        /// the backend maps it to the same wire error as the Card1.Sign
-        /// throttle (Error.RateLimited). Append-only: added after
-        /// UserNotLoggedIn, never reordered.
+        /// (anti-phishing throttle, RateLimiter policy). Produced by the seam,
+        /// not the broker: the flow asks before every prompt. The backend maps
+        /// it to the same wire error as the Card1.Sign throttle
+        /// (Error.RateLimited). Append-only: added after UserNotLoggedIn,
+        /// never reordered.
         RateLimited,
     };
     struct CryptoResult
@@ -134,15 +136,18 @@ public:
     };
 
     // Lease-scoped PIN-verified state passed INTO the crypto seam so the flow
-    // prompts + verifies the PIN only on the FIRST op of a lease and skips the
+    // prompts for the PIN only on the FIRST op of a lease and skips the
     // re-prompt on subsequent ops (the held channel persists the on-card verified
-    // state). NEVER carries the PIN — only the boolean. Bound to the call's
-    // LeaseKey before invoking the seam.
+    // state) -- except for a key the card marks for consent per operation, which
+    // prompts every time. NEVER carries the PIN — only the boolean and the
+    // prompt gate. Bound to the call's LeaseKey and caller before invoking the
+    // seam.
     struct LeasePinState
     {
-        std::function<bool()> isVerified;    // true => skip the prompt + verify
-        std::function<void()> markVerified;  // set after a verify+op both succeed
-        std::function<void()> clearVerified; // reset when a verify-skipped op finds the channel dropped
+        std::function<bool()> isVerified;    // true => skip the prompt
+        std::function<void()> markVerified;  // set after a PIN-presenting op succeeds
+        std::function<void()> clearVerified; // reset when a PIN-less op finds the channel dropped
+        std::function<bool()> allowPrompt;   // asked before EVERY PIN prompt; false = the caller is over its budget
     };
 
     // --- Async card-op seams ----------------------------------------------
@@ -264,13 +269,16 @@ private:
     [[nodiscard]] std::chrono::steady_clock::time_point nowOr() const;
 
     Deps m_deps;
-    // Per-caller throttle for the PIN-prompt-raising cold-lease first op (see the
-    // SECURITY/POLICY block above). Broker-owned so the limit is ACTIVE in every
-    // composition with no host wiring; it runs on the SAME clock seam as the
-    // lease (Deps::now), so tests drive both deterministically. Its budget is
-    // independent of the host's Card1.Sign limiter — the two consent surfaces
-    // are throttled separately, with identical policy constants.
-    Operations::RateLimiter m_rateLimiter;
+    // Per-caller throttle for every PIN prompt the raw-crypto flow raises (see
+    // the SECURITY/POLICY block above). Broker-owned so the limit is ACTIVE in
+    // every composition that hands LeasePinState::allowPrompt to the flow; it
+    // runs on the SAME clock seam as the lease (Deps::now), so tests drive both
+    // deterministically. Its budget is independent of the host's Card1.Sign
+    // limiter — the two consent surfaces are throttled separately, with
+    // identical policy constants. Shared: the prompt gate handed to the worker
+    // co-owns it, because an abandoned worker can ask it after this broker is
+    // gone.
+    std::shared_ptr<Operations::RateLimiter> m_rateLimiter;
 };
 
 } // namespace LibreSCRS::Agent
