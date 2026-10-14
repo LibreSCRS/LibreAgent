@@ -16,6 +16,7 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <functional>
 #include <future>
 #include <string>
 #include <thread>
@@ -957,7 +958,12 @@ TEST(ModuleAbi, AnEcKeyIsAnEcKeyWithItsCurveAndPoint)
     ASSERT_EQ(m.fn->C_GetAttributeValue(session, priv, flags, 3), CKR_OK);
     EXPECT_EQ(decrypt, CK_FALSE);
     EXPECT_EQ(unwrap, CK_FALSE);
-    EXPECT_EQ(derive, CK_FALSE) << "no derive surface until key agreement is wired";
+    EXPECT_EQ(derive, CK_FALSE) << "a key the agent does not derive with";
+    // Every key has CKA_DERIVE: a public key does not derive.
+    derive = CK_TRUE;
+    CK_ATTRIBUTE pubDerive{CKA_DERIVE, &derive, sizeof(derive)};
+    ASSERT_EQ(m.fn->C_GetAttributeValue(session, pub, &pubDerive, 1), CKR_OK);
+    EXPECT_EQ(derive, CK_FALSE);
 }
 
 TEST(ModuleAbi, AnRsaKeyHasNoEcAttributes)
@@ -1175,4 +1181,393 @@ TEST(ModuleAbi, AnEcPointOffTheKeysCurveIsNotServed)
     CK_RV rv = CKR_OK;
     (void)attrBytes(m.fn, session, pub, CKA_EC_POINT, &rv);
     EXPECT_EQ(rv, CKR_ATTRIBUTE_TYPE_INVALID) << "a P-256 point served for a P-384 key";
+}
+
+namespace {
+
+// A logged-in session on an EC card whose key derives.
+struct DeriveRig
+{
+    SocketFixture agent;
+    LoadedModule m;
+    CK_SESSION_HANDLE session = 0;
+    CK_OBJECT_HANDLE base = CK_INVALID_HANDLE;
+
+    explicit DeriveRig(const std::function<void(FakeSocketAgent&)>& extra = {})
+        : agent(true, "None", [&extra](FakeSocketAgent& f) {
+              seatEcKey(f, kCertId, /*canDerive=*/true);
+              if (extra)
+                  extra(f);
+          })
+    {
+        EXPECT_EQ(m.fn->C_Initialize(nullptr), CKR_OK);
+        EXPECT_EQ(m.fn->C_OpenSession(firstPresentSlot(m.fn), CKF_SERIAL_SESSION, nullptr, nullptr, &session), CKR_OK);
+        EXPECT_EQ(m.fn->C_Login(session, CKU_USER, nullptr, 0), CKR_OK);
+        base = findPrivateKey(m.fn, session);
+    }
+};
+
+std::vector<std::uint8_t> p384Point()
+{
+    std::vector<std::uint8_t> p(97, 0x33);
+    p[0] = 0x04;
+    return p;
+}
+
+CK_RV deriveWith(CK_FUNCTION_LIST_PTR fn, CK_SESSION_HANDLE s, CK_OBJECT_HANDLE base,
+                 std::vector<std::uint8_t> publicData, CK_ATTRIBUTE* tmpl, CK_ULONG count, CK_OBJECT_HANDLE* out,
+                 CK_EC_KDF_TYPE kdf = CKD_NULL, CK_ULONG sharedLen = 0)
+{
+    CK_BYTE shared = 0x01;
+    CK_ECDH1_DERIVE_PARAMS params{kdf, sharedLen, sharedLen ? &shared : nullptr,
+                                  static_cast<CK_ULONG>(publicData.size()), publicData.data()};
+    CK_MECHANISM mech{CKM_ECDH1_DERIVE, &params, sizeof(params)};
+    return fn->C_DeriveKey(s, &mech, base, tmpl, count, out);
+}
+
+CK_BBOOL kCkTrue = CK_TRUE;
+CK_BBOOL kCkFalse = CK_FALSE;
+
+} // namespace
+
+TEST(ModuleAbi, DeriveKeyRunsEcdhWithCkdNullAndKeepsTheSecretSensitive)
+{
+    DeriveRig rig;
+    ASSERT_NE(rig.base, CK_INVALID_HANDLE);
+    CK_BBOOL derive = CK_FALSE;
+    CK_ATTRIBUTE d{CKA_DERIVE, &derive, sizeof(derive)};
+    ASSERT_EQ(rig.m.fn->C_GetAttributeValue(rig.session, rig.base, &d, 1), CKR_OK);
+    EXPECT_EQ(derive, CK_TRUE);
+
+    CK_OBJECT_HANDLE key = CK_INVALID_HANDLE;
+    ASSERT_EQ(deriveWith(rig.m.fn, rig.session, rig.base, p384Point(), nullptr, 0, &key), CKR_OK);
+    EXPECT_NE(key & (CK_OBJECT_HANDLE{1} << 63), 0u) << "a derived key lives in its own handle space";
+    EXPECT_EQ(rig.agent.fake->lastDerivePoint(), p384Point());
+    CK_RV rv = CKR_OK;
+    (void)attrBytes(rig.m.fn, rig.session, key, CKA_VALUE, &rv);
+    EXPECT_EQ(rv, CKR_ATTRIBUTE_SENSITIVE);
+    CK_ULONG len = 0;
+    CK_ATTRIBUTE vl{CKA_VALUE_LEN, &len, sizeof(len)};
+    ASSERT_EQ(rig.m.fn->C_GetAttributeValue(rig.session, key, &vl, 1), CKR_OK);
+    EXPECT_EQ(len, kCannedSecret.size());
+
+    CK_SESSION_INFO info{};
+    ASSERT_EQ(rig.m.fn->C_GetSessionInfo(rig.session, &info), CKR_OK);
+    CK_MECHANISM_INFO mi{};
+    ASSERT_EQ(rig.m.fn->C_GetMechanismInfo(info.slotID, CKM_ECDH1_DERIVE, &mi), CKR_OK);
+    EXPECT_EQ(mi.ulMinKeySize, 256u);
+    EXPECT_EQ(mi.ulMaxKeySize, 521u);
+    EXPECT_EQ(mi.flags, CKF_HW | CKF_DERIVE | CKF_EC_F_P | CKF_EC_OID | CKF_EC_UNCOMPRESS);
+}
+
+TEST(ModuleAbi, DeriveKeyAcceptsThePointWrappedInDer)
+{
+    DeriveRig rig;
+    auto der = p384Point();
+    der.insert(der.begin(), {0x04, 0x61});
+    CK_OBJECT_HANDLE key = CK_INVALID_HANDLE;
+    ASSERT_EQ(deriveWith(rig.m.fn, rig.session, rig.base, der, nullptr, 0, &key), CKR_OK);
+    EXPECT_EQ(rig.agent.fake->lastDerivePoint(), p384Point()) << "the agent gets the raw point";
+}
+
+// Everything the module can decide is decided before the agent is asked.
+TEST(ModuleAbi, DeriveKeyChecksEverythingBeforeTheAgent)
+{
+    DeriveRig rig;
+    CK_OBJECT_HANDLE key = CK_INVALID_HANDLE;
+    EXPECT_EQ(deriveWith(rig.m.fn, rig.session, rig.base, p384Point(), nullptr, 0, &key, CKD_SHA256_KDF),
+              CKR_MECHANISM_PARAM_INVALID);
+    EXPECT_EQ(deriveWith(rig.m.fn, rig.session, rig.base, p384Point(), nullptr, 0, &key, CKD_NULL, 1),
+              CKR_MECHANISM_PARAM_INVALID);
+    EXPECT_EQ(deriveWith(rig.m.fn, rig.session, rig.base, std::vector<std::uint8_t>(96, 0x04), nullptr, 0, &key),
+              CKR_MECHANISM_PARAM_INVALID);
+    CK_ATTRIBUTE onToken[] = {{CKA_TOKEN, &kCkTrue, sizeof(kCkTrue)}};
+    EXPECT_EQ(deriveWith(rig.m.fn, rig.session, rig.base, p384Point(), onToken, 1, &key), CKR_TEMPLATE_INCONSISTENT);
+    auto point = p384Point();
+    CK_ECDH1_DERIVE_PARAMS params{CKD_NULL, 0, nullptr, static_cast<CK_ULONG>(point.size()), point.data()};
+    CK_MECHANISM shortParams{CKM_ECDH1_DERIVE, &params, sizeof(params) - 1};
+    EXPECT_EQ(rig.m.fn->C_DeriveKey(rig.session, &shortParams, rig.base, nullptr, 0, &key),
+              CKR_MECHANISM_PARAM_INVALID);
+    CK_ECDH1_DERIVE_PARAMS noPoint{CKD_NULL, 0, nullptr, 0, nullptr};
+    CK_MECHANISM noPointMech{CKM_ECDH1_DERIVE, &noPoint, sizeof(noPoint)};
+    EXPECT_EQ(rig.m.fn->C_DeriveKey(rig.session, &noPointMech, rig.base, nullptr, 0, &key),
+              CKR_MECHANISM_PARAM_INVALID);
+    CK_MECHANISM notEcdh{CKM_ECDSA, &params, sizeof(params)};
+    EXPECT_EQ(rig.m.fn->C_DeriveKey(rig.session, &notEcdh, rig.base, nullptr, 0, &key), CKR_MECHANISM_INVALID);
+    CK_MECHANISM ecdh{CKM_ECDH1_DERIVE, &params, sizeof(params)};
+    EXPECT_EQ(rig.m.fn->C_DeriveKey(rig.session, &ecdh, rig.base, nullptr, 0, nullptr), CKR_ARGUMENTS_BAD);
+    EXPECT_EQ(deriveWith(rig.m.fn, rig.session, findOne(rig.m.fn, rig.session, CKO_PUBLIC_KEY), p384Point(), nullptr, 0,
+                         &key),
+              CKR_KEY_HANDLE_INVALID);
+    ASSERT_EQ(rig.m.fn->C_Logout(rig.session), CKR_OK);
+    EXPECT_EQ(deriveWith(rig.m.fn, rig.session, rig.base, p384Point(), nullptr, 0, &key), CKR_USER_NOT_LOGGED_IN);
+    EXPECT_EQ(rig.agent.fake->callCount(Call::PkDerive), 0);
+
+    // A derived key is not a base key.
+    ASSERT_EQ(rig.m.fn->C_Login(rig.session, CKU_USER, nullptr, 0), CKR_OK);
+    CK_OBJECT_HANDLE derived = CK_INVALID_HANDLE;
+    ASSERT_EQ(deriveWith(rig.m.fn, rig.session, rig.base, p384Point(), nullptr, 0, &derived), CKR_OK);
+    EXPECT_EQ(deriveWith(rig.m.fn, rig.session, derived, p384Point(), nullptr, 0, &key), CKR_KEY_HANDLE_INVALID);
+    EXPECT_EQ(rig.agent.fake->callCount(Call::PkDerive), 1);
+
+    // An uninitialised module says so before it looks at the arguments, as
+    // every other call does.
+    ASSERT_EQ(rig.m.fn->C_Finalize(nullptr), CKR_OK);
+    EXPECT_EQ(rig.m.fn->C_DeriveKey(rig.session, nullptr, rig.base, nullptr, 0, nullptr), CKR_CRYPTOKI_NOT_INITIALIZED);
+}
+
+TEST(ModuleAbi, DeriveKeyRefusesAnRsaBaseKey)
+{
+    constexpr const char* kEcCert = "cert-ec";
+    SocketFixture agent(true, "None", [](FakeSocketAgent& f) {
+        f.addCert(kCard0, kEcCert, /*signingCapable=*/true, 0, "EC Holder");
+        seatEcKey(f, kEcCert, /*canDerive=*/true);
+    });
+    LoadedModule m;
+    ASSERT_EQ(m.fn->C_Initialize(nullptr), CKR_OK);
+    CK_SESSION_HANDLE session = 0;
+    ASSERT_EQ(m.fn->C_OpenSession(firstPresentSlot(m.fn), CKF_SERIAL_SESSION, nullptr, nullptr, &session), CKR_OK);
+    ASSERT_EQ(m.fn->C_Login(session, CKU_USER, nullptr, 0), CKR_OK);
+    const CK_OBJECT_HANDLE rsaKey = findKeyOfType(m.fn, session, CKO_PRIVATE_KEY, CKK_RSA);
+    CK_OBJECT_HANDLE key = CK_INVALID_HANDLE;
+    EXPECT_EQ(deriveWith(m.fn, session, rsaKey, p384Point(), nullptr, 0, &key), CKR_KEY_TYPE_INCONSISTENT);
+    EXPECT_EQ(agent.fake->callCount(Call::PkDerive), 0);
+}
+
+// pkcs11-tool --derive asks for a readable generic secret; a shorter
+// CKA_VALUE_LEN gives the last bytes, a longer one is the template's fault.
+TEST(ModuleAbi, AReadableDerivedKeyGivesItsLastBytes)
+{
+    DeriveRig rig;
+    CK_OBJECT_CLASS cls = CKO_SECRET_KEY;
+    CK_KEY_TYPE kt = CKK_GENERIC_SECRET;
+    CK_ULONG sixteen = 16;
+    CK_ATTRIBUTE tmpl[] = {
+        {CKA_TOKEN, &kCkFalse, sizeof(kCkFalse)},
+        {CKA_CLASS, &cls, sizeof(cls)},
+        {CKA_KEY_TYPE, &kt, sizeof(kt)},
+        {CKA_SENSITIVE, &kCkFalse, sizeof(kCkFalse)},
+        {CKA_EXTRACTABLE, &kCkTrue, sizeof(kCkTrue)},
+        {CKA_ENCRYPT, &kCkTrue, sizeof(kCkTrue)},
+        {CKA_DECRYPT, &kCkTrue, sizeof(kCkTrue)},
+        {CKA_WRAP, &kCkTrue, sizeof(kCkTrue)},
+        {CKA_UNWRAP, &kCkTrue, sizeof(kCkTrue)},
+        {CKA_VALUE_LEN, &sixteen, sizeof(sixteen)},
+    };
+    CK_OBJECT_HANDLE key = CK_INVALID_HANDLE;
+    ASSERT_EQ(deriveWith(rig.m.fn, rig.session, rig.base, p384Point(), tmpl, 10, &key), CKR_OK);
+    EXPECT_EQ(attrBytes(rig.m.fn, rig.session, key, CKA_VALUE),
+              std::vector<std::uint8_t>(kCannedSecret.end() - 16, kCannedSecret.end()));
+    // Longer than a P-384 secret: refused from the key's size, before the
+    // agent -- and so before the card and any PIN prompt.
+    const int derivesBefore = rig.agent.fake->callCount(Call::PkDerive);
+    CK_ULONG tooLong = 49;
+    tmpl[9].pValue = &tooLong;
+    EXPECT_EQ(deriveWith(rig.m.fn, rig.session, rig.base, p384Point(), tmpl, 10, &key), CKR_TEMPLATE_INCONSISTENT);
+    EXPECT_EQ(rig.agent.fake->callCount(Call::PkDerive), derivesBefore) << "the card derived for a refused template";
+    CK_ULONG whole = 48;
+    tmpl[9].pValue = &whole;
+    EXPECT_EQ(deriveWith(rig.m.fn, rig.session, rig.base, p384Point(), tmpl, 10, &key), CKR_OK);
+}
+
+// A derived key belongs to the application: another logged-in session of it
+// finds the key, a public one does not, and it goes when its creator closes.
+TEST(ModuleAbi, DerivedKeysLiveForTheirApplication)
+{
+    DeriveRig rig;
+    CK_OBJECT_HANDLE key = CK_INVALID_HANDLE;
+    ASSERT_EQ(deriveWith(rig.m.fn, rig.session, rig.base, p384Point(), nullptr, 0, &key), CKR_OK);
+    const CK_SLOT_ID slot = firstPresentSlot(rig.m.fn);
+    CK_SESSION_HANDLE other = 0;
+    CK_SESSION_HANDLE pub = 0;
+    ASSERT_EQ(rig.m.fn->C_OpenSession(slot, CKF_SERIAL_SESSION, nullptr, nullptr, &other), CKR_OK);
+    ASSERT_EQ(rig.m.fn->C_OpenSession(slot, CKF_SERIAL_SESSION, nullptr, nullptr, &pub), CKR_OK);
+    ASSERT_EQ(rig.m.fn->C_Login(other, CKU_USER, nullptr, 0), CKR_OK);
+    EXPECT_EQ(findOne(rig.m.fn, other, CKO_SECRET_KEY), key);
+    EXPECT_EQ(findOne(rig.m.fn, pub, CKO_SECRET_KEY), CK_INVALID_HANDLE)
+        << "a private object, unseen by a public session";
+    ASSERT_EQ(rig.m.fn->C_CloseSession(other), CKR_OK);
+    EXPECT_EQ(findOne(rig.m.fn, rig.session, CKO_SECRET_KEY), key) << "closing another session leaves it";
+    ASSERT_EQ(rig.m.fn->C_Login(pub, CKU_USER, nullptr, 0), CKR_OK);
+    ASSERT_EQ(rig.m.fn->C_CloseSession(rig.session), CKR_OK);
+    CK_RV rv = CKR_OK;
+    (void)attrBytes(rig.m.fn, pub, key, CKA_VALUE_LEN, &rv);
+    EXPECT_EQ(rv, CKR_OBJECT_HANDLE_INVALID) << "closing its creator destroys it";
+}
+
+TEST(ModuleAbi, DerivedKeysGoWithLogoutLapseCloseAllAndTheCard)
+{
+    const auto alive = [](DeriveRig& rig, CK_OBJECT_HANDLE key) {
+        CK_RV rv = CKR_OK;
+        (void)attrBytes(rig.m.fn, rig.session, key, CKA_VALUE_LEN, &rv);
+        return rv == CKR_OK;
+    };
+    {
+        DeriveRig rig;
+        CK_OBJECT_HANDLE key = CK_INVALID_HANDLE;
+        ASSERT_EQ(deriveWith(rig.m.fn, rig.session, rig.base, p384Point(), nullptr, 0, &key), CKR_OK);
+        ASSERT_EQ(rig.m.fn->C_Logout(rig.session), CKR_OK);
+        ASSERT_EQ(rig.m.fn->C_Login(rig.session, CKU_USER, nullptr, 0), CKR_OK);
+        EXPECT_FALSE(alive(rig, key)) << "C_Logout";
+    }
+    {
+        DeriveRig rig([](FakeSocketAgent& f) { f.failCall(Call::PkSignRaw, W::SyncError::UserNotLoggedIn); });
+        CK_OBJECT_HANDLE key = CK_INVALID_HANDLE;
+        ASSERT_EQ(deriveWith(rig.m.fn, rig.session, rig.base, p384Point(), nullptr, 0, &key), CKR_OK);
+        CK_MECHANISM mech{CKM_ECDSA, nullptr, 0};
+        ASSERT_EQ(rig.m.fn->C_SignInit(rig.session, &mech, rig.base), CKR_OK);
+        std::vector<CK_BYTE> digest(48, 0x01);
+        CK_BYTE sig[128];
+        CK_ULONG len = sizeof(sig);
+        EXPECT_EQ(rig.m.fn->C_Sign(rig.session, digest.data(), digest.size(), sig, &len), CKR_USER_NOT_LOGGED_IN);
+        ASSERT_EQ(rig.m.fn->C_Login(rig.session, CKU_USER, nullptr, 0), CKR_OK);
+        EXPECT_FALSE(alive(rig, key)) << "a lapsed lease";
+    }
+    {
+        DeriveRig rig;
+        CK_OBJECT_HANDLE key = CK_INVALID_HANDLE;
+        ASSERT_EQ(deriveWith(rig.m.fn, rig.session, rig.base, p384Point(), nullptr, 0, &key), CKR_OK);
+        const CK_SLOT_ID slot = firstPresentSlot(rig.m.fn);
+        CK_SESSION_HANDLE again = 0;
+        ASSERT_EQ(rig.m.fn->C_CloseAllSessions(slot), CKR_OK);
+        ASSERT_EQ(rig.m.fn->C_OpenSession(slot, CKF_SERIAL_SESSION, nullptr, nullptr, &again), CKR_OK);
+        ASSERT_EQ(rig.m.fn->C_Login(again, CKU_USER, nullptr, 0), CKR_OK);
+        EXPECT_EQ(findOne(rig.m.fn, again, CKO_SECRET_KEY), CK_INVALID_HANDLE) << "C_CloseAllSessions";
+    }
+    {
+        DeriveRig rig;
+        CK_OBJECT_HANDLE key = CK_INVALID_HANDLE;
+        ASSERT_EQ(deriveWith(rig.m.fn, rig.session, rig.base, p384Point(), nullptr, 0, &key), CKR_OK);
+        rig.agent.fake->removeCard();
+        CK_SLOT_ID slots[8];
+        CK_ULONG n = 8;
+        ASSERT_EQ(rig.m.fn->C_GetSlotList(CK_FALSE, slots, &n), CKR_OK); // the refresh sees the empty reader
+        rig.agent.fake->insertCard();
+        n = 8;
+        ASSERT_EQ(rig.m.fn->C_GetSlotList(CK_FALSE, slots, &n), CKR_OK);
+        EXPECT_FALSE(alive(rig, key)) << "the card it was derived with left";
+    }
+}
+
+// Only a derived key can be destroyed; the card's objects are the card's.
+TEST(ModuleAbi, DestroyObjectRemovesADerivedKeyAndRefusesACardObject)
+{
+    DeriveRig rig;
+    CK_OBJECT_HANDLE key = CK_INVALID_HANDLE;
+    ASSERT_EQ(deriveWith(rig.m.fn, rig.session, rig.base, p384Point(), nullptr, 0, &key), CKR_OK);
+    EXPECT_EQ(rig.m.fn->C_DestroyObject(rig.session, rig.base), CKR_ACTION_PROHIBITED);
+    ASSERT_EQ(rig.m.fn->C_DestroyObject(rig.session, key), CKR_OK);
+    EXPECT_EQ(rig.m.fn->C_DestroyObject(rig.session, key), CKR_OBJECT_HANDLE_INVALID);
+}
+
+// A derived key's handle survives the module's every-query model refresh.
+TEST(ModuleAbi, ADerivedHandleSurvivesARefresh)
+{
+    DeriveRig rig;
+    CK_OBJECT_HANDLE key = CK_INVALID_HANDLE;
+    ASSERT_EQ(deriveWith(rig.m.fn, rig.session, rig.base, p384Point(), nullptr, 0, &key), CKR_OK);
+    CK_SLOT_ID slots[8];
+    CK_ULONG n = 8;
+    ASSERT_EQ(rig.m.fn->C_GetSlotList(CK_TRUE, slots, &n), CKR_OK);
+    CK_ULONG len = 0;
+    CK_ATTRIBUTE vl{CKA_VALUE_LEN, &len, sizeof(len)};
+    EXPECT_EQ(rig.m.fn->C_GetAttributeValue(rig.session, key, &vl, 1), CKR_OK);
+}
+
+// A point the agent refuses before any prompt is a parameter error.
+TEST(ModuleAbi, APointTheAgentRefusesIsAParameterError)
+{
+    DeriveRig rig([](FakeSocketAgent& f) { f.failCall(Call::PkDerive, W::SyncError::InvalidRequest); });
+    CK_OBJECT_HANDLE key = CK_INVALID_HANDLE;
+    EXPECT_EQ(deriveWith(rig.m.fn, rig.session, rig.base, p384Point(), nullptr, 0, &key), CKR_MECHANISM_PARAM_INVALID);
+}
+
+// The secret comes back after the login it was derived under has ended: it is
+// wiped, never kept for a later login to find (C_Logout destroys derived keys).
+TEST(ModuleAbi, ADeriveThatOutlivesItsLoginKeepsNoKey)
+{
+    DeriveRig rig([](FakeSocketAgent& f) { f.delayCall(Call::PkDerive, std::chrono::milliseconds{400}); });
+    CK_OBJECT_HANDLE key = CK_INVALID_HANDLE;
+    auto parked = std::async(std::launch::async, [&rig, &key] {
+        return deriveWith(rig.m.fn, rig.session, rig.base, p384Point(), nullptr, 0, &key);
+    });
+    const auto until = std::chrono::steady_clock::now() + std::chrono::seconds{5};
+    while (rig.agent.fake->callCount(Call::PkDerive) == 0 && std::chrono::steady_clock::now() < until)
+        std::this_thread::sleep_for(std::chrono::milliseconds{5});
+    ASSERT_EQ(rig.agent.fake->callCount(Call::PkDerive), 1) << "the derive never reached the agent";
+    ASSERT_EQ(rig.m.fn->C_Logout(rig.session), CKR_OK); // while the derive is parked in the agent
+    EXPECT_EQ(parked.get(), CKR_USER_NOT_LOGGED_IN);
+    ASSERT_EQ(rig.m.fn->C_Login(rig.session, CKU_USER, nullptr, 0), CKR_OK);
+    EXPECT_EQ(findOne(rig.m.fn, rig.session, CKO_SECRET_KEY), CK_INVALID_HANDLE)
+        << "no key may outlive the login it was derived under";
+}
+
+// The card is changed while the agent derives, and the module re-reads the
+// slots before it takes its lock back: the secret belongs to the card that
+// left, so it is wiped, never kept for the card now in the reader.
+TEST(ModuleAbi, ADeriveThatOutlivesItsCardKeepsNoKey)
+{
+    ::setenv("LIBRESCRS_TEST_REFRESH_AFTER_DERIVE", "1", 1);
+    DeriveRig rig([](FakeSocketAgent& f) {
+        f.setDeriveResponder([&f](const W::PkDerive&) {
+            f.swapCard("/org/librescrs/Agent/card/9");
+            return kCannedSecret;
+        });
+    });
+    ::unsetenv("LIBRESCRS_TEST_REFRESH_AFTER_DERIVE"); // read once, by C_Initialize
+    CK_OBJECT_HANDLE key = CK_INVALID_HANDLE;
+    EXPECT_EQ(deriveWith(rig.m.fn, rig.session, rig.base, p384Point(), nullptr, 0, &key), CKR_DEVICE_REMOVED);
+    EXPECT_EQ(key, CK_INVALID_HANDLE);
+    EXPECT_EQ(rig.agent.fake->callCount(Call::PkDerive), 1);
+    EXPECT_EQ(findOne(rig.m.fn, rig.session, CKO_SECRET_KEY), CK_INVALID_HANDLE)
+        << "no key may outlive the card it was derived with";
+}
+
+// A base key without CKA_DERIVE is refused before the agent, even on a slot
+// whose other key derives.
+TEST(ModuleAbi, DeriveKeyRefusesABaseKeyThatDoesNotDerive)
+{
+    constexpr const char* kSignOnly = "cert-sign-only";
+    const std::vector<std::uint8_t> signOnlyId{0x51, 0x6E};
+    DeriveRig rig([&signOnlyId](FakeSocketAgent& f) {
+        f.addCert(kCard0, kSignOnly, /*signingCapable=*/true, 0, "Sign Only");
+        f.setKeyFacts(kSignOnly, signOnlyId, LibreSCRS::Agent::KeyType::Ec, 384, /*canDerive=*/false);
+        f.setEcPoint(kSignOnly, "P-384", std::vector<std::uint8_t>(48, 0x11), std::vector<std::uint8_t>(48, 0x22));
+    });
+    CK_OBJECT_CLASS cls = CKO_PRIVATE_KEY;
+    std::vector<std::uint8_t> id = signOnlyId;
+    CK_ATTRIBUTE byId[] = {{CKA_CLASS, &cls, sizeof(cls)}, {CKA_ID, id.data(), static_cast<CK_ULONG>(id.size())}};
+    ASSERT_EQ(rig.m.fn->C_FindObjectsInit(rig.session, byId, 2), CKR_OK);
+    CK_OBJECT_HANDLE signOnly = CK_INVALID_HANDLE;
+    CK_ULONG n = 0;
+    ASSERT_EQ(rig.m.fn->C_FindObjects(rig.session, &signOnly, 1, &n), CKR_OK);
+    ASSERT_EQ(rig.m.fn->C_FindObjectsFinal(rig.session), CKR_OK);
+    ASSERT_EQ(n, 1u);
+    CK_BBOOL derive = CK_TRUE;
+    CK_ATTRIBUTE d{CKA_DERIVE, &derive, sizeof(derive)};
+    ASSERT_EQ(rig.m.fn->C_GetAttributeValue(rig.session, signOnly, &d, 1), CKR_OK);
+    EXPECT_EQ(derive, CK_FALSE);
+    CK_OBJECT_HANDLE key = CK_INVALID_HANDLE;
+    EXPECT_EQ(deriveWith(rig.m.fn, rig.session, signOnly, p384Point(), nullptr, 0, &key),
+              CKR_KEY_FUNCTION_NOT_PERMITTED);
+    EXPECT_EQ(rig.agent.fake->callCount(Call::PkDerive), 0);
+}
+
+// C_Finalize ends the application's use of the module; its derived keys go
+// with it, and a new C_Initialize starts with none.
+TEST(ModuleAbi, DerivedKeysDoNotSurviveFinalize)
+{
+    DeriveRig rig;
+    CK_OBJECT_HANDLE key = CK_INVALID_HANDLE;
+    ASSERT_EQ(deriveWith(rig.m.fn, rig.session, rig.base, p384Point(), nullptr, 0, &key), CKR_OK);
+    ASSERT_EQ(rig.m.fn->C_Finalize(nullptr), CKR_OK);
+    ASSERT_EQ(rig.m.fn->C_Initialize(nullptr), CKR_OK);
+    CK_SESSION_HANDLE again = 0;
+    ASSERT_EQ(rig.m.fn->C_OpenSession(firstPresentSlot(rig.m.fn), CKF_SERIAL_SESSION, nullptr, nullptr, &again),
+              CKR_OK);
+    ASSERT_EQ(rig.m.fn->C_Login(again, CKU_USER, nullptr, 0), CKR_OK);
+    EXPECT_EQ(findOne(rig.m.fn, again, CKO_SECRET_KEY), CK_INVALID_HANDLE);
+    CK_RV rv = CKR_OK;
+    (void)attrBytes(rig.m.fn, again, key, CKA_VALUE_LEN, &rv);
+    EXPECT_EQ(rv, CKR_OBJECT_HANDLE_INVALID);
 }

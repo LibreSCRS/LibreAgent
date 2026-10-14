@@ -4,6 +4,7 @@
 
 #include <LibreSCRS/Agent/KeyType.h> // the NIST curve table
 
+#include <algorithm>
 #include <cstddef>
 
 namespace LibreSCRS::Pkcs11Agent {
@@ -60,6 +61,34 @@ std::vector<std::uint8_t> ecPointOctetString(std::span<const std::uint8_t> x, st
     out.insert(out.end(), x.begin(), x.end());
     out.insert(out.end(), y.begin(), y.end());
     return out;
+}
+
+std::optional<std::vector<std::uint8_t>> peerPointFromPublicData(std::span<const std::uint8_t> publicData,
+                                                                 std::uint32_t keyBits)
+{
+    const std::size_t n = (static_cast<std::size_t>(keyBits) + 7) / 8;
+    if (n == 0) {
+        return std::nullopt;
+    }
+    const std::size_t pointLen = 1 + 2 * n;
+    std::span<const std::uint8_t> point;
+    if (publicData.size() == pointLen) {
+        point = publicData;
+    } else {
+        // Both forms begin with 0x04 (OCTET STRING tag, uncompressed point), so
+        // the length and the full header decide.
+        std::vector<std::uint8_t> header{0x04};
+        appendDerLength(header, pointLen);
+        if (publicData.size() != header.size() + pointLen ||
+            !std::equal(header.begin(), header.end(), publicData.begin())) {
+            return std::nullopt;
+        }
+        point = publicData.subspan(header.size());
+    }
+    if (point.front() != 0x04) {
+        return std::nullopt;
+    }
+    return std::vector<std::uint8_t>(point.begin(), point.end());
 }
 
 } // namespace LibreSCRS::Pkcs11Agent

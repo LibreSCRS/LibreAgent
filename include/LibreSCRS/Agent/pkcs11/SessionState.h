@@ -12,6 +12,7 @@
 #pragma once
 
 #include <LibreSCRS/Agent/KeyType.h>
+#include <LibreSCRS/Agent/pkcs11/DerivedKeys.h>
 #include <LibreSCRS/Agent/pkcs11/ObjectModel.h>
 #include <LibreSCRS/Agent/pkcs11/pkcs11.h>
 
@@ -102,9 +103,26 @@ public:
     /// @brief Decode -> the Object* on the given session's slot (nullptr if stale).
     [[nodiscard]] const Object* resolveObject(CK_SLOT_ID slot, CK_OBJECT_HANDLE h) const;
 
-    /// @brief Object handles on @p slot matching @p tmpl (CKA_CLASS, CKA_ID, CKA_TOKEN, CKA_KEY_TYPE, CKA_PRIVATE).
-    [[nodiscard]] std::vector<CK_OBJECT_HANDLE> findMatches(CK_SLOT_ID slot, CK_ATTRIBUTE_PTR tmpl,
-                                                            CK_ULONG count) const;
+    /// @brief Object handles on @p slot matching @p tmpl (CKA_CLASS, CKA_ID, CKA_TOKEN, CKA_KEY_TYPE, CKA_PRIVATE):
+    ///        the card's objects, then the derived keys @p session may see.
+    [[nodiscard]] std::vector<CK_OBJECT_HANDLE> findMatches(CK_SESSION_HANDLE session, CK_SLOT_ID slot,
+                                                            CK_ATTRIBUTE_PTR tmpl, CK_ULONG count) const;
+
+    // --- derived keys (C_DeriveKey) -----------------------------------------
+    /// @brief The high bit marks a derived key's handle; the card objects'
+    ///        (slot << 32 | index + 1) handles never reach it.
+    static constexpr CK_OBJECT_HANDLE kDerivedHandleBit = CK_OBJECT_HANDLE{1} << 63;
+    [[nodiscard]] static bool isDerivedHandle(CK_OBJECT_HANDLE h) noexcept
+    {
+        return (h & kDerivedHandleBit) != 0;
+    }
+    /// @brief Keep @p key; its handle is never reused while the module is loaded.
+    [[nodiscard]] CK_OBJECT_HANDLE addDerivedKey(DerivedKey key);
+    /// @brief The derived key @p h as @p session sees it: the same slot, and
+    ///        only while that session is logged in (it is a private object).
+    [[nodiscard]] const DerivedKey* derivedKey(CK_SESSION_HANDLE session, CK_OBJECT_HANDLE h) const;
+    bool destroyDerivedKey(CK_OBJECT_HANDLE h);
+    void destroyDerivedKeysOfSlot(CK_SLOT_ID slot);
 
 private:
     ObjectModel m_model;
@@ -113,6 +131,12 @@ private:
     std::map<CK_SLOT_ID, std::size_t> m_slotIndex; ///< slot id -> index into m_model.slots
     std::map<CK_SESSION_HANDLE, Session> m_sessions;
     CK_SESSION_HANDLE m_nextSession = 1;
+    std::map<CK_OBJECT_HANDLE, DerivedKey> m_derived;
+    CK_OBJECT_HANDLE m_nextDerived = 1;
+
+    void destroyDerivedKeysOfSession(CK_SESSION_HANDLE creator);
 };
+
+static_assert(sizeof(CK_OBJECT_HANDLE) == 8, "the derived-key handle bit needs a 64-bit handle");
 
 } // namespace LibreSCRS::Pkcs11Agent

@@ -82,6 +82,9 @@ if(LIBREAGENT_BUILD_PKCS11_SOCKET_CLIENT)
     # pure byte encoding with no crypto library.
     agent_pkcs11_test(EcEncodingTest)
 
+    # The secret keys C_DeriveKey makes: template, value, attributes. Pure.
+    agent_pkcs11_test(DerivedKeysTest)
+
     # dlopen the built module and exercise the C ABI surface standalone.
     agent_pkcs11_module_test(LoadModuleTest)
 
@@ -107,6 +110,11 @@ if(LIBREAGENT_BUILD_PKCS11_SOCKET_CLIENT)
     find_package(OpenSSL REQUIRED COMPONENTS Crypto)
     agent_pkcs11_module_test(RealCardCryptoVerifyTest)
     target_link_libraries(RealCardCryptoVerifyTest PRIVATE OpenSSL::Crypto)
+
+    # EC keys end to end through the real module, against a double that holds a
+    # real key: OpenSSL verifies the ECDSA signature and recomputes the ECDH secret.
+    agent_pkcs11_module_test(EcInteropTest)
+    target_link_libraries(EcInteropTest PRIVATE OpenSSL::Crypto LibreAgent::Pkcs11SocketClient)
 
     # RPC integration: drive the EXTERNAL consumer pkcs11-tool against the real
     # module with the socket double as the card backend. A suite that only ever

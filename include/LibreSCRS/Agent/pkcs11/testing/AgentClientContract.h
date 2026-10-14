@@ -42,6 +42,11 @@
 //       static std::unique_ptr<Harness> refusingLogin(Refusal r);
 //       // An agent that serves that reader and refuses signRaw() with r.
 //       static std::unique_ptr<Harness> refusingSign(Refusal r);
+//       // An agent that serves that reader, its cert the EC key of servingEcCert(),
+//       // and refuses derive() with r.
+//       static std::unique_ptr<Harness> refusingDerive(Refusal r);
+//       // An agent that serves that reader and refuses decrypt() with r.
+//       static std::unique_ptr<Harness> refusingDecrypt(Refusal r);
 //       // An agent that serves that reader and refuses nothing.
 //       static std::unique_ptr<Harness> serving();
 //       // The same reader and card, with no certificate on the card.
@@ -53,6 +58,11 @@
 //       // The same reader and card, its cert an EC P-384 key with ID ecKeyId() that derives.
 //       static std::unique_ptr<Harness> servingEcCert();
 //       static std::vector<std::uint8_t> ecKeyId();
+//       // The same EC key for key agreement only: its certificate's keyUsage
+//       // is keyAgreement, so the agent reports it as not signing-capable.
+//       static std::unique_ptr<Harness> servingDeriveOnlyEcCert();
+//       // The secret Z servingEcCert()'s agent answers every derive() with.
+//       static std::vector<std::uint8_t> cannedSecret();
 //       // A client with nothing on the other end at all.
 //       static std::unique_ptr<Harness> unreachable();
 //
@@ -218,6 +228,7 @@ TYPED_TEST_P(AgentClientContract, WithNoAgentEveryCallIsDeviceRemoved)
     EXPECT_EQ(c.signRaw(reader, certId, LibreSCRS::Agent::Mechanism::RsaPkcs1Sign, payload).status,
               Status::DeviceRemoved);
     EXPECT_EQ(c.decrypt(reader, certId, payload).status, Status::DeviceRemoved);
+    EXPECT_EQ(c.derive(reader, certId, payload).status, Status::DeviceRemoved);
     EXPECT_TRUE(c.snapshot().readers.empty());
 }
 
@@ -397,6 +408,27 @@ TYPED_TEST_P(AgentClientContract, TheKeyFactsReachTheEntry)
     EXPECT_EQ(e.keyBits, 384u);
     EXPECT_TRUE(e.canDerive);
     EXPECT_FALSE(e.canDecrypt) << "an EC key never decrypts";
+    EXPECT_TRUE(e.signingCapable);
+    EXPECT_TRUE(e.canSign) << "a signing-capable key on a card the agent signs with";
+}
+
+// A key the agent derives with but whose certificate does not sign still
+// arrives -- as a key that derives and does not sign, on both transports.
+TYPED_TEST_P(AgentClientContract, ADeriveOnlyKeyArrivesAsOneThatDoesNotSign)
+{
+    auto harness = TypeParam::servingDeriveOnlyEcCert();
+    ASSERT_NE(harness, nullptr);
+    const AgentSnapshot snap = harness->client().snapshot();
+    const std::string want = TypeParam::reader();
+    const auto reader = std::find_if(snap.readers.begin(), snap.readers.end(),
+                                     [&want](const ReaderState& r) { return r.readerPath == want; });
+    ASSERT_NE(reader, snap.readers.end());
+    ASSERT_FALSE(reader->certs.empty()) << "a key that derives is dropped for not signing";
+    const CertEntry& e = reader->certs.front();
+    EXPECT_EQ(e.keyType, LibreSCRS::Agent::KeyType::Ec);
+    EXPECT_TRUE(e.canDerive);
+    EXPECT_FALSE(e.signingCapable);
+    EXPECT_FALSE(e.canSign);
 }
 
 // An EC key's public point arrives at fixed width on both transports.
@@ -426,6 +458,16 @@ TYPED_TEST_P(AgentClientContract, ASignTheAgentRefusesAsInvalidIsInvalidInput)
               Status::InvalidInput);
 }
 
+// ...and a decryption refused the same way is InvalidInput as well.
+TYPED_TEST_P(AgentClientContract, ADecryptTheAgentRefusesAsInvalidIsInvalidInput)
+{
+    auto harness = TypeParam::refusingDecrypt(Refusal::InvalidRequest);
+    ASSERT_NE(harness, nullptr);
+    const std::vector<std::uint8_t> ciphertext(255, 0x01);
+    EXPECT_EQ(harness->client().decrypt(TypeParam::reader(), TypeParam::certId(), ciphertext).status,
+              Status::InvalidInput);
+}
+
 // Only a signing mechanism is ever sent as a signature. A decryption mechanism
 // shares its wire token with an RSA signature, and a mechanism with no signing
 // token at all has nothing to send; both answer NotSupported without reaching
@@ -448,13 +490,43 @@ TYPED_TEST_P(AgentClientContract, OnlyASigningMechanismIsSentAsASignature)
     }
 }
 
+// A key agreement answers the agent's secret, or its refusal, the same on both
+// wires: an off-curve point the agent refuses before any prompt is the
+// caller's mistake (InvalidInput), not a device error.
+TYPED_TEST_P(AgentClientContract, ADeriveAnswersTheSecretOrItsRefusal)
+{
+    std::vector<std::uint8_t> point(97, 0x33);
+    point[0] = 0x04;
+    {
+        auto harness = TypeParam::servingEcCert();
+        ASSERT_NE(harness, nullptr);
+        const BytesResult z = harness->client().derive(TypeParam::reader(), TypeParam::certId(), point);
+        EXPECT_EQ(z.status, Status::Ok);
+        EXPECT_EQ(z.bytes, TypeParam::cannedSecret());
+    }
+    {
+        auto harness = TypeParam::refusingDerive(Refusal::InvalidRequest);
+        ASSERT_NE(harness, nullptr);
+        EXPECT_EQ(harness->client().derive(TypeParam::reader(), TypeParam::certId(), point).status,
+                  Status::InvalidInput);
+    }
+    {
+        // Lease-gated like a signature: without one it is not logged in.
+        auto harness = TypeParam::refusingDerive(Refusal::UserNotLoggedIn);
+        ASSERT_NE(harness, nullptr);
+        EXPECT_EQ(harness->client().derive(TypeParam::reader(), TypeParam::certId(), point).status,
+                  Status::UserNotLoggedIn);
+    }
+}
+
 REGISTER_TYPED_TEST_SUITE_P(AgentClientContract, EveryRefusalReachesItsOwnStatus,
                             TheRefusalsStayDistinguishableFromEachOther, ACancelledPromptIsNotAFailedOne,
                             WithNoAgentEveryCallIsDeviceRemoved, AServingAgentAnswersALease,
                             AServingAgentEnumeratesItsCard, ACardIsNamedAfterItsCertificateHolder,
                             ACardWithoutACertificateIsNamedAfterItsReader, ACertWithoutACommonNameDoesNotNameTheToken,
                             AReaderCarriesItsName, TheCardsConsentRuleReachesTheEntry, ASignWithoutALeaseIsNotLoggedIn,
-                            TheKeyFactsReachTheEntry, AnEcKeyServesItsPoint,
-                            ASignTheAgentRefusesAsInvalidIsInvalidInput, OnlyASigningMechanismIsSentAsASignature);
+                            TheKeyFactsReachTheEntry, ADeriveOnlyKeyArrivesAsOneThatDoesNotSign, AnEcKeyServesItsPoint,
+                            ASignTheAgentRefusesAsInvalidIsInvalidInput, ADecryptTheAgentRefusesAsInvalidIsInvalidInput,
+                            OnlyASigningMechanismIsSentAsASignature, ADeriveAnswersTheSecretOrItsRefusal);
 
 } // namespace LibreSCRS::Pkcs11Agent::Testing

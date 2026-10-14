@@ -210,6 +210,12 @@ void FakeSocketAgent::setSignResponder(std::function<std::vector<std::uint8_t>(c
     m_signResponder = std::move(f);
 }
 
+void FakeSocketAgent::setDeriveResponder(std::function<std::vector<std::uint8_t>(const W::PkDerive&)> f)
+{
+    const std::lock_guard lock{m_mutex};
+    m_deriveResponder = std::move(f);
+}
+
 Wire::Hello FakeSocketAgent::lastHello() const
 {
     const std::lock_guard lock{m_mutex};
@@ -240,6 +246,17 @@ void FakeSocketAgent::insertCard()
     for (auto& r : m_readers) {
         if (r.handle == saved.handle) {
             r = saved;
+            return;
+        }
+    }
+}
+
+void FakeSocketAgent::swapCard(std::string card)
+{
+    const std::lock_guard lock{m_mutex};
+    for (auto& r : m_readers) {
+        if (r.hasCard) {
+            r.card = std::move(card);
             return;
         }
     }
@@ -563,11 +580,14 @@ bool FakeSocketAgent::answer(int fd, const W::RequestEnvelope& env)
         applyScript(Call::PkDerive);
         if (const auto e = scriptedFailure(Call::PkDerive))
             return refuse(*e);
+        std::function<std::vector<std::uint8_t>(const W::PkDerive&)> responder;
         {
             const std::lock_guard lock{m_mutex};
             m_lastDerivePoint = dv->data;
+            responder = m_deriveResponder;
         }
-        return send(W::makeReply(env.req, W::DerivedSecretReply{kCannedSecret}));
+        // Called outside the lock: a responder may derive with a real key.
+        return send(W::makeReply(env.req, W::DerivedSecretReply{responder ? responder(*dv) : kCannedSecret}));
     }
 
     // Anything else this seam never asks for.

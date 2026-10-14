@@ -4,6 +4,7 @@
 #include <LibreSCRS/Agent/pkcs11/SocketAgentClient.h>
 
 #include <LibreSCRS/Agent/KeyType.h>
+#include <LibreSCRS/Agent/SecureZero.h>
 #include <LibreSCRS/Agent/crypto/Mechanism.h>
 
 #include <LibreSCRS/Agent/wire/ClientCodec.h>
@@ -273,6 +274,10 @@ struct SocketAgentClient::Impl
                 closeSocket();
                 return std::nullopt;
             }
+            // A frame may carry a secret (a derived Z, a plaintext), and so may
+            // one that is not ours: whatever happens to it, its bytes are wiped
+            // when this pass ends. What the caller keeps was decoded out of it.
+            const LibreSCRS::Agent::SecureZeroOnExit wipe{frame->body};
             // No payload on this seam rides a descriptor. One that does is
             // either a different contract or an attempt to hand this process a
             // file it never asked for; the frame is refused and the descriptors
@@ -282,8 +287,14 @@ struct SocketAgentClient::Impl
                 return std::nullopt;
             }
             if (auto decoded = W::parseReply(frame->body, {})) {
-                if (decoded->requestId != id)
-                    continue; // a reply to something else: not ours to read.
+                if (decoded->requestId != id) {
+                    // A reply to something else: not ours to read, nor to keep.
+                    if (auto* z = std::get_if<W::DerivedSecretReply>(&decoded->reply))
+                        LibreSCRS::Agent::secureZero(z->z);
+                    if (auto* raw = std::get_if<W::RawSignatureReply>(&decoded->reply))
+                        LibreSCRS::Agent::secureZero(raw->sig);
+                    continue;
+                }
                 return std::move(decoded->reply);
             }
             if (W::parseEvent(frame->body, {}).has_value())
@@ -536,8 +547,8 @@ BytesResult SocketAgentClient::signRaw(const std::string& reader, const std::str
         out.status = Status::DeviceRemoved;
         return out;
     }
-    const auto reply = m_impl->call(W::PkSignRaw{reader, certId, std::string{token}, {input.begin(), input.end()}},
-                                    m_impl->budgets.interactiveSecs);
+    auto reply = m_impl->call(W::PkSignRaw{reader, certId, std::string{token}, {input.begin(), input.end()}},
+                              m_impl->budgets.interactiveSecs);
     if (!reply.has_value()) {
         out.status = Status::DeviceRemoved;
         return out;
@@ -547,8 +558,12 @@ BytesResult SocketAgentClient::signRaw(const std::string& reader, const std::str
         return out;
     }
     const auto* sig = std::get_if<W::RawSignatureReply>(&*reply);
-    if (sig == nullptr)
+    if (sig == nullptr) {
+        // A derived secret from a misbehaving agent is still a secret.
+        if (auto* z = std::get_if<W::DerivedSecretReply>(&*reply))
+            LibreSCRS::Agent::secureZero(z->z);
         return out;
+    }
     out.status = Status::Ok;
     out.bytes = sig->sig;
     return out;
@@ -563,7 +578,7 @@ BytesResult SocketAgentClient::decrypt(const std::string& reader, const std::str
         out.status = Status::DeviceRemoved;
         return out;
     }
-    const auto reply = m_impl->call(
+    auto reply = m_impl->call(
         W::PkDecrypt{reader,
                      certId,
                      std::string{LibreSCRS::Agent::mechanismToken(LibreSCRS::Agent::Mechanism::RsaPkcs1Decrypt)},
@@ -577,11 +592,47 @@ BytesResult SocketAgentClient::decrypt(const std::string& reader, const std::str
         out.status = statusOf(*err);
         return out;
     }
-    const auto* plain = std::get_if<W::RawSignatureReply>(&*reply);
-    if (plain == nullptr)
+    auto* plain = std::get_if<W::RawSignatureReply>(&*reply);
+    if (plain == nullptr) {
+        // An arm that is not a plaintext, for our own request: a derived secret
+        // from a misbehaving agent is still a secret, so it is wiped here.
+        if (auto* z = std::get_if<W::DerivedSecretReply>(&*reply))
+            LibreSCRS::Agent::secureZero(z->z);
         return out;
+    }
     out.status = Status::Ok;
-    out.bytes = plain->sig;
+    out.bytes = std::move(plain->sig); // moved, never copied: nothing is left in the reply; the caller wipes it
+    return out;
+}
+
+BytesResult SocketAgentClient::derive(const std::string& reader, const std::string& certId,
+                                      std::span<const std::uint8_t> peerPoint)
+{
+    const std::lock_guard<std::mutex> lock{m_impl->callMutex};
+    BytesResult out;
+    if (!m_impl->connect()) {
+        out.status = Status::DeviceRemoved;
+        return out;
+    }
+    auto reply = m_impl->call(W::PkDerive{reader, certId, {peerPoint.begin(), peerPoint.end()}},
+                              m_impl->budgets.interactiveSecs);
+    if (!reply.has_value()) {
+        out.status = Status::DeviceRemoved;
+        return out;
+    }
+    if (const auto* err = std::get_if<W::ErrInfo>(&*reply)) {
+        out.status = statusOf(*err);
+        return out;
+    }
+    auto* secret = std::get_if<W::DerivedSecretReply>(&*reply);
+    if (secret == nullptr) {
+        // The other secret-bearing arm for our own request: wiped, not dropped.
+        if (auto* raw = std::get_if<W::RawSignatureReply>(&*reply))
+            LibreSCRS::Agent::secureZero(raw->sig);
+        return out;
+    }
+    out.status = Status::Ok;
+    out.bytes = std::move(secret->z); // moved, never copied: nothing is left in the reply; the caller wipes it
     return out;
 }
 

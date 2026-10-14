@@ -9,9 +9,12 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <cstddef>
 #include <cstdint>
-#include <utility>
+#include <random>
+#include <span>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 using namespace LibreSCRS::Pkcs11Agent;
@@ -81,4 +84,52 @@ TEST(EcEncoding, APointIsTheKeysOnlyOnTheKeysCurve)
     EXPECT_FALSE(isPointOfKey(256, "P-384", w48, w48));
     EXPECT_FALSE(isPointOfKey(0, "P-384", w48, w48)) << "a key of no known size";
     EXPECT_FALSE(isPointOfKey(384, "P-384", w32, w32)) << "the width is checked too";
+}
+
+// pPublicData is the raw point or the same point in a DER OCTET STRING
+// (pkcs11-tool --derive-pass-der); the length and the header decide which, on
+// every curve, and only an uncompressed point is accepted either way.
+TEST(EcEncoding, ThePeersPointIsRawOrDerOnEveryCurve)
+{
+    for (const auto& [bits, width] :
+         std::vector<std::pair<std::uint32_t, std::size_t>>{{256, 32}, {384, 48}, {521, 66}}) {
+        const std::vector<std::uint8_t> x(width, 0x11);
+        const std::vector<std::uint8_t> y(width, 0x22);
+        const auto der = ecPointOctetString(x, y);
+        const std::vector<std::uint8_t> raw(der.end() - static_cast<std::ptrdiff_t>(1 + 2 * width), der.end());
+        EXPECT_EQ(peerPointFromPublicData(raw, bits), raw) << bits;
+        EXPECT_EQ(peerPointFromPublicData(der, bits), raw) << bits;
+        auto compressed = raw;
+        compressed[0] = 0x02;
+        EXPECT_FALSE(peerPointFromPublicData(compressed, bits).has_value()) << bits;
+        auto badHeader = der;
+        badHeader[0] = 0x03;
+        EXPECT_FALSE(peerPointFromPublicData(badHeader, bits).has_value()) << bits;
+        EXPECT_FALSE(
+            peerPointFromPublicData(std::span<const std::uint8_t>{raw.data(), raw.size() - 1}, bits).has_value());
+    }
+    EXPECT_FALSE(peerPointFromPublicData(std::vector<std::uint8_t>(65, 0x04), 0).has_value());
+}
+
+// Property: for random coordinates, wrapping then unwrapping gives the point back.
+TEST(EcEncoding, WrappingAndUnwrappingAPointIsTheIdentity)
+{
+    std::mt19937 rng{2026};
+    std::uniform_int_distribution<int> byte{0, 255};
+    for (int i = 0; i < 1000; ++i) {
+        for (const auto& [bits, width] :
+             std::vector<std::pair<std::uint32_t, std::size_t>>{{256, 32}, {384, 48}, {521, 66}}) {
+            std::vector<std::uint8_t> x(width);
+            std::vector<std::uint8_t> y(width);
+            for (auto& b : x)
+                b = static_cast<std::uint8_t>(byte(rng));
+            for (auto& b : y)
+                b = static_cast<std::uint8_t>(byte(rng));
+            const auto point = peerPointFromPublicData(ecPointOctetString(x, y), bits);
+            ASSERT_TRUE(point.has_value());
+            ASSERT_EQ(point->size(), 1 + 2 * width);
+            EXPECT_TRUE(std::equal(x.begin(), x.end(), point->begin() + 1));
+            EXPECT_TRUE(std::equal(y.begin(), y.end(), point->begin() + 1 + static_cast<std::ptrdiff_t>(width)));
+        }
+    }
 }

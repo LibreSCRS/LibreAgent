@@ -84,6 +84,8 @@ public:
                                       std::span<const std::uint8_t> input) override;
     [[nodiscard]] BytesResult decrypt(const std::string& reader, const std::string& certId,
                                       std::span<const std::uint8_t> ciphertext) override;
+    [[nodiscard]] BytesResult derive(const std::string& reader, const std::string& certId,
+                                     std::span<const std::uint8_t> peerPoint) override;
 
 private:
     struct Impl;

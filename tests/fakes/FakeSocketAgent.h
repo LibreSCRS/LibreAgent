@@ -204,6 +204,9 @@ public:
     ///        suite that checks the reply's shape (an ECDSA r||s width) or
     ///        signs with a real key says what the agent answers.
     void setSignResponder(std::function<std::vector<std::uint8_t>(const Wire::PkSignRaw&)> f);
+    /// @brief Answer PkDerive with @p f's result instead of kCannedSecret: the
+    ///        interop suite derives with a real key.
+    void setDeriveResponder(std::function<std::vector<std::uint8_t>(const Wire::PkDerive&)> f);
     /// @brief The most recent Hello this fake served. A client that means to
     ///        opt out of presence events has to be caught on the wire; a fake
     ///        that only counted the call would pass either way.
@@ -213,6 +216,9 @@ public:
     void removeCard();
     /// @brief Put it back, with the certificates it had.
     void insertCard();
+    /// @brief Seat another card, with the same certificates, in the first
+    ///        reader that has one: a card change only the token serial shows.
+    void swapCard(std::string card);
 
 private:
     void acceptLoop();
@@ -236,6 +242,7 @@ private:
     std::string m_lastSignMechanism;
     std::vector<std::uint8_t> m_lastDerivePoint;
     std::function<std::vector<std::uint8_t>(const Wire::PkSignRaw&)> m_signResponder;
+    std::function<std::vector<std::uint8_t>(const Wire::PkDerive&)> m_deriveResponder;
     Wire::Hello m_lastHello;
     std::map<Call, std::chrono::milliseconds> m_delays;
     std::map<Call, Wire::SyncError> m_failures;

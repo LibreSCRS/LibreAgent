@@ -3,6 +3,8 @@
 
 #include <LibreSCRS/Agent/pkcs11/ObjectModel.h>
 
+#include <LibreSCRS/Agent/KeyType.h> // the NIST curve table
+
 namespace LibreSCRS::Pkcs11Agent {
 
 ObjectModel ObjectModel::build(const AgentSnapshot& snapshot)
@@ -28,15 +30,23 @@ ObjectModel ObjectModel::build(const AgentSnapshot& snapshot)
         bool anyRsaDecrypt = false;
         bool anyRsaHashOnCard = false;
         bool anyEcSign = false;
+        bool anyDerive = false;
 
         for (const auto& cert : reader.certs) {
             using LibreSCRS::Agent::KeyType;
-            // Only RSA and EC keys the agent can sign with surface as objects;
-            // an Other key has no attributes this module could serve.
+            // Only RSA and EC keys the agent can sign or derive with surface as
+            // objects; an Other key has no attributes this module could serve.
             const bool isRsa = cert.keyType == KeyType::Rsa;
             const bool isEc = cert.keyType == KeyType::Ec;
-            if (!(isRsa || isEc) || !cert.signingCapable)
+            if (!(isRsa || isEc) || !(cert.signingCapable || (isEc && cert.canDerive)))
                 continue;
+            // Nor does a key whose size names no modulus or no curve: it would
+            // have no curve to name and send every length question to the card.
+            if ((isRsa && cert.keyBits == 0) || (isEc && LibreSCRS::Agent::nistCurveByBits(cert.keyBits) == nullptr))
+                continue;
+            // A key signs only where its certificate does AND the agent can
+            // drive it -- whatever a transport reported for the second.
+            const bool signs = cert.signingCapable && cert.canSign;
 
             // CKO_CERTIFICATE — public DER, fetched lazily by the module.
             Object certObj;
@@ -64,17 +74,19 @@ ObjectModel ObjectModel::build(const AgentSnapshot& snapshot)
             privObj.certId = cert.certId;
             privObj.keyType = cert.keyType;
             privObj.keyBits = cert.keyBits;
-            privObj.sign = cert.canSign;
+            privObj.sign = signs;
             privObj.decrypt = isRsa && cert.canDecrypt; // decryption is RSA's alone
+            privObj.derive = isEc && cert.canDerive;    // and key agreement EC's
             privObj.alwaysAuthenticate = cert.alwaysAuthenticate;
             slot.objects.push_back(std::move(privObj));
 
             if (isRsa) {
-                anyRsaSign = anyRsaSign || cert.canSign;
+                anyRsaSign = anyRsaSign || signs;
                 anyRsaDecrypt = anyRsaDecrypt || cert.canDecrypt;
-                anyRsaHashOnCard = anyRsaHashOnCard || (cert.canSign && cert.signsHashOnCard);
+                anyRsaHashOnCard = anyRsaHashOnCard || (signs && cert.signsHashOnCard);
             } else {
-                anyEcSign = anyEcSign || cert.canSign;
+                anyEcSign = anyEcSign || signs;
+                anyDerive = anyDerive || cert.canDerive;
             }
         }
 
@@ -110,6 +122,10 @@ ObjectModel ObjectModel::build(const AgentSnapshot& snapshot)
         // An EC key signs the caller's digest (CKM_ECDSA); the card never hashes for it.
         if (anyEcSign) {
             slot.mechanisms.push_back(CKM_ECDSA);
+        }
+        // ECDH with an EC key the agent derives with (CKD_NULL only).
+        if (anyDerive) {
+            slot.mechanisms.push_back(CKM_ECDH1_DERIVE);
         }
 
         model.slots.push_back(std::move(slot));

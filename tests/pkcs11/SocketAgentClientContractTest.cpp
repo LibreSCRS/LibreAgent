@@ -31,6 +31,8 @@ using P::Testing::Refusal;
 // RFC 5280 keyEncipherment, so the served cert is a complete one rather than a
 // cert-shaped placeholder.
 constexpr std::uint32_t kKeyEncipherment = 1U << 2;
+// RFC 5280 keyAgreement: a key that derives and does not sign.
+constexpr std::uint32_t kKeyAgreement = 1U << 4;
 
 // Short budgets: the contract parks no call behind a delay, and the shipped
 // ten-minute interactive budget is only a ceiling here.
@@ -148,6 +150,29 @@ struct SocketContractTraits
         });
     }
 
+    static std::unique_ptr<Harness> servingDeriveOnlyEcCert()
+    {
+        return make(
+            [](T::FakeSocketAgent& fake) {
+                fake.setKeyFacts(certId(), ecKeyId(), LibreSCRS::Agent::KeyType::Ec, 384, /*canDerive=*/true);
+            },
+            /*withCert=*/true, holderName(), /*signingCapable=*/false, kKeyAgreement);
+    }
+
+    static std::vector<std::uint8_t> cannedSecret()
+    {
+        return T::kCannedSecret;
+    }
+
+    static std::unique_ptr<Harness> refusingDerive(Refusal r)
+    {
+        const W::SyncError e = wireNameFor(r);
+        return make([e](T::FakeSocketAgent& fake) {
+            fake.setKeyFacts(certId(), ecKeyId(), LibreSCRS::Agent::KeyType::Ec, 384, /*canDerive=*/true);
+            fake.failCall(T::Call::PkDerive, e);
+        });
+    }
+
     static std::unique_ptr<Harness> refusingLogin(Refusal r)
     {
         const W::SyncError e = wireNameFor(r);
@@ -158,6 +183,12 @@ struct SocketContractTraits
     {
         const W::SyncError e = wireNameFor(r);
         return make([e](T::FakeSocketAgent& fake) { fake.failCall(T::Call::PkSignRaw, e); });
+    }
+
+    static std::unique_ptr<Harness> refusingDecrypt(Refusal r)
+    {
+        const W::SyncError e = wireNameFor(r);
+        return make([e](T::FakeSocketAgent& fake) { fake.failCall(T::Call::PkDecrypt, e); });
     }
 
     static std::unique_ptr<Harness> unreachable()
@@ -172,13 +203,14 @@ struct SocketContractTraits
 
 private:
     static std::unique_ptr<Harness> make(const std::function<void(T::FakeSocketAgent&)>& script, bool withCert = true,
-                                         const std::string& subjectCn = holderName())
+                                         const std::string& subjectCn = holderName(), bool signingCapable = true,
+                                         std::uint32_t keyUsage = kKeyEncipherment)
     {
         auto h = std::make_unique<Harness>();
         h->fake = std::make_unique<T::FakeSocketAgent>();
         h->fake->addReader(reader(), /*hasCard=*/true, "c1");
         if (withCert) {
-            h->fake->addCert("c1", certId(), /*signingCapable=*/true, kKeyEncipherment, subjectCn);
+            h->fake->addCert("c1", certId(), signingCapable, keyUsage, subjectCn);
         }
         if (script) {
             script(*h->fake);

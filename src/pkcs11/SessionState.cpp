@@ -6,6 +6,8 @@
 #include <LibreSCRS/Agent/KeyType.h>
 
 #include <cstring>
+#include <string>
+#include <utility>
 
 namespace LibreSCRS::Pkcs11Agent {
 
@@ -21,6 +23,14 @@ constexpr unsigned kSlotShift = 32;
 
 void SessionState::setModel(ObjectModel model)
 {
+    // The token each slot showed before this refresh: a derived key belongs to
+    // the card it was derived with, and goes when that card does.
+    std::map<CK_SLOT_ID, std::string> before;
+    for (const auto& [id, idx] : m_slotIndex) {
+        const Slot& s = m_model.slots[idx];
+        before.emplace(id, s.tokenPresent ? s.tokenSerial : std::string{});
+    }
+
     m_model = std::move(model);
     m_slotIndex.clear();
     for (std::size_t i = 0; i < m_model.slots.size(); ++i) {
@@ -34,6 +44,15 @@ void SessionState::setModel(ObjectModel model)
             id = it->second;
         }
         m_slotIndex[id] = i;
+    }
+
+    // A token that named no serial cannot be told from the next one, so its
+    // keys do not survive a refresh at all.
+    for (const auto& [id, serial] : before) {
+        const Slot* now = slotById(id);
+        if (serial.empty() || now == nullptr || !now->tokenPresent || now->tokenSerial != serial) {
+            destroyDerivedKeysOfSlot(id);
+        }
     }
 }
 
@@ -74,11 +93,13 @@ Session* SessionState::session(CK_SESSION_HANDLE h)
 
 bool SessionState::closeSession(CK_SESSION_HANDLE h)
 {
+    destroyDerivedKeysOfSession(h);
     return m_sessions.erase(h) > 0;
 }
 
 void SessionState::closeAllSessions(CK_SLOT_ID slot)
 {
+    destroyDerivedKeysOfSlot(slot);
     for (auto it = m_sessions.begin(); it != m_sessions.end();) {
         if (it->second.slot == slot)
             it = m_sessions.erase(it);
@@ -114,7 +135,8 @@ const Object* SessionState::resolveObject(CK_SLOT_ID slot, CK_OBJECT_HANDLE h) c
     return &s->objects[objIndex];
 }
 
-std::vector<CK_OBJECT_HANDLE> SessionState::findMatches(CK_SLOT_ID slot, CK_ATTRIBUTE_PTR tmpl, CK_ULONG count) const
+std::vector<CK_OBJECT_HANDLE> SessionState::findMatches(CK_SESSION_HANDLE session, CK_SLOT_ID slot,
+                                                        CK_ATTRIBUTE_PTR tmpl, CK_ULONG count) const
 {
     std::vector<CK_OBJECT_HANDLE> out;
     const Slot* s = slotById(slot);
@@ -187,7 +209,47 @@ std::vector<CK_OBJECT_HANDLE> SessionState::findMatches(CK_SLOT_ID slot, CK_ATTR
         if (match)
             out.push_back(encodeHandle(slot, i));
     }
+
+    // The application's derived keys on this slot, private: only a logged-in
+    // session sees them.
+    for (const auto& [h, key] : m_derived) {
+        if (derivedKey(session, h) != nullptr && derivedKeyMatches(key, tmpl, count))
+            out.push_back(h);
+    }
     return out;
+}
+
+CK_OBJECT_HANDLE SessionState::addDerivedKey(DerivedKey key)
+{
+    const CK_OBJECT_HANDLE h = kDerivedHandleBit | m_nextDerived++;
+    m_derived.emplace(h, std::move(key));
+    return h;
+}
+
+const DerivedKey* SessionState::derivedKey(CK_SESSION_HANDLE session, CK_OBJECT_HANDLE h) const
+{
+    const auto s = m_sessions.find(session);
+    const auto k = m_derived.find(h);
+    if (s == m_sessions.end() || k == m_derived.end())
+        return nullptr;
+    if (k->second.slot != s->second.slot || !s->second.loggedIn)
+        return nullptr;
+    return &k->second;
+}
+
+bool SessionState::destroyDerivedKey(CK_OBJECT_HANDLE h)
+{
+    return m_derived.erase(h) > 0; // ~DerivedKey wipes the value
+}
+
+void SessionState::destroyDerivedKeysOfSlot(CK_SLOT_ID slot)
+{
+    std::erase_if(m_derived, [slot](const auto& entry) { return entry.second.slot == slot; });
+}
+
+void SessionState::destroyDerivedKeysOfSession(CK_SESSION_HANDLE creator)
+{
+    std::erase_if(m_derived, [creator](const auto& entry) { return entry.second.creator == creator; });
 }
 
 } // namespace LibreSCRS::Pkcs11Agent

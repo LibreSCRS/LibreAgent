@@ -56,7 +56,9 @@ EXPECTED_ENTRIES=(
     Pkcs11ToolRpcSocketTest
 )
 EXPECTED_TESTS=(
+    DerivedKeysTest
     EcEncodingTest
+    EcInteropTest
     FakeSocketAgentTest
     LoadModuleTest
     ModuleAbiTest

@@ -369,7 +369,7 @@ TEST(ObjectModel, AnEcKeyAdvertisesEcdsaNotTheRsaMechanisms)
     EXPECT_TRUE(hasMech(mechs, CKM_ECDSA));
     EXPECT_FALSE(hasMech(mechs, CKM_SHA256_RSA_PKCS)) << "hash-on-card is an RSA family choice";
     EXPECT_FALSE(hasMech(mechs, CKM_RSA_PKCS));
-    EXPECT_FALSE(hasMech(mechs, CKM_ECDH1_DERIVE)) << "derive is advertised only with C_DeriveKey";
+    EXPECT_FALSE(hasMech(mechs, CKM_ECDH1_DERIVE)) << "a key the agent does not derive with";
 }
 
 TEST(ObjectModel, AMixedCardAdvertisesTheUnion)
@@ -415,12 +415,72 @@ TEST(ObjectModel, AnOtherKeyProducesNoObjects)
     EXPECT_TRUE(m.slots[0].mechanisms.empty());
 }
 
-TEST(ObjectModel, ADeriveOnlyKeyWaitsForKeyAgreement)
+TEST(ObjectModel, ADeriveOnlyKeyIsAKeyThatDerives)
 {
     auto deriveOnly = lkEntry();
     deriveOnly.signingCapable = false;
     deriveOnly.canSign = false;
     deriveOnly.canDerive = true;
     const auto m = ObjectModel::build(cardWith({deriveOnly}));
-    EXPECT_TRUE(m.slots[0].objects.empty()) << "no derive surface yet, so no object";
+    ASSERT_EQ(m.slots[0].objects.size(), 3u);
+    for (const auto& o : m.slots[0].objects) {
+        if (o.cls == CKO_PRIVATE_KEY) {
+            EXPECT_TRUE(o.derive);
+            EXPECT_FALSE(o.sign);
+        }
+    }
+    EXPECT_TRUE(hasMech(m.slots[0].mechanisms, CKM_ECDH1_DERIVE));
+    EXPECT_FALSE(hasMech(m.slots[0].mechanisms, CKM_ECDSA));
+}
+
+TEST(ObjectModel, AnRsaKeyNeverDerives)
+{
+    auto rsa = oneCardOneCert().readers[0].certs[0];
+    rsa.canDerive = true; // a transport bug must not turn into CKA_DERIVE on an RSA key
+    const auto m = ObjectModel::build(cardWith({rsa}));
+    for (const auto& o : m.slots[0].objects) {
+        EXPECT_FALSE(o.derive);
+    }
+    EXPECT_FALSE(hasMech(m.slots[0].mechanisms, CKM_ECDH1_DERIVE));
+
+    // Nor does it make a non-signing RSA key an object of its own.
+    rsa.signingCapable = false;
+    const auto none = ObjectModel::build(cardWith({rsa}));
+    EXPECT_TRUE(none.slots[0].objects.empty());
+}
+
+// CKA_SIGN is the agent's signingCapable AND the transport's canSign: a key
+// the certificate does not sign with (a key-agreement key) never signs, even
+// if a transport sets canSign for it.
+TEST(ObjectModel, AKeyItsCertificateDoesNotSignWithNeverSigns)
+{
+    auto deriveOnly = lkEntry();
+    deriveOnly.signingCapable = false;
+    deriveOnly.canSign = true; // a transport that did not AND signingCapable in
+    deriveOnly.canDerive = true;
+    const auto m = ObjectModel::build(cardWith({deriveOnly}));
+    for (const auto& o : m.slots[0].objects) {
+        EXPECT_FALSE(o.sign);
+    }
+    EXPECT_FALSE(hasMech(m.slots[0].mechanisms, CKM_ECDSA));
+    EXPECT_TRUE(hasMech(m.slots[0].mechanisms, CKM_ECDH1_DERIVE));
+}
+
+// A key whose size names no curve (EC) or no modulus (RSA) cannot be served:
+// it would have no CKA_EC_PARAMS, and every length question about it would go
+// to the card. It produces no objects, as an Other key does.
+TEST(ObjectModel, AKeyOfNoKnownSizeProducesNoObjects)
+{
+    for (const std::uint32_t bits : {0U, 255U, 192U}) {
+        auto ec = lkEntry();
+        ec.keyBits = bits;
+        const auto m = ObjectModel::build(cardWith({ec}));
+        EXPECT_TRUE(m.slots[0].objects.empty()) << "EC " << bits;
+        EXPECT_TRUE(m.slots[0].mechanisms.empty()) << "EC " << bits;
+    }
+    auto rsa = oneCardOneCert().readers[0].certs[0];
+    rsa.keyBits = 0;
+    const auto m = ObjectModel::build(cardWith({rsa}));
+    EXPECT_TRUE(m.slots[0].objects.empty());
+    EXPECT_TRUE(m.slots[0].mechanisms.empty());
 }

@@ -5,12 +5,13 @@
 // over, with no transport in it. It enumerates readers/cards, drives the
 // per-card certificate read to learn the signing certs + their capabilities,
 // and brokers the low-level primitives (CertDer / PublicKey / Login / Logout /
-// SignRaw / Decrypt).
+// SignRaw / Decrypt / Derive).
 //
 // Every type here is a value type — strings, spans, vectors, an outcome enum —
 // so an implementation over a bus and one over a socket answer the same
-// questions in the same words. The module holds NO secret: sign/decrypt I/O
-// passes straight through and is NEVER logged. No crypto here, no Qt.
+// questions in the same words. Sign/decrypt I/O passes straight through and
+// is NEVER logged; a decrypted block or a derived secret a call returns is the
+// caller's to wipe. No crypto here, no Qt.
 
 #pragma once
 
@@ -55,7 +56,7 @@ struct LoginResult
     std::uint32_t idleTimeoutSecs = 0;
 };
 
-/// @brief A bytes-or-status result for sign / decrypt / certDer.
+/// @brief A bytes-or-status result for sign / decrypt / derive / certDer.
 struct BytesResult
 {
     Status status = Status::GeneralError;
@@ -130,6 +131,12 @@ public:
     /// @brief Raw RSA PKCS#1 v1.5 decrypt of @p ciphertext.
     [[nodiscard]] virtual BytesResult decrypt(const std::string& reader, const std::string& certId,
                                               std::span<const std::uint8_t> ciphertext) = 0;
+
+    /// @brief ECDH with the card's key against @p peerPoint (uncompressed
+    ///        04||X||Y), CKD_NULL: the raw secret Z. Lease-gated like a
+    ///        signature. Z is a secret -- the caller wipes BytesResult::bytes.
+    [[nodiscard]] virtual BytesResult derive(const std::string& reader, const std::string& certId,
+                                             std::span<const std::uint8_t> peerPoint) = 0;
 };
 
 } // namespace LibreSCRS::Pkcs11Agent

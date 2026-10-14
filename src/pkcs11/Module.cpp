@@ -4,23 +4,26 @@
 // librescrs-pkcs11-agent — a standalone, Qt-free, libcrypto-free PKCS#11
 // v2.40 module that implements the C_* ABI by brokering to the per-user
 // librescrs-agent through an AgentClient (D-Bus on Linux, a Unix socket on
-// macOS). It holds NO card connection and NO secret: every real crypto
+// macOS). It holds NO card connection and NO card key: every real crypto
 // operation is performed on-card by the agent.
 //
 // PIN/CAN are collected by the agent's prompter, so every token advertises
 // CKF_PROTECTED_AUTHENTICATION_PATH and the application PIN passed to C_Login is
-// IGNORED — it is NEVER placed on the wire. The only secret-ish bytes the module
-// touches are sign/decrypt I/O, which pass straight through to/from the agent
-// and are NEVER logged.
+// IGNORED — it is NEVER placed on the wire. The secret bytes the module touches
+// are sign/decrypt I/O, which pass straight through to/from the agent, and the
+// ECDH secrets C_DeriveKey keeps as session keys of the application; none is
+// ever logged, and each is wiped when it goes.
 //
 // Layout: this file owns the C ABI surface + the static function-list table;
 // SessionState owns the session/object/cursor bookkeeping; AgentClient is the
 // transport to the agent; ObjectModel is the pure slot/token/object/mechanism mapping.
 
 #include <LibreSCRS/Agent/KeyType.h>
+#include <LibreSCRS/Agent/SecureZero.h>
 #include <LibreSCRS/Agent/crypto/Mechanism.h>
 #include <LibreSCRS/Agent/pkcs11/AgentClient.h>
 #include <LibreSCRS/Agent/pkcs11/AgentClientFactory.h>
+#include <LibreSCRS/Agent/pkcs11/DerivedKeys.h>
 #include <LibreSCRS/Agent/pkcs11/EcEncoding.h>
 #include <LibreSCRS/Agent/pkcs11/ObjectModel.h>
 #include <LibreSCRS/Agent/pkcs11/SessionState.h>
@@ -184,8 +187,11 @@ void dropLoginOnLapsedLease(Status s, CK_SESSION_HANDLE hSession)
     std::lock_guard lk(g_mutex);
     if (!g_lib)
         return;
-    if (Session* sess = g_lib->state.session(hSession))
+    if (Session* sess = g_lib->state.session(hSession)) {
         sess->loggedIn = false;
+        // ...and the private session objects of that token go with the login.
+        g_lib->state.destroyDerivedKeysOfSlot(sess->slot);
+    }
 }
 
 // The signature length a key produces, from the model alone: an RSA
@@ -713,6 +719,8 @@ CK_DECLARE_FUNCTION(CK_RV, C_Logout)(CK_SESSION_HANDLE hSession)
     if (slot)
         (void)g_lib->client->logout(slot->readerPath);
     s->loggedIn = false;
+    // The token's private session objects end with the login.
+    g_lib->state.destroyDerivedKeysOfSlot(s->slot);
     return CKR_OK;
     PKCS11_CATCH
 }
@@ -745,9 +753,24 @@ CK_DECLARE_FUNCTION(CK_RV, C_CopyObject)
 
 CK_DECLARE_FUNCTION(CK_RV, C_DestroyObject)(CK_SESSION_HANDLE hSession, CK_OBJECT_HANDLE hObject)
 {
-    (void)hSession;
-    (void)hObject;
-    return CKR_FUNCTION_NOT_SUPPORTED;
+    PKCS11_TRY
+    std::lock_guard lk(g_mutex);
+    if (!g_lib)
+        return CKR_CRYPTOKI_NOT_INITIALIZED;
+    Session* s = g_lib->state.session(hSession);
+    if (!s)
+        return CKR_SESSION_HANDLE_INVALID;
+    if (SessionState::isDerivedHandle(hObject)) {
+        if (g_lib->state.derivedKey(hSession, hObject) == nullptr)
+            return CKR_OBJECT_HANDLE_INVALID;
+        (void)g_lib->state.destroyDerivedKey(hObject); // the value is wiped
+        return CKR_OK;
+    }
+    // The card's objects are the card's: this module neither creates nor destroys them.
+    if (g_lib->state.resolveObject(s->slot, hObject) != nullptr)
+        return CKR_ACTION_PROHIBITED;
+    return CKR_OBJECT_HANDLE_INVALID;
+    PKCS11_CATCH
 }
 
 CK_DECLARE_FUNCTION(CK_RV, C_GetObjectSize)(CK_SESSION_HANDLE hSession, CK_OBJECT_HANDLE hObject, CK_ULONG_PTR pulSize)
@@ -834,6 +857,9 @@ CK_RV serveAttribute(const Slot& slot, const Object& obj, CK_ATTRIBUTE& attr)
             return CKR_ATTRIBUTE_TYPE_INVALID;
         return give(obj.decrypt ? &ckTrue : &ckFalse, sizeof(CK_BBOOL));
     case CKA_DERIVE:
+        // A common key attribute: a public key has it too, and does not derive.
+        if (obj.cls == CKO_PUBLIC_KEY)
+            return give(&ckFalse, sizeof(ckFalse));
         if (obj.cls != CKO_PRIVATE_KEY)
             return CKR_ATTRIBUTE_TYPE_INVALID;
         return give(obj.derive ? &ckTrue : &ckFalse, sizeof(CK_BBOOL));
@@ -940,6 +966,22 @@ CK_DECLARE_FUNCTION(CK_RV, C_GetAttributeValue)
     const Slot* slot = g_lib->state.slotById(s->slot);
     if (!slot)
         return CKR_SESSION_HANDLE_INVALID;
+    if (SessionState::isDerivedHandle(hObject)) {
+        const DerivedKey* key = g_lib->state.derivedKey(hSession, hObject);
+        if (!key)
+            return CKR_OBJECT_HANDLE_INVALID;
+        CK_RV overall = CKR_OK;
+        for (CK_ULONG i = 0; i < ulCount; ++i) {
+            const CK_RV rv = serveDerivedKeyAttribute(*key, pTemplate[i]);
+            if (rv == CKR_ATTRIBUTE_TYPE_INVALID) {
+                pTemplate[i].ulValueLen = CK_UNAVAILABLE_INFORMATION;
+                overall = CKR_ATTRIBUTE_TYPE_INVALID;
+            } else if (rv != CKR_OK) {
+                overall = rv;
+            }
+        }
+        return overall;
+    }
     const Object* obj = g_lib->state.resolveObject(s->slot, hObject);
     if (!obj)
         return CKR_OBJECT_HANDLE_INVALID;
@@ -979,7 +1021,7 @@ CK_DECLARE_FUNCTION(CK_RV, C_FindObjectsInit)(CK_SESSION_HANDLE hSession, CK_ATT
         return CKR_SESSION_HANDLE_INVALID;
     if (s->find.active)
         return CKR_OPERATION_ACTIVE;
-    s->find.matches = g_lib->state.findMatches(s->slot, pTemplate, ulCount);
+    s->find.matches = g_lib->state.findMatches(hSession, s->slot, pTemplate, ulCount);
     s->find.next = 0;
     s->find.active = true;
     return CKR_OK;
@@ -1184,6 +1226,9 @@ CK_RV doDecrypt(CK_SESSION_HANDLE hSession, const std::uint8_t* ct, std::size_t 
     }
     std::vector<std::uint8_t> ciphertext(ct, ct + ctLen);
     auto res = g_lib->client->decrypt(reader, certId, ciphertext);
+    // The plaintext is the caller's once copied out; this copy is wiped on
+    // every way out, as a derived secret is.
+    const LibreSCRS::Agent::SecureZeroOnExit wipe{res.bytes};
     if (res.status != Status::Ok) {
         clearCursorIf(/*clearCursor=*/true);
         dropLoginOnLapsedLease(res.status, hSession);
@@ -1689,13 +1734,117 @@ CK_DECLARE_FUNCTION(CK_RV, C_DeriveKey)
 (CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR pMechanism, CK_OBJECT_HANDLE hBaseKey, CK_ATTRIBUTE_PTR pTemplate,
  CK_ULONG ulAttributeCount, CK_OBJECT_HANDLE_PTR phKey)
 {
-    (void)hSession;
-    (void)pMechanism;
-    (void)hBaseKey;
-    (void)pTemplate;
-    (void)ulAttributeCount;
-    (void)phKey;
-    return CKR_FUNCTION_NOT_SUPPORTED;
+    PKCS11_TRY
+    // --- under lock: every check this module can make, before the agent and
+    //     before any PIN prompt: the mechanism and its parameters, the base key,
+    //     the peer's point (its curve is the agent's check), the template. ---
+    std::string reader;
+    std::string certId;
+    std::string tokenSerial; // the card the secret is derived with
+    std::vector<std::uint8_t> peerPoint;
+    DerivedKeyTemplate wanted;
+    CK_SLOT_ID slotId = 0;
+    std::optional<RpcInFlightGuard> guard;
+    {
+        std::lock_guard lk(g_mutex);
+        if (!g_lib)
+            return CKR_CRYPTOKI_NOT_INITIALIZED;
+        if (pMechanism == NULL_PTR || phKey == NULL_PTR)
+            return CKR_ARGUMENTS_BAD;
+        Session* s = g_lib->state.session(hSession);
+        if (!s)
+            return CKR_SESSION_HANDLE_INVALID;
+        if (s->rpcInFlight)
+            return CKR_OPERATION_ACTIVE;
+        const Slot* slot = g_lib->state.slotById(s->slot);
+        if (!slot)
+            return CKR_SESSION_HANDLE_INVALID;
+        if (pMechanism->mechanism != CKM_ECDH1_DERIVE || !slotHasMechanism(*slot, CKM_ECDH1_DERIVE))
+            return CKR_MECHANISM_INVALID;
+        if (!s->loggedIn)
+            return CKR_USER_NOT_LOGGED_IN;
+        if (pMechanism->pParameter == NULL_PTR || pMechanism->ulParameterLen != sizeof(CK_ECDH1_DERIVE_PARAMS))
+            return CKR_MECHANISM_PARAM_INVALID;
+        CK_ECDH1_DERIVE_PARAMS params{};
+        std::memcpy(&params, pMechanism->pParameter, sizeof(params));
+        // The raw secret only: a KDF or shared data is refused, never ignored.
+        if (params.kdf != CKD_NULL || params.ulSharedDataLen != 0)
+            return CKR_MECHANISM_PARAM_INVALID;
+        const Object* base = g_lib->state.resolveObject(s->slot, hBaseKey);
+        if (!base || base->cls != CKO_PRIVATE_KEY)
+            return CKR_KEY_HANDLE_INVALID;
+        if (base->keyType != KeyType::Ec)
+            return CKR_KEY_TYPE_INCONSISTENT;
+        if (!base->derive)
+            return CKR_KEY_FUNCTION_NOT_PERMITTED;
+        if (params.pPublicData == NULL_PTR)
+            return CKR_MECHANISM_PARAM_INVALID;
+        auto point = peerPointFromPublicData({params.pPublicData, params.ulPublicDataLen}, base->keyBits);
+        if (!point)
+            return CKR_MECHANISM_PARAM_INVALID;
+        auto parsed = parseDerivedKeyTemplate(pTemplate, ulAttributeCount);
+        if (!parsed)
+            return parsed.error();
+        // The secret is ceil(bits/8) bytes, known without the card: a key
+        // longer than that is refused here, not after the card's ECDH.
+        if (parsed->valueLen && *parsed->valueLen > (static_cast<CK_ULONG>(base->keyBits) + 7) / 8)
+            return CKR_TEMPLATE_INCONSISTENT;
+        reader = slot->readerPath;
+        certId = base->certId;
+        tokenSerial = slot->tokenSerial;
+        peerPoint = std::move(*point);
+        wanted = std::move(*parsed);
+        slotId = s->slot;
+        guard.emplace(s);
+        guard->setHandle(hSession);
+    }
+
+    // --- lock RELEASED: the agent may ask for the PIN (human-paced). ---
+    // Z and the key's value are wiped on every way out, an exception included;
+    // what is kept is moved into the key, which wipes it when it goes.
+    BytesResult res = g_lib->client->derive(reader, certId, peerPoint);
+    const LibreSCRS::Agent::SecureZeroOnExit wipeSecret{res.bytes};
+    if (res.status != Status::Ok) {
+        dropLoginOnLapsedLease(res.status, hSession);
+        return ckrFromStatus(res.status, CKR_MECHANISM_PARAM_INVALID);
+    }
+    std::vector<std::uint8_t> value;
+    const LibreSCRS::Agent::SecureZeroOnExit wipeValue{value};
+    {
+        auto picked = derivedKeyValue(res.bytes, wanted);
+        if (!picked)
+            return picked.error();
+        value = std::move(*picked);
+    }
+
+    // --- re-take the lock: keep the key for this application. The guard,
+    //     declared first, is destroyed after this lock is released. ---
+    std::lock_guard lk(g_mutex);
+    if (!g_lib)
+        return CKR_CRYPTOKI_NOT_INITIALIZED;
+    const Session* s = g_lib->state.session(hSession);
+    if (s == nullptr)
+        return CKR_SESSION_HANDLE_INVALID;
+    // The lock was released for the agent: C_Logout, a lapsed lease,
+    // C_CloseAllSessions or a card change may have run meanwhile and destroyed
+    // the derived keys of this slot. A key stored now would outlive the login
+    // or the card it was derived with, so the secret is wiped instead. On the
+    // socket transport nothing refreshes the slots during the call, so a card
+    // changed meanwhile is caught by the next refresh, which destroys the key
+    // with the card it was derived with.
+    const Slot* now = g_lib->state.slotById(slotId);
+    if (now == nullptr || !now->tokenPresent || now->tokenSerial != tokenSerial)
+        return CKR_DEVICE_REMOVED;
+    if (!s->loggedIn)
+        return CKR_USER_NOT_LOGGED_IN;
+    DerivedKey key;
+    key.slot = slotId;
+    key.creator = hSession;
+    key.attributes = std::move(wanted);
+    key.value = std::move(value);
+    *phKey = g_lib->state.addDerivedKey(std::move(key));
+    return CKR_OK;
+    PKCS11_CATCH
 }
 
 // ===========================================================================

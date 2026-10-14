@@ -6,11 +6,12 @@
 // no card I/O, no crypto — fully unit-testable.
 //
 // One slot per reader. CKF_TOKEN_PRESENT iff the reader has a card. For each
-// signing cert on a present card the model emits three objects sharing one
-// CKA_ID: a CKO_CERTIFICATE, a CKO_PUBLIC_KEY, and a non-extractable
-// CKO_PRIVATE_KEY. The private key's CKA_SIGN / CKA_DECRYPT and the token's
-// mechanism set are derived ENTIRELY from the agent-reported capabilities
-// (canSign / canDecrypt / signsHashOnCard), never from the card type: a
+// signing cert (or EC cert whose key derives) on a present card the model
+// emits three objects sharing one CKA_ID: a CKO_CERTIFICATE, a CKO_PUBLIC_KEY,
+// and a non-extractable CKO_PRIVATE_KEY. The private key's CKA_SIGN /
+// CKA_DECRYPT / CKA_DERIVE and the token's mechanism set are derived ENTIRELY
+// from the agent-reported capabilities (canSign / canDecrypt / canDerive /
+// signsHashOnCard), never from the card type: a
 // hash-on-card token (canSign + signsHashOnCard) advertises CKM_SHA256_RSA_PKCS
 // sign-only, a DigestInfo token advertises CKM_RSA_PKCS, and a card the agent
 // cannot drive (canSign == canDecrypt == false) advertises no mechanisms and a

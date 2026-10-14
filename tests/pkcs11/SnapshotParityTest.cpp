@@ -117,6 +117,7 @@ void expectSameModel(const P::AgentSnapshot& a, const P::AgentSnapshot& b)
             EXPECT_EQ(ma.slots[i].objects[j].ckaId, mb.slots[i].objects[j].ckaId);
             EXPECT_EQ(ma.slots[i].objects[j].sign, mb.slots[i].objects[j].sign);
             EXPECT_EQ(ma.slots[i].objects[j].decrypt, mb.slots[i].objects[j].decrypt);
+            EXPECT_EQ(ma.slots[i].objects[j].derive, mb.slots[i].objects[j].derive);
             EXPECT_EQ(ma.slots[i].objects[j].keyType, mb.slots[i].objects[j].keyType);
             EXPECT_EQ(ma.slots[i].objects[j].keyBits, mb.slots[i].objects[j].keyBits);
         }
@@ -199,3 +200,21 @@ TEST(SnapshotParity, AnEcKeyProducesTheSameModelOnEitherPath)
 }
 
 } // namespace
+
+TEST(SnapshotParity, ADeriveOnlyKeyProducesTheSameModelOnEitherPath)
+{
+    CardFacts facts{W::PreReadAuth::None, 0};
+    facts.keyType = LibreSCRS::Agent::KeyType::Ec;
+    facts.keyBits = 384;
+    facts.keyId = {0xF7, 0x13};
+    facts.signingCapable = false;
+    facts.canDerive = true;
+    const auto sock = socketSnapshot(facts);
+    expectSameModel(busSnapshot(facts), sock);
+    const auto model = P::ObjectModel::build(sock);
+    ASSERT_EQ(model.slots.size(), 1U);
+    ASSERT_EQ(model.slots[0].objects.size(), 3U) << "a key that only derives is still a key";
+    const auto& mechs = model.slots[0].mechanisms;
+    EXPECT_NE(std::find(mechs.begin(), mechs.end(), static_cast<CK_MECHANISM_TYPE>(CKM_ECDH1_DERIVE)), mechs.end());
+    EXPECT_EQ(std::find(mechs.begin(), mechs.end(), static_cast<CK_MECHANISM_TYPE>(CKM_ECDSA)), mechs.end());
+}
