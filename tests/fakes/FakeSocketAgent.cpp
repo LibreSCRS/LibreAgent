@@ -198,6 +198,12 @@ std::string FakeSocketAgent::lastSignMechanism() const
     return m_lastSignMechanism;
 }
 
+std::vector<std::uint8_t> FakeSocketAgent::lastDerivePoint() const
+{
+    const std::lock_guard lock{m_mutex};
+    return m_lastDerivePoint;
+}
+
 void FakeSocketAgent::setSignResponder(std::function<std::vector<std::uint8_t>(const W::PkSignRaw&)> f)
 {
     const std::lock_guard lock{m_mutex};
@@ -551,6 +557,17 @@ bool FakeSocketAgent::answer(int fd, const W::RequestEnvelope& env)
             return refuse(*e);
         (void)dec;
         return send(W::makeReply(env.req, W::RawSignatureReply{kCannedPlain}));
+    }
+
+    if (const auto* dv = std::get_if<W::PkDerive>(&env.body)) {
+        applyScript(Call::PkDerive);
+        if (const auto e = scriptedFailure(Call::PkDerive))
+            return refuse(*e);
+        {
+            const std::lock_guard lock{m_mutex};
+            m_lastDerivePoint = dv->data;
+        }
+        return send(W::makeReply(env.req, W::DerivedSecretReply{kCannedSecret}));
     }
 
     // Anything else this seam never asks for.

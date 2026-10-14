@@ -334,6 +334,17 @@ struct PkDecrypt
     std::vector<std::uint8_t> data;
     bool operator==(const PkDecrypt&) const = default;
 };
+// Pkcs11.Derive: ECDH with the card's key against the peer's point (`data`,
+// uncompressed 04||X||Y), CKD_NULL only -- the answer is the raw secret Z. No
+// `mech`: a KDF variant arrives as a request of its own, never as a key an
+// older agent would skip.
+struct PkDerive
+{
+    std::string reader;
+    std::string cert;
+    std::vector<std::uint8_t> data;
+    bool operator==(const PkDerive&) const = default;
+};
 // Credentials1 seam requests (PIN/signing-key lifecycle). Gated behind the
 // "credentials" HelloAck feature token + the PinManagement capability bit; this
 // wire never carries a secret (pinId is a record id from the last listing).
@@ -380,7 +391,7 @@ struct GetAppearanceFont
 using Request = std::variant<Hello, GetState, ReadIdentity, GetPhoto, ReadCertificates, ReadTokenInfo, Sign, SignBatch,
                              GetCertDer, GetConfig, SetConfig, ResetConfig, CancelOp, GetSignResult, PkLogin, PkLogout,
                              PkPublicKey, PkSignRaw, PkDecrypt, ListCredentials, ManagePin, ActivateSigningKey,
-                             LayoutVisual, GetAppearanceFont, ImportCscaMasterList, ForgetCscaAnchors>;
+                             LayoutVisual, GetAppearanceFont, ImportCscaMasterList, ForgetCscaAnchors, PkDerive>;
 
 struct RequestEnvelope
 {
@@ -453,6 +464,13 @@ struct RawSignatureReply
 {
     std::vector<std::uint8_t> sig;
     bool operator==(const RawSignatureReply&) const = default;
+};
+// Pkcs11.Derive's reply: the raw ECDH secret Z, ceil(bits/8) bytes. A secret:
+// every holder of a copy wipes it.
+struct DerivedSecretReply
+{
+    std::vector<std::uint8_t> z;
+    bool operator==(const DerivedSecretReply&) const = default;
 };
 // LayoutVisualSignature's reply — see Operations::VisualLayoutResult
 // (LmSeams.h), which this mirrors field-for-field. `clipped` is
@@ -609,6 +627,7 @@ using OpResult =
 [[nodiscard]] CborValue makeReply(std::uint64_t req, const ConfigReply&);
 [[nodiscard]] CborValue makeReply(std::uint64_t req, const AckReply&);
 [[nodiscard]] CborValue makeReply(std::uint64_t req, const RawSignatureReply&);
+[[nodiscard]] CborValue makeReply(std::uint64_t req, const DerivedSecretReply&);
 [[nodiscard]] CborValue makeReply(std::uint64_t req, const LayoutReply&);
 [[nodiscard]] CborValue makeReply(std::uint64_t req, const AppearanceFontReply&);
 [[nodiscard]] CborValue makeReply(std::uint64_t req, const CscaAnchorStateReply&);

@@ -486,9 +486,10 @@ TEST(SocketAgentClient, ARawSignatureCarriesTheMechanismToken)
     EXPECT_EQ(fake.callCount(T::Call::PkSignRaw), signsBefore);
 }
 
-// The wire takes any curve name and any length for an EC point. The module
-// serves only a NIST curve at that curve's width: anything else is a malformed
-// answer (GeneralError), never a point handed to a loader, and never cached.
+// The module serves only a NIST curve at that curve's width. A point of
+// another curve or width is a reply the wire decoder refuses, so the client
+// treats the agent as one that no longer speaks the contract (DeviceRemoved,
+// as for any malformed reply): never a point handed to a loader, never cached.
 TEST(SocketAgentClient, AnEcPointOffItsCurvesWidthIsNotServed)
 {
     namespace T = LibreSCRS::Agent::Test;
@@ -515,10 +516,10 @@ TEST(SocketAgentClient, AnEcPointOffItsCurvesWidthIsNotServed)
 
     for (const char* certId : {"no-point", "short", "uneven", "p192"}) {
         const auto first = client.publicKey("r1", certId, KeyType::Ec);
-        EXPECT_EQ(first.status, P::Status::GeneralError) << certId;
+        EXPECT_EQ(first.status, P::Status::DeviceRemoved) << certId;
         EXPECT_TRUE(first.x.empty() && first.y.empty() && first.crv.empty()) << certId;
         const int asked = fake.callCount(T::Call::PkPublicKey);
-        EXPECT_EQ(client.publicKey("r1", certId, KeyType::Ec).status, P::Status::GeneralError) << certId;
+        EXPECT_EQ(client.publicKey("r1", certId, KeyType::Ec).status, P::Status::DeviceRemoved) << certId;
         EXPECT_EQ(fake.callCount(T::Call::PkPublicKey), asked + 1) << certId << ": a malformed answer was cached";
     }
     // The control: a well-formed point on the widest curve is served.

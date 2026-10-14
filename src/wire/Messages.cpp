@@ -608,6 +608,11 @@ CborValue encodeRequestBody(const Request& body)
                 m.emplace("cert", CborValue(r.cert));
                 m.emplace("mech", CborValue(r.mech));
                 m.emplace("data", CborValue(r.data));
+            } else if constexpr (std::is_same_v<T, PkDerive>) {
+                m.emplace("t", CborValue("Pkcs11.Derive"));
+                m.emplace("reader", CborValue(r.reader));
+                m.emplace("cert", CborValue(r.cert));
+                m.emplace("data", CborValue(r.data));
             } else if constexpr (std::is_same_v<T, ListCredentials>) {
                 m.emplace("t", CborValue("ListCredentials"));
                 m.emplace("card", CborValue(r.card));
@@ -844,7 +849,7 @@ std::expected<RequestEnvelope, WireError> parseRequest(std::span<const std::uint
             return std::unexpected(cert.error());
         }
         env.body = PkPublicKey{std::move(*reader), std::move(*cert)};
-    } else if (t == "Pkcs11.SignRaw" || t == "Pkcs11.Decrypt") {
+    } else if (t == "Pkcs11.SignRaw" || t == "Pkcs11.Decrypt" || t == "Pkcs11.Derive") {
         auto reader = fText(*m, "reader");
         if (!reader) {
             return std::unexpected(reader.error());
@@ -853,21 +858,27 @@ std::expected<RequestEnvelope, WireError> parseRequest(std::span<const std::uint
         if (!cert) {
             return std::unexpected(cert.error());
         }
-        // Required: a request that does not name its mechanism is malformed.
-        // Which tokens are known is the frontend's question (it answers an
-        // unknown one with InvalidRequest instead of dropping the connection).
-        auto mech = fText(*m, "mech");
-        if (!mech) {
-            return std::unexpected(mech.error());
+        std::string mechToken;
+        if (t != "Pkcs11.Derive") {
+            // Required: a request that does not name its mechanism is malformed.
+            // Which tokens are known is the frontend's question (it answers an
+            // unknown one with InvalidRequest instead of dropping the connection).
+            auto mech = fText(*m, "mech");
+            if (!mech) {
+                return std::unexpected(mech.error());
+            }
+            mechToken = std::move(*mech);
         }
         auto data = fBytes(*m, "data");
         if (!data) {
             return std::unexpected(data.error());
         }
         if (t == "Pkcs11.SignRaw") {
-            env.body = PkSignRaw{std::move(*reader), std::move(*cert), std::move(*mech), std::move(*data)};
+            env.body = PkSignRaw{std::move(*reader), std::move(*cert), std::move(mechToken), std::move(*data)};
+        } else if (t == "Pkcs11.Decrypt") {
+            env.body = PkDecrypt{std::move(*reader), std::move(*cert), std::move(mechToken), std::move(*data)};
         } else {
-            env.body = PkDecrypt{std::move(*reader), std::move(*cert), std::move(*mech), std::move(*data)};
+            env.body = PkDerive{std::move(*reader), std::move(*cert), std::move(*data)};
         }
     } else if (t == "ListCredentials") {
         auto card = oneString("card");
@@ -1068,6 +1079,15 @@ CborValue makeReply(std::uint64_t req, const RawSignatureReply& r)
     CborValue reply = makeReplyBase(req);
     Map arm;
     arm.emplace("sig", CborValue(r.sig));
+    mergeInto(reply, std::move(arm));
+    return reply;
+}
+
+CborValue makeReply(std::uint64_t req, const DerivedSecretReply& d)
+{
+    CborValue reply = makeReplyBase(req);
+    Map arm;
+    arm.emplace("z", CborValue(d.z));
     mergeInto(reply, std::move(arm));
     return reply;
 }

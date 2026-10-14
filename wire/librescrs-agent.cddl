@@ -68,7 +68,7 @@ error-code = &( None: 0, CardRemoved: 1, CredentialWrong: 2, CredentialBlocked: 
 request  = { req: uint, req-body }
 req-body = ( hello // get-state // read-identity // get-photo //
   read-certificates // read-token-info // sign // sign-batch // get-cert-der // get-config // set-config // reset-config //
-  cancel-op // get-sign-result // pk-login // pk-logout // pk-public-key // pk-sign-raw // pk-decrypt //
+  cancel-op // get-sign-result // pk-login // pk-logout // pk-public-key // pk-sign-raw // pk-decrypt // pk-derive //
   list-credentials // manage-pin // activate-signing-key // layout-visual // get-appearance-font //
   import-csca-master-list // forget-csca-anchors )
 
@@ -209,6 +209,16 @@ pk-decrypt        = ( t: "Pkcs11.Decrypt",   reader: handle, cert: cert-id, mech
 ; budget is charged when the request arrives, before the card is touched.)
 pk-sign-mech    = "rsa-pkcs" / "sha256-rsa-pkcs" / "ecdsa"
 pk-decrypt-mech = "rsa-pkcs"
+; Pkcs11.Derive: ECDH with the card's key against the peer's point (data:
+; uncompressed 04||X||Y on the key's curve), CKD_NULL only -- answered with
+; derived-secret, the raw Z. Lease-gated and PIN-as-consent like SignRaw. A
+; point that is not 1 + 2*ceil(bits/8) bytes, not uncompressed, or not on the
+; key's curve is refused as InvalidRequest before any PIN prompt. Gated
+; behind the "ec-keys" feature token (see hello-ack): an agent without it
+; drops the connection on this unknown tag. A key-derivation variant arrives
+; as a request tag of its own behind a token of its own -- never as an extra
+; key here, which an older agent would skip and answer raw Z.
+pk-derive         = ( t: "Pkcs11.Derive",    reader: handle, cert: cert-id, data: bstr )   ; reader-addressed
 ; Credentials1 seam — PIN/signing-key lifecycle. Gated behind the "credentials"
 ; hello-ack feature token (see hello-ack) and the PinManagement capability bit.
 list-credentials     = ( t: "ListCredentials",    card: handle )
@@ -368,7 +378,7 @@ sync-error = "UnknownCard" / "KeyNotFound" / "NotAuthorized" / "UserNotLoggedIn"
              "InputTooLarge" / "RateLimited" / "UnknownCredential" / "InvalidRequest" / "NoResult" /
              "MasterListReplayed" / "Cancelled"
 reply-ok = ( hello-ack // op-started // state // cert-list // cert-der // public-key //
-             config // ack // raw-signature // sign-recovery // layout // appearance-font //
+             config // ack // raw-signature // derived-secret // sign-recovery // layout // appearance-font //
              csca-anchor-state // forgotten-anchors )
 ; `features` advertises optional request families this agent understands; the
 ; client MUST gate the credential requests (ListCredentials / ManagePin /
@@ -404,10 +414,11 @@ state         = ( readers: [* reader-state], cards: [* card-state] )
 cert-list     = ( certs: [* cert-info] )
 cert-der      = ( der: bstr )
 public-key    = ( kty: "RSA", n: bstr, e: bstr //             ; RSA: modulus + public exponent (served)
-                  kty: "EC",  crv: tstr, x: bstr, y: bstr )   ; EC: "P-256"/"P-384"/"P-521", x and y ceil(bits/8) bytes each, left-padded
+                  kty: "EC",  crv: tstr, x: bstr, y: bstr )   ; EC: "P-256"/"P-384"/"P-521", x and y ceil(bits/8) bytes each, left-padded; a client refuses any other curve or width
 config        = ( entries: { * config-key => any } )
 ack           = ( ok: true )
 raw-signature = ( sig: bstr )              ; Pkcs11.SignRaw / Decrypt result
+derived-secret = ( z: bstr )             ; Pkcs11.Derive result: the raw ECDH secret Z, ceil(bits/8) bytes -- a secret
 sign-recovery = ( result: sign-result )    ; GetSignResult reply (Sign-only, within the grace window)
 ; LayoutVisual's reply. fontSize/lineHeight are PDF user units (float64,
 ; mirroring the request's own rectangle units); lines is the word-wrapped
@@ -569,7 +580,7 @@ card-state   = { handle: handle, reader: handle, caps: capabilities, preAuth: pr
 ; macOS token never publish it (signingCapable keeps its meaning for every
 ; key). Tolerance (client decode): a key-type token this client does not know
 ; decodes as "OTHER", never as an error. keyBits: RSA modulus bits, or 256/384/521; 0 for "OTHER". canDerive:
-; the agent runs ECDH (Pkcs11.Derive) with this key.
+; the agent runs ECDH with this key (pk-derive).
 cert-info    = { certId: cert-id, signingCapable: bool,
                  fields: { * tstr => { * tstr => cert-field } },
                  keyUsageBits: uint, ekus: [* tstr], chainSubjectCns: [* tstr], trustStatus: uint,

@@ -119,6 +119,7 @@ TEST(MessagesRoundTrip, EveryRequestType)
     expectStable({17, PkPublicKey{"reader/0", "certid"}});
     expectStable({18, PkSignRaw{"reader/0", "certid", "rsa-pkcs", {0xDE, 0xAD}}});
     expectStable({19, PkDecrypt{"reader/0", "certid", "rsa-pkcs", {0xBE, 0xEF}}});
+    expectStable({23, PkDerive{"reader/0", "certid", std::vector<std::uint8_t>(97, 0x04)}});
 }
 
 TEST(MessagesRoundTrip, HelloWantsEventsRoundTripsAndDefaultsTrue)
@@ -375,6 +376,24 @@ TEST(MessagesRoundTrip, PkSignRawWithoutAMechanismIsMissingField)
     }
 }
 
+// A mechanism is a token, never a number: a mech of another CBOR type is
+// refused by the decoder rather than read as some default.
+TEST(MessagesRoundTrip, AMechanismOfTheWrongTypeIsWrongType)
+{
+    for (const char* tag : {"Pkcs11.SignRaw", "Pkcs11.Decrypt"}) {
+        CborValue::Map m;
+        m.emplace("t", CborValue(tag));
+        m.emplace("req", CborValue::uint(1));
+        m.emplace("reader", CborValue("r"));
+        m.emplace("cert", CborValue("c"));
+        m.emplace("mech", CborValue::uint(1));
+        m.emplace("data", CborValue(std::vector<std::uint8_t>{0x01}));
+        const auto r = parseRequest(CborValue(std::move(m)).encode());
+        ASSERT_FALSE(r.has_value()) << tag;
+        EXPECT_EQ(r.error(), WireError::WrongType) << tag;
+    }
+}
+
 TEST(MessagesRoundTrip, RejectsWrongFieldType)
 {
     CborValue::Map m;
@@ -615,6 +634,12 @@ int dumpFixtures(const std::filesystem::path& dir)
     writeFixture(dir, "PkSignRaw",
                  toCbor(RequestEnvelope{1, PkSignRaw{"r", "c", "ecdsa", std::vector<std::uint8_t>(32, 0xAB)}}));
     writeFixture(dir, "PkDecrypt", toCbor(RequestEnvelope{1, PkDecrypt{"r", "c", "rsa-pkcs", {0x01, 0x02}}}));
+    writeFixture(dir, "DerivedSecret", makeReply(16, DerivedSecretReply{std::vector<std::uint8_t>(32, 0x5A)}));
+    {
+        std::vector<std::uint8_t> point(65, 0x33);
+        point[0] = 0x04;
+        writeFixture(dir, "PkDerive", toCbor(RequestEnvelope{1, PkDerive{"r", "c", point}}));
+    }
 
     // ---- requests (client -> agent; the Swift client mirrors encode(req: 1)) ----
     writeFixture(dir, "ReadTokenInfo", toCbor(RequestEnvelope{1, ReadTokenInfo{"reader/0:card/0"}}));

@@ -50,6 +50,8 @@ inline const std::vector<std::uint8_t> kCannedSig = {0xAA, 0xBB, 0xCC, 0xDD};
 inline const std::vector<std::uint8_t> kCannedPlain = {0x11, 0x22, 0x33};
 inline const std::vector<std::uint8_t> kCannedDer = {0x30, 0x82, 0x01};
 inline const std::vector<std::uint8_t> kCannedExponent = {0x01, 0x00, 0x01};
+/// The derived secret every Pkcs11.Derive answers: 48 bytes, a P-384 Z.
+inline const std::vector<std::uint8_t> kCannedSecret(48, 0x5A);
 inline constexpr const char* kCertId = "cert-abc";
 inline constexpr const char* kReader0 = "/org/librescrs/Agent/reader/0";
 inline constexpr const char* kCard0 = "/org/librescrs/Agent/card/0";
@@ -87,6 +89,7 @@ enum class Call : std::uint8_t {
     PkLogout,
     PkSignRaw,
     PkDecrypt,
+    PkDerive,
 };
 
 /// @brief One scripted certificate a ReadCertificates operation returns.
@@ -195,6 +198,8 @@ public:
     [[nodiscard]] std::vector<std::uint8_t> lastSignInput() const;
     /// @brief The `mech` of the most recent PkSignRaw.
     [[nodiscard]] std::string lastSignMechanism() const;
+    /// @brief The peer point of the most recent PkDerive, as the module sent it.
+    [[nodiscard]] std::vector<std::uint8_t> lastDerivePoint() const;
     /// @brief Answer PkSignRaw with @p f's result instead of kCannedSig: a
     ///        suite that checks the reply's shape (an ECDSA r||s width) or
     ///        signs with a real key says what the agent answers.
@@ -229,6 +234,7 @@ private:
     std::vector<FakeReader> m_removed; ///< cards taken out, for insertCard()
     std::vector<std::uint8_t> m_lastSignInput;
     std::string m_lastSignMechanism;
+    std::vector<std::uint8_t> m_lastDerivePoint;
     std::function<std::vector<std::uint8_t>(const Wire::PkSignRaw&)> m_signResponder;
     Wire::Hello m_lastHello;
     std::map<Call, std::chrono::milliseconds> m_delays;

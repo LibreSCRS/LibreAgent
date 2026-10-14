@@ -34,6 +34,7 @@
 
 #include <limits>
 #include <optional>
+#include <string>
 #include <vector>
 
 using namespace LibreSCRS::Agent::Wire;
@@ -174,6 +175,7 @@ TEST(ClientCodec, EncodeRequestEveryTypeRoundTripsThroughServerParse)
     expectRequestRoundTrip(17, PkPublicKey{"reader/0", "certid"});
     expectRequestRoundTrip(18, PkSignRaw{"reader/0", "certid", "rsa-pkcs", {0xDE, 0xAD}});
     expectRequestRoundTrip(19, PkDecrypt{"reader/0", "certid", "rsa-pkcs", {0xBE, 0xEF}});
+    expectRequestRoundTrip(28, PkDerive{"reader/0", "certid", std::vector<std::uint8_t>(97, 0x04)});
     expectRequestRoundTrip(
         25, SignBatch{"card/0",
                       "abc123",
@@ -358,8 +360,32 @@ TEST(ClientCodec, PublicKeyReplyDiscriminatesRsaFromEcByKtyValue)
     const PublicKeyReply rsa = RsaPublicKey{{0x01, 0x02}, {0x03}};
     expectReplyRoundTrip(6, rsa, [](std::uint64_t r, const PublicKeyReply& a) { return makeReply(r, a); });
 
-    const PublicKeyReply ec = EcPublicKey{"P-256", {0x04}, {0x05}};
+    const PublicKeyReply ec =
+        EcPublicKey{"P-256", std::vector<std::uint8_t>(32, 0x04), std::vector<std::uint8_t>(32, 0x05)};
     expectReplyRoundTrip(7, ec, [](std::uint64_t r, const PublicKeyReply& a) { return makeReply(r, a); });
+}
+
+// An EC key names one of the three curves and carries each coordinate at
+// exactly that curve's field width; anything else is a malformed reply, not
+// a key the client would hand on.
+TEST(ClientCodec, EcPublicKeyOfAnotherCurveOrWidthIsRejected)
+{
+    const auto parses = [](std::string crv, std::size_t xLen, std::size_t yLen) {
+        const PublicKeyReply pk =
+            EcPublicKey{std::move(crv), std::vector<std::uint8_t>(xLen, 0x11), std::vector<std::uint8_t>(yLen, 0x22)};
+        return parseReply(makeReply(12, pk).encode(), noFds()).has_value();
+    };
+    EXPECT_TRUE(parses("P-256", 32, 32));
+    EXPECT_TRUE(parses("P-384", 48, 48));
+    EXPECT_TRUE(parses("P-521", 66, 66));
+
+    EXPECT_FALSE(parses("P-224", 28, 28));
+    EXPECT_FALSE(parses("brainpoolP256r1", 32, 32));
+    EXPECT_FALSE(parses("", 32, 32));
+    EXPECT_FALSE(parses("P-256", 31, 32));
+    EXPECT_FALSE(parses("P-384", 48, 49));
+    EXPECT_FALSE(parses("P-521", 65, 66));
+    EXPECT_FALSE(parses("P-384", 32, 32));
 }
 
 TEST(ClientCodec, ConfigReplyRoundTrips)
@@ -455,6 +481,13 @@ TEST(ClientCodec, RawSignatureReplyRoundTrips)
 {
     expectReplyRoundTrip(10, RawSignatureReply{{0xAA, 0xBB}},
                          [](std::uint64_t r, const RawSignatureReply& a) { return makeReply(r, a); });
+}
+
+// The derived secret Z rides its own reply arm, told apart by its key.
+TEST(ClientCodec, DerivedSecretReplyRoundTrips)
+{
+    const DerivedSecretReply z{std::vector<std::uint8_t>(48, 0x5A)};
+    expectReplyRoundTrip(11, z, [](std::uint64_t r, const DerivedSecretReply& a) { return makeReply(r, a); });
 }
 
 // (f) fd-index: sign-recovery's artifact is a valid index into `fds`.

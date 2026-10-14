@@ -5,7 +5,6 @@
 
 #include <LibreSCRS/Agent/KeyType.h>
 #include <LibreSCRS/Agent/crypto/Mechanism.h>
-#include <LibreSCRS/Agent/pkcs11/EcEncoding.h>
 
 #include <LibreSCRS/Agent/wire/ClientCodec.h>
 #include <LibreSCRS/Agent/wire/Framing.h>
@@ -471,8 +470,7 @@ PublicKeyResult SocketAgentClient::publicKey(const std::string& reader, const st
         out.modulus = rsa->n;
         out.exponent = rsa->e;
     } else if (const auto* ec = std::get_if<W::EcPublicKey>(pk); ec != nullptr && keyType == KeyType::Ec) {
-        if (!isNamedCurvePoint(ec->crv, ec->x, ec->y))
-            return out; // a malformed answer: GeneralError, and nothing cached
+        // The wire decoder already refused any other curve or width.
         out.crv = ec->crv;
         out.x = ec->x;
         out.y = ec->y;

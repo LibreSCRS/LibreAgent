@@ -20,7 +20,7 @@ CborRoundTripTest 12
 CddlVocabularyTest 17
 CertDerExportTest 1
 CertReadFlowTest 24
-ClientCodecTest 81
+ClientCodecTest 83
 ClientQtAgentCardTest 52
 ClientQtAgentDiscoveryTest 17
 ClientQtAgentOperationTest 19
@@ -75,7 +75,7 @@ LmSeamsRoutingTest 14
 LmSigningRequestBuilderTest 8
 LmTrustVerifierTest 1
 LoggingTest 2
-MessagesRoundTripTest 25
+MessagesRoundTripTest 26
 MrzPayloadTest 18
 ObjectRegistryTest 12
 OperationBaseTest 7

@@ -8,7 +8,12 @@
 // rather than re-implementing canonical encoding.
 #include <LibreSCRS/Agent/wire/ClientCodec.h>
 
+#include <LibreSCRS/Agent/KeyType.h> // the NIST curve table
+
+#include <cstddef>
 #include <limits>
+#include <optional>
+#include <string_view>
 #include <utility>
 
 namespace LibreSCRS::Agent::Wire {
@@ -777,6 +782,12 @@ std::optional<PublicKeyReply> decodePublicKeyReply(const Map& m)
         if (!r.ok()) {
             return std::nullopt;
         }
+        // One of the three curves, each coordinate at exactly its field width:
+        // a key the client cannot place on a curve is malformed, not passed on.
+        const NistCurve* curve = nistCurveByName(crv);
+        if (curve == nullptr || x.size() != curve->fieldBytes || y.size() != curve->fieldBytes) {
+            return std::nullopt;
+        }
         return PublicKeyReply{EcPublicKey{std::move(crv), std::move(x), std::move(y)}};
     }
     return std::nullopt;
@@ -817,6 +828,16 @@ std::optional<RawSignatureReply> decodeRawSignatureReply(const Map& m)
         return std::nullopt;
     }
     return RawSignatureReply{std::move(sig)};
+}
+
+std::optional<DerivedSecretReply> decodeDerivedSecretReply(const Map& m)
+{
+    FieldReader r(m);
+    auto z = r.bytes("z");
+    if (!r.ok()) {
+        return std::nullopt;
+    }
+    return DerivedSecretReply{std::move(z)};
 }
 
 // layout = ( kind: "Layout", fontSize, lineHeight, lines, clipped ) — the
@@ -1246,7 +1267,7 @@ std::optional<AgentQuiesced> decodeAgentQuiesced(const Map& m)
 
 std::optional<DecodedReply> parseReply(std::span<const std::uint8_t> body, std::span<const int> fds)
 {
-    const auto decoded = decode(body);
+    auto decoded = decode(body);
     if (!decoded) {
         return std::nullopt;
     }
@@ -1371,6 +1392,18 @@ std::optional<DecodedReply> parseReply(std::span<const std::uint8_t> body, std::
     }
     if (has(*m, "sig")) {
         auto v = decodeRawSignatureReply(*m);
+        // A decryption answers its plaintext here: the tree's copy is wiped
+        // once the reply holds its own (or the reply is refused).
+        decoded->scrub();
+        if (!v) {
+            return std::nullopt;
+        }
+        return DecodedReply{reqId, std::move(*v)};
+    }
+    if (has(*m, "z")) {
+        auto v = decodeDerivedSecretReply(*m);
+        // The derived secret Z: the tree's copy goes as soon as it is read.
+        decoded->scrub();
         if (!v) {
             return std::nullopt;
         }
