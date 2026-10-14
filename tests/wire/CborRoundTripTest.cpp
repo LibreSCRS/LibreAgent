@@ -8,6 +8,7 @@
 
 #include <gtest/gtest.h>
 
+#include <cstddef>
 #include <cstdint>
 #include <span>
 #include <vector>
@@ -141,6 +142,59 @@ TEST(CborRoundTrip, RejectsNonShortestFloat)
     const auto r = decode(asDouble);
     ASSERT_FALSE(r.has_value());
     EXPECT_EQ(r.error(), CborError::NotCanonical);
+}
+
+TEST(CborRoundTrip, FloatsThatDoNotShortenRoundTripInTheirOwnWidth)
+{
+    // Each input is the canonical encoding of its value, so decode() must accept
+    // it and the re-encode must reproduce it byte for byte. QCBOR's preferred-
+    // float reduction shifts by an out-of-range amount for each of the first
+    // seven (0.1 alone gives -93): undefined behaviour, which a
+    // -fsanitize=undefined build of this test reports. The last four sit in
+    // the subnormal ranges, where the reduction really runs and must still
+    // pick the shortest form.
+    const std::vector<std::vector<std::uint8_t>> canonical{
+        {0xfa, 0x02, 0x03, 0x20, 0x05},                         // float32, far below the half range
+        {0xfa, 0x47, 0xc3, 0x50, 0x00},                         // 100000.0f, above the half range
+        {0xfa, 0x3f, 0x8c, 0xcc, 0xcd},                         // 1.1f, half exponent but too many bits
+        {0xfa, 0x7f, 0x7f, 0xff, 0xff},                         // largest float32
+        {0xfb, 0x3f, 0xb9, 0x99, 0x99, 0x99, 0x99, 0x99, 0x9a}, // 0.1
+        {0xfb, 0x09, 0xc0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}, // 2^-867, far below the float32 range
+        {0xfb, 0x7e, 0x37, 0xe4, 0x3c, 0x88, 0x00, 0x75, 0x9c}, // 1e300
+        {0xf9, 0x00, 0x01},                                     // 2^-24, smallest half subnormal
+        {0xfa, 0x33, 0xc0, 0x00, 0x00},                         // 1.5 * 2^-24, no half subnormal
+        {0xfa, 0x00, 0x00, 0x00, 0x01},                         // 2^-149, smallest float32 subnormal
+        {0xfb, 0x36, 0xa8, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}, // 1.5 * 2^-149, no float32 subnormal
+    };
+    for (std::size_t i = 0; i < canonical.size(); ++i) {
+        SCOPED_TRACE(i);
+        const auto decoded = decode(canonical[i]);
+        ASSERT_TRUE(decoded.has_value());
+        EXPECT_EQ(decoded->encode(), canonical[i]);
+    }
+    EXPECT_EQ(CborValue(0.1).encode(), canonical[4]);
+    EXPECT_EQ(CborValue(100000.0).encode(), canonical[1]);
+}
+
+// The other end of each window the reduction runs in: exponent -15 is the
+// highest half subnormal candidate, -127 the highest float32 one. A value there
+// that shortens must still shorten, and one that does not must keep its width.
+TEST(CborRoundTrip, FloatsAtTheTopOfEachSubnormalWindowKeepTheirShortestForm)
+{
+    const std::vector<std::vector<std::uint8_t>> canonical{
+        {0xf9, 0x02, 0x00},                                     // 2^-15, a half subnormal
+        {0xfa, 0x38, 0x00, 0x00, 0x01},                         // (1 + 2^-23) * 2^-15, no half subnormal
+        {0xfa, 0x00, 0x40, 0x00, 0x00},                         // 2^-127, a float32 subnormal
+        {0xfb, 0x38, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01}, // (1 + 2^-52) * 2^-127, no float32 subnormal
+    };
+    for (std::size_t i = 0; i < canonical.size(); ++i) {
+        SCOPED_TRACE(i);
+        const auto decoded = decode(canonical[i]);
+        ASSERT_TRUE(decoded.has_value());
+        EXPECT_EQ(decoded->encode(), canonical[i]);
+    }
+    EXPECT_EQ(CborValue(0x1p-15).encode(), canonical[0]);
+    EXPECT_EQ(CborValue(0x1p-127).encode(), canonical[2]);
 }
 
 TEST(CborRoundTrip, MalformedInputNeverCrashes)

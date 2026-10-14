@@ -16,7 +16,7 @@ CardReadSnapshotTest 4
 CardSessionHolderTest 17
 CardTypeArbitrationTest 8
 CborRelocationTest 3
-CborRoundTripTest 12
+CborRoundTripTest 14
 CddlVocabularyTest 17
 CertDerExportTest 1
 CertReadFlowTest 24

@@ -15,6 +15,8 @@
 #include <qcbor/qcbor_encode.h>
 
 #include <algorithm>
+#include <bit>
+#include <cstdint>
 
 namespace LibreSCRS::Agent::Wire {
 
@@ -83,6 +85,47 @@ UsefulBufC bufOf(std::span<const std::uint8_t> b) noexcept
     return UsefulBufC{b.data(), b.size()};
 }
 
+// QCBOREncode_AddDouble's preferred-float reduction, without its undefined
+// shifts. QCBOR v1.6.1 (IEEE754_DoubleToSingle, IEEE754_SingleToHalf) shifts the
+// significand by an exponent-derived amount BEFORE checking that the exponent is
+// in the narrower type's subnormal range; for any other regular value the count
+// is negative or at least the operand width (0.1 gives -93, 100000.0 gives -17).
+// Its range check then discards that result and keeps the wider width, so the
+// width is already known here: those values go to the NoPreferred encoder of that
+// width, and QCBOR reduces only the values whose shifts stay in range. The bytes
+// are the ones QCBOR's own reduction defines; only the undefined shift is gone.
+// That equivalence holds only while QCBOR does reduce: built with
+// QCBOR_DISABLE_PREFERRED_FLOAT, QCBOREncode_AddDouble writes every value as a
+// float64 and this routine would still shorten some, so such a build is refused.
+#ifdef QCBOR_DISABLE_PREFERRED_FLOAT
+#error "the wire codec needs QCBOR's preferred float serialization"
+#endif
+void addPreferredDouble(QCBOREncodeContext* ctx, double d)
+{
+    const auto bits = std::bit_cast<std::uint64_t>(d);
+    const int exponent = static_cast<int>((bits >> 52) & 0x7ffU) - 1023;
+    // Zero, subnormal, infinity and NaN take branches with constant shifts.
+    const bool regular = exponent != -1023 && exponent != 1024;
+    // A float32 normal exactly: in its exponent range, no significand bit lost.
+    const bool singleNormal = exponent >= -126 && exponent <= 127 && (bits & ((1ULL << 29) - 1)) == 0;
+    if (regular && !singleNormal) {
+        // Only the float32 subnormal candidates [-149, -127] keep the shift in range.
+        if (exponent < -149 || exponent > -127) {
+            QCBOREncode_AddDoubleNoPreferred(ctx, d);
+            return;
+        }
+    } else if (regular) {
+        // The same for half precision: a half normal needs no shift, and only the
+        // half subnormal candidates [-24, -15] keep it in range.
+        const bool halfNormal = exponent >= -14 && exponent <= 15 && (bits & ((1ULL << 42) - 1)) == 0;
+        if (!halfNormal && (exponent < -24 || exponent > -15)) {
+            QCBOREncode_AddFloatNoPreferred(ctx, static_cast<float>(d));
+            return;
+        }
+    }
+    QCBOREncode_AddDouble(ctx, d);
+}
+
 void encodeValue(QCBOREncodeContext* ctx, const CborValue& v)
 {
     switch (v.type()) {
@@ -99,7 +142,7 @@ void encodeValue(QCBOREncodeContext* ctx, const CborValue& v)
         QCBOREncode_AddInt64(ctx, *v.asInt());
         break;
     case CborType::Double:
-        QCBOREncode_AddDouble(ctx, *v.asDouble());
+        addPreferredDouble(ctx, *v.asDouble());
         break;
     // The four POINTER-returning accessors below are bound, never dereferenced.
     // type() is m_v.index(), so the alternative is guaranteed — but that stops
