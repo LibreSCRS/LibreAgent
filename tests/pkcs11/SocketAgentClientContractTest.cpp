@@ -19,6 +19,7 @@
 #include <functional>
 #include <memory>
 #include <string>
+#include <vector>
 
 namespace {
 
@@ -62,6 +63,8 @@ W::SyncError wireNameFor(Refusal r) noexcept
         return W::SyncError::RateLimited;
     case Refusal::Communication:
         return W::SyncError::CommunicationError;
+    case Refusal::InvalidRequest:
+        return W::SyncError::InvalidRequest;
     }
     return W::SyncError::CommunicationError;
 }
@@ -129,6 +132,20 @@ struct SocketContractTraits
     static std::unique_ptr<Harness> servingAlwaysAuthenticateCert()
     {
         return make([](T::FakeSocketAgent& fake) { fake.setAlwaysAuthenticate(certId()); });
+    }
+
+    static std::vector<std::uint8_t> ecKeyId()
+    {
+        return {0xF7, 0x13, 0x4B, 0x02, 0x7C, 0xD6, 0x45, 0x57, 0x86, 0x0A, 0xF5, 0x4E, 0xB9, 0xCD, 0x1D, 0x41};
+    }
+
+    static std::unique_ptr<Harness> servingEcCert()
+    {
+        return make([](T::FakeSocketAgent& fake) {
+            fake.setKeyFacts(certId(), ecKeyId(), LibreSCRS::Agent::KeyType::Ec, 384, /*canDerive=*/true);
+            fake.setEcPoint(certId(), "P-384", std::vector<std::uint8_t>(48, 0x11),
+                            std::vector<std::uint8_t>(48, 0x22));
+        });
     }
 
     static std::unique_ptr<Harness> refusingLogin(Refusal r)

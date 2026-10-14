@@ -3,6 +3,8 @@
 
 #include <LibreSCRS/Agent/pkcs11/SessionState.h>
 
+#include <LibreSCRS/Agent/KeyType.h>
+
 #include <cstring>
 
 namespace LibreSCRS::Pkcs11Agent {
@@ -149,6 +151,27 @@ std::vector<CK_OBJECT_HANDLE> SessionState::findMatches(CK_SLOT_ID slot, CK_ATTR
                 if (attr.pValue && attr.ulValueLen == sizeof(CK_BBOOL)) {
                     CK_BBOOL want = *static_cast<CK_BBOOL*>(attr.pValue);
                     if (want != CK_TRUE)
+                        match = false;
+                }
+                break;
+            }
+            case CKA_KEY_TYPE: {
+                // Only key objects have a key type; a certificate never matches.
+                if (attr.pValue && attr.ulValueLen == sizeof(CK_KEY_TYPE)) {
+                    CK_KEY_TYPE want = 0;
+                    std::memcpy(&want, attr.pValue, sizeof(want));
+                    const bool isKey = obj.cls == CKO_PUBLIC_KEY || obj.cls == CKO_PRIVATE_KEY;
+                    const CK_KEY_TYPE have = (obj.keyType == LibreSCRS::Agent::KeyType::Ec) ? CKK_EC : CKK_RSA;
+                    if (!isKey || want != have)
+                        match = false;
+                }
+                break;
+            }
+            case CKA_PRIVATE: {
+                if (attr.pValue && attr.ulValueLen == sizeof(CK_BBOOL)) {
+                    const CK_BBOOL want = *static_cast<CK_BBOOL*>(attr.pValue);
+                    const CK_BBOOL have = (obj.cls == CKO_PRIVATE_KEY) ? CK_TRUE : CK_FALSE;
+                    if (want != have)
                         match = false;
                 }
                 break;

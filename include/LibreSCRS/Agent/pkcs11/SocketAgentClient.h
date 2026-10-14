@@ -75,10 +75,12 @@ public:
     [[nodiscard]] bool connected() const noexcept override;
     [[nodiscard]] AgentSnapshot snapshot() override;
     [[nodiscard]] BytesResult certDer(const std::string& reader, const std::string& certId) override;
-    [[nodiscard]] PublicKeyResult publicKey(const std::string& reader, const std::string& certId) override;
+    [[nodiscard]] PublicKeyResult publicKey(const std::string& reader, const std::string& certId,
+                                            LibreSCRS::Agent::KeyType keyType) override;
     [[nodiscard]] LoginResult login(const std::string& reader) override;
     Status logout(const std::string& reader) override;
     [[nodiscard]] BytesResult signRaw(const std::string& reader, const std::string& certId,
+                                      LibreSCRS::Agent::Mechanism mechanism,
                                       std::span<const std::uint8_t> input) override;
     [[nodiscard]] BytesResult decrypt(const std::string& reader, const std::string& certId,
                                       std::span<const std::uint8_t> ciphertext) override;

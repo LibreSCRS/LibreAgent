@@ -15,9 +15,14 @@
 // sign-only, a DigestInfo token advertises CKM_RSA_PKCS, and a card the agent
 // cannot drive (canSign == canDecrypt == false) advertises no mechanisms and a
 // key with neither CKA_SIGN nor CKA_DECRYPT.
+//
+// The key's family decides its attributes and mechanisms: RSA keys as
+// described, EC keys CKM_ECDSA (and CKM_ECDH1_DERIVE where the agent derives);
+// the hash-on-card choice applies to RSA keys only.
 
 #pragma once
 
+#include <LibreSCRS/Agent/KeyType.h>
 #include <LibreSCRS/Agent/pkcs11/pkcs11.h>
 
 #include <cstddef>
@@ -34,16 +39,20 @@ struct CertEntry
     std::string certId;              ///< Opaque stable id (== sha256hex of DER).
     std::string label;               ///< Display label (CKA_LABEL): the subject CN, else certId.
     std::string holderName;          ///< The subject CN alone; empty when the cert has none.
-    std::vector<std::uint8_t> ckaId; ///< Shared CKA_ID for the cert + key pair.
+    std::vector<std::uint8_t> ckaId; ///< CKA_ID shared by the cert + key pair: the agent's
+                                     ///< keyId (the card's own PKCS#15 iD).
     bool signingCapable = false;     ///< Paired on-card key + signing-suitable keyUsage.
-    bool canSign = false;            ///< Agent can drive on-card RSA sign for this key.
-    bool canDecrypt = false;         ///< Agent can drive on-card RSA decrypt for this key.
+    bool canSign = false;            ///< Agent can drive an on-card signature with this key.
+    bool canDecrypt = false;         ///< Agent can drive on-card RSA decryption with this key.
     bool signsHashOnCard = false;    ///< Card hashes on-card (NAM/IAS-ECC): advertise
                                      ///< CKM_SHA256_RSA_PKCS (raw message in), not
                                      ///< CKM_RSA_PKCS (caller-built DigestInfo).
     bool alwaysAuthenticate = false; ///< The card's per-operation PIN rule for this key
                                      ///< (PKCS#15 userConsent, PIV PIN-always).
-    std::uint32_t modulusBits = 0;   ///< RSA modulus size in bits (0 if unknown).
+    bool canDerive = false;          ///< Agent can drive ECDH with this key (EC keys only).
+    /// The key's family, from the agent; an Other key is never modelled.
+    LibreSCRS::Agent::KeyType keyType = LibreSCRS::Agent::KeyType::Other;
+    std::uint32_t keyBits = 0; ///< RSA modulus bits, or 256/384/521.
 };
 
 /// @brief One reader (+ optional card) reported by the agent.
@@ -140,8 +149,11 @@ struct Object
     CK_OBJECT_CLASS cls = CKO_DATA;
     std::vector<std::uint8_t> ckaId;
     std::string label;
-    std::string certId;              ///< Owning cert id (for lazy CKA_VALUE / agent calls).
-    std::uint32_t modulusBits = 0;   ///< For key objects: RSA modulus bits.
+    std::string certId; ///< Owning cert id (for lazy CKA_VALUE / agent calls).
+    /// Key objects: RSA or EC.
+    LibreSCRS::Agent::KeyType keyType = LibreSCRS::Agent::KeyType::Other;
+    std::uint32_t keyBits = 0;       ///< Key objects: RSA modulus bits, or 256/384/521.
+    bool derive = false;             ///< CKA_DERIVE (private key).
     bool sign = false;               ///< CKA_SIGN (private key).
     bool decrypt = false;            ///< CKA_DECRYPT (private key).
     bool alwaysAuthenticate = false; ///< CKA_ALWAYS_AUTHENTICATE (private key): the card's rule.

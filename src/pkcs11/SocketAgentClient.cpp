@@ -3,6 +3,10 @@
 
 #include <LibreSCRS/Agent/pkcs11/SocketAgentClient.h>
 
+#include <LibreSCRS/Agent/KeyType.h>
+#include <LibreSCRS/Agent/crypto/Mechanism.h>
+#include <LibreSCRS/Agent/pkcs11/EcEncoding.h>
+
 #include <LibreSCRS/Agent/wire/ClientCodec.h>
 #include <LibreSCRS/Agent/wire/Framing.h>
 #include <LibreSCRS/Agent/wire/Messages.h>
@@ -18,6 +22,7 @@
 #include <map>
 #include <mutex>
 #include <optional>
+#include <string_view>
 #include <utility>
 #include <variant>
 
@@ -63,6 +68,8 @@ constexpr std::uint32_t kDataEnciphermentBit = 1U << 3;
         return Status::RateLimited;
     case W::SyncError::CommunicationError:
         return Status::Communication;
+    case W::SyncError::InvalidRequest:
+        return Status::InvalidInput;
     default:
         return Status::GeneralError;
     }
@@ -359,14 +366,19 @@ AgentSnapshot SocketAgentClient::snapshot()
         const bool hashesOnCard = (preAuth == W::PreReadAuth::Can);
 
         const auto certs = m_impl->readCertificates(*r.card);
-        std::uint8_t ckaId = 1;
         for (const auto& e : certs) {
-            if (!e.signingCapable)
+            // Derive counts only for an EC key, the same restricted value the
+            // entry carries below and the other transport skips on.
+            const bool derives = e.canDerive && e.keyType == LibreSCRS::Agent::KeyType::Ec;
+            if (!e.signingCapable && !derives)
                 continue;
             CertEntry ce;
             ce.certId = e.certId;
-            ce.signingCapable = true;
-            ce.ckaId = {ckaId++};
+            ce.signingCapable = e.signingCapable;
+            // The key's own CKA_ID, as the card -- or, failing that, the agent -- names it.
+            ce.ckaId = e.keyId;
+            ce.keyType = e.keyType;
+            ce.keyBits = e.keyBits;
             ce.label = e.certId;
             if (const auto sg = e.fields.find("subject"); sg != e.fields.end()) {
                 if (const auto cn = sg->second.find("cn"); cn != sg->second.end()) {
@@ -374,10 +386,12 @@ AgentSnapshot SocketAgentClient::snapshot()
                     ce.label = ce.holderName;
                 }
             }
+            const bool isRsa = e.keyType == LibreSCRS::Agent::KeyType::Rsa;
             const bool keyUsagePermitsDecrypt = (e.keyUsageBits & (kKeyEnciphermentBit | kDataEnciphermentBit)) != 0;
-            ce.canSign = canDriveSigning;
-            ce.canDecrypt = canDriveDecrypt && keyUsagePermitsDecrypt;
-            ce.signsHashOnCard = hashesOnCard;
+            ce.canSign = e.signingCapable && canDriveSigning;
+            ce.canDecrypt = isRsa && canDriveDecrypt && keyUsagePermitsDecrypt;
+            ce.canDerive = derives;
+            ce.signsHashOnCard = isRsa && hashesOnCard;
             ce.alwaysAuthenticate = e.alwaysAuthenticate;
             reader.certs.push_back(std::move(ce));
         }
@@ -419,11 +433,21 @@ BytesResult SocketAgentClient::certDer(const std::string& reader, const std::str
     return out;
 }
 
-PublicKeyResult SocketAgentClient::publicKey(const std::string& reader, const std::string& certId)
+PublicKeyResult SocketAgentClient::publicKey(const std::string& reader, const std::string& certId,
+                                             LibreSCRS::Agent::KeyType keyType)
 {
     const std::lock_guard<std::mutex> lock{m_impl->callMutex};
-    if (const auto hit = m_impl->keyCache.find(certId); hit != m_impl->keyCache.end())
+    if (const auto hit = m_impl->keyCache.find(certId); hit != m_impl->keyCache.end()) {
+        // The cache holds the key the agent served; a request for another
+        // family is answered as an uncached one would be.
+        const auto cached = hit->second.x.empty() ? LibreSCRS::Agent::KeyType::Rsa : LibreSCRS::Agent::KeyType::Ec;
+        if (cached != keyType) {
+            PublicKeyResult other;
+            other.status = Status::NotSupported;
+            return other;
+        }
         return hit->second;
+    }
 
     PublicKeyResult out;
     if (!m_impl->connect()) {
@@ -442,16 +466,22 @@ PublicKeyResult SocketAgentClient::publicKey(const std::string& reader, const st
     const auto* pk = std::get_if<W::PublicKeyReply>(&*reply);
     if (pk == nullptr)
         return out;
-    // EC keys are reserved on this wire and not produced; the module serves RSA
-    // attributes only, on both transports.
-    const auto* rsa = std::get_if<W::RsaPublicKey>(pk);
-    if (rsa == nullptr) {
+    using LibreSCRS::Agent::KeyType;
+    if (const auto* rsa = std::get_if<W::RsaPublicKey>(pk); rsa != nullptr && keyType == KeyType::Rsa) {
+        out.modulus = rsa->n;
+        out.exponent = rsa->e;
+    } else if (const auto* ec = std::get_if<W::EcPublicKey>(pk); ec != nullptr && keyType == KeyType::Ec) {
+        if (!isNamedCurvePoint(ec->crv, ec->x, ec->y))
+            return out; // a malformed answer: GeneralError, and nothing cached
+        out.crv = ec->crv;
+        out.x = ec->x;
+        out.y = ec->y;
+    } else {
+        // The agent's key is not of the family the snapshot reported.
         out.status = Status::NotSupported;
         return out;
     }
     out.status = Status::Ok;
-    out.modulus = rsa->n;
-    out.exponent = rsa->e;
     m_impl->keyCache.emplace(certId, out);
     return out;
 }
@@ -496,17 +526,19 @@ Status SocketAgentClient::logout(const std::string& reader)
 }
 
 BytesResult SocketAgentClient::signRaw(const std::string& reader, const std::string& certId,
-                                       std::span<const std::uint8_t> input)
+                                       LibreSCRS::Agent::Mechanism mechanism, std::span<const std::uint8_t> input)
 {
+    const std::string_view token = LibreSCRS::Agent::mechanismToken(mechanism);
+    if (LibreSCRS::Agent::signMechanismFromToken(token) != mechanism) {
+        return BytesResult{.status = Status::NotSupported, .bytes = {}}; // not a signing mechanism of this wire
+    }
     const std::lock_guard<std::mutex> lock{m_impl->callMutex};
     BytesResult out;
     if (!m_impl->connect()) {
         out.status = Status::DeviceRemoved;
         return out;
     }
-    // Until the module names its mechanism, every raw signature is the RSA
-    // PKCS#1 v1.5 block it has always sent.
-    const auto reply = m_impl->call(W::PkSignRaw{reader, certId, std::string{"rsa-pkcs"}, {input.begin(), input.end()}},
+    const auto reply = m_impl->call(W::PkSignRaw{reader, certId, std::string{token}, {input.begin(), input.end()}},
                                     m_impl->budgets.interactiveSecs);
     if (!reply.has_value()) {
         out.status = Status::DeviceRemoved;
@@ -533,9 +565,12 @@ BytesResult SocketAgentClient::decrypt(const std::string& reader, const std::str
         out.status = Status::DeviceRemoved;
         return out;
     }
-    const auto reply =
-        m_impl->call(W::PkDecrypt{reader, certId, std::string{"rsa-pkcs"}, {ciphertext.begin(), ciphertext.end()}},
-                     m_impl->budgets.interactiveSecs);
+    const auto reply = m_impl->call(
+        W::PkDecrypt{reader,
+                     certId,
+                     std::string{LibreSCRS::Agent::mechanismToken(LibreSCRS::Agent::Mechanism::RsaPkcs1Decrypt)},
+                     {ciphertext.begin(), ciphertext.end()}},
+        m_impl->budgets.interactiveSecs);
     if (!reply.has_value()) {
         out.status = Status::DeviceRemoved;
         return out;

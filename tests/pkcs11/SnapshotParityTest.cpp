@@ -10,14 +10,15 @@
 // differently would publish a different token and its own suite would stay
 // green throughout.
 //
-// Three of the four cases need no socket: they build the bus transport's
-// snapshot the way that client builds it, from the same card facts, and
-// compare the two as structures. The fourth drives the real socket client
-// against the double, because a hand-built snapshot cannot show that the
-// socket client fills one in the same way.
+// Every case builds the bus transport's snapshot the way that client builds
+// it, from the same card facts, and drives the real socket client against the
+// double scripted with those facts, because a hand-built snapshot cannot show
+// that the socket client fills one in the same way. The two are compared as
+// the model a loader would see.
 
 #include "fakes/FakeSocketAgent.h"
 
+#include <LibreSCRS/Agent/KeyType.h>
 #include <LibreSCRS/Agent/pkcs11/ObjectModel.h>
 #include <LibreSCRS/Agent/pkcs11/SocketAgentClient.h>
 
@@ -25,6 +26,7 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <vector>
 
 namespace {
 
@@ -41,9 +43,16 @@ struct CardFacts
 {
     W::PreReadAuth preAuth = W::PreReadAuth::None;
     std::uint32_t keyUsageBits = 0;
+    LibreSCRS::Agent::KeyType keyType = LibreSCRS::Agent::KeyType::Rsa;
+    std::uint32_t keyBits = 2048;
+    /// The agent's keyId. The socket double names a certificate's key by the
+    /// certId's bytes unless told otherwise; the same bytes here.
+    std::vector<std::uint8_t> keyId{'c', 'e', 'r', 't', 'i', 'd', '-', '1'};
+    bool signingCapable = true;
+    bool canDerive = false;
 };
 
-/// Assemble the snapshot the way the BUS client assembles it -- the same three
+/// Assemble the snapshot the way the BUS client assembles it -- the same
 /// derivations, spelled out here rather than called, because that client lives
 /// in the other repository and links a bus this tree does not have.
 P::AgentSnapshot busSnapshot(const CardFacts& facts)
@@ -52,20 +61,26 @@ P::AgentSnapshot busSnapshot(const CardFacts& facts)
     const bool canDriveDecrypt = (facts.preAuth == W::PreReadAuth::None);
     const bool hashesOnCard = (facts.preAuth == W::PreReadAuth::Can);
     const bool keyUsagePermitsDecrypt = (facts.keyUsageBits & ((1U << 2) | (1U << 3))) != 0;
-
-    P::CertEntry ce;
-    ce.certId = "certid-1";
-    ce.label = "certid-1";
-    ce.ckaId = {1};
-    ce.signingCapable = true;
-    ce.canSign = canDriveSigning;
-    ce.canDecrypt = canDriveDecrypt && keyUsagePermitsDecrypt;
-    ce.signsHashOnCard = hashesOnCard;
+    const bool isRsa = facts.keyType == LibreSCRS::Agent::KeyType::Rsa;
 
     P::ReaderState reader;
     reader.readerPath = "r1";
     reader.hasCard = true;
-    reader.certs.push_back(std::move(ce));
+
+    P::CertEntry ce;
+    ce.certId = "certid-1";
+    ce.signingCapable = facts.signingCapable;
+    ce.keyType = facts.keyType;
+    ce.canDerive = facts.canDerive && facts.keyType == LibreSCRS::Agent::KeyType::Ec;
+    if (ce.signingCapable || ce.canDerive) {
+        ce.label = "certid-1";
+        ce.ckaId = facts.keyId;
+        ce.keyBits = facts.keyBits;
+        ce.canSign = ce.signingCapable && canDriveSigning;
+        ce.canDecrypt = isRsa && canDriveDecrypt && keyUsagePermitsDecrypt;
+        ce.signsHashOnCard = isRsa && hashesOnCard;
+        reader.certs.push_back(std::move(ce));
+    }
 
     P::AgentSnapshot snap;
     snap.readers.push_back(std::move(reader));
@@ -77,7 +92,8 @@ P::AgentSnapshot socketSnapshot(const CardFacts& facts)
 {
     T::FakeSocketAgent fake;
     fake.addReader("r1", /*hasCard=*/true, "c1", facts.preAuth);
-    fake.addCert("c1", "certid-1", /*signingCapable=*/true, facts.keyUsageBits);
+    fake.addCert("c1", "certid-1", facts.signingCapable, facts.keyUsageBits);
+    fake.setKeyFacts("certid-1", facts.keyId, facts.keyType, facts.keyBits, facts.canDerive);
     fake.start();
 
     P::SocketAgentClient client{fake.path(), kFastBudgets};
@@ -101,6 +117,8 @@ void expectSameModel(const P::AgentSnapshot& a, const P::AgentSnapshot& b)
             EXPECT_EQ(ma.slots[i].objects[j].ckaId, mb.slots[i].objects[j].ckaId);
             EXPECT_EQ(ma.slots[i].objects[j].sign, mb.slots[i].objects[j].sign);
             EXPECT_EQ(ma.slots[i].objects[j].decrypt, mb.slots[i].objects[j].decrypt);
+            EXPECT_EQ(ma.slots[i].objects[j].keyType, mb.slots[i].objects[j].keyType);
+            EXPECT_EQ(ma.slots[i].objects[j].keyBits, mb.slots[i].objects[j].keyBits);
         }
     }
 }
@@ -159,6 +177,25 @@ TEST(SnapshotParity, DecryptStaysGatedToPreAuthNoneOnEitherPath)
         for (const auto& o : model.slots[0].objects)
             EXPECT_FALSE(o.decrypt);
     }
+}
+
+TEST(SnapshotParity, AnEcKeyProducesTheSameModelOnEitherPath)
+{
+    CardFacts facts{W::PreReadAuth::Can, kKeyEncipherment};
+    facts.keyType = LibreSCRS::Agent::KeyType::Ec;
+    facts.keyBits = 384;
+    facts.keyId = {0xF7, 0x13, 0x4B, 0x02};
+    facts.canDerive = true;
+    const auto sock = socketSnapshot(facts);
+    expectSameModel(busSnapshot(facts), sock);
+    const auto model = P::ObjectModel::build(sock);
+    ASSERT_EQ(model.slots.size(), 1U);
+    const auto& mechs = model.slots[0].mechanisms;
+    EXPECT_NE(std::find(mechs.begin(), mechs.end(), static_cast<CK_MECHANISM_TYPE>(CKM_ECDSA)), mechs.end());
+    EXPECT_EQ(std::find(mechs.begin(), mechs.end(), static_cast<CK_MECHANISM_TYPE>(CKM_SHA256_RSA_PKCS)), mechs.end())
+        << "hash-on-card is an RSA family choice";
+    for (const auto& o : model.slots[0].objects)
+        EXPECT_FALSE(o.decrypt) << "an EC key never decrypts";
 }
 
 } // namespace

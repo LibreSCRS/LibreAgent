@@ -31,6 +31,7 @@
 #include <atomic>
 #include <chrono>
 #include <cstdint>
+#include <functional>
 #include <map>
 #include <mutex>
 #include <optional>
@@ -104,6 +105,7 @@ struct FakeCert
     std::string crv; ///< EC only: what PkPublicKey answers
     std::vector<std::uint8_t> ecX;
     std::vector<std::uint8_t> ecY;
+    bool ecPointSeated = false; ///< setEcPoint() was called
 };
 
 /// @brief One scripted reader, and the card (if any) seated in it.
@@ -146,7 +148,10 @@ public:
     ///        reports: its CKA_ID, family, size and whether the agent derives.
     void setKeyFacts(const std::string& certId, std::vector<std::uint8_t> keyId, KeyType type, std::uint32_t bits,
                      bool canDerive);
-    /// @brief The EC point PkPublicKey answers for @p certId.
+    /// @brief The EC point PkPublicKey answers for @p certId. An EC key that
+    ///        was never given one is refused (KeyNotFound) rather than answered
+    ///        with an empty point: the double does not invent a key it was not
+    ///        told. Seat an empty point here to send a malformed one on purpose.
     void setEcPoint(const std::string& certId, std::string crv, std::vector<std::uint8_t> x,
                     std::vector<std::uint8_t> y);
 
@@ -190,6 +195,10 @@ public:
     [[nodiscard]] std::vector<std::uint8_t> lastSignInput() const;
     /// @brief The `mech` of the most recent PkSignRaw.
     [[nodiscard]] std::string lastSignMechanism() const;
+    /// @brief Answer PkSignRaw with @p f's result instead of kCannedSig: a
+    ///        suite that checks the reply's shape (an ECDSA r||s width) or
+    ///        signs with a real key says what the agent answers.
+    void setSignResponder(std::function<std::vector<std::uint8_t>(const Wire::PkSignRaw&)> f);
     /// @brief The most recent Hello this fake served. A client that means to
     ///        opt out of presence events has to be caught on the wire; a fake
     ///        that only counted the call would pass either way.
@@ -220,6 +229,7 @@ private:
     std::vector<FakeReader> m_removed; ///< cards taken out, for insertCard()
     std::vector<std::uint8_t> m_lastSignInput;
     std::string m_lastSignMechanism;
+    std::function<std::vector<std::uint8_t>(const Wire::PkSignRaw&)> m_signResponder;
     Wire::Hello m_lastHello;
     std::map<Call, std::chrono::milliseconds> m_delays;
     std::map<Call, Wire::SyncError> m_failures;

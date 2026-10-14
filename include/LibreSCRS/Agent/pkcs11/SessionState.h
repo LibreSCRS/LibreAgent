@@ -11,6 +11,7 @@
 
 #pragma once
 
+#include <LibreSCRS/Agent/KeyType.h>
 #include <LibreSCRS/Agent/pkcs11/ObjectModel.h>
 #include <LibreSCRS/Agent/pkcs11/pkcs11.h>
 
@@ -27,7 +28,9 @@ struct SignCursor
     bool active = false;
     std::string reader;
     std::string certId;
-    std::uint32_t modulusBits = 0;
+    std::uint32_t keyBits = 0;
+    CK_MECHANISM_TYPE mechanism = CKM_RSA_PKCS; ///< As C_SignInit admitted it.
+    LibreSCRS::Agent::KeyType keyType = LibreSCRS::Agent::KeyType::Other;
     std::vector<std::uint8_t> accumulated; ///< For the C_SignUpdate multi-part path.
 };
 
@@ -37,7 +40,7 @@ struct DecryptCursor
     bool active = false;
     std::string reader;
     std::string certId;
-    std::uint32_t modulusBits = 0;
+    std::uint32_t keyBits = 0;
     std::vector<std::uint8_t> accumulated; ///< For the C_DecryptUpdate multi-part path.
 };
 
@@ -99,7 +102,7 @@ public:
     /// @brief Decode -> the Object* on the given session's slot (nullptr if stale).
     [[nodiscard]] const Object* resolveObject(CK_SLOT_ID slot, CK_OBJECT_HANDLE h) const;
 
-    /// @brief Object handles on @p slot matching @p tmpl (CKA_CLASS / CKA_ID).
+    /// @brief Object handles on @p slot matching @p tmpl (CKA_CLASS, CKA_ID, CKA_TOKEN, CKA_KEY_TYPE, CKA_PRIVATE).
     [[nodiscard]] std::vector<CK_OBJECT_HANDLE> findMatches(CK_SLOT_ID slot, CK_ATTRIBUTE_PTR tmpl,
                                                             CK_ULONG count) const;
 

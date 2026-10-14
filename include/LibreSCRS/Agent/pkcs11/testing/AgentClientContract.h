@@ -50,6 +50,9 @@
 //       static std::unique_ptr<Harness> servingCertWithoutCommonName();
 //       // The same reader and card, its cert's key marked by the card for consent per operation.
 //       static std::unique_ptr<Harness> servingAlwaysAuthenticateCert();
+//       // The same reader and card, its cert an EC P-384 key with ID ecKeyId() that derives.
+//       static std::unique_ptr<Harness> servingEcCert();
+//       static std::vector<std::uint8_t> ecKeyId();
 //       // A client with nothing on the other end at all.
 //       static std::unique_ptr<Harness> unreachable();
 //
@@ -98,6 +101,7 @@ enum class Refusal : std::uint8_t {
     NotSupported,
     RateLimited,
     Communication,
+    InvalidRequest,
 };
 
 /// @brief A refusal and the single Status every transport must answer with.
@@ -114,7 +118,7 @@ struct RefusalRow
 /// CKR_* each one becomes), so this table is what stops a transport from
 /// quietly answering a cancelled prompt with a device error -- the failure this
 /// suite exists for, and one that each transport's own suite reports as green.
-inline constexpr std::array<RefusalRow, 9> kEveryRefusal{{
+inline constexpr std::array<RefusalRow, 10> kEveryRefusal{{
     {Refusal::UserNotLoggedIn, Status::UserNotLoggedIn, "UserNotLoggedIn"},
     {Refusal::NotAuthorized, Status::NotAuthorized, "NotAuthorized"},
     {Refusal::AuthFailed, Status::AuthFailed, "AuthFailed"},
@@ -124,6 +128,7 @@ inline constexpr std::array<RefusalRow, 9> kEveryRefusal{{
     {Refusal::NotSupported, Status::NotSupported, "NotSupported"},
     {Refusal::RateLimited, Status::RateLimited, "RateLimited"},
     {Refusal::Communication, Status::Communication, "CommunicationError"},
+    {Refusal::InvalidRequest, Status::InvalidInput, "InvalidRequest"},
 }};
 
 template <typename Traits>
@@ -146,7 +151,7 @@ TYPED_TEST_P(AgentClientContract, EveryRefusalReachesItsOwnStatus)
 }
 
 // The table's Status column has no repeats, so the loop above is a claim about
-// nine distinguishable outcomes rather than about nine names for one. Asserted
+// ten distinguishable outcomes rather than about ten names for one. Asserted
 // here rather than assumed: a later edit that folds two rows together would
 // otherwise leave the loop above passing with less coverage than it reads as
 // having.
@@ -209,8 +214,9 @@ TYPED_TEST_P(AgentClientContract, WithNoAgentEveryCallIsDeviceRemoved)
     EXPECT_EQ(c.login(reader).status, Status::DeviceRemoved);
     EXPECT_EQ(c.logout(reader), Status::DeviceRemoved);
     EXPECT_EQ(c.certDer(reader, certId).status, Status::DeviceRemoved);
-    EXPECT_EQ(c.publicKey(reader, certId).status, Status::DeviceRemoved);
-    EXPECT_EQ(c.signRaw(reader, certId, payload).status, Status::DeviceRemoved);
+    EXPECT_EQ(c.publicKey(reader, certId, LibreSCRS::Agent::KeyType::Rsa).status, Status::DeviceRemoved);
+    EXPECT_EQ(c.signRaw(reader, certId, LibreSCRS::Agent::Mechanism::RsaPkcs1Sign, payload).status,
+              Status::DeviceRemoved);
     EXPECT_EQ(c.decrypt(reader, certId, payload).status, Status::DeviceRemoved);
     EXPECT_TRUE(c.snapshot().readers.empty());
 }
@@ -365,8 +371,81 @@ TYPED_TEST_P(AgentClientContract, ASignWithoutALeaseIsNotLoggedIn)
     auto harness = TypeParam::refusingSign(Refusal::UserNotLoggedIn);
     ASSERT_NE(harness, nullptr);
     const std::vector<std::uint8_t> payload{0x30, 0x31};
-    EXPECT_EQ(harness->client().signRaw(TypeParam::reader(), TypeParam::certId(), payload).status,
+    EXPECT_EQ(harness->client()
+                  .signRaw(TypeParam::reader(), TypeParam::certId(), LibreSCRS::Agent::Mechanism::RsaPkcs1Sign, payload)
+                  .status,
               Status::UserNotLoggedIn);
+}
+
+// The facts a module builds a key object from arrive the same way on both
+// transports: the card's own CKA_ID, the key's family and size, and whether the
+// agent derives with it. A transport that dropped one would hand a loader an
+// RSA key with a made-up ID where the card holds an EC key.
+TYPED_TEST_P(AgentClientContract, TheKeyFactsReachTheEntry)
+{
+    auto harness = TypeParam::servingEcCert();
+    ASSERT_NE(harness, nullptr);
+    const AgentSnapshot snap = harness->client().snapshot();
+    const std::string want = TypeParam::reader();
+    const auto reader = std::find_if(snap.readers.begin(), snap.readers.end(),
+                                     [&want](const ReaderState& r) { return r.readerPath == want; });
+    ASSERT_NE(reader, snap.readers.end());
+    ASSERT_FALSE(reader->certs.empty());
+    const CertEntry& e = reader->certs.front();
+    EXPECT_EQ(e.ckaId, TypeParam::ecKeyId());
+    EXPECT_EQ(e.keyType, LibreSCRS::Agent::KeyType::Ec);
+    EXPECT_EQ(e.keyBits, 384u);
+    EXPECT_TRUE(e.canDerive);
+    EXPECT_FALSE(e.canDecrypt) << "an EC key never decrypts";
+}
+
+// An EC key's public point arrives at fixed width on both transports.
+TYPED_TEST_P(AgentClientContract, AnEcKeyServesItsPoint)
+{
+    auto harness = TypeParam::servingEcCert();
+    ASSERT_NE(harness, nullptr);
+    const PublicKeyResult pk =
+        harness->client().publicKey(TypeParam::reader(), TypeParam::certId(), LibreSCRS::Agent::KeyType::Ec);
+    EXPECT_EQ(pk.status, Status::Ok);
+    EXPECT_EQ(pk.crv, "P-384");
+    EXPECT_EQ(pk.x.size(), 48u);
+    EXPECT_EQ(pk.y.size(), 48u);
+    EXPECT_TRUE(pk.modulus.empty());
+}
+
+// An input the agent refuses before any prompt is the caller's mistake on both
+// transports -- InvalidInput, never a device error the loader would act on.
+TYPED_TEST_P(AgentClientContract, ASignTheAgentRefusesAsInvalidIsInvalidInput)
+{
+    auto harness = TypeParam::refusingSign(Refusal::InvalidRequest);
+    ASSERT_NE(harness, nullptr);
+    const std::vector<std::uint8_t> digest(20, 0x01);
+    EXPECT_EQ(harness->client()
+                  .signRaw(TypeParam::reader(), TypeParam::certId(), LibreSCRS::Agent::Mechanism::EcdsaSign, digest)
+                  .status,
+              Status::InvalidInput);
+}
+
+// Only a signing mechanism is ever sent as a signature. A decryption mechanism
+// shares its wire token with an RSA signature, and a mechanism with no signing
+// token at all has nothing to send; both answer NotSupported without reaching
+// the agent -- which here would refuse any signature as "not logged in", so a
+// transport that sent one is caught by the answer it got back.
+TYPED_TEST_P(AgentClientContract, OnlyASigningMechanismIsSentAsASignature)
+{
+    using LibreSCRS::Agent::Mechanism;
+    auto harness = TypeParam::refusingSign(Refusal::UserNotLoggedIn);
+    ASSERT_NE(harness, nullptr);
+    const std::vector<std::uint8_t> payload(48, 0x01);
+    for (const Mechanism m : {Mechanism::RsaPkcs1Sign, Mechanism::RsaPssSign, Mechanism::EcdsaSign,
+                              Mechanism::RsaPkcs1Decrypt, Mechanism::RsaOaepDecrypt, Mechanism::EcdhDerive,
+                              Mechanism::RsaPkcs1Encrypt, Mechanism::RsaOaepEncrypt, Mechanism::Sha256RsaPkcs1Sign}) {
+        const bool signs = LibreSCRS::Agent::signMechanismFromToken(LibreSCRS::Agent::mechanismToken(m)) == m;
+        const Status got = harness->client().signRaw(TypeParam::reader(), TypeParam::certId(), m, payload).status;
+        EXPECT_EQ(got, signs ? Status::UserNotLoggedIn : Status::NotSupported)
+            << "mechanism " << static_cast<int>(m)
+            << (signs ? " is a signature and was not sent" : " is not a signature and reached the agent");
+    }
 }
 
 REGISTER_TYPED_TEST_SUITE_P(AgentClientContract, EveryRefusalReachesItsOwnStatus,
@@ -374,6 +453,8 @@ REGISTER_TYPED_TEST_SUITE_P(AgentClientContract, EveryRefusalReachesItsOwnStatus
                             WithNoAgentEveryCallIsDeviceRemoved, AServingAgentAnswersALease,
                             AServingAgentEnumeratesItsCard, ACardIsNamedAfterItsCertificateHolder,
                             ACardWithoutACertificateIsNamedAfterItsReader, ACertWithoutACommonNameDoesNotNameTheToken,
-                            AReaderCarriesItsName, TheCardsConsentRuleReachesTheEntry, ASignWithoutALeaseIsNotLoggedIn);
+                            AReaderCarriesItsName, TheCardsConsentRuleReachesTheEntry, ASignWithoutALeaseIsNotLoggedIn,
+                            TheKeyFactsReachTheEntry, AnEcKeyServesItsPoint,
+                            ASignTheAgentRefusesAsInvalidIsInvalidInput, OnlyASigningMechanismIsSentAsASignature);
 
 } // namespace LibreSCRS::Pkcs11Agent::Testing

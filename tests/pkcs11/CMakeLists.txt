@@ -78,6 +78,10 @@ if(LIBREAGENT_BUILD_PKCS11_SOCKET_CLIENT)
     # the component that carries it now.
     agent_pkcs11_test(ObjectModelTest)
 
+    # The EC DER shapes the module serves (curve OID, point OCTET STRING),
+    # pure byte encoding with no crypto library.
+    agent_pkcs11_test(EcEncodingTest)
+
     # dlopen the built module and exercise the C ABI surface standalone.
     agent_pkcs11_module_test(LoadModuleTest)
 

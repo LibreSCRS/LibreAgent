@@ -56,6 +56,7 @@ EXPECTED_ENTRIES=(
     Pkcs11ToolRpcSocketTest
 )
 EXPECTED_TESTS=(
+    EcEncodingTest
     FakeSocketAgentTest
     LoadModuleTest
     ModuleAbiTest

@@ -17,8 +17,11 @@
 // SessionState owns the session/object/cursor bookkeeping; AgentClient is the
 // transport to the agent; ObjectModel is the pure slot/token/object/mechanism mapping.
 
+#include <LibreSCRS/Agent/KeyType.h>
+#include <LibreSCRS/Agent/crypto/Mechanism.h>
 #include <LibreSCRS/Agent/pkcs11/AgentClient.h>
 #include <LibreSCRS/Agent/pkcs11/AgentClientFactory.h>
+#include <LibreSCRS/Agent/pkcs11/EcEncoding.h>
 #include <LibreSCRS/Agent/pkcs11/ObjectModel.h>
 #include <LibreSCRS/Agent/pkcs11/SessionState.h>
 #include <LibreSCRS/Agent/pkcs11/pkcs11.h>
@@ -36,6 +39,7 @@
 namespace {
 
 using namespace LibreSCRS::Pkcs11Agent;
+using LibreSCRS::Agent::KeyType;
 
 // PKCS#11 is a C API — C++ exceptions must never cross the boundary.
 #define PKCS11_TRY try {
@@ -132,7 +136,9 @@ void refreshModel()
 }
 
 // Map an AgentClient::Status to a CKR_* for a sign/decrypt/login outcome.
-CK_RV ckrFromStatus(Status s)
+// @p invalidInputRv is what the calling function answers for an input the
+// agent refused: each operation has its own length or parameter error.
+CK_RV ckrFromStatus(Status s, CK_RV invalidInputRv = CKR_GENERAL_ERROR)
 {
     switch (s) {
     case Status::Ok:
@@ -158,6 +164,10 @@ CK_RV ckrFromStatus(Status s)
         return CKR_DEVICE_ERROR;
     case Status::DeviceRemoved:
         return CKR_DEVICE_REMOVED;
+    case Status::InvalidInput:
+        // The agent refused the input before any prompt: the calling
+        // function's own length or parameter error.
+        return invalidInputRv;
     case Status::GeneralError:
     default:
         return CKR_GENERAL_ERROR;
@@ -178,20 +188,35 @@ void dropLoginOnLapsedLease(Status s, CK_SESSION_HANDLE hSession)
         sess->loggedIn = false;
 }
 
-// The key's RSA modulus in bits: @p known when the cursor already has it, else
-// read from the public key (public data, cached by the client). 0 when neither
-// says. Called with g_mutex RELEASED, under the caller's RpcInFlightGuard.
-// It lets a length question be answered without the card: for a key the card
-// marks for consent per operation, every call that reaches the card is a PIN
-// prompt, so one spent on a length would cost the user a second PIN.
-std::uint32_t modulusBitsFor(const std::string& reader, const std::string& certId, std::uint32_t known)
+// The signature length a key produces, from the model alone: an RSA
+// signature is the modulus length, an ECDSA one r||s at the curve's width. 0
+// when the model does not say. Answering a length from the card would cost a
+// PIN prompt for a key the card marks for consent per operation.
+CK_ULONG signatureLength(KeyType type, std::uint32_t bits)
 {
-    if (known != 0)
-        return known;
-    const auto pk = g_lib->client->publicKey(reader, certId);
-    if (pk.status == Status::Ok && !pk.modulus.empty())
-        return static_cast<std::uint32_t>(pk.modulus.size()) * 8;
+    const CK_ULONG bytes = (static_cast<CK_ULONG>(bits) + 7) / 8;
+    switch (type) {
+    case KeyType::Rsa:
+        return bytes;
+    case KeyType::Ec:
+        return 2 * bytes;
+    case KeyType::Other:
+        break;
+    }
     return 0;
+}
+
+// The agent mechanism for a module sign mechanism (C_SignInit admitted only these three).
+LibreSCRS::Agent::Mechanism agentSignMechanism(CK_MECHANISM_TYPE m)
+{
+    switch (m) {
+    case CKM_ECDSA:
+        return LibreSCRS::Agent::Mechanism::EcdsaSign;
+    case CKM_SHA256_RSA_PKCS:
+        return LibreSCRS::Agent::Mechanism::Sha256RsaPkcs1Sign;
+    default:
+        return LibreSCRS::Agent::Mechanism::RsaPkcs1Sign;
+    }
 }
 
 // Copy a padded C-string field (CK_TOKEN_INFO / CK_SLOT_INFO are space-padded,
@@ -441,18 +466,31 @@ CK_DECLARE_FUNCTION(CK_RV, C_GetMechanismInfo)(CK_SLOT_ID slotID, CK_MECHANISM_T
         return CKR_MECHANISM_INVALID;
 
     *pInfo = CK_MECHANISM_INFO{};
-    // RSA key-size bounds (bits). SR cards are 2048/4096.
-    pInfo->ulMinKeySize = 2048;
-    pInfo->ulMaxKeySize = 4096;
-    pInfo->flags = CKF_HW;
-    // Per-mechanism flags (slotHasMechanism gated the type above):
-    //   * CKM_RSA_PKCS — DigestInfo family: raw RSA PKCS#1 v1.5 sign AND decrypt.
-    //   * CKM_SHA256_RSA_PKCS — hash-on-card family: SIGN ONLY (no decrypt; the
-    //     pkcs15 plugin has no decipher primitive).
-    if (type == CKM_SHA256_RSA_PKCS)
-        pInfo->flags |= CKF_SIGN;
-    else
-        pInfo->flags |= CKF_SIGN | CKF_DECRYPT;
+    // Per-mechanism bounds (bits) and flags; slotHasMechanism gated the type above.
+    switch (type) {
+    case CKM_ECDSA:
+        pInfo->ulMinKeySize = 256;
+        pInfo->ulMaxKeySize = 521;
+        pInfo->flags = CKF_HW | CKF_SIGN | CKF_EC_F_P | CKF_EC_OID | CKF_EC_UNCOMPRESS;
+        break;
+    case CKM_ECDH1_DERIVE:
+        pInfo->ulMinKeySize = 256;
+        pInfo->ulMaxKeySize = 521;
+        pInfo->flags = CKF_HW | CKF_DERIVE | CKF_EC_F_P | CKF_EC_OID | CKF_EC_UNCOMPRESS;
+        break;
+    case CKM_SHA256_RSA_PKCS:
+        // Hash-on-card family: sign only (the pkcs15 plugin has no decipher primitive).
+        pInfo->ulMinKeySize = 2048;
+        pInfo->ulMaxKeySize = 4096;
+        pInfo->flags = CKF_HW | CKF_SIGN;
+        break;
+    default:
+        // CKM_RSA_PKCS: DigestInfo family, sign and decrypt.
+        pInfo->ulMinKeySize = 2048;
+        pInfo->ulMaxKeySize = 4096;
+        pInfo->flags = CKF_HW | CKF_SIGN | CKF_DECRYPT;
+        break;
+    }
     return CKR_OK;
     PKCS11_CATCH
 }
@@ -745,16 +783,16 @@ CK_RV serveAttribute(const Slot& slot, const Object& obj, CK_ATTRIBUTE& attr)
     const CK_BBOOL ckTrue = CK_TRUE;
     const CK_BBOOL ckFalse = CK_FALSE;
 
-    // Fetch the cert's RSA public key (lazy, agent-served — the module holds no
+    // Fetch the cert's public key (lazy, agent-served — the module holds no
     // crypto) and map the fetch status onto the PKCS#11 attribute protocol:
     // KeyNotFound -> CKR_KEY_HANDLE_INVALID, anything else non-Ok (NotSupported /
     // non-RSA / bus error) -> the attribute is absent (CKR_ATTRIBUTE_TYPE_INVALID).
     // On success @p out holds the key and the helper returns CKR_OK so the caller
     // serves its own field. Shared by the CKA_MODULUS / CKA_PUBLIC_EXPONENT /
-    // CKA_MODULUS_BITS arms (each independently served, no extra round-trip — the
+    // CKA_EC_POINT arms (each independently served, no extra round-trip — the
     // AgentClient caches the key per certId).
     auto fetchPubKeyOr = [&](PublicKeyResult& out) -> CK_RV {
-        out = g_lib->client->publicKey(slot.readerPath, obj.certId);
+        out = g_lib->client->publicKey(slot.readerPath, obj.certId, obj.keyType);
         if (out.status == Status::KeyNotFound)
             return CKR_KEY_HANDLE_INVALID;
         if (out.status != Status::Ok)
@@ -775,7 +813,7 @@ CK_RV serveAttribute(const Slot& slot, const Object& obj, CK_ATTRIBUTE& attr)
         return give(obj.cls == CKO_PRIVATE_KEY ? &ckTrue : &ckFalse, sizeof(CK_BBOOL));
     case CKA_KEY_TYPE: {
         if (obj.cls == CKO_PUBLIC_KEY || obj.cls == CKO_PRIVATE_KEY) {
-            const CK_KEY_TYPE kt = CKK_RSA;
+            const CK_KEY_TYPE kt = (obj.keyType == KeyType::Ec) ? CKK_EC : CKK_RSA;
             return give(&kt, sizeof(kt));
         }
         return CKR_ATTRIBUTE_TYPE_INVALID;
@@ -795,6 +833,40 @@ CK_RV serveAttribute(const Slot& slot, const Object& obj, CK_ATTRIBUTE& attr)
         if (obj.cls != CKO_PRIVATE_KEY)
             return CKR_ATTRIBUTE_TYPE_INVALID;
         return give(obj.decrypt ? &ckTrue : &ckFalse, sizeof(CK_BBOOL));
+    case CKA_DERIVE:
+        if (obj.cls != CKO_PRIVATE_KEY)
+            return CKR_ATTRIBUTE_TYPE_INVALID;
+        return give(obj.derive ? &ckTrue : &ckFalse, sizeof(CK_BBOOL));
+    case CKA_UNWRAP:
+        // No key is ever unwrapped with a card key through this module.
+        if (obj.cls != CKO_PRIVATE_KEY)
+            return CKR_ATTRIBUTE_TYPE_INVALID;
+        return give(&ckFalse, sizeof(ckFalse));
+    case CKA_EC_PARAMS: {
+        // The named curve's OID, from the model (P-256/P-384/P-521 by size).
+        if ((obj.cls != CKO_PUBLIC_KEY && obj.cls != CKO_PRIVATE_KEY) || obj.keyType != KeyType::Ec)
+            return CKR_ATTRIBUTE_TYPE_INVALID;
+        const auto params = ecParamsDerFor(obj.keyBits);
+        if (params.empty())
+            return CKR_ATTRIBUTE_TYPE_INVALID;
+        return give(params.data(), params.size());
+    }
+    case CKA_EC_POINT: {
+        // The point, on the public key only, as the agent read it off the
+        // certificate -- and only on the curve CKA_EC_PARAMS names for the
+        // key's size, whatever the transport let through.
+        if (obj.cls != CKO_PUBLIC_KEY || obj.keyType != KeyType::Ec)
+            return CKR_ATTRIBUTE_TYPE_INVALID;
+        PublicKeyResult pk;
+        if (const CK_RV rv = fetchPubKeyOr(pk); rv != CKR_OK)
+            return rv;
+        if (!isPointOfKey(obj.keyBits, pk.crv, pk.x, pk.y))
+            return CKR_ATTRIBUTE_TYPE_INVALID;
+        const auto point = ecPointOctetString(pk.x, pk.y);
+        if (point.empty())
+            return CKR_ATTRIBUTE_TYPE_INVALID;
+        return give(point.data(), point.size());
+    }
     case CKA_EXTRACTABLE:
         if (obj.cls != CKO_PRIVATE_KEY)
             return CKR_ATTRIBUTE_TYPE_INVALID;
@@ -815,7 +887,7 @@ CK_RV serveAttribute(const Slot& slot, const Object& obj, CK_ATTRIBUTE& attr)
     case CKA_MODULUS: {
         // RSA modulus (big-endian, unpadded) for key objects. Fetched lazily
         // from the agent — the module holds no crypto.
-        if (obj.cls != CKO_PUBLIC_KEY && obj.cls != CKO_PRIVATE_KEY)
+        if ((obj.cls != CKO_PUBLIC_KEY && obj.cls != CKO_PRIVATE_KEY) || obj.keyType != KeyType::Rsa)
             return CKR_ATTRIBUTE_TYPE_INVALID;
         PublicKeyResult pk;
         if (const CK_RV rv = fetchPubKeyOr(pk); rv != CKR_OK)
@@ -823,7 +895,7 @@ CK_RV serveAttribute(const Slot& slot, const Object& obj, CK_ATTRIBUTE& attr)
         return give(pk.modulus.data(), pk.modulus.size());
     }
     case CKA_PUBLIC_EXPONENT: {
-        if (obj.cls != CKO_PUBLIC_KEY && obj.cls != CKO_PRIVATE_KEY)
+        if ((obj.cls != CKO_PUBLIC_KEY && obj.cls != CKO_PRIVATE_KEY) || obj.keyType != KeyType::Rsa)
             return CKR_ATTRIBUTE_TYPE_INVALID;
         PublicKeyResult pk;
         if (const CK_RV rv = fetchPubKeyOr(pk); rv != CKR_OK)
@@ -831,16 +903,10 @@ CK_RV serveAttribute(const Slot& slot, const Object& obj, CK_ATTRIBUTE& attr)
         return give(pk.exponent.data(), pk.exponent.size());
     }
     case CKA_MODULUS_BITS: {
-        // CKA_MODULUS_BITS belongs to the public key object. Derive it from the
-        // fetched modulus length (no stale modulusBits==0 wart).
-        if (obj.cls != CKO_PUBLIC_KEY)
+        // The public key's modulus size, from the model.
+        if (obj.cls != CKO_PUBLIC_KEY || obj.keyType != KeyType::Rsa || obj.keyBits == 0)
             return CKR_ATTRIBUTE_TYPE_INVALID;
-        PublicKeyResult pk;
-        if (const CK_RV rv = fetchPubKeyOr(pk); rv != CKR_OK)
-            return rv;
-        if (pk.modulus.empty())
-            return CKR_ATTRIBUTE_TYPE_INVALID;
-        const CK_ULONG bits = static_cast<CK_ULONG>(pk.modulus.size()) * 8;
+        const CK_ULONG bits = obj.keyBits;
         return give(&bits, sizeof(bits));
     }
     case CKA_VALUE: {
@@ -1032,13 +1098,16 @@ CK_DECLARE_FUNCTION(CK_RV, C_DecryptInit)
     const Object* obj = g_lib->state.resolveObject(s->slot, hKey);
     if (!obj || obj->cls != CKO_PRIVATE_KEY)
         return CKR_KEY_HANDLE_INVALID;
+    // RSA PKCS#1 v1.5 decrypts with an RSA key only, decided without the card.
+    if (obj->keyType != KeyType::Rsa)
+        return CKR_KEY_TYPE_INCONSISTENT;
     if (!obj->decrypt)
         return CKR_KEY_FUNCTION_NOT_PERMITTED;
     s->decrypt = DecryptCursor{};
     s->decrypt.active = true;
     s->decrypt.reader = slot->readerPath;
     s->decrypt.certId = obj->certId;
-    s->decrypt.modulusBits = obj->modulusBits;
+    s->decrypt.keyBits = obj->keyBits;
     return CKR_OK;
     PKCS11_CATCH
 }
@@ -1062,7 +1131,7 @@ CK_RV doDecrypt(CK_SESSION_HANDLE hSession, const std::uint8_t* ct, std::size_t 
     // --- under lock: validate + capture (reader, certId), mark in-flight ----
     std::string reader;
     std::string certId;
-    std::uint32_t modulusBits = 0;
+    std::uint32_t keyBits = 0;
     std::vector<std::uint8_t> accumulated; // the C_DecryptFinal multi-part buffer
     std::optional<RpcInFlightGuard> guard;
     {
@@ -1078,7 +1147,7 @@ CK_RV doDecrypt(CK_SESSION_HANDLE hSession, const std::uint8_t* ct, std::size_t 
             return CKR_OPERATION_ACTIVE;
         reader = s->decrypt.reader;
         certId = s->decrypt.certId;
-        modulusBits = s->decrypt.modulusBits;
+        keyBits = s->decrypt.keyBits;
         if (useAccumulated)
             accumulated = s->decrypt.accumulated; // snapshot before releasing the lock
         // RAII: sets s->rpcInFlight + bumps the global in-flight count; cleared on
@@ -1105,29 +1174,20 @@ CK_RV doDecrypt(CK_SESSION_HANDLE hSession, const std::uint8_t* ct, std::size_t 
     };
 
     // --- lock RELEASED for the blocking on-card decrypt ----------------------
-    // Size query: answer the modulus length, which bounds any PKCS#1 v1.5
+    // Size query: the modulus length, from the model, bounds any PKCS#1 v1.5
     // plaintext (PKCS#11 lets a length answer be somewhat larger than the
-    // result), without decrypting. A non-NULL buffer still goes to the card:
-    // the plaintext's length is known only once decrypted, and a buffer
-    // shorter than the modulus may well hold it. With the modulus unknown the
-    // size query falls through to a real decrypt, as it always did.
-    if (pData == NULL_PTR) {
-        modulusBits = modulusBitsFor(reader, certId, modulusBits);
-        if (modulusBits != 0) {
-            *pulDataLen = (modulusBits + 7) / 8;
-            std::lock_guard lk(g_mutex);
-            if (g_lib)
-                if (Session* s = g_lib->state.session(hSession))
-                    s->decrypt.modulusBits = modulusBits; // the operation stays active
-            return CKR_OK;
-        }
+    // result); it never decrypts. A non-NULL buffer still goes to the card: the
+    // plaintext's length is known only once decrypted.
+    if (pData == NULL_PTR && keyBits != 0) {
+        *pulDataLen = (keyBits + 7) / 8;
+        return CKR_OK;
     }
     std::vector<std::uint8_t> ciphertext(ct, ct + ctLen);
     auto res = g_lib->client->decrypt(reader, certId, ciphertext);
     if (res.status != Status::Ok) {
         clearCursorIf(/*clearCursor=*/true);
         dropLoginOnLapsedLease(res.status, hSession);
-        return ckrFromStatus(res.status);
+        return ckrFromStatus(res.status, CKR_ENCRYPTED_DATA_LEN_RANGE);
     }
     if (pData == NULL_PTR) {
         *pulDataLen = static_cast<CK_ULONG>(res.bytes.size());
@@ -1262,21 +1322,18 @@ CK_DECLARE_FUNCTION(CK_RV, C_SignInit)(CK_SESSION_HANDLE hSession, CK_MECHANISM_
     if (!slot)
         return CKR_SESSION_HANDLE_INVALID;
     const CK_MECHANISM_TYPE mech = pMechanism->mechanism;
-    // Two per-card RSA sign mechanisms, gated by slotHasMechanism so a slot only
-    // ever accepts the one it advertised (never both):
-    //   * CKM_RSA_PKCS  — DigestInfo family (opensc/PKS): caller supplies the
-    //     complete pre-built DigestInfo; the card runs the raw private-key op.
-    //   * CKM_SHA256_RSA_PKCS — hash-on-card family (pkcs15/NAM IAS-ECC SSCD):
-    //     caller supplies the RAW message; the CARD computes SHA-256 and signs.
-    //     The module stays libcrypto-free either way — it never hashes, it
-    //     forwards the caller's bytes verbatim (the card or caller owns the
-    //     digest). PSS / ECDSA / a slot's non-advertised mechanism all fall
-    //     through to CKR_MECHANISM_INVALID.
-    if ((mech != CKM_RSA_PKCS && mech != CKM_SHA256_RSA_PKCS) || !slotHasMechanism(*slot, mech))
+    // Three sign mechanisms, each only where the slot advertised it: the two
+    // RSA families (CKM_RSA_PKCS over a caller-built DigestInfo; CKM_SHA256_RSA_PKCS
+    // over the raw message the card hashes) and CKM_ECDSA over the caller's digest.
+    // The module never hashes. PSS and anything else: CKR_MECHANISM_INVALID.
+    if ((mech != CKM_RSA_PKCS && mech != CKM_SHA256_RSA_PKCS && mech != CKM_ECDSA) || !slotHasMechanism(*slot, mech))
         return CKR_MECHANISM_INVALID;
     const Object* obj = g_lib->state.resolveObject(s->slot, hKey);
     if (!obj || obj->cls != CKO_PRIVATE_KEY)
         return CKR_KEY_HANDLE_INVALID;
+    // The pairing is the key's family, decided without the card.
+    if ((mech == CKM_ECDSA) != (obj->keyType == KeyType::Ec))
+        return CKR_KEY_TYPE_INCONSISTENT;
     if (!obj->sign)
         return CKR_KEY_FUNCTION_NOT_PERMITTED;
 
@@ -1284,7 +1341,9 @@ CK_DECLARE_FUNCTION(CK_RV, C_SignInit)(CK_SESSION_HANDLE hSession, CK_MECHANISM_
     s->sign.active = true;
     s->sign.reader = slot->readerPath;
     s->sign.certId = obj->certId;
-    s->sign.modulusBits = obj->modulusBits;
+    s->sign.mechanism = mech;
+    s->sign.keyType = obj->keyType;
+    s->sign.keyBits = obj->keyBits;
     return CKR_OK;
     PKCS11_CATCH
 }
@@ -1305,7 +1364,9 @@ CK_RV doSign(CK_SESSION_HANDLE hSession, const std::uint8_t* data, std::size_t l
     // --- under lock: validate + capture the cursor, mark in-flight ----------
     std::string reader;
     std::string certId;
-    std::uint32_t modulusBits = 0;
+    CK_MECHANISM_TYPE mech = CKM_RSA_PKCS;
+    KeyType keyType = KeyType::Other;
+    std::uint32_t keyBits = 0;
     std::vector<std::uint8_t> accumulated; // the C_SignFinal multi-part buffer
     std::optional<RpcInFlightGuard> guard;
     {
@@ -1321,7 +1382,9 @@ CK_RV doSign(CK_SESSION_HANDLE hSession, const std::uint8_t* data, std::size_t l
             return CKR_OPERATION_ACTIVE;
         reader = s->sign.reader;
         certId = s->sign.certId;
-        modulusBits = s->sign.modulusBits;
+        mech = s->sign.mechanism;
+        keyType = s->sign.keyType;
+        keyBits = s->sign.keyBits;
         if (useAccumulated)
             accumulated = s->sign.accumulated; // snapshot before releasing the lock
         // RAII: sets s->rpcInFlight + bumps the global in-flight count; cleared on
@@ -1347,35 +1410,36 @@ CK_RV doSign(CK_SESSION_HANDLE hSession, const std::uint8_t* data, std::size_t l
     };
 
     // --- lock RELEASED for the blocking RPCs --------------------------------
-    // Length questions: an RSA signature is exactly the modulus length, so a
-    // size query (NULL buffer) and a buffer shorter than that are both
-    // answered from the modulus and NEVER trigger a real on-card sign; the
-    // operation stays active either way. Modulus unavailable (non-RSA /
-    // error): fall through to a real call, as before.
-    modulusBits = modulusBitsFor(reader, certId, modulusBits);
-    if (modulusBits != 0) {
-        const auto sigLen = static_cast<CK_ULONG>((modulusBits + 7) / 8);
+    // ECDSA takes the digest itself: SHA-256, -384 or -512. Deliberately
+    // narrower than v2.40, which lets a longer input be truncated -- a SHA-1
+    // digest is refused here, without the agent.
+    if (mech == CKM_ECDSA && len != 32 && len != 48 && len != 64) {
+        clearCursorIf(/*clearCursor=*/true);
+        return CKR_DATA_LEN_RANGE;
+    }
+    // Length questions are answered from the model and NEVER reach the card:
+    // a size query (NULL buffer) and a buffer shorter than the signature both
+    // keep the operation active.
+    if (const CK_ULONG sigLen = signatureLength(keyType, keyBits); sigLen != 0) {
         if (pSignature == NULL_PTR || *pulSignatureLen < sigLen) {
             const bool sizeQuery = (pSignature == NULL_PTR);
             *pulSignatureLen = sigLen;
-            // Persist the learned size (the guard clears rpcInFlight + the
-            // count on return).
-            {
-                std::lock_guard lk(g_mutex);
-                if (g_lib)
-                    if (Session* s = g_lib->state.session(hSession))
-                        s->sign.modulusBits = modulusBits;
-            }
             return sizeQuery ? CKR_OK : CKR_BUFFER_TOO_SMALL;
         }
     }
 
     std::vector<std::uint8_t> input = buildSignInput(data, len);
-    auto res = g_lib->client->signRaw(reader, certId, input);
+    auto res = g_lib->client->signRaw(reader, certId, agentSignMechanism(mech), input);
     if (res.status != Status::Ok) {
         clearCursorIf(/*clearCursor=*/true);
         dropLoginOnLapsedLease(res.status, hSession);
-        return ckrFromStatus(res.status);
+        return ckrFromStatus(res.status, CKR_DATA_LEN_RANGE);
+    }
+    // An ECDSA answer is r||s at the curve's width and nothing else: a
+    // DER-shaped or truncated reply never reaches the caller as a signature.
+    if (mech == CKM_ECDSA && res.bytes.size() != signatureLength(keyType, keyBits)) {
+        clearCursorIf(/*clearCursor=*/true);
+        return CKR_DEVICE_ERROR;
     }
     if (pSignature == NULL_PTR) {
         *pulSignatureLen = static_cast<CK_ULONG>(res.bytes.size());

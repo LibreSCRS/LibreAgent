@@ -324,7 +324,10 @@ TEST(SocketAgentClient, APeerCheckThatRefusesSendsNothingAndReportsDeviceRemoved
     EXPECT_GE(seenFd, 0);
     EXPECT_TRUE(client.snapshot().readers.empty());
     EXPECT_EQ(client.login("r1").status, P::Status::DeviceRemoved);
-    EXPECT_EQ(client.signRaw("r1", "certid-1", std::vector<std::uint8_t>{1, 2, 3}).status, P::Status::DeviceRemoved);
+    EXPECT_EQ(
+        client.signRaw("r1", "certid-1", LibreSCRS::Agent::Mechanism::RsaPkcs1Sign, std::vector<std::uint8_t>{1, 2, 3})
+            .status,
+        P::Status::DeviceRemoved);
     // Refused before the handshake: the peer never saw a request.
     EXPECT_EQ(fake.callCount(T::Call::Hello), 0);
     EXPECT_EQ(fake.callCount(T::Call::PkSignRaw), 0);
@@ -421,6 +424,7 @@ TEST(SocketAgentClient, MapsEveryRefusalTheWireHasANameFor)
         {W::SyncError::UnsupportedOnThisCard, P::Status::NotSupported},
         {W::SyncError::RateLimited, P::Status::RateLimited},
         {W::SyncError::CommunicationError, P::Status::Communication},
+        {W::SyncError::InvalidRequest, P::Status::InvalidInput},
         {W::SyncError::InputTooLarge, P::Status::GeneralError},
     };
     for (const auto& row : rows) {
@@ -433,6 +437,136 @@ TEST(SocketAgentClient, MapsEveryRefusalTheWireHasANameFor)
         ASSERT_TRUE(client.connected());
         EXPECT_EQ(client.login("r1").status, row.want) << "wire refusal #" << static_cast<int>(row.wire);
     }
+}
+
+// The entry a key object is built from carries the agent's key facts: the
+// card's CKA_ID (no more counter), the key's family and size, and no decrypt
+// for an EC key whatever its keyUsage says.
+TEST(SocketAgentClient, CarriesTheKeyFactsOfEachCertificate)
+{
+    namespace T = LibreSCRS::Agent::Test;
+    T::FakeSocketAgent fake;
+    fake.addReader("r1", /*hasCard=*/true, "c1", LibreSCRS::Agent::Wire::PreReadAuth::Can);
+    fake.addCert("c1", "lk", /*signingCapable=*/true, /*keyUsageBits=*/0x05);
+    fake.setKeyFacts("lk", {0xF7, 0x13}, LibreSCRS::Agent::KeyType::Ec, 384, /*canDerive=*/true);
+    fake.start();
+    P::SocketAgentClient client{fake.path(), kFastBudgets};
+    const auto snap = client.snapshot();
+    ASSERT_EQ(snap.readers.size(), 1u);
+    ASSERT_EQ(snap.readers[0].certs.size(), 1u);
+    const auto& e = snap.readers[0].certs[0];
+    EXPECT_EQ(e.ckaId, (std::vector<std::uint8_t>{0xF7, 0x13}));
+    EXPECT_EQ(e.keyType, LibreSCRS::Agent::KeyType::Ec);
+    EXPECT_EQ(e.keyBits, 384u);
+    EXPECT_TRUE(e.canDerive);
+    EXPECT_FALSE(e.canDecrypt) << "keyEncipherment on an EC key is not an RSA decryption";
+    EXPECT_FALSE(e.signsHashOnCard) << "the hash-on-card family is an RSA choice";
+}
+
+// A raw signature names its mechanism on the wire, as the module asked.
+TEST(SocketAgentClient, ARawSignatureCarriesTheMechanismToken)
+{
+    namespace T = LibreSCRS::Agent::Test;
+    T::FakeSocketAgent fake;
+    fake.addReader("r1", /*hasCard=*/true, "c1");
+    fake.addCert("c1", "lk");
+    fake.start();
+    P::SocketAgentClient client{fake.path(), kFastBudgets};
+    const std::vector<std::uint8_t> digest(48, 0xAB);
+    EXPECT_EQ(client.signRaw("r1", "lk", LibreSCRS::Agent::Mechanism::EcdsaSign, digest).status, P::Status::Ok);
+    EXPECT_EQ(fake.lastSignMechanism(), "ecdsa");
+    EXPECT_EQ(client.signRaw("r1", "lk", LibreSCRS::Agent::Mechanism::Sha256RsaPkcs1Sign, digest).status,
+              P::Status::Ok);
+    EXPECT_EQ(fake.lastSignMechanism(), "sha256-rsa-pkcs");
+    // A decryption mechanism shares its token with a signing one; it is still
+    // not a signature, and nothing reaches the agent for it.
+    const int signsBefore = fake.callCount(T::Call::PkSignRaw);
+    EXPECT_EQ(client.signRaw("r1", "lk", LibreSCRS::Agent::Mechanism::RsaPkcs1Decrypt, digest).status,
+              P::Status::NotSupported);
+    EXPECT_EQ(fake.callCount(T::Call::PkSignRaw), signsBefore);
+}
+
+// The wire takes any curve name and any length for an EC point. The module
+// serves only a NIST curve at that curve's width: anything else is a malformed
+// answer (GeneralError), never a point handed to a loader, and never cached.
+TEST(SocketAgentClient, AnEcPointOffItsCurvesWidthIsNotServed)
+{
+    namespace T = LibreSCRS::Agent::Test;
+    using LibreSCRS::Agent::KeyType;
+    T::FakeSocketAgent fake;
+    fake.addReader("r1", /*hasCard=*/true, "c1");
+    fake.addCert("c1", "no-point");
+    fake.setKeyFacts("no-point", {0x01}, KeyType::Ec, 384, /*canDerive=*/false);
+    fake.setEcPoint("no-point", "P-384", {}, {});
+    fake.addCert("c1", "short");
+    fake.setKeyFacts("short", {0x02}, KeyType::Ec, 384, /*canDerive=*/false);
+    fake.setEcPoint("short", "P-384", std::vector<std::uint8_t>(32, 0x11), std::vector<std::uint8_t>(32, 0x22));
+    fake.addCert("c1", "uneven");
+    fake.setKeyFacts("uneven", {0x03}, KeyType::Ec, 384, /*canDerive=*/false);
+    fake.setEcPoint("uneven", "P-384", std::vector<std::uint8_t>(48, 0x11), std::vector<std::uint8_t>(47, 0x22));
+    fake.addCert("c1", "p192");
+    fake.setKeyFacts("p192", {0x04}, KeyType::Ec, 192, /*canDerive=*/false);
+    fake.setEcPoint("p192", "P-192", std::vector<std::uint8_t>(24, 0x11), std::vector<std::uint8_t>(24, 0x22));
+    fake.addCert("c1", "p521");
+    fake.setKeyFacts("p521", {0x05}, KeyType::Ec, 521, /*canDerive=*/false);
+    fake.setEcPoint("p521", "P-521", std::vector<std::uint8_t>(66, 0x11), std::vector<std::uint8_t>(66, 0x22));
+    fake.start();
+    P::SocketAgentClient client{fake.path(), kFastBudgets};
+
+    for (const char* certId : {"no-point", "short", "uneven", "p192"}) {
+        const auto first = client.publicKey("r1", certId, KeyType::Ec);
+        EXPECT_EQ(first.status, P::Status::GeneralError) << certId;
+        EXPECT_TRUE(first.x.empty() && first.y.empty() && first.crv.empty()) << certId;
+        const int asked = fake.callCount(T::Call::PkPublicKey);
+        EXPECT_EQ(client.publicKey("r1", certId, KeyType::Ec).status, P::Status::GeneralError) << certId;
+        EXPECT_EQ(fake.callCount(T::Call::PkPublicKey), asked + 1) << certId << ": a malformed answer was cached";
+    }
+    // The control: a well-formed point on the widest curve is served.
+    const auto ok = client.publicKey("r1", "p521", KeyType::Ec);
+    EXPECT_EQ(ok.status, P::Status::Ok);
+    EXPECT_EQ(ok.crv, "P-521");
+    EXPECT_EQ(ok.x.size(), 66u);
+    EXPECT_EQ(ok.y.size(), 66u);
+}
+
+// A cached key answers only for its own family: once the RSA key is cached, a
+// request for an EC key under the same id is NotSupported, as an uncached one
+// would be -- not the cached RSA key.
+TEST(SocketAgentClient, ACachedKeyAnswersOnlyForItsFamily)
+{
+    namespace T = LibreSCRS::Agent::Test;
+    using LibreSCRS::Agent::KeyType;
+    T::FakeSocketAgent fake;
+    fake.addReader("r1", /*hasCard=*/true, "c1");
+    fake.addCert("c1", "rsa");
+    fake.start();
+    P::SocketAgentClient client{fake.path(), kFastBudgets};
+    ASSERT_EQ(client.publicKey("r1", "rsa", KeyType::Rsa).status, P::Status::Ok);
+    const auto ec = client.publicKey("r1", "rsa", KeyType::Ec);
+    EXPECT_EQ(ec.status, P::Status::NotSupported);
+    EXPECT_TRUE(ec.modulus.empty());
+    EXPECT_EQ(client.publicKey("r1", "rsa", KeyType::Other).status, P::Status::NotSupported);
+    EXPECT_EQ(client.publicKey("r1", "rsa", KeyType::Rsa).status, P::Status::Ok) << "the cached key is still served";
+}
+
+// Derive admits an entry only for an EC key, as the entry's own canDerive
+// does: an RSA key the agent marks as deriving and not signing is left out,
+// as the other transport leaves it out.
+TEST(SocketAgentClient, AnRsaKeyMarkedDerivingIsNotAnEntry)
+{
+    namespace T = LibreSCRS::Agent::Test;
+    T::FakeSocketAgent fake;
+    fake.addReader("r1", /*hasCard=*/true, "c1");
+    fake.addCert("c1", "rsa-derive", /*signingCapable=*/false);
+    fake.setKeyFacts("rsa-derive", {0x01}, LibreSCRS::Agent::KeyType::Rsa, 2048, /*canDerive=*/true);
+    fake.addCert("c1", "ec-derive", /*signingCapable=*/false);
+    fake.setKeyFacts("ec-derive", {0x02}, LibreSCRS::Agent::KeyType::Ec, 384, /*canDerive=*/true);
+    fake.start();
+    P::SocketAgentClient client{fake.path(), kFastBudgets};
+    const auto snap = client.snapshot();
+    ASSERT_EQ(snap.readers.size(), 1u);
+    ASSERT_EQ(snap.readers[0].certs.size(), 1u);
+    EXPECT_EQ(snap.readers[0].certs[0].certId, "ec-derive");
 }
 
 } // namespace

@@ -144,6 +144,7 @@ void FakeSocketAgent::setEcPoint(const std::string& certId, std::string crv, std
                 c.crv = crv;
                 c.ecX = x;
                 c.ecY = y;
+                c.ecPointSeated = true;
             }
         }
     }
@@ -195,6 +196,12 @@ std::string FakeSocketAgent::lastSignMechanism() const
 {
     const std::lock_guard lock{m_mutex};
     return m_lastSignMechanism;
+}
+
+void FakeSocketAgent::setSignResponder(std::function<std::vector<std::uint8_t>(const W::PkSignRaw&)> f)
+{
+    const std::lock_guard lock{m_mutex};
+    m_signResponder = std::move(f);
 }
 
 Wire::Hello FakeSocketAgent::lastHello() const
@@ -485,17 +492,24 @@ bool FakeSocketAgent::answer(int fd, const W::RequestEnvelope& env)
         if (const auto e = scriptedFailure(Call::PkPublicKey))
             return refuse(*e);
         std::optional<W::PublicKeyReply> ec;
+        bool ecWithoutPoint = false;
         {
             const std::lock_guard lock{m_mutex};
             for (const auto& r : m_readers) {
                 for (const auto& c : r.certs) {
-                    if (c.certId == pk->cert && c.keyType == KeyType::Ec)
+                    if (c.certId != pk->cert || c.keyType != KeyType::Ec)
+                        continue;
+                    if (c.ecPointSeated)
                         ec = W::PublicKeyReply{W::EcPublicKey{c.crv, c.ecX, c.ecY}};
+                    else
+                        ecWithoutPoint = true;
                 }
             }
         }
         if (ec)
             return send(W::makeReply(env.req, *ec));
+        if (ecWithoutPoint)
+            return refuse(W::SyncError::KeyNotFound);
         return send(W::makeReply(env.req, W::PublicKeyReply{W::RsaPublicKey{cannedModulus(), kCannedExponent}}));
     }
 
@@ -520,12 +534,15 @@ bool FakeSocketAgent::answer(int fd, const W::RequestEnvelope& env)
         // The canned signature is a constant, but what arrived is recorded:
         // a canned answer alone would pass even if the module had sent the
         // wrong bytes, so the suite asserts the INPUT, not only the output.
+        std::function<std::vector<std::uint8_t>(const W::PkSignRaw&)> responder;
         {
             const std::lock_guard lock{m_mutex};
             m_lastSignInput = sr->data;
             m_lastSignMechanism = sr->mech;
+            responder = m_signResponder;
         }
-        return send(W::makeReply(env.req, W::RawSignatureReply{kCannedSig}));
+        // Called outside the lock: a responder may sign with a real key.
+        return send(W::makeReply(env.req, W::RawSignatureReply{responder ? responder(*sr) : kCannedSig}));
     }
 
     if (const auto* dec = std::get_if<W::PkDecrypt>(&env.body)) {

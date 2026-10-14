@@ -14,6 +14,8 @@
 
 #pragma once
 
+#include <LibreSCRS/Agent/KeyType.h>
+#include <LibreSCRS/Agent/crypto/Mechanism.h>
 #include <LibreSCRS/Agent/pkcs11/ObjectModel.h>
 
 #include <cstdint>
@@ -41,6 +43,9 @@ enum class Status : std::uint8_t {
     Communication,   ///< -> CKR_DEVICE_ERROR
     DeviceRemoved,   ///< connection lost / no agent     -> CKR_DEVICE_REMOVED
     GeneralError,    ///< anything else                  -> CKR_GENERAL_ERROR
+    InvalidInput,    ///< the agent refused the input before any PIN prompt (a wrong length, a
+                     ///< point off the key's curve) -> per call: CKR_DATA_LEN_RANGE (sign),
+                     ///< CKR_ENCRYPTED_DATA_LEN_RANGE (decrypt), CKR_MECHANISM_PARAM_INVALID (derive)
 };
 
 /// @brief A login lease handle returned by login().
@@ -57,15 +62,18 @@ struct BytesResult
     std::vector<std::uint8_t> bytes;
 };
 
-/// @brief The RSA public key (modulus + public exponent) for a signing cert.
-///        Both are unpadded big-endian (PKCS#11 CKA_* convention) exactly as the
-///        agent returns them. The module serves CKA_MODULUS / CKA_PUBLIC_EXPONENT
+/// @brief A certificate's public key: RSA modulus + exponent (unpadded
+///        big-endian, the CKA_* convention), or an EC point on a NIST curve.
+///        The module serves CKA_MODULUS / CKA_PUBLIC_EXPONENT or CKA_EC_POINT
 ///        from these without any crypto of its own.
 struct PublicKeyResult
 {
     Status status = Status::GeneralError;
-    std::vector<std::uint8_t> modulus;
-    std::vector<std::uint8_t> exponent;
+    std::vector<std::uint8_t> modulus;  ///< RSA
+    std::vector<std::uint8_t> exponent; ///< RSA
+    std::string crv;                    ///< EC: "P-256", "P-384" or "P-521"
+    std::vector<std::uint8_t> x;        ///< EC, ceil(bits/8) bytes
+    std::vector<std::uint8_t> y;        ///< EC, ceil(bits/8) bytes
 };
 
 /// @brief What the module needs from the agent, independent of how it asks.
@@ -98,10 +106,11 @@ public:
     /// @brief Public cert DER for (reader, certId). No consent, no lease.
     [[nodiscard]] virtual BytesResult certDer(const std::string& reader, const std::string& certId) = 0;
 
-    /// @brief RSA public key (modulus + public exponent) for (reader, certId).
-    ///        Public data (no consent, no lease). The module serves
-    ///        CKA_MODULUS / CKA_PUBLIC_EXPONENT from these.
-    [[nodiscard]] virtual PublicKeyResult publicKey(const std::string& reader, const std::string& certId) = 0;
+    /// @brief The public key of (reader, certId), of the family the snapshot
+    ///        reported for it. Public data (no consent, no lease). A key of
+    ///        another family than @p keyType answers NotSupported.
+    [[nodiscard]] virtual PublicKeyResult publicKey(const std::string& reader, const std::string& certId,
+                                                    LibreSCRS::Agent::KeyType keyType) = 0;
 
     /// @brief Establish/refresh the login lease (raises the agent prompter).
     ///        The lease is (caller, card)-scoped (C_Login is per-token), so no
@@ -111,8 +120,11 @@ public:
     /// @brief Drop the lease for (caller, card). Idempotent.
     virtual Status logout(const std::string& reader) = 0;
 
-    /// @brief Raw RSA PKCS#1 v1.5 sign over @p input (DigestInfo-or-raw bytes).
+    /// @brief Raw signature with exactly @p mechanism: RsaPkcs1Sign (a complete
+    ///        PKCS#1 v1.5 block), Sha256RsaPkcs1Sign (the raw message, hashed on
+    ///        the card) or EcdsaSign (the digest; answered r||s).
     [[nodiscard]] virtual BytesResult signRaw(const std::string& reader, const std::string& certId,
+                                              LibreSCRS::Agent::Mechanism mechanism,
                                               std::span<const std::uint8_t> input) = 0;
 
     /// @brief Raw RSA PKCS#1 v1.5 decrypt of @p ciphertext.

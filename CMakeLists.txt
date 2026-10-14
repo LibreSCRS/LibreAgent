@@ -342,6 +342,7 @@ if(LIBREAGENT_BUILD_PKCS11_FACADE)
     include(cmake/Pkcs11ModuleExport.cmake)
 
     add_library(LibreAgentPkcs11Facade STATIC
+        src/pkcs11/EcEncoding.cpp
         src/pkcs11/Module.cpp
         src/pkcs11/ObjectModel.cpp
         src/pkcs11/SessionState.cpp)

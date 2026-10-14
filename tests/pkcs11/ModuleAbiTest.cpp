@@ -13,6 +13,7 @@
 #include <dlfcn.h>
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <future>
@@ -79,6 +80,45 @@ CK_OBJECT_HANDLE findOne(CK_FUNCTION_LIST_PTR fn, CK_SESSION_HANDLE session, CK_
     EXPECT_EQ(fn->C_FindObjects(session, objs, 8, &n), CKR_OK);
     EXPECT_EQ(fn->C_FindObjectsFinal(session), CKR_OK);
     return n > 0 ? objs[0] : CK_INVALID_HANDLE;
+}
+
+// The new Serbian ID card's single key: EC P-384, the card's own 16-byte iD.
+const std::vector<std::uint8_t> kLkKeyId{0xF7, 0x13, 0x4B, 0x02, 0x7C, 0xD6, 0x45, 0x57,
+                                         0x86, 0x0A, 0xF5, 0x4E, 0xB9, 0xCD, 0x1D, 0x41};
+
+void seatEcKey(FakeSocketAgent& f, const std::string& certId, bool canDerive = false)
+{
+    f.setKeyFacts(certId, kLkKeyId, LibreSCRS::Agent::KeyType::Ec, 384, canDerive);
+    f.setEcPoint(certId, "P-384", std::vector<std::uint8_t>(48, 0x11), std::vector<std::uint8_t>(48, 0x22));
+    // What the agent answers for ECDSA on P-384: r||s, 2 * 48 bytes.
+    f.setSignResponder([](const W::PkSignRaw&) { return std::vector<std::uint8_t>(96, 0x5A); });
+}
+
+CK_OBJECT_HANDLE findKeyOfType(CK_FUNCTION_LIST_PTR fn, CK_SESSION_HANDLE session, CK_OBJECT_CLASS cls, CK_KEY_TYPE kt)
+{
+    CK_ATTRIBUTE tmpl[] = {{CKA_CLASS, &cls, sizeof(cls)}, {CKA_KEY_TYPE, &kt, sizeof(kt)}};
+    EXPECT_EQ(fn->C_FindObjectsInit(session, tmpl, 2), CKR_OK);
+    CK_OBJECT_HANDLE objs[8];
+    CK_ULONG n = 0;
+    EXPECT_EQ(fn->C_FindObjects(session, objs, 8, &n), CKR_OK);
+    EXPECT_EQ(fn->C_FindObjectsFinal(session), CKR_OK);
+    return n > 0 ? objs[0] : CK_INVALID_HANDLE;
+}
+
+std::vector<std::uint8_t> attrBytes(CK_FUNCTION_LIST_PTR fn, CK_SESSION_HANDLE s, CK_OBJECT_HANDLE o,
+                                    CK_ATTRIBUTE_TYPE t, CK_RV* rvOut = nullptr)
+{
+    CK_ATTRIBUTE a{t, nullptr, 0};
+    CK_RV rv = fn->C_GetAttributeValue(s, o, &a, 1);
+    std::vector<std::uint8_t> out;
+    if (rv == CKR_OK) {
+        out.resize(a.ulValueLen);
+        a.pValue = out.data();
+        rv = fn->C_GetAttributeValue(s, o, &a, 1);
+    }
+    if (rvOut != nullptr)
+        *rvOut = rv;
+    return out;
 }
 
 } // namespace
@@ -343,9 +383,8 @@ TEST(ModuleAbi, SignSizeQueryReturnsModulusBytes)
     CK_OBJECT_HANDLE key = findPrivateKey(m.fn, session);
     ASSERT_NE(key, CK_INVALID_HANDLE);
 
-    // The fake cert reports no modulusBits (0), so the module reads the length
-    // from the public key's modulus. Either way, a NULL-buffer size query must
-    // not error.
+    // The model carries the key's size (the double reports 2048 bits), so the
+    // length is answered without the card. A NULL-buffer size query must not error.
     CK_MECHANISM mech{CKM_RSA_PKCS, nullptr, 0};
     ASSERT_EQ(m.fn->C_SignInit(session, &mech, key), CKR_OK);
     std::vector<CK_BYTE> data(32, 0x11);
@@ -869,4 +908,271 @@ TEST(ModuleAbi, FinalizeDrainsInFlightRpcNoUaf)
 
     // We already finalized; the LoadedModule dtor's second C_Finalize is a
     // harmless NOT_INITIALIZED. Re-init is unnecessary.
+}
+
+// An EC key reads as one: CKK_EC, the curve's OID, the point (on the public
+// key), the card's own CKA_ID, no RSA attributes, no decryption.
+TEST(ModuleAbi, AnEcKeyIsAnEcKeyWithItsCurveAndPoint)
+{
+    SocketFixture agent(true, "Can", [](FakeSocketAgent& f) { seatEcKey(f, kCertId); });
+    LoadedModule m;
+    ASSERT_EQ(m.fn->C_Initialize(nullptr), CKR_OK);
+    CK_SESSION_HANDLE session = 0;
+    ASSERT_EQ(m.fn->C_OpenSession(firstPresentSlot(m.fn), CKF_SERIAL_SESSION, nullptr, nullptr, &session), CKR_OK);
+    const CK_OBJECT_HANDLE pub = findKeyOfType(m.fn, session, CKO_PUBLIC_KEY, CKK_EC);
+    const CK_OBJECT_HANDLE priv = findKeyOfType(m.fn, session, CKO_PRIVATE_KEY, CKK_EC);
+    ASSERT_NE(pub, CK_INVALID_HANDLE);
+    ASSERT_NE(priv, CK_INVALID_HANDLE);
+    // Read back, not only searched by: the search and the attribute are two
+    // code paths, and a loader reads the attribute.
+    for (const CK_OBJECT_HANDLE key : {pub, priv}) {
+        CK_KEY_TYPE kt = CKK_RSA;
+        CK_ATTRIBUTE ktAttr{CKA_KEY_TYPE, &kt, sizeof(kt)};
+        ASSERT_EQ(m.fn->C_GetAttributeValue(session, key, &ktAttr, 1), CKR_OK);
+        EXPECT_EQ(kt, static_cast<CK_KEY_TYPE>(CKK_EC));
+    }
+
+    const std::vector<std::uint8_t> p384Oid{0x06, 0x05, 0x2B, 0x81, 0x04, 0x00, 0x22};
+    EXPECT_EQ(attrBytes(m.fn, session, pub, CKA_EC_PARAMS), p384Oid);
+    EXPECT_EQ(attrBytes(m.fn, session, priv, CKA_EC_PARAMS), p384Oid);
+    const auto point = attrBytes(m.fn, session, pub, CKA_EC_POINT);
+    ASSERT_EQ(point.size(), 2u + 97u);
+    EXPECT_EQ(point[0], 0x04);
+    EXPECT_EQ(point[1], 0x61);
+    EXPECT_EQ(point[2], 0x04);
+    EXPECT_EQ(attrBytes(m.fn, session, priv, CKA_ID), kLkKeyId);
+    EXPECT_EQ(attrBytes(m.fn, session, pub, CKA_ID), kLkKeyId);
+
+    CK_RV rv = CKR_OK;
+    (void)attrBytes(m.fn, session, pub, CKA_MODULUS, &rv);
+    EXPECT_EQ(rv, CKR_ATTRIBUTE_TYPE_INVALID) << "no RSA attribute on an EC key";
+    (void)attrBytes(m.fn, session, priv, CKA_EC_POINT, &rv);
+    EXPECT_EQ(rv, CKR_ATTRIBUTE_TYPE_INVALID) << "the point belongs to the public key";
+    CK_BBOOL decrypt = CK_TRUE;
+    CK_BBOOL unwrap = CK_TRUE;
+    CK_BBOOL derive = CK_TRUE;
+    CK_ATTRIBUTE flags[] = {{CKA_DECRYPT, &decrypt, sizeof(decrypt)},
+                            {CKA_UNWRAP, &unwrap, sizeof(unwrap)},
+                            {CKA_DERIVE, &derive, sizeof(derive)}};
+    ASSERT_EQ(m.fn->C_GetAttributeValue(session, priv, flags, 3), CKR_OK);
+    EXPECT_EQ(decrypt, CK_FALSE);
+    EXPECT_EQ(unwrap, CK_FALSE);
+    EXPECT_EQ(derive, CK_FALSE) << "no derive surface until key agreement is wired";
+}
+
+TEST(ModuleAbi, AnRsaKeyHasNoEcAttributes)
+{
+    SocketFixture agent;
+    LoadedModule m;
+    ASSERT_EQ(m.fn->C_Initialize(nullptr), CKR_OK);
+    CK_SESSION_HANDLE session = 0;
+    ASSERT_EQ(m.fn->C_OpenSession(firstPresentSlot(m.fn), CKF_SERIAL_SESSION, nullptr, nullptr, &session), CKR_OK);
+    const CK_OBJECT_HANDLE pub = findKeyOfType(m.fn, session, CKO_PUBLIC_KEY, CKK_RSA);
+    ASSERT_NE(pub, CK_INVALID_HANDLE);
+    CK_RV rv = CKR_OK;
+    (void)attrBytes(m.fn, session, pub, CKA_EC_PARAMS, &rv);
+    EXPECT_EQ(rv, CKR_ATTRIBUTE_TYPE_INVALID);
+    (void)attrBytes(m.fn, session, pub, CKA_EC_POINT, &rv);
+    EXPECT_EQ(rv, CKR_ATTRIBUTE_TYPE_INVALID);
+    const std::string id{kCertId};
+    EXPECT_EQ(attrBytes(m.fn, session, pub, CKA_ID), (std::vector<std::uint8_t>(id.begin(), id.end())))
+        << "CKA_ID is the agent's keyId (the double fills it with the certId's bytes), not a counter";
+}
+
+// The new ID card is a PACE card: its EC key signs CKM_ECDSA over the
+// caller's digest, never the RSA hash-on-card mechanism, and every length
+// question is answered from the model.
+TEST(ModuleAbi, AnEcKeyOnAPaceCardSignsEcdsaNotHashOnCard)
+{
+    SocketFixture agent(true, "Can", [](FakeSocketAgent& f) { seatEcKey(f, kCertId); });
+    LoadedModule m;
+    ASSERT_EQ(m.fn->C_Initialize(nullptr), CKR_OK);
+    const CK_SLOT_ID slot = firstPresentSlot(m.fn);
+    CK_MECHANISM_TYPE mechs[8];
+    CK_ULONG n = 8;
+    ASSERT_EQ(m.fn->C_GetMechanismList(slot, mechs, &n), CKR_OK);
+    const std::vector<CK_MECHANISM_TYPE> list(mechs, mechs + n);
+    EXPECT_NE(std::find(list.begin(), list.end(), CKM_ECDSA), list.end());
+    EXPECT_EQ(std::find(list.begin(), list.end(), CKM_SHA256_RSA_PKCS), list.end());
+
+    CK_SESSION_HANDLE session = 0;
+    ASSERT_EQ(m.fn->C_OpenSession(slot, CKF_SERIAL_SESSION, nullptr, nullptr, &session), CKR_OK);
+    ASSERT_EQ(m.fn->C_Login(session, CKU_USER, nullptr, 0), CKR_OK);
+    const CK_OBJECT_HANDLE key = findPrivateKey(m.fn, session);
+    CK_MECHANISM mech{CKM_ECDSA, nullptr, 0};
+    ASSERT_EQ(m.fn->C_SignInit(session, &mech, key), CKR_OK);
+    std::vector<CK_BYTE> digest(48, 0xAB);
+    CK_ULONG len = 0;
+    EXPECT_EQ(m.fn->C_Sign(session, digest.data(), digest.size(), nullptr, &len), CKR_OK);
+    EXPECT_EQ(len, 96u) << "2 * ceil(384 / 8)";
+    EXPECT_EQ(agent.fake->callCount(Call::PkSignRaw), 0);
+    EXPECT_EQ(agent.fake->callCount(Call::PkPublicKey), 0) << "the length comes from the model, not the key";
+    CK_BYTE sig[128];
+    len = sizeof(sig);
+    ASSERT_EQ(m.fn->C_Sign(session, digest.data(), digest.size(), sig, &len), CKR_OK);
+    EXPECT_EQ(agent.fake->lastSignMechanism(), "ecdsa");
+    EXPECT_EQ(agent.fake->lastSignInput(), std::vector<std::uint8_t>(digest.begin(), digest.end()));
+}
+
+// ECDSA takes the digest itself, 32/48/64 bytes; anything else is refused
+// without the agent (narrower than v2.40, which would truncate a longer input).
+TEST(ModuleAbi, EcdsaRefusesADigestOfTheWrongLength)
+{
+    SocketFixture agent(true, "Can", [](FakeSocketAgent& f) { seatEcKey(f, kCertId); });
+    LoadedModule m;
+    ASSERT_EQ(m.fn->C_Initialize(nullptr), CKR_OK);
+    CK_SESSION_HANDLE session = 0;
+    ASSERT_EQ(m.fn->C_OpenSession(firstPresentSlot(m.fn), CKF_SERIAL_SESSION, nullptr, nullptr, &session), CKR_OK);
+    ASSERT_EQ(m.fn->C_Login(session, CKU_USER, nullptr, 0), CKR_OK);
+    const CK_OBJECT_HANDLE key = findPrivateKey(m.fn, session);
+    for (const std::size_t bad : {std::size_t{20}, std::size_t{51}}) {
+        CK_MECHANISM mech{CKM_ECDSA, nullptr, 0};
+        ASSERT_EQ(m.fn->C_SignInit(session, &mech, key), CKR_OK);
+        std::vector<CK_BYTE> data(bad, 0x01);
+        CK_BYTE sig[128];
+        CK_ULONG len = sizeof(sig);
+        EXPECT_EQ(m.fn->C_Sign(session, data.data(), data.size(), sig, &len), CKR_DATA_LEN_RANGE) << bad;
+    }
+    EXPECT_EQ(agent.fake->callCount(Call::PkSignRaw), 0);
+}
+
+// A mechanism of the other family is the key's type, not a missing mechanism.
+TEST(ModuleAbi, AMechanismOfTheOtherFamilyIsKeyTypeInconsistent)
+{
+    constexpr const char* kEcCert = "cert-ec";
+    SocketFixture agent(true, "None", [](FakeSocketAgent& f) {
+        f.addCert(kCard0, kEcCert, /*signingCapable=*/true, kDecryptableKeyUsage, "EC Holder");
+        seatEcKey(f, kEcCert);
+    });
+    LoadedModule m;
+    ASSERT_EQ(m.fn->C_Initialize(nullptr), CKR_OK);
+    CK_SESSION_HANDLE session = 0;
+    ASSERT_EQ(m.fn->C_OpenSession(firstPresentSlot(m.fn), CKF_SERIAL_SESSION, nullptr, nullptr, &session), CKR_OK);
+    const CK_OBJECT_HANDLE rsaKey = findKeyOfType(m.fn, session, CKO_PRIVATE_KEY, CKK_RSA);
+    const CK_OBJECT_HANDLE ecKey = findKeyOfType(m.fn, session, CKO_PRIVATE_KEY, CKK_EC);
+    ASSERT_NE(rsaKey, CK_INVALID_HANDLE);
+    ASSERT_NE(ecKey, CK_INVALID_HANDLE);
+    CK_MECHANISM ecdsa{CKM_ECDSA, nullptr, 0};
+    CK_MECHANISM rsa{CKM_RSA_PKCS, nullptr, 0};
+    EXPECT_EQ(m.fn->C_SignInit(session, &ecdsa, rsaKey), CKR_KEY_TYPE_INCONSISTENT);
+    EXPECT_EQ(m.fn->C_SignInit(session, &rsa, ecKey), CKR_KEY_TYPE_INCONSISTENT);
+    EXPECT_EQ(m.fn->C_DecryptInit(session, &rsa, ecKey), CKR_KEY_TYPE_INCONSISTENT);
+}
+
+TEST(ModuleAbi, EcMechanismInfoCarriesTheCurveFlags)
+{
+    SocketFixture agent(true, "Can", [](FakeSocketAgent& f) { seatEcKey(f, kCertId); });
+    LoadedModule m;
+    ASSERT_EQ(m.fn->C_Initialize(nullptr), CKR_OK);
+    CK_MECHANISM_INFO info{};
+    ASSERT_EQ(m.fn->C_GetMechanismInfo(firstPresentSlot(m.fn), CKM_ECDSA, &info), CKR_OK);
+    EXPECT_EQ(info.ulMinKeySize, 256u);
+    EXPECT_EQ(info.ulMaxKeySize, 521u);
+    EXPECT_EQ(info.flags, CKF_HW | CKF_SIGN | CKF_EC_F_P | CKF_EC_OID | CKF_EC_UNCOMPRESS);
+}
+
+// A search by key type or by CKA_PRIVATE no longer returns every object.
+TEST(ModuleAbi, FindObjectsMatchesKeyTypeAndPrivate)
+{
+    constexpr const char* kEcCert = "cert-ec";
+    SocketFixture agent(true, "None", [](FakeSocketAgent& f) {
+        f.addCert(kCard0, kEcCert, /*signingCapable=*/true, 0, "EC Holder");
+        seatEcKey(f, kEcCert);
+    });
+    LoadedModule m;
+    ASSERT_EQ(m.fn->C_Initialize(nullptr), CKR_OK);
+    CK_SESSION_HANDLE session = 0;
+    ASSERT_EQ(m.fn->C_OpenSession(firstPresentSlot(m.fn), CKF_SERIAL_SESSION, nullptr, nullptr, &session), CKR_OK);
+    const auto count = [&](CK_ATTRIBUTE* tmpl, CK_ULONG n) {
+        EXPECT_EQ(m.fn->C_FindObjectsInit(session, tmpl, n), CKR_OK);
+        CK_OBJECT_HANDLE objs[16];
+        CK_ULONG found = 0;
+        EXPECT_EQ(m.fn->C_FindObjects(session, objs, 16, &found), CKR_OK);
+        EXPECT_EQ(m.fn->C_FindObjectsFinal(session), CKR_OK);
+        return found;
+    };
+    CK_KEY_TYPE ec = CKK_EC;
+    CK_ATTRIBUTE byType[] = {{CKA_KEY_TYPE, &ec, sizeof(ec)}};
+    EXPECT_EQ(count(byType, 1), 2u) << "the EC public and private key, nothing else";
+    CK_BBOOL yes = CK_TRUE;
+    CK_ATTRIBUTE byPrivate[] = {{CKA_PRIVATE, &yes, sizeof(yes)}};
+    EXPECT_EQ(count(byPrivate, 1), 2u) << "the two private keys";
+}
+
+// An input the agent refuses before any prompt reaches the caller as the
+// standard's length error for that call -- and the session stays logged in.
+TEST(ModuleAbi, AnInputTheAgentRefusesIsALengthError)
+{
+    SocketFixture agent(true, "None", [](FakeSocketAgent& f) {
+        f.failCall(Call::PkSignRaw, W::SyncError::InvalidRequest);
+        f.failCall(Call::PkDecrypt, W::SyncError::InvalidRequest);
+    });
+    LoadedModule m;
+    ASSERT_EQ(m.fn->C_Initialize(nullptr), CKR_OK);
+    CK_SESSION_HANDLE session = 0;
+    ASSERT_EQ(m.fn->C_OpenSession(firstPresentSlot(m.fn), CKF_SERIAL_SESSION, nullptr, nullptr, &session), CKR_OK);
+    ASSERT_EQ(m.fn->C_Login(session, CKU_USER, nullptr, 0), CKR_OK);
+    const CK_OBJECT_HANDLE key = findPrivateKey(m.fn, session);
+    CK_MECHANISM mech{CKM_RSA_PKCS, nullptr, 0};
+    ASSERT_EQ(m.fn->C_SignInit(session, &mech, key), CKR_OK);
+    std::vector<CK_BYTE> data(51, 0x30);
+    CK_BYTE out[512];
+    CK_ULONG len = sizeof(out);
+    EXPECT_EQ(m.fn->C_Sign(session, data.data(), data.size(), out, &len), CKR_DATA_LEN_RANGE);
+    ASSERT_EQ(m.fn->C_DecryptInit(session, &mech, key), CKR_OK);
+    std::vector<CK_BYTE> ct(256, 0x01);
+    len = sizeof(out);
+    EXPECT_EQ(m.fn->C_Decrypt(session, ct.data(), ct.size(), out, &len), CKR_ENCRYPTED_DATA_LEN_RANGE);
+    CK_SESSION_INFO si{};
+    ASSERT_EQ(m.fn->C_GetSessionInfo(session, &si), CKR_OK);
+    EXPECT_NE(si.state, static_cast<CK_STATE>(CKS_RO_PUBLIC_SESSION)) << "a refused input is not a lapsed lease";
+}
+
+// The agent's ECDSA answer is r||s at the curve's width. Anything else -- a
+// DER-shaped or a truncated reply -- never reaches the caller (NSS, ssh) as a
+// signature, and the operation ends.
+TEST(ModuleAbi, AnEcdsaReplyOfTheWrongWidthIsADeviceError)
+{
+    SocketFixture agent(true, "Can", [](FakeSocketAgent& f) {
+        seatEcKey(f, kCertId);
+        f.setSignResponder([](const W::PkSignRaw&) { return std::vector<std::uint8_t>(95, 0x5A); });
+    });
+    LoadedModule m;
+    ASSERT_EQ(m.fn->C_Initialize(nullptr), CKR_OK);
+    CK_SESSION_HANDLE session = 0;
+    ASSERT_EQ(m.fn->C_OpenSession(firstPresentSlot(m.fn), CKF_SERIAL_SESSION, nullptr, nullptr, &session), CKR_OK);
+    ASSERT_EQ(m.fn->C_Login(session, CKU_USER, nullptr, 0), CKR_OK);
+    const CK_OBJECT_HANDLE key = findPrivateKey(m.fn, session);
+    CK_MECHANISM mech{CKM_ECDSA, nullptr, 0};
+    ASSERT_EQ(m.fn->C_SignInit(session, &mech, key), CKR_OK);
+    std::vector<CK_BYTE> digest(48, 0xAB);
+    CK_BYTE sig[128];
+    CK_ULONG len = sizeof(sig);
+    EXPECT_EQ(m.fn->C_Sign(session, digest.data(), digest.size(), sig, &len), CKR_DEVICE_ERROR);
+    EXPECT_EQ(agent.fake->callCount(Call::PkSignRaw), 1);
+    len = sizeof(sig);
+    EXPECT_EQ(m.fn->C_Sign(session, digest.data(), digest.size(), sig, &len), CKR_OPERATION_NOT_INITIALIZED)
+        << "the failed signature ended the operation";
+}
+
+// The point served is the one on the curve CKA_EC_PARAMS names for the key's
+// size. An agent that reports a P-384 key and answers a well-formed P-256 point
+// would publish a key that contradicts itself; the point is withheld instead.
+TEST(ModuleAbi, AnEcPointOffTheKeysCurveIsNotServed)
+{
+    SocketFixture agent(true, "Can", [](FakeSocketAgent& f) {
+        seatEcKey(f, kCertId);
+        f.setEcPoint(kCertId, "P-256", std::vector<std::uint8_t>(32, 0x11), std::vector<std::uint8_t>(32, 0x22));
+    });
+    LoadedModule m;
+    ASSERT_EQ(m.fn->C_Initialize(nullptr), CKR_OK);
+    CK_SESSION_HANDLE session = 0;
+    ASSERT_EQ(m.fn->C_OpenSession(firstPresentSlot(m.fn), CKF_SERIAL_SESSION, nullptr, nullptr, &session), CKR_OK);
+    const CK_OBJECT_HANDLE pub = findKeyOfType(m.fn, session, CKO_PUBLIC_KEY, CKK_EC);
+    ASSERT_NE(pub, CK_INVALID_HANDLE);
+    EXPECT_EQ(attrBytes(m.fn, session, pub, CKA_EC_PARAMS),
+              (std::vector<std::uint8_t>{0x06, 0x05, 0x2B, 0x81, 0x04, 0x00, 0x22}));
+    CK_RV rv = CKR_OK;
+    (void)attrBytes(m.fn, session, pub, CKA_EC_POINT, &rv);
+    EXPECT_EQ(rv, CKR_ATTRIBUTE_TYPE_INVALID) << "a P-256 point served for a P-384 key";
 }

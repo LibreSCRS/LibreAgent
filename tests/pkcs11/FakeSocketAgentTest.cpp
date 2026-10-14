@@ -13,8 +13,11 @@
 #include <gtest/gtest.h>
 #include <unistd.h>
 
+#include <cstdint>
+#include <memory>
 #include <optional>
 #include <variant>
+#include <vector>
 
 namespace {
 
@@ -184,6 +187,46 @@ TEST(FakeSocketAgent, CanRefuseACallWithEachNameTheWireHas)
         EXPECT_EQ(*sync, want);
         ::close(fd);
     }
+}
+
+// An EC key's public half is a point; a double that answered one it was never
+// given with an empty point would hand every suite above it a key no agent
+// ever sends. Unseated, it is refused; seated, it is served as given.
+TEST(FakeSocketAgent, AnEcKeyWithoutASeatedPointIsRefusedNotAnsweredEmpty)
+{
+    T::FakeSocketAgent fake;
+    fake.addReader("r1", /*hasCard=*/true, "c1");
+    fake.addCert("c1", "unseated");
+    fake.setKeyFacts("unseated", {0x01}, LibreSCRS::Agent::KeyType::Ec, 384, /*canDerive=*/false);
+    fake.addCert("c1", "seated");
+    fake.setKeyFacts("seated", {0x02}, LibreSCRS::Agent::KeyType::Ec, 384, /*canDerive=*/false);
+    fake.setEcPoint("seated", "P-384", std::vector<std::uint8_t>(48, 0x11), std::vector<std::uint8_t>(48, 0x22));
+    fake.start();
+
+    const int fd = T::connectTo(fake.path());
+    ASSERT_GE(fd, 0);
+    // Closed on every exit: a failed assertion that left it open would park
+    // the double's stop() on a connection nobody ends.
+    const std::unique_ptr<const int, void (*)(const int*)> closer{&fd, [](const int* f) { ::close(*f); }};
+    ASSERT_TRUE(roundTrip(fd, W::Hello{W::kProtocolVersion, std::nullopt}, 1).has_value());
+
+    const auto unseated = roundTrip(fd, W::PkPublicKey{"r1", "unseated"}, 2);
+    ASSERT_TRUE(unseated.has_value());
+    const auto* err = std::get_if<W::ErrInfo>(&unseated->reply);
+    ASSERT_NE(err, nullptr) << "an EC key with no point was answered";
+    const auto* sync = std::get_if<W::SyncError>(&err->code);
+    ASSERT_NE(sync, nullptr);
+    EXPECT_EQ(*sync, W::SyncError::KeyNotFound);
+
+    const auto seated = roundTrip(fd, W::PkPublicKey{"r1", "seated"}, 3);
+    ASSERT_TRUE(seated.has_value());
+    const auto* pk = std::get_if<W::PublicKeyReply>(&seated->reply);
+    ASSERT_NE(pk, nullptr);
+    const auto* ec = std::get_if<W::EcPublicKey>(pk);
+    ASSERT_NE(ec, nullptr);
+    EXPECT_EQ(ec->crv, "P-384");
+    EXPECT_EQ(ec->x, std::vector<std::uint8_t>(48, 0x11));
+    EXPECT_EQ(ec->y, std::vector<std::uint8_t>(48, 0x22));
 }
 
 } // namespace

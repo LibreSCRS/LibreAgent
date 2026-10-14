@@ -15,13 +15,15 @@
 //    not CKA_DECRYPT;
 //  - a fully capability-gated token (canSign == canDecrypt == false) advertises
 //    NO mechanisms and its key carries neither CKA_SIGN nor CKA_DECRYPT.
-// PSS / ECDSA are never advertised (SR cards are RSA PKCS#1 v1.5 only).
+// PSS is never advertised. CKM_ECDSA is advertised for an EC key only, and the
+// hash-on-card choice is an RSA family's alone.
 
 #include <LibreSCRS/Agent/pkcs11/ObjectModel.h>
 #include <LibreSCRS/Agent/pkcs11/pkcs11.h>
 
 #include <algorithm>
 #include <string>
+#include <vector>
 #include <gtest/gtest.h>
 
 using namespace LibreSCRS::Pkcs11Agent;
@@ -41,7 +43,8 @@ AgentSnapshot oneCardOneCert()
     c.signingCapable = true;
     c.canSign = true;    // PKS: CardPlugin::sign works
     c.canDecrypt = true; // PKS: CardPlugin::decipher works (keyUsage permits)
-    c.modulusBits = 2048;
+    c.keyType = LibreSCRS::Agent::KeyType::Rsa;
+    c.keyBits = 2048;
     r.certs.push_back(c);
     return AgentSnapshot{.readers = {r}};
 }
@@ -64,7 +67,8 @@ AgentSnapshot namCard()
     c.canSign = true;         // the agent supplies the eSign PIN + drives on-card sign
     c.signsHashOnCard = true; // IAS-ECC hashes the raw message on-card
     c.canDecrypt = false;     // decrypt is not supported on this card
-    c.modulusBits = 3072;
+    c.keyType = LibreSCRS::Agent::KeyType::Rsa;
+    c.keyBits = 3072;
     r.certs.push_back(c);
     return AgentSnapshot{.readers = {r}};
 }
@@ -135,7 +139,7 @@ TEST(ObjectModel, MechanismsAreRawRsaPkcsOnly_NoHashCombosNoPssNoEcdsa)
     EXPECT_FALSE(hasMech(mechs, CKM_SHA384_RSA_PKCS));
     EXPECT_FALSE(hasMech(mechs, CKM_SHA512_RSA_PKCS));
     EXPECT_FALSE(hasMech(mechs, CKM_RSA_PKCS_PSS)); // SR cards do not advertise PSS
-    EXPECT_FALSE(hasMech(mechs, CKM_ECDSA));        // SR cards are RSA-only
+    EXPECT_FALSE(hasMech(mechs, CKM_ECDSA));        // an RSA-only card
     // Exactly one advertised mechanism.
     EXPECT_EQ(mechs.size(), 1u);
 }
@@ -325,4 +329,98 @@ TEST(ObjectModel, PrivateKeyCarriesTheCardsConsentRule)
         if (o.cls == CKO_PRIVATE_KEY)
             EXPECT_FALSE(o.alwaysAuthenticate) << "an unmarked key's private object stays unmarked";
     }
+}
+
+namespace {
+
+// The new Serbian ID card: one EC P-384 key, the card's own 16-byte iD, a PACE
+// card (the agent reports it as hash-on-card for RSA keys, which must not
+// matter for an EC key).
+CertEntry lkEntry()
+{
+    CertEntry c;
+    c.certId = "lk";
+    c.label = "LK";
+    c.ckaId = {0xF7, 0x13, 0x4B, 0x02, 0x7C, 0xD6, 0x45, 0x57, 0x86, 0x0A, 0xF5, 0x4E, 0xB9, 0xCD, 0x1D, 0x41};
+    c.signingCapable = true;
+    c.canSign = true;
+    c.canDecrypt = false;
+    c.signsHashOnCard = true;
+    c.keyType = LibreSCRS::Agent::KeyType::Ec;
+    c.keyBits = 384;
+    return c;
+}
+
+AgentSnapshot cardWith(std::vector<CertEntry> certs)
+{
+    ReaderState r;
+    r.readerPath = "/org/librescrs/Agent/reader/9";
+    r.hasCard = true;
+    r.certs = std::move(certs);
+    return AgentSnapshot{.readers = {r}};
+}
+
+} // namespace
+
+TEST(ObjectModel, AnEcKeyAdvertisesEcdsaNotTheRsaMechanisms)
+{
+    const auto m = ObjectModel::build(cardWith({lkEntry()}));
+    const auto& mechs = m.slots[0].mechanisms;
+    EXPECT_TRUE(hasMech(mechs, CKM_ECDSA));
+    EXPECT_FALSE(hasMech(mechs, CKM_SHA256_RSA_PKCS)) << "hash-on-card is an RSA family choice";
+    EXPECT_FALSE(hasMech(mechs, CKM_RSA_PKCS));
+    EXPECT_FALSE(hasMech(mechs, CKM_ECDH1_DERIVE)) << "derive is advertised only with C_DeriveKey";
+}
+
+TEST(ObjectModel, AMixedCardAdvertisesTheUnion)
+{
+    auto rsa = oneCardOneCert().readers[0].certs[0];
+    const auto m = ObjectModel::build(cardWith({rsa, lkEntry()}));
+    EXPECT_TRUE(hasMech(m.slots[0].mechanisms, CKM_RSA_PKCS));
+    EXPECT_TRUE(hasMech(m.slots[0].mechanisms, CKM_ECDSA));
+}
+
+TEST(ObjectModel, KeyObjectsCarryTheirTypeSizeAndTheCardsId)
+{
+    const auto m = ObjectModel::build(cardWith({lkEntry()}));
+    for (const auto& o : m.slots[0].objects) {
+        EXPECT_EQ(o.ckaId, lkEntry().ckaId) << "CKA_ID is the card's own iD on every object";
+        if (o.cls == CKO_PUBLIC_KEY || o.cls == CKO_PRIVATE_KEY) {
+            EXPECT_EQ(o.keyType, LibreSCRS::Agent::KeyType::Ec);
+            EXPECT_EQ(o.keyBits, 384u);
+        }
+    }
+}
+
+TEST(ObjectModel, AnEcPrivateKeyNeverDecrypts)
+{
+    auto lk = lkEntry();
+    lk.canDecrypt = true; // a transport bug must not turn into CKA_DECRYPT on an EC key
+    const auto m = ObjectModel::build(cardWith({lk}));
+    for (const auto& o : m.slots[0].objects) {
+        if (o.cls == CKO_PRIVATE_KEY) {
+            EXPECT_FALSE(o.decrypt);
+            EXPECT_TRUE(o.sign);
+        }
+    }
+}
+
+TEST(ObjectModel, AnOtherKeyProducesNoObjects)
+{
+    auto other = lkEntry();
+    other.keyType = LibreSCRS::Agent::KeyType::Other;
+    other.keyBits = 0;
+    const auto m = ObjectModel::build(cardWith({other}));
+    EXPECT_TRUE(m.slots[0].objects.empty());
+    EXPECT_TRUE(m.slots[0].mechanisms.empty());
+}
+
+TEST(ObjectModel, ADeriveOnlyKeyWaitsForKeyAgreement)
+{
+    auto deriveOnly = lkEntry();
+    deriveOnly.signingCapable = false;
+    deriveOnly.canSign = false;
+    deriveOnly.canDerive = true;
+    const auto m = ObjectModel::build(cardWith({deriveOnly}));
+    EXPECT_TRUE(m.slots[0].objects.empty()) << "no derive surface yet, so no object";
 }
