@@ -9,6 +9,8 @@
 #include <type_traits>
 #include <LibreSCRS/Agent/wire/Cbor.h>
 
+#include <LibreSCRS/Agent/SecureZero.h>
+
 #include <qcbor/qcbor_decode.h>
 #include <qcbor/qcbor_encode.h>
 
@@ -363,14 +365,6 @@ void CborValue::scrub() noexcept
         for (auto& [key, v] : **held) {
             v.scrub();
         }
-    }
-}
-
-void secureZero(std::span<std::uint8_t> bytes) noexcept
-{
-    volatile std::uint8_t* p = bytes.data();
-    for (std::size_t i = 0; i < bytes.size(); ++i) {
-        p[i] = 0;
     }
 }
 

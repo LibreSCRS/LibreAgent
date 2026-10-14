@@ -3,11 +3,13 @@
 //
 // Byte-stable canonical CBOR round-trips + fail-closed rejection of
 // non-canonical / malformed input (the untrusted-parser contract).
+#include <LibreSCRS/Agent/SecureZero.h>
 #include <LibreSCRS/Agent/wire/Cbor.h>
 
 #include <gtest/gtest.h>
 
 #include <cstdint>
+#include <span>
 #include <vector>
 
 using LibreSCRS::Agent::Wire::CborError;
@@ -150,6 +152,15 @@ TEST(CborRoundTrip, MalformedInputNeverCrashes)
         const auto r = decode(bytes);
         EXPECT_FALSE(r.has_value());
     }
+}
+
+// The one zeroization routine the agent, the facade and both transports share:
+// every byte of the span is zero afterwards, and nothing past it is touched.
+TEST(CborRoundTrip, SecureZeroClearsExactlyTheSpan)
+{
+    std::vector<std::uint8_t> buf{0x11, 0x22, 0x33, 0x44, 0x55};
+    LibreSCRS::Agent::secureZero(std::span<std::uint8_t>{buf.data() + 1, 3});
+    EXPECT_EQ(buf, (std::vector<std::uint8_t>{0x11, 0x00, 0x00, 0x00, 0x55}));
 }
 
 } // namespace

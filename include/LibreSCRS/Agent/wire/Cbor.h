@@ -176,10 +176,6 @@ private:
 // inputs fail-closed.
 [[nodiscard]] std::expected<CborValue, CborError> decode(std::span<const std::uint8_t> bytes);
 
-// Guaranteed zeroization for secret-bearing buffers: volatile writes the
-// optimizer may not elide as dead stores (unlike a plain fill before free).
-void secureZero(std::span<std::uint8_t> bytes) noexcept;
-
 // Caps applied by decode() (also the encode side stays well within them).
 inline constexpr std::size_t kMaxCborDepth = 16;
 inline constexpr std::size_t kMaxCborItems = 4096;

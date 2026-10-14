@@ -25,6 +25,9 @@
 // client-role (ClientCodec.h) — an LM/Qt/OpenSSL include added to any header
 // in that chain fails this target with a file-not-found error.
 #include <LibreSCRS/Agent/FeatureTokens.h>
+#include <LibreSCRS/Agent/KeyType.h>
+#include <LibreSCRS/Agent/SecureZero.h>
+#include <LibreSCRS/Agent/crypto/Mechanism.h>
 #include <LibreSCRS/Agent/wire/ErrorCode.h>
 #include <LibreSCRS/Agent/OperationPhase.h>
 #include <LibreSCRS/Agent/wire/CredentialWire.h>
@@ -57,3 +60,36 @@ static_assert(static_cast<int>(CredentialOutcome::CardRemoved) == 9);
 static_assert(sizeof(SyncError) == 1);
 
 static_assert(LibreSCRS::Agent::kAgentFeatures.size() == 9);
+
+// The key-type and mechanism vocabularies are std-only and constexpr, so the
+// facade -- which links no crypto and no core -- can read them. Pinned here,
+// where only this repo's include/ is on the path.
+static_assert(LibreSCRS::Agent::keyTypeFromToken("RSA") == LibreSCRS::Agent::KeyType::Rsa);
+static_assert(LibreSCRS::Agent::keyTypeFromToken("EC") == LibreSCRS::Agent::KeyType::Ec);
+static_assert(LibreSCRS::Agent::keyTypeFromToken("ED448") == LibreSCRS::Agent::KeyType::Other);
+static_assert(LibreSCRS::Agent::keyTypeToken(LibreSCRS::Agent::KeyType::Other) == "OTHER");
+// The one NIST curve table: every name of a curve finds the same row, a
+// coordinate is ceil(bits/8) bytes, and nothing else is a curve.
+static_assert([] {
+    for (const auto& c : LibreSCRS::Agent::kNistCurves) {
+        if (LibreSCRS::Agent::nistCurveByBits(c.keyBits) != &c || LibreSCRS::Agent::nistCurveByName(c.crv) != &c ||
+            LibreSCRS::Agent::nistCurveByGroup(c.group) != &c || c.fieldBytes != (c.keyBits + 7) / 8 ||
+            c.oidDer.size() != 2U + c.oidDer[1]) {
+            return false;
+        }
+    }
+    return true;
+}());
+static_assert(LibreSCRS::Agent::nistCurveByName("P-384")->group == "secp384r1");
+static_assert(LibreSCRS::Agent::nistCurveByBits(521)->fieldBytes == 66);
+static_assert(LibreSCRS::Agent::nistCurveByBits(255) == nullptr);
+static_assert(LibreSCRS::Agent::nistCurveByName("brainpoolP384r1") == nullptr);
+static_assert(LibreSCRS::Agent::nistCurveByGroup("secp256k1") == nullptr);
+static_assert(LibreSCRS::Agent::signMechanismFromToken("ecdsa") == LibreSCRS::Agent::Mechanism::EcdsaSign);
+static_assert(LibreSCRS::Agent::signMechanismFromToken("sha256-rsa-pkcs") ==
+              LibreSCRS::Agent::Mechanism::Sha256RsaPkcs1Sign);
+static_assert(!LibreSCRS::Agent::signMechanismFromToken("rsa-pss").has_value());
+static_assert(!LibreSCRS::Agent::decryptMechanismFromToken("ecdsa").has_value());
+static_assert(LibreSCRS::Agent::decryptMechanismFromToken("rsa-pkcs") == LibreSCRS::Agent::Mechanism::RsaPkcs1Decrypt);
+static_assert(LibreSCRS::Agent::mechanismToken(LibreSCRS::Agent::Mechanism::RsaPssSign).empty());
+static_assert(LibreSCRS::Agent::kEcdhKdfNull == 1u); // CKD_NULL
