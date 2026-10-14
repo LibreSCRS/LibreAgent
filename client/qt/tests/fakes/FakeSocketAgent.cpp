@@ -8,6 +8,7 @@
 #include "dbus/AgentDBus.h"     // the shared object/interface name spellings (constants only)
 #include "socket/MemfdSource.h" // memfd document/artifact source + readFdAll (Linux test helper)
 
+#include <LibreSCRS/Agent/KeyType.h>
 #include <LibreSCRS/Agent/wire/Framing.h>
 
 #include <QFile>
@@ -578,6 +579,10 @@ std::vector<Wire::CertInfo> FakeSocketAgent::buildCertList() const
         }
         cert.trustStatus = scripted.trustStatus;
         cert.alwaysAuthenticate = scripted.alwaysAuthenticate;
+        cert.keyId.assign(scripted.keyId.begin(), scripted.keyId.end());
+        cert.keyType = LibreSCRS::Agent::keyTypeFromToken(scripted.keyType.toStdString());
+        cert.keyBits = scripted.keyBits;
+        cert.canDerive = scripted.canDerive;
         for (const QString& token : scripted.securityStatus) {
             cert.fields["security"][token.toStdString()] =
                 Wire::CertField{"cert.security." + token.toStdString(), token.toStdString(), token.toStdString()};

@@ -33,6 +33,8 @@
 #include <gtest/gtest.h>
 
 #include <limits>
+#include <optional>
+#include <vector>
 
 using namespace LibreSCRS::Agent::Wire;
 
@@ -96,6 +98,9 @@ CertInfo makeSampleCertInfo()
     ci.ekus = {"clientAuth"};
     ci.chainSubjectCns = {"Root CA"};
     ci.trustStatus = 0;
+    ci.keyId = {0x01};
+    ci.keyType = LibreSCRS::Agent::KeyType::Rsa;
+    ci.keyBits = 2048;
     return ci;
 }
 
@@ -167,8 +172,8 @@ TEST(ClientCodec, EncodeRequestEveryTypeRoundTripsThroughServerParse)
     expectRequestRoundTrip(15, PkLogin{"reader/0"});
     expectRequestRoundTrip(16, PkLogout{"reader/0"});
     expectRequestRoundTrip(17, PkPublicKey{"reader/0", "certid"});
-    expectRequestRoundTrip(18, PkSignRaw{"reader/0", "certid", {0xDE, 0xAD}});
-    expectRequestRoundTrip(19, PkDecrypt{"reader/0", "certid", {0xBE, 0xEF}});
+    expectRequestRoundTrip(18, PkSignRaw{"reader/0", "certid", "rsa-pkcs", {0xDE, 0xAD}});
+    expectRequestRoundTrip(19, PkDecrypt{"reader/0", "certid", "rsa-pkcs", {0xBE, 0xEF}});
     expectRequestRoundTrip(
         25, SignBatch{"card/0",
                       "abc123",
@@ -240,10 +245,9 @@ TEST(ClientCodec, CertListReplyKeepsBothConsentValues)
     expectReplyRoundTrip(4, certList, [](std::uint64_t r, const CertListReply& a) { return makeReply(r, a); });
 }
 
-// Every cert-info key is required, this one included: an entry without it is
-// malformed. A decoder that read "absent" as "no consent per operation" would
-// tell a client a key is ordinary on the word of an agent that never said so.
-TEST(ClientCodec, CertInfoWithoutTheConsentFlagIsRejected)
+// A complete cert-info map as the agent encodes it, for the refusal cases to
+// take one key away from.
+CborValue::Map fullCertInfoMap()
 {
     CborValue::Map cert;
     cert.emplace("certId", CborValue("deadbeef"));
@@ -253,13 +257,91 @@ TEST(ClientCodec, CertInfoWithoutTheConsentFlagIsRejected)
     cert.emplace("ekus", CborValue(CborValue::Array{}));
     cert.emplace("chainSubjectCns", CborValue(CborValue::Array{}));
     cert.emplace("trustStatus", CborValue::uint(0));
+    cert.emplace("alwaysAuthenticate", CborValue(false));
+    cert.emplace("keyId", CborValue(std::vector<std::uint8_t>{0xF7, 0x13}));
+    cert.emplace("keyType", CborValue("EC"));
+    cert.emplace("keyBits", CborValue::uint(384));
+    cert.emplace("canDerive", CborValue(true));
+    return cert;
+}
+
+std::optional<CertInfo> decodeOneCert(CborValue::Map cert)
+{
     CborValue::Array certs;
     certs.push_back(CborValue(std::move(cert)));
     CborValue::Map reply;
     reply.emplace("t", CborValue("Reply"));
     reply.emplace("req", CborValue::uint(4));
     reply.emplace("certs", CborValue(std::move(certs)));
-    EXPECT_FALSE(parseReply(CborValue(std::move(reply)).encode(), {}).has_value());
+    const auto decoded = parseReply(CborValue(std::move(reply)).encode(), {});
+    if (!decoded.has_value()) {
+        return std::nullopt;
+    }
+    const auto* list = std::get_if<CertListReply>(&decoded->reply);
+    if (list == nullptr || list->certs.size() != 1) {
+        return std::nullopt;
+    }
+    return list->certs.front();
+}
+
+// Every cert-info key is required, this one included: an entry without it is
+// malformed. A decoder that read "absent" as "no consent per operation" would
+// tell a client a key is ordinary on the word of an agent that never said so.
+TEST(ClientCodec, CertInfoWithoutTheConsentFlagIsRejected)
+{
+    ASSERT_TRUE(decodeOneCert(fullCertInfoMap()).has_value()) << "control: the complete map decodes";
+    auto cert = fullCertInfoMap();
+    cert.erase("alwaysAuthenticate");
+    EXPECT_FALSE(decodeOneCert(std::move(cert)).has_value());
+}
+
+// The four key facts survive the client decode in both families.
+TEST(ClientCodec, CertInfoCarriesTheKeyFacts)
+{
+    CertListReply certList;
+    CertInfo ec = makeSampleCertInfo();
+    ec.certId = "lk";
+    ec.keyId = {0xF7, 0x13, 0x4B, 0x02, 0x7C, 0xD6, 0x45, 0x57, 0x86, 0x0A, 0xF5, 0x4E, 0xB9, 0xCD, 0x1D, 0x41};
+    ec.keyType = LibreSCRS::Agent::KeyType::Ec;
+    ec.keyBits = 384;
+    ec.canDerive = true;
+    CertInfo rsa = makeSampleCertInfo();
+    rsa.certId = "piv";
+    certList.certs = {ec, rsa};
+    expectReplyRoundTrip(4, certList, [](std::uint64_t r, const CertListReply& a) { return makeReply(r, a); });
+}
+
+// Every key fact is required, and keyId is never empty: an entry without one is
+// malformed, never silently "RSA, no ID".
+TEST(ClientCodec, CertInfoWithoutAKeyFactIsRejected)
+{
+    ASSERT_TRUE(decodeOneCert(fullCertInfoMap()).has_value()) << "control: the complete map decodes";
+    for (const char* key : {"keyId", "keyType", "keyBits", "canDerive"}) {
+        auto cert = fullCertInfoMap();
+        cert.erase(key);
+        EXPECT_FALSE(decodeOneCert(std::move(cert)).has_value()) << "decoded without " << key;
+    }
+    auto empty = fullCertInfoMap();
+    empty.insert_or_assign("keyId", CborValue(std::vector<std::uint8_t>{}));
+    EXPECT_FALSE(decodeOneCert(std::move(empty)).has_value()) << "an empty keyId is malformed";
+}
+
+// A key type a newer agent appended decodes as Other, never as a failure.
+TEST(ClientCodec, AnUnknownKeyTypeDecodesAsOther)
+{
+    auto cert = fullCertInfoMap();
+    cert.insert_or_assign("keyType", CborValue("ED448"));
+    const auto ci = decodeOneCert(std::move(cert));
+    ASSERT_TRUE(ci.has_value());
+    EXPECT_EQ(ci->keyType, LibreSCRS::Agent::KeyType::Other);
+}
+
+// The EC arm of public-key is served now, at fixed width.
+TEST(ClientCodec, EcPublicKeyReplyRoundTrips)
+{
+    const PublicKeyReply pk =
+        EcPublicKey{"P-384", std::vector<std::uint8_t>(48, 0x11), std::vector<std::uint8_t>(48, 0x22)};
+    expectReplyRoundTrip(9, pk, [](std::uint64_t r, const PublicKeyReply& a) { return makeReply(r, a); });
 }
 
 TEST(ClientCodec, CertDerReplyRoundTrips)

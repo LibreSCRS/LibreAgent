@@ -297,6 +297,10 @@ CborValue encodeCertInfo(const CertInfo& ci)
     m.emplace("chainSubjectCns", arrOfText(ci.chainSubjectCns));
     m.emplace("trustStatus", CborValue::uint(ci.trustStatus));
     m.emplace("alwaysAuthenticate", CborValue(ci.alwaysAuthenticate));
+    m.emplace("keyId", CborValue(ci.keyId));
+    m.emplace("keyType", CborValue(std::string{keyTypeToken(ci.keyType)}));
+    m.emplace("keyBits", CborValue::uint(ci.keyBits));
+    m.emplace("canDerive", CborValue(ci.canDerive));
     return CborValue(std::move(m));
 }
 
@@ -596,11 +600,13 @@ CborValue encodeRequestBody(const Request& body)
                 m.emplace("t", CborValue("Pkcs11.SignRaw"));
                 m.emplace("reader", CborValue(r.reader));
                 m.emplace("cert", CborValue(r.cert));
+                m.emplace("mech", CborValue(r.mech));
                 m.emplace("data", CborValue(r.data));
             } else if constexpr (std::is_same_v<T, PkDecrypt>) {
                 m.emplace("t", CborValue("Pkcs11.Decrypt"));
                 m.emplace("reader", CborValue(r.reader));
                 m.emplace("cert", CborValue(r.cert));
+                m.emplace("mech", CborValue(r.mech));
                 m.emplace("data", CborValue(r.data));
             } else if constexpr (std::is_same_v<T, ListCredentials>) {
                 m.emplace("t", CborValue("ListCredentials"));
@@ -847,14 +853,21 @@ std::expected<RequestEnvelope, WireError> parseRequest(std::span<const std::uint
         if (!cert) {
             return std::unexpected(cert.error());
         }
+        // Required: a request that does not name its mechanism is malformed.
+        // Which tokens are known is the frontend's question (it answers an
+        // unknown one with InvalidRequest instead of dropping the connection).
+        auto mech = fText(*m, "mech");
+        if (!mech) {
+            return std::unexpected(mech.error());
+        }
         auto data = fBytes(*m, "data");
         if (!data) {
             return std::unexpected(data.error());
         }
         if (t == "Pkcs11.SignRaw") {
-            env.body = PkSignRaw{std::move(*reader), std::move(*cert), std::move(*data)};
+            env.body = PkSignRaw{std::move(*reader), std::move(*cert), std::move(*mech), std::move(*data)};
         } else {
-            env.body = PkDecrypt{std::move(*reader), std::move(*cert), std::move(*data)};
+            env.body = PkDecrypt{std::move(*reader), std::move(*cert), std::move(*mech), std::move(*data)};
         }
     } else if (t == "ListCredentials") {
         auto card = oneString("card");

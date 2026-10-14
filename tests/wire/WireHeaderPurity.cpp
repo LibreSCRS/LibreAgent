@@ -67,6 +67,8 @@ static_assert(LibreSCRS::Agent::kAgentFeatures.size() == 9);
 static_assert(LibreSCRS::Agent::keyTypeFromToken("RSA") == LibreSCRS::Agent::KeyType::Rsa);
 static_assert(LibreSCRS::Agent::keyTypeFromToken("EC") == LibreSCRS::Agent::KeyType::Ec);
 static_assert(LibreSCRS::Agent::keyTypeFromToken("ED448") == LibreSCRS::Agent::KeyType::Other);
+static_assert(LibreSCRS::Agent::keyTypeToken(LibreSCRS::Agent::KeyType::Rsa) == "RSA");
+static_assert(LibreSCRS::Agent::keyTypeToken(LibreSCRS::Agent::KeyType::Ec) == "EC");
 static_assert(LibreSCRS::Agent::keyTypeToken(LibreSCRS::Agent::KeyType::Other) == "OTHER");
 // The one NIST curve table: every name of a curve finds the same row, a
 // coordinate is ceil(bits/8) bytes, and nothing else is a curve.
@@ -91,5 +93,9 @@ static_assert(LibreSCRS::Agent::signMechanismFromToken("sha256-rsa-pkcs") ==
 static_assert(!LibreSCRS::Agent::signMechanismFromToken("rsa-pss").has_value());
 static_assert(!LibreSCRS::Agent::decryptMechanismFromToken("ecdsa").has_value());
 static_assert(LibreSCRS::Agent::decryptMechanismFromToken("rsa-pkcs") == LibreSCRS::Agent::Mechanism::RsaPkcs1Decrypt);
+static_assert(LibreSCRS::Agent::mechanismToken(LibreSCRS::Agent::Mechanism::RsaPkcs1Sign) == "rsa-pkcs");
+static_assert(LibreSCRS::Agent::mechanismToken(LibreSCRS::Agent::Mechanism::Sha256RsaPkcs1Sign) == "sha256-rsa-pkcs");
+static_assert(LibreSCRS::Agent::mechanismToken(LibreSCRS::Agent::Mechanism::EcdsaSign) == "ecdsa");
+static_assert(LibreSCRS::Agent::mechanismToken(LibreSCRS::Agent::Mechanism::RsaPkcs1Decrypt) == "rsa-pkcs");
 static_assert(LibreSCRS::Agent::mechanismToken(LibreSCRS::Agent::Mechanism::RsaPssSign).empty());
 static_assert(LibreSCRS::Agent::kEcdhKdfNull == 1u); // CKD_NULL

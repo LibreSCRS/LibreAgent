@@ -52,6 +52,8 @@
 #include <LibreSCRS/Plugin/PinStatusEntry.h>
 #include <LibreSCRS/Auth/AuthRequirement.h>
 
+#include <LibreSCRS/Agent/KeyType.h>
+#include <LibreSCRS/Agent/crypto/Mechanism.h>
 #include <LibreSCRS/Agent/wire/Messages.h>
 
 #include <gtest/gtest.h>
@@ -971,6 +973,39 @@ TEST(WireContractGuard, CddlCredentialVerbsMatchTokens)
     }
 }
 
+// cert-info's keyType tokens are the agent's own, in the enum's order.
+TEST(WireContractGuard, CddlKeyTypeMatchesTheAgentTokens)
+{
+    const std::string cddl = slurp(LIBRESCRS_AGENT_WIRE_CDDL);
+    ASSERT_FALSE(cddl.empty()) << "wire CDDL source path not wired";
+    using LibreSCRS::Agent::KeyType;
+    const auto tokens = cddlQuotedTokens(cddlRuleRhs(cddl, "key-type"));
+    const std::vector<std::string> agent{std::string{keyTypeToken(KeyType::Rsa)},
+                                         std::string{keyTypeToken(KeyType::Ec)},
+                                         std::string{keyTypeToken(KeyType::Other)}};
+    ASSERT_EQ(tokens.size(), agent.size()) << "the CDDL `key-type` group changed size";
+    for (std::size_t i = 0; i < agent.size(); ++i) {
+        EXPECT_EQ(tokens[i], agent[i]) << "key-type token " << i << " drifted";
+    }
+}
+
+// The two mechanism groups are exactly the tables the frontends map from.
+TEST(WireContractGuard, CddlMechanismTokensMatchTheAgentTables)
+{
+    const std::string cddl = slurp(LIBRESCRS_AGENT_WIRE_CDDL);
+    ASSERT_FALSE(cddl.empty()) << "wire CDDL source path not wired";
+    const auto sign = cddlQuotedTokens(cddlRuleRhs(cddl, "pk-sign-mech"));
+    ASSERT_EQ(sign.size(), LibreSCRS::Agent::kSignMechanismTokens.size());
+    for (std::size_t i = 0; i < sign.size(); ++i) {
+        EXPECT_EQ(sign[i], LibreSCRS::Agent::kSignMechanismTokens[i].token) << "pk-sign-mech token " << i;
+    }
+    const auto decrypt = cddlQuotedTokens(cddlRuleRhs(cddl, "pk-decrypt-mech"));
+    ASSERT_EQ(decrypt.size(), LibreSCRS::Agent::kDecryptMechanismTokens.size());
+    for (std::size_t i = 0; i < decrypt.size(); ++i) {
+        EXPECT_EQ(decrypt[i], LibreSCRS::Agent::kDecryptMechanismTokens[i].token) << "pk-decrypt-mech token " << i;
+    }
+}
+
 // The four enum-valued record vocabularies (kind/state/unblock-style/recovery)
 // match the shipping detail::credential*Token helpers, and the CDDL groups match
 // them as SETS (cred-kind's source order deliberately differs from the enum's).
@@ -1117,7 +1152,7 @@ TEST(WireContractGuard, ClosedVocabulariesAreTheExpectedSet)
         "cred-verb",      "error-code",    "op-phase",         "op-status",       "packaging-mode",
         "pre-read-auth",  "sign-format",   "sign-level",       "quiesce-reason",  "settable-config-key",
         "sync-error",     "unblock-style", "requested-format", "requested-level", "requested-packaging",
-        "config-key",
+        "config-key",     "key-type",      "pk-sign-mech",     "pk-decrypt-mech",
     };
 
     std::set<std::string> found;

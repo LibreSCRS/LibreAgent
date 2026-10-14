@@ -504,8 +504,10 @@ BytesResult SocketAgentClient::signRaw(const std::string& reader, const std::str
         out.status = Status::DeviceRemoved;
         return out;
     }
-    const auto reply =
-        m_impl->call(W::PkSignRaw{reader, certId, {input.begin(), input.end()}}, m_impl->budgets.interactiveSecs);
+    // Until the module names its mechanism, every raw signature is the RSA
+    // PKCS#1 v1.5 block it has always sent.
+    const auto reply = m_impl->call(W::PkSignRaw{reader, certId, std::string{"rsa-pkcs"}, {input.begin(), input.end()}},
+                                    m_impl->budgets.interactiveSecs);
     if (!reply.has_value()) {
         out.status = Status::DeviceRemoved;
         return out;
@@ -531,8 +533,9 @@ BytesResult SocketAgentClient::decrypt(const std::string& reader, const std::str
         out.status = Status::DeviceRemoved;
         return out;
     }
-    const auto reply = m_impl->call(W::PkDecrypt{reader, certId, {ciphertext.begin(), ciphertext.end()}},
-                                    m_impl->budgets.interactiveSecs);
+    const auto reply =
+        m_impl->call(W::PkDecrypt{reader, certId, std::string{"rsa-pkcs"}, {ciphertext.begin(), ciphertext.end()}},
+                     m_impl->budgets.interactiveSecs);
     if (!reply.has_value()) {
         out.status = Status::DeviceRemoved;
         return out;

@@ -191,9 +191,21 @@ cancel-op         = ( t: "CancelOp", op: uint )
 get-sign-result   = ( t: "GetSignResult", op: uint )                    ; recovery is Sign-ONLY (Sign1.GetResult)
 pk-login          = ( t: "Pkcs11.Login",     reader: handle )                       ; reader-addressed
 pk-logout         = ( t: "Pkcs11.Logout",    reader: handle )                       ; reader-addressed
-pk-public-key     = ( t: "Pkcs11.PublicKey", reader: handle, cert: cert-id )        ; reader-addressed; RSA n/e (EC reserved)
-pk-sign-raw       = ( t: "Pkcs11.SignRaw",   reader: handle, cert: cert-id, data: bstr )   ; reader-addressed
-pk-decrypt        = ( t: "Pkcs11.Decrypt",   reader: handle, cert: cert-id, data: bstr )   ; reader-addressed
+pk-public-key     = ( t: "Pkcs11.PublicKey", reader: handle, cert: cert-id )        ; reader-addressed; RSA n/e or EC crv/x/y by the key's type
+pk-sign-raw       = ( t: "Pkcs11.SignRaw",   reader: handle, cert: cert-id, mech: pk-sign-mech, data: bstr )    ; reader-addressed
+pk-decrypt        = ( t: "Pkcs11.Decrypt",   reader: handle, cert: cert-id, mech: pk-decrypt-mech, data: bstr ) ; reader-addressed
+; mech names the exact primitive and is required: a tolerant decoder skips
+; keys it does not know, so a mechanism added later would otherwise run on an
+; older agent as whatever it ran before. rsa-pkcs: the caller's complete
+; PKCS#1 v1.5 block (a DigestInfo for a signature, the ciphertext for a
+; decryption); sha256-rsa-pkcs: the raw message, which the card hashes; ecdsa:
+; the digest (32, 48 or 64 bytes), answered with r||s, each half ceil(bits/8)
+; bytes. An unknown token is answered InvalidRequest. The agent checks the
+; mechanism against the key, and the input's length, before any PIN prompt; a
+; refusal is InvalidRequest and asks for no PIN. (On a cold lease the prompt
+; budget is charged when the request arrives, before the card is touched.)
+pk-sign-mech    = "rsa-pkcs" / "sha256-rsa-pkcs" / "ecdsa"
+pk-decrypt-mech = "rsa-pkcs"
 ; Credentials1 seam — PIN/signing-key lifecycle. Gated behind the "credentials"
 ; hello-ack feature token (see hello-ack) and the PinManagement capability bit.
 list-credentials     = ( t: "ListCredentials",    card: handle )
@@ -389,7 +401,7 @@ state         = ( readers: [* reader-state], cards: [* card-state] )
 cert-list     = ( certs: [* cert-info] )
 cert-der      = ( der: bstr )
 public-key    = ( kty: "RSA", n: bstr, e: bstr //             ; RSA: modulus + public exponent (served)
-                  kty: "EC",  crv: tstr, x: bstr, y: bstr )   ; EC reserved — not served in v0.1 (agent-ec-support)
+                  kty: "EC",  crv: tstr, x: bstr, y: bstr )   ; EC: "P-256"/"P-384"/"P-521", x and y ceil(bits/8) bytes each, left-padded
 config        = ( entries: { * config-key => any } )
 ack           = ( ok: true )
 raw-signature = ( sig: bstr )              ; Pkcs11.SignRaw / Decrypt result
@@ -481,10 +493,10 @@ reader-state = { handle: handle, name: tstr, hasCard: bool, ? card: handle }
 ; both degrade to empty strings, never a decode failure.
 card-state   = { handle: handle, reader: handle, caps: capabilities, preAuth: pre-read-auth,
                  ? cardType: tstr, ? atr: tstr }
-; Mirror the canonical Certificates1.Result a(sba{sa{s(ssv)}}uasasub) grouped
+; Mirror the canonical Certificates1.Result a(sba{sa{s(ssv)}}uasasubaysub) grouped
 ; shape — grouped fields (group -> field -> [labelKey, labelFallback, value]) plus
-; keyUsageBits, ekus, chainSubjectCns, trustStatus, alwaysAuthenticate. No DER
-; on the wire.
+; keyUsageBits, ekus, chainSubjectCns, trustStatus, alwaysAuthenticate, keyId,
+; keyType, keyBits, canDerive. No DER on the wire.
 ; `fields` group keys (dict-key growth is lawful and append-only on this
 ; map): subject | issuer | validity | publicKey | cert | ext |
 ; basicConstraints | san | ian | crlDp | aia | certificatePolicies | eku |
@@ -545,10 +557,22 @@ card-state   = { handle: handle, reader: handle, caps: capabilities, preAuth: pr
 ; PKCS#11 CKA_ALWAYS_AUTHENTICATE). Read off the card by the agent, which
 ; enforces it on every raw sign and decrypt itself, so a client never decides
 ; on it. Required, like every key of this map.
+; keyId: the key's PKCS#11 CKA_ID, never empty -- the card's own PKCS#15 iD,
+; else the agent's SHA-1 of the RSA modulus / of the EC X coordinate / of the
+; subjectPublicKey bits, or of the whole certificate when it does not parse
+; (SHA-256 of the certificate where SHA-1 is unavailable). keyType: "RSA" only
+; for an rsaEncryption key (an RSASSA-PSS key is "OTHER"), "EC" only for the
+; NIST prime curves; any other key is "OTHER"; the PKCS#11 module and the
+; macOS token never publish it (signingCapable keeps its meaning for every
+; key). Tolerance (client decode): a key-type token this client does not know
+; decodes as "OTHER", never as an error. keyBits: RSA modulus bits, or 256/384/521; 0 for "OTHER". canDerive:
+; the agent runs ECDH (Pkcs11.Derive) with this key.
 cert-info    = { certId: cert-id, signingCapable: bool,
                  fields: { * tstr => { * tstr => cert-field } },
                  keyUsageBits: uint, ekus: [* tstr], chainSubjectCns: [* tstr], trustStatus: uint,
-                 alwaysAuthenticate: bool }
+                 alwaysAuthenticate: bool,
+                 keyId: bstr, keyType: key-type, keyBits: uint, canDerive: bool }
+key-type     = "RSA" / "EC" / "OTHER"
 cert-field   = [ labelKey: tstr, labelFallback: tstr, value: tstr ]   ; (ssv): value is UTF-8
 
 ; ---- events (agent -> client, unsolicited) ----

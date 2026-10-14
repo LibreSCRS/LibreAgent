@@ -446,8 +446,15 @@ std::optional<CertInfo> decodeCertInfo(const Map& m)
     const Array* chainSubjectCns = r.array("chainSubjectCns");
     ci.trustStatus = r.u32("trustStatus");
     ci.alwaysAuthenticate = r.boolean("alwaysAuthenticate");
+    ci.keyId = r.bytes("keyId");
+    ci.keyType = keyTypeFromToken(r.text("keyType")); // an unknown token reads as Other
+    ci.keyBits = r.u32("keyBits");
+    ci.canDerive = r.boolean("canDerive");
     if (!r.ok()) {
         return std::nullopt;
+    }
+    if (ci.keyId.empty()) {
+        return std::nullopt; // never empty on the wire
     }
     for (const auto& [group, groupVal] : *fields) {
         const auto* inner = groupVal.asMap();

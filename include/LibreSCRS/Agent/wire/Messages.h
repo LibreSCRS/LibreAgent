@@ -3,6 +3,7 @@
 #pragma once
 #include <LibreSCRS/Agent/wire/Cbor.h>
 
+#include <LibreSCRS/Agent/KeyType.h>             // KeyType
 #include <LibreSCRS/Agent/OperationPhase.h>      // OperationPhase, OperationStatus
 #include <LibreSCRS/Agent/wire/CredentialWire.h> // CredentialOpResult, CredentialRecord
 #include <LibreSCRS/Agent/wire/ErrorCode.h>      // ErrorCode
@@ -138,6 +139,12 @@ struct CertInfo
     // The card asks for the PIN before every operation with this key.
     // Required on the wire, like every cert-info key.
     bool alwaysAuthenticate{false};
+    // The key's PKCS#11 CKA_ID (never empty), its family and size, and whether
+    // the agent derives with it. Required on the wire, like every key here.
+    std::vector<std::uint8_t> keyId;
+    KeyType keyType{KeyType::Other};
+    std::uint32_t keyBits{0};
+    bool canDerive{false};
     bool operator==(const CertInfo&) const = default;
 };
 
@@ -313,6 +320,8 @@ struct PkSignRaw
 {
     std::string reader;
     std::string cert;
+    // A pk-sign-mech token; the frontend maps it and refuses an unknown one.
+    std::string mech;
     std::vector<std::uint8_t> data;
     bool operator==(const PkSignRaw&) const = default;
 };
@@ -320,6 +329,8 @@ struct PkDecrypt
 {
     std::string reader;
     std::string cert;
+    // A pk-decrypt-mech token; the frontend maps it and refuses an unknown one.
+    std::string mech;
     std::vector<std::uint8_t> data;
     bool operator==(const PkDecrypt&) const = default;
 };
@@ -414,7 +425,7 @@ struct CertDerReply
     std::vector<std::uint8_t> der;
     bool operator==(const CertDerReply&) const = default;
 };
-// Pkcs11.PublicKey: RSA served (n/e); EC reserved (crv/x/y) — not produced in v0.1.
+// Pkcs11.PublicKey: RSA (n/e) or EC on a NIST curve (crv/x/y).
 struct RsaPublicKey
 {
     std::vector<std::uint8_t> n;

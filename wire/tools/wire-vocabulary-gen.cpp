@@ -22,8 +22,11 @@ namespace {
 // kVerbActivatePin); settable-config-key's members are ConfigStore.cpp's
 // kDefaultLevel/kTsaUrls/kTslSources/kDefaultReason/kDefaultLocation string
 // constants; config-key is that group plus the read-only keys, string
-// constants likewise -- none is backed by a C++ enum.
-const std::set<std::string> kCddlOnly = {"cred-verb", "settable-config-key", "config-key"};
+// constants likewise; pk-sign-mech / pk-decrypt-mech are the agent's
+// mechanism-token tables (Mechanism.h), strings too -- none is backed by a
+// C++ enum.
+const std::set<std::string> kCddlOnly = {"cred-verb", "settable-config-key", "config-key", "pk-sign-mech",
+                                         "pk-decrypt-mech"};
 
 std::string jsonEscape(const std::string& s)
 {

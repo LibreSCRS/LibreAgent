@@ -22,6 +22,7 @@
 //   * push an unrelated event into the middle of an operation -- a client that
 //     never sees an interleaved frame has not been shown to discard one.
 
+#include <LibreSCRS/Agent/KeyType.h>
 #include <LibreSCRS/Agent/wire/ClientCodec.h>
 #include <LibreSCRS/Agent/wire/Framing.h>
 #include <LibreSCRS/Agent/wire/Messages.h>
@@ -96,6 +97,13 @@ struct FakeCert
     std::uint32_t keyUsageBits = 0;
     std::uint32_t trustStatus = 255;
     bool alwaysAuthenticate = false;
+    std::vector<std::uint8_t> keyId; ///< filled with the certId's bytes by addCert()
+    KeyType keyType = KeyType::Rsa;
+    std::uint32_t keyBits = 2048; ///< matches cannedModulus()
+    bool canDerive = false;
+    std::string crv; ///< EC only: what PkPublicKey answers
+    std::vector<std::uint8_t> ecX;
+    std::vector<std::uint8_t> ecY;
 };
 
 /// @brief One scripted reader, and the card (if any) seated in it.
@@ -134,6 +142,13 @@ public:
     /// @brief Mark a served certificate's key as one the card asks the PIN for
     ///        before every use (cert-info `alwaysAuthenticate`).
     void setAlwaysAuthenticate(const std::string& certId, bool on = true);
+    /// @brief Give a served certificate's key the facts an EC (or other) key
+    ///        reports: its CKA_ID, family, size and whether the agent derives.
+    void setKeyFacts(const std::string& certId, std::vector<std::uint8_t> keyId, KeyType type, std::uint32_t bits,
+                     bool canDerive);
+    /// @brief The EC point PkPublicKey answers for @p certId.
+    void setEcPoint(const std::string& certId, std::string crv, std::vector<std::uint8_t> x,
+                    std::vector<std::uint8_t> y);
 
     /// @brief Make @p call sleep before it answers.
     void delayCall(Call call, std::chrono::milliseconds d);
@@ -173,6 +188,8 @@ public:
     /// @brief The bytes of the most recent PkSignRaw. A canned signature alone
     ///        would pass even if the module had sent the wrong input.
     [[nodiscard]] std::vector<std::uint8_t> lastSignInput() const;
+    /// @brief The `mech` of the most recent PkSignRaw.
+    [[nodiscard]] std::string lastSignMechanism() const;
     /// @brief The most recent Hello this fake served. A client that means to
     ///        opt out of presence events has to be caught on the wire; a fake
     ///        that only counted the call would pass either way.
@@ -202,6 +219,7 @@ private:
     std::vector<FakeReader> m_readers;
     std::vector<FakeReader> m_removed; ///< cards taken out, for insertCard()
     std::vector<std::uint8_t> m_lastSignInput;
+    std::string m_lastSignMechanism;
     Wire::Hello m_lastHello;
     std::map<Call, std::chrono::milliseconds> m_delays;
     std::map<Call, Wire::SyncError> m_failures;

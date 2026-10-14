@@ -4,14 +4,14 @@
 CborRelocationTest 3
 CborRoundTripTest 12
 CddlVocabularyTest 17
-ClientCodecTest 77
+ClientCodecTest 81
 FakeSocketAgentTest 5
 FdHarvestTest 5
 FeatureTokensGuardTest 3
 FrameReassemblerTest 8
 FramingTest 11
 LoadModuleTest 4
-MessagesRoundTripTest 23
+MessagesRoundTripTest 25
 ModuleAbiTest 26
 ObjectModelTest 14
 PropertyChangedVocabGuardTest 2

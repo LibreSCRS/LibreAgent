@@ -4,7 +4,7 @@
 CborRelocationTest 3
 CborRoundTripTest 12
 CddlVocabularyTest 17
-ClientCodecTest 77
+ClientCodecTest 81
 ClientQtCapabilitiesTest 15
 ClientQtCardDateTest 5
 ClientQtConfigKeyMirrorTest 2
@@ -26,7 +26,7 @@ FdHarvestTest 5
 FeatureTokensGuardTest 3
 FrameReassemblerTest 8
 FramingTest 11
-MessagesRoundTripTest 23
+MessagesRoundTripTest 25
 PropertyChangedVocabGuardTest 2
 RunHeaderAcceptance.cmake 1
 WireHeadersTest 1

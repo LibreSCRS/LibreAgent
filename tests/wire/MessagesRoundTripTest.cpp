@@ -18,6 +18,7 @@
 #include <filesystem>
 #include <fstream>
 #include <string_view>
+#include <vector>
 
 using namespace LibreSCRS::Agent::Wire;
 
@@ -116,8 +117,8 @@ TEST(MessagesRoundTrip, EveryRequestType)
     expectStable({15, PkLogin{"reader/0"}});
     expectStable({16, PkLogout{"reader/0"}});
     expectStable({17, PkPublicKey{"reader/0", "certid"}});
-    expectStable({18, PkSignRaw{"reader/0", "certid", {0xDE, 0xAD}}});
-    expectStable({19, PkDecrypt{"reader/0", "certid", {0xBE, 0xEF}}});
+    expectStable({18, PkSignRaw{"reader/0", "certid", "rsa-pkcs", {0xDE, 0xAD}}});
+    expectStable({19, PkDecrypt{"reader/0", "certid", "rsa-pkcs", {0xBE, 0xEF}}});
 }
 
 TEST(MessagesRoundTrip, HelloWantsEventsRoundTripsAndDefaultsTrue)
@@ -350,6 +351,30 @@ TEST(MessagesRoundTrip, RejectsMissingRequiredField)
     EXPECT_EQ(r.error(), WireError::MissingField);
 }
 
+// The mechanism travels with the bytes, as the caller named it.
+TEST(MessagesRoundTrip, PkSignRawCarriesItsMechanism)
+{
+    expectStable({30, PkSignRaw{"reader/0", "certid", "ecdsa", std::vector<std::uint8_t>(48, 0xAB)}});
+    expectStable({31, PkSignRaw{"reader/0", "certid", "sha256-rsa-pkcs", {0x01}}});
+}
+
+// mech is required: a tolerant decoder skips keys it does not know, so a
+// mechanism added later would otherwise run as whatever an older agent ran.
+TEST(MessagesRoundTrip, PkSignRawWithoutAMechanismIsMissingField)
+{
+    for (const char* tag : {"Pkcs11.SignRaw", "Pkcs11.Decrypt"}) {
+        CborValue::Map m;
+        m.emplace("t", CborValue(tag));
+        m.emplace("req", CborValue::uint(1));
+        m.emplace("reader", CborValue("r"));
+        m.emplace("cert", CborValue("c"));
+        m.emplace("data", CborValue(std::vector<std::uint8_t>{0x01}));
+        const auto r = parseRequest(CborValue(std::move(m)).encode());
+        ASSERT_FALSE(r.has_value()) << tag;
+        EXPECT_EQ(r.error(), WireError::MissingField) << tag;
+    }
+}
+
 TEST(MessagesRoundTrip, RejectsWrongFieldType)
 {
     CborValue::Map m;
@@ -522,6 +547,10 @@ CertInfo makeSampleCertInfo()
     ci.chainSubjectCns = {"Root CA"};
     ci.trustStatus = 0;
     ci.alwaysAuthenticate = true;
+    ci.keyId = {0xF7, 0x13, 0x4B, 0x02};
+    ci.keyType = LibreSCRS::Agent::KeyType::Ec;
+    ci.keyBits = 384;
+    ci.canDerive = true;
     return ci;
 }
 
@@ -580,6 +609,12 @@ int dumpFixtures(const std::filesystem::path& dir)
     // layoutArmDoesNotDisturbAnOlderClient case).
     writeFixture(dir, "Layout", makeReply(12, LayoutReply{9.5, 11.4, {"Signed by", "John Doe"}, false}));
     writeFixture(dir, "AppearanceFont", makeReply(13, AppearanceFontReply{0}));
+    writeFixture(dir, "PublicKeyEc",
+                 makeReply(15, PublicKeyReply{EcPublicKey{"P-256", std::vector<std::uint8_t>(32, 0x11),
+                                                          std::vector<std::uint8_t>(32, 0x22)}}));
+    writeFixture(dir, "PkSignRaw",
+                 toCbor(RequestEnvelope{1, PkSignRaw{"r", "c", "ecdsa", std::vector<std::uint8_t>(32, 0xAB)}}));
+    writeFixture(dir, "PkDecrypt", toCbor(RequestEnvelope{1, PkDecrypt{"r", "c", "rsa-pkcs", {0x01, 0x02}}}));
 
     // ---- requests (client -> agent; the Swift client mirrors encode(req: 1)) ----
     writeFixture(dir, "ReadTokenInfo", toCbor(RequestEnvelope{1, ReadTokenInfo{"reader/0:card/0"}}));

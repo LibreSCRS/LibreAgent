@@ -20,7 +20,7 @@ CborRoundTripTest 12
 CddlVocabularyTest 17
 CertDerExportTest 1
 CertReadFlowTest 24
-ClientCodecTest 77
+ClientCodecTest 81
 ClientQtAgentCardTest 52
 ClientQtAgentDiscoveryTest 17
 ClientQtAgentOperationTest 19
@@ -75,7 +75,7 @@ LmSeamsRoutingTest 14
 LmSigningRequestBuilderTest 8
 LmTrustVerifierTest 1
 LoggingTest 2
-MessagesRoundTripTest 23
+MessagesRoundTripTest 25
 MrzPayloadTest 18
 ObjectRegistryTest 12
 OperationBaseTest 7
@@ -120,7 +120,7 @@ SigningEngineProviderTest 7
 TokenInfoReadFlowTest 7
 VisualLayoutServiceTest 7
 WatchdogTest 10
-WireContractGuardTest 15
+WireContractGuardTest 17
 WireHeadersTest 1
 ZombieWorkerDrainTest 3
 check-vendored-exports.sh 1

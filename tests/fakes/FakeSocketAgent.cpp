@@ -101,6 +101,7 @@ void FakeSocketAgent::addCert(const std::string& card, std::string certId, bool 
     for (auto& r : m_readers) {
         if (r.card == card) {
             r.certs.push_back(FakeCert{std::move(certId), std::move(subjectCn), signingCapable, keyUsageBits, 255});
+            r.certs.back().keyId.assign(r.certs.back().certId.begin(), r.certs.back().certId.end());
             return;
         }
     }
@@ -113,6 +114,37 @@ void FakeSocketAgent::setAlwaysAuthenticate(const std::string& certId, bool on)
         for (auto& c : r.certs) {
             if (c.certId == certId)
                 c.alwaysAuthenticate = on;
+        }
+    }
+}
+
+void FakeSocketAgent::setKeyFacts(const std::string& certId, std::vector<std::uint8_t> keyId, KeyType type,
+                                  std::uint32_t bits, bool canDerive)
+{
+    const std::lock_guard lock{m_mutex};
+    for (auto& r : m_readers) {
+        for (auto& c : r.certs) {
+            if (c.certId == certId) {
+                c.keyId = keyId;
+                c.keyType = type;
+                c.keyBits = bits;
+                c.canDerive = canDerive;
+            }
+        }
+    }
+}
+
+void FakeSocketAgent::setEcPoint(const std::string& certId, std::string crv, std::vector<std::uint8_t> x,
+                                 std::vector<std::uint8_t> y)
+{
+    const std::lock_guard lock{m_mutex};
+    for (auto& r : m_readers) {
+        for (auto& c : r.certs) {
+            if (c.certId == certId) {
+                c.crv = crv;
+                c.ecX = x;
+                c.ecY = y;
+            }
         }
     }
 }
@@ -157,6 +189,12 @@ std::vector<std::uint8_t> FakeSocketAgent::lastSignInput() const
 {
     const std::lock_guard lock{m_mutex};
     return m_lastSignInput;
+}
+
+std::string FakeSocketAgent::lastSignMechanism() const
+{
+    const std::lock_guard lock{m_mutex};
+    return m_lastSignMechanism;
 }
 
 Wire::Hello FakeSocketAgent::lastHello() const
@@ -338,6 +376,10 @@ std::vector<W::CertInfo> FakeSocketAgent::buildCerts(const std::string& card) co
             ci.keyUsageBits = c.keyUsageBits;
             ci.trustStatus = c.trustStatus;
             ci.alwaysAuthenticate = c.alwaysAuthenticate;
+            ci.keyId = c.keyId;
+            ci.keyType = c.keyType;
+            ci.keyBits = c.keyBits;
+            ci.canDerive = c.canDerive;
             // The subject CN is the label the module shows, and it rides the
             // grouped `fields` dict rather than a field of its own -- the same
             // shape the bus surface uses, so the two clients read one place.
@@ -438,10 +480,22 @@ bool FakeSocketAgent::answer(int fd, const W::RequestEnvelope& env)
         return send(W::makeReply(env.req, W::CertDerReply{kCannedDer}));
     }
 
-    if (std::holds_alternative<W::PkPublicKey>(env.body)) {
+    if (const auto* pk = std::get_if<W::PkPublicKey>(&env.body)) {
         applyScript(Call::PkPublicKey);
         if (const auto e = scriptedFailure(Call::PkPublicKey))
             return refuse(*e);
+        std::optional<W::PublicKeyReply> ec;
+        {
+            const std::lock_guard lock{m_mutex};
+            for (const auto& r : m_readers) {
+                for (const auto& c : r.certs) {
+                    if (c.certId == pk->cert && c.keyType == KeyType::Ec)
+                        ec = W::PublicKeyReply{W::EcPublicKey{c.crv, c.ecX, c.ecY}};
+                }
+            }
+        }
+        if (ec)
+            return send(W::makeReply(env.req, *ec));
         return send(W::makeReply(env.req, W::PublicKeyReply{W::RsaPublicKey{cannedModulus(), kCannedExponent}}));
     }
 
@@ -469,6 +523,7 @@ bool FakeSocketAgent::answer(int fd, const W::RequestEnvelope& env)
         {
             const std::lock_guard lock{m_mutex};
             m_lastSignInput = sr->data;
+            m_lastSignMechanism = sr->mech;
         }
         return send(W::makeReply(env.req, W::RawSignatureReply{kCannedSig}));
     }
