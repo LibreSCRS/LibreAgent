@@ -9,6 +9,10 @@
 // returns the human number) and the keyUsage -> bitmask / signingCapable logic.
 #include <LibreSCRS/Agent/operations/LmSeams.h>
 
+#include "TestCertMint.h"
+#include <LibreSCRS/Agent/operations/RsaPublicKey.h>
+#include <LibreSCRS/Certificate/ParsedCertificate.h>
+
 #include <LibreSCRS/Plugin/PluginTypes.h>
 #include <openssl/evp.h>
 #include <openssl/rsa.h>
@@ -18,6 +22,7 @@
 #include <cstdint>
 #include <optional>
 #include <string>
+#include <utility>
 #include <vector>
 
 using namespace LibreSCRS::Agent;
@@ -506,4 +511,96 @@ TEST(LmCertReaderKat, NoExtendedKeyUsageMeansNoEkuGroup)
 
     EXPECT_FALSE(groupLabel(s, "eku").has_value());
     EXPECT_TRUE(s.ekuOids.empty());
+}
+
+// The CKA_ID a loader pairs certificate and key by is the card's own PKCS#15
+// iD whenever the card names one.
+TEST(LmCertReaderKat, CarriesTheCardsKeyIdWhenItHasOne)
+{
+    namespace T = LibreSCRS::Agent::Test;
+    LibreSCRS::Plugin::CertificateData cd;
+    cd.derBytes = T::selfSignedCert(T::ecKey("P-384").get(), "LK", "critical,digitalSignature,keyEncipherment");
+    cd.keyFID = std::uint16_t{0x47};
+    cd.ckaId = {0xF7, 0x13, 0x4B, 0x02, 0x7C, 0xD6, 0x45, 0x57, 0x86, 0x0A, 0xF5, 0x4E, 0xB9, 0xCD, 0x1D, 0x41};
+    EXPECT_EQ(certSnapshotFromDer(cd).keyId, cd.ckaId);
+}
+
+// A card that names no iD still gets a non-empty one, computed from the key.
+TEST(LmCertReaderKat, ComputesTheKeyIdWhenTheCardGivesNone)
+{
+    const auto der = makeSelfSignedV3Der("No Id", "critical,digitalSignature");
+    LibreSCRS::Plugin::CertificateData cd;
+    cd.derBytes = der;
+    cd.keyFID = std::uint16_t{0x01};
+    const CertSnapshot s = certSnapshotFromDer(cd);
+    EXPECT_FALSE(s.keyId.empty());
+    EXPECT_EQ(s.keyId, LibreSCRS::Agent::Operations::fallbackKeyIdFromCertDer(der));
+}
+
+// The agent decides the key family from the certificate: rsaEncryption is RSA,
+// the three NIST curves are EC, and everything else is Other -- which never
+// derives, whatever the card says. signingCapable keeps its meaning for every
+// family: document signing through the agent stays with a brainpool or
+// RSASSA-PSS card; only the PKCS#11 module and the macOS token leave an Other
+// key out.
+TEST(LmCertReaderKat, ClassifiesRsaEcAndOtherKeys)
+{
+    namespace T = LibreSCRS::Agent::Test;
+    using LibreSCRS::Agent::KeyType;
+    const auto snap = [](const std::vector<std::uint8_t>& der) {
+        LibreSCRS::Plugin::CertificateData cd;
+        cd.derBytes = der;
+        cd.keyFID = std::uint16_t{0x01};
+        cd.canDerive = true;
+        return certSnapshotFromDer(cd);
+    };
+    const auto rsa = snap(makeSelfSignedV3Der("Rsa", "critical,digitalSignature"));
+    EXPECT_EQ(rsa.keyType, KeyType::Rsa);
+    EXPECT_EQ(rsa.keyBits, 2048u);
+    EXPECT_TRUE(rsa.signingCapable);
+    for (const auto& [group, bits] :
+         std::vector<std::pair<const char*, std::uint32_t>>{{"P-256", 256}, {"P-384", 384}, {"P-521", 521}}) {
+        const auto ec = snap(T::selfSignedCert(T::ecKey(group).get(), "Ec", "critical,digitalSignature"));
+        EXPECT_EQ(ec.keyType, KeyType::Ec) << group;
+        EXPECT_EQ(ec.keyBits, bits) << group;
+        EXPECT_TRUE(ec.signingCapable) << group;
+    }
+    for (const char* other : {"RSA-PSS", "ED25519"}) {
+        const auto der = T::selfSignedCert(T::namedKey(other).get(), "Other", "critical,digitalSignature");
+        const auto s = snap(der);
+        EXPECT_EQ(s.keyType, KeyType::Other) << other;
+        EXPECT_EQ(s.keyBits, 0u) << other;
+        // Today's rule, unchanged: a certificate that parses with a signing
+        // keyUsage pairs with a signing-capable key.
+        EXPECT_EQ(s.signingCapable, LibreSCRS::Certificate::ParsedCertificate::fromDer(der).has_value()) << other;
+        EXPECT_FALSE(s.canDerive) << other;
+    }
+    const auto bpDer = T::selfSignedCert(T::ecKey("brainpoolP256r1").get(), "Bp", "critical,digitalSignature");
+    ASSERT_TRUE(LibreSCRS::Certificate::ParsedCertificate::fromDer(bpDer).has_value())
+        << "control: a brainpool certificate parses";
+    const auto bp = snap(bpDer);
+    EXPECT_EQ(bp.keyType, KeyType::Other);
+    EXPECT_TRUE(bp.signingCapable) << "a brainpool card keeps document signing (Card1.Sign)";
+    EXPECT_FALSE(bp.canDerive);
+
+    LibreSCRS::Plugin::CertificateData broken;
+    broken.derBytes = {0x30, 0x03, 0x02, 0x01, 0x00};
+    broken.keyFID = std::uint16_t{0x01};
+    const auto b = certSnapshotFromDer(broken);
+    EXPECT_EQ(b.keyType, KeyType::Other);
+    EXPECT_FALSE(b.keyId.empty()) << "even an unreadable certificate has an ID";
+}
+
+// A key derives only when the card's plugin says it can AND the key is EC.
+TEST(LmCertReaderKat, DeriveNeedsThePluginsWordAndAnEcKey)
+{
+    namespace T = LibreSCRS::Agent::Test;
+    LibreSCRS::Plugin::CertificateData cd;
+    cd.derBytes = T::selfSignedCert(T::ecKey("P-384").get(), "Ec");
+    cd.keyFID = std::uint16_t{0x47};
+    EXPECT_FALSE(certSnapshotFromDer(cd).canDerive);
+    cd.canDerive = true;
+    EXPECT_TRUE(certSnapshotFromDer(cd).canDerive);
+    cd.derBytes = makeSelfSignedV3Der("Rsa", "critical,keyAgreement");
+    EXPECT_FALSE(certSnapshotFromDer(cd).canDerive) << "an RSA key never derives";
 }

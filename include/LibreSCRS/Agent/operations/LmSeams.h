@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 // SPDX-FileCopyrightText: 2026 hirashix0
 #pragma once
+#include <LibreSCRS/Agent/KeyType.h>
 #include <LibreSCRS/Agent/operations/Seams.h>
+#include <LibreSCRS/Certificate/ParsedCertificate.h>
 #include <LibreSCRS/Plugin/CardPlugin.h>
 #include <cstdint>
 #include <memory>
@@ -161,6 +163,18 @@ private:
 
 // Result of resolving a signing request's certId against the present card: the
 // candidate plugin that owns the cert and the exact CertificateData selected.
+// The key family and size the agent reports for a certificate, from its
+// SubjectPublicKeyInfo: RSA only for rsaEncryption (an RSASSA-PSS key cannot do
+// PKCS#1 v1.5), EC only on P-256/P-384/P-521, Other for everything else.
+// Shared by the certificate snapshot and the raw-crypto preflight, so the two
+// can never disagree about what a key is.
+struct CertKeyClass
+{
+    KeyType type{KeyType::Other};
+    std::uint32_t bits{0};
+};
+[[nodiscard]] CertKeyClass classifyCertKey(const LibreSCRS::Certificate::ParsedCertificate& cert);
+
 struct SigningSelection
 {
     std::shared_ptr<const LibreSCRS::Plugin::CardPlugin> plugin;

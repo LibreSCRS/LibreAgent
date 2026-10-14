@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 // SPDX-FileCopyrightText: 2026 hirashix0
 #include <LibreSCRS/Agent/operations/LmSeams.h>
+#include <LibreSCRS/Agent/KeyType.h>          // the NIST curve table
 #include <LibreSCRS/Agent/util/Sha256Hex.h>   // sha256Hex (certId)
 #include <LibreSCRS/Agent/util/DisplayText.h> // isDisplayableUtf8 (text-field display safety)
 #include <LibreSCRS/Agent/util/HexEncode.h>   // toHex (serial / extension presentation)
@@ -9,6 +10,7 @@
 #include "LmSignResultMapping.h"     // mapSigningResultStatus (extracted, unit-testable)
 #include <LibreSCRS/Agent/operations/SignGate.h>
 #include <LibreSCRS/Agent/operations/SignatureParams.h> // timestampWasApplied (honest tsaUsed)
+#include <LibreSCRS/Agent/operations/RsaPublicKey.h>
 #include <LibreSCRS/Agent/operations/SigningEngineProvider.h>
 #include <LibreSCRS/Auth/ErrorKeys.h> // keyAmbiguous() — bind KeyAmbiguous to the LM key constant
 #include <LibreSCRS/Certificate/ParsedCertificate.h>
@@ -24,6 +26,7 @@
 #include <LibreSCRS/Trust/TrustStore.h>
 #include <LibreSCRS/Trust/TrustStoreService.h>
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cmath>   // std::lround (visual geometry float -> LM's integer Rect)
 #include <cstddef> // std::byte (embeddedAppearanceFontData's span)
@@ -434,6 +437,8 @@ CertSnapshot toCertSnapshot(const LibreSCRS::Plugin::CertificateData& cd)
     // The card's rule for the key, not the certificate's: it holds even when
     // the DER below does not parse.
     snap.alwaysAuthenticate = cd.alwaysAuthenticate;
+    // The key's ID: the card's own when it names one, never empty otherwise.
+    snap.keyId = !cd.ckaId.empty() ? cd.ckaId : fallbackKeyIdFromCertDer(cd.derBytes);
     snap.trustStatus = static_cast<std::uint32_t>(CertTrustStatus::Unknown); // chain verdict not yet wired
     // signingCapable is set AFTER parsing (it needs the keyUsage); it defaults
     // false so an unparseable cert is never reported as a usable signing handle.
@@ -450,6 +455,10 @@ CertSnapshot toCertSnapshot(const LibreSCRS::Plugin::CertificateData& cd)
         return snap;
     }
     const auto& c = *parsed;
+    const CertKeyClass key = classifyCertKey(c);
+    snap.keyType = key.type;
+    snap.keyBits = key.bits;
+    snap.canDerive = cd.canDerive && key.type == KeyType::Ec;
 
     GroupSnapshot subject = makeGroup("subject", "Subject");
     addText(subject, "cn", "Common Name", c.subject().commonName());
@@ -654,6 +663,23 @@ CertSnapshot toCertSnapshot(const LibreSCRS::Plugin::CertificateData& cd)
 }
 
 } // namespace
+
+CertKeyClass classifyCertKey(const LibreSCRS::Certificate::ParsedCertificate& cert)
+{
+    using LibreSCRS::Certificate::PublicKeyAlgorithm;
+    const auto pk = cert.publicKey();
+    if (pk.algorithm == PublicKeyAlgorithm::RSA && pk.algorithmOid.dottedDecimal == "1.2.840.113549.1.1.1" &&
+        pk.bitLength > 0) {
+        return CertKeyClass{.type = KeyType::Rsa, .bits = static_cast<std::uint32_t>(pk.bitLength)};
+    }
+    if (pk.algorithm == PublicKeyAlgorithm::ECDSA) {
+        // ParsedCertificate reports the OpenSSL group name here, not a dotted OID.
+        if (const NistCurve* curve = nistCurveByGroup(pk.curveOid)) {
+            return CertKeyClass{.type = KeyType::Ec, .bits = curve->keyBits};
+        }
+    }
+    return CertKeyClass{};
+}
 
 // Exposed entry to the agent-side cert parser (the anon-namespace helpers stay
 // internal). LmCertificateReader::read and the LmSeams KAT both call this.

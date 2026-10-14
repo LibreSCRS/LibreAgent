@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 // SPDX-FileCopyrightText: 2026 hirashix0
 #pragma once
+#include <LibreSCRS/Agent/KeyType.h>
 #include <LibreSCRS/Agent/value/CardReadSnapshot.h> // GroupSnapshot / FieldSnapshot (composed, not re-rolled)
 #include <cstdint>
 #include <string>
@@ -51,6 +52,19 @@ struct CertSnapshot
     // card. Display and the PKCS#11 attribute only: the raw sign/decrypt path
     // re-reads it from the card it operates on, never from this snapshot.
     bool alwaysAuthenticate{false};
+    // The key's PKCS#11 CKA_ID: the card's own PKCS#15 iD when it names one,
+    // else one the agent computes from the public key the way OpenSC does.
+    // Never empty.
+    std::vector<std::uint8_t> keyId;
+    // RSA, EC (NIST P-256/P-384/P-521 only) or Other, from the certificate.
+    // An Other key never derives and is never published by the PKCS#11 module
+    // or the token extension; document signing (Card1.Sign) is unaffected.
+    KeyType keyType{KeyType::Other};
+    // RSA modulus bits, or the curve size (256/384/521); 0 for Other.
+    std::uint32_t keyBits{0};
+    // The card's plugin runs ECDH with this key (LM CertificateData::canDerive)
+    // and the key is EC.
+    bool canDerive{false};
     // Closed-vocabulary tokens mirroring trustStatus (see the CertTrustStatus
     // comment above for the pairing): "trusted", "untrusted-root",
     // "broken-chain", "invalid", "expired", "revoked", "offline-unverified".

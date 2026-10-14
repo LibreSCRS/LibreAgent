@@ -68,7 +68,7 @@ IdentityReadFlowTest 49
 IdentityTest 3
 KeyActivationFlowTest 10
 LeaseManagerTest 18
-LmCertReaderKatTest 16
+LmCertReaderKatTest 20
 LmRawCryptoTest 29
 LmSeamsCompileTest 1
 LmSeamsRoutingTest 14
@@ -104,7 +104,7 @@ ReadCertificatesOperationTest 2
 ReadIdentityOperationTest 3
 ReadTokenInfoOperationTest 5
 ReaderLabelsTest 7
-RsaPublicKeyTest 3
+RsaPublicKeyTest 8
 RunHeaderAcceptance.cmake 1
 ScmRightsSpikeTest 4
 SeamsCompileTest 1

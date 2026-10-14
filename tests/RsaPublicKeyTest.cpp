@@ -8,12 +8,20 @@
 // rejected.
 #include <LibreSCRS/Agent/operations/RsaPublicKey.h>
 
+#include "TestCertMint.h"
+
 #include <openssl/bn.h>
 #include <openssl/core_names.h>
 #include <openssl/evp.h>
+#include <openssl/sha.h>
 #include <openssl/x509.h>
 #include <gtest/gtest.h>
+#include <array>
 #include <cstdint>
+#include <memory>
+#include <span>
+#include <tuple>
+#include <variant>
 #include <vector>
 
 using namespace LibreSCRS::Agent::Operations;
@@ -130,4 +138,142 @@ TEST(RsaPublicKey, RejectsGarbageAndEmpty)
     EXPECT_FALSE(rsaPublicKeyFromCertDer({}).has_value());
     const std::vector<std::uint8_t> garbage{0x30, 0x03, 0x02, 0x01, 0x00};
     EXPECT_FALSE(rsaPublicKeyFromCertDer(garbage).has_value());
+}
+
+namespace {
+
+std::vector<std::uint8_t> sha1Of(std::span<const std::uint8_t> in)
+{
+    std::vector<std::uint8_t> out(SHA_DIGEST_LENGTH);
+    SHA1(in.data(), in.size(), out.data());
+    return out;
+}
+
+} // namespace
+
+// The point a certificate carries, split into fixed-width halves on each of the
+// three curves the agent serves.
+TEST(RsaPublicKey, EcPublicKeyServesThePointOnEveryNistCurve)
+{
+    namespace T = LibreSCRS::Agent::Test;
+    const std::array<std::tuple<const char*, const char*, std::size_t>, 3> curves{
+        {{"P-256", "P-256", 32}, {"P-384", "P-384", 48}, {"P-521", "P-521", 66}}};
+    for (const auto& [group, crv, width] : curves) {
+        auto key = T::ecKey(group);
+        ASSERT_NE(key, nullptr) << group;
+        const auto der = T::selfSignedCert(key.get(), "ec-pub-kat");
+        const auto point = T::encodedPublicPoint(key.get());
+        ASSERT_EQ(point.size(), 1 + 2 * width) << group;
+        const auto ec = ecPublicKeyFromCertDer(der);
+        ASSERT_TRUE(ec.has_value()) << group;
+        EXPECT_EQ(ec->crv, crv);
+        EXPECT_EQ(ec->x, (std::vector<std::uint8_t>(point.begin() + 1, point.begin() + 1 + width))) << group;
+        EXPECT_EQ(ec->y, (std::vector<std::uint8_t>(point.begin() + 1 + width, point.end()))) << group;
+    }
+}
+
+// About one key in 256 has an X coordinate whose first byte is zero; an
+// extractor that went through BN_bn2bin would serve 31 bytes for it.
+TEST(RsaPublicKey, AnXCoordinateWithALeadingZeroKeepsItsWidth)
+{
+    namespace T = LibreSCRS::Agent::Test;
+    for (int attempt = 0; attempt < 8192; ++attempt) {
+        auto key = T::ecKey("P-256");
+        const auto point = T::encodedPublicPoint(key.get());
+        if (point.size() != 65 || point[1] != 0x00) {
+            continue;
+        }
+        const auto ec = ecPublicKeyFromCertDer(T::selfSignedCert(key.get(), "leading-zero"));
+        ASSERT_TRUE(ec.has_value());
+        EXPECT_EQ(ec->x.size(), 32u);
+        EXPECT_EQ(ec->x.front(), 0x00);
+        return;
+    }
+    FAIL() << "no P-256 key with a leading zero in X in 8192 tries";
+}
+
+TEST(RsaPublicKey, EcPublicKeyRefusesEveryOtherKey)
+{
+    namespace T = LibreSCRS::Agent::Test;
+    EXPECT_FALSE(ecPublicKeyFromCertDer(T::selfSignedCert(T::rsaKey().get(), "rsa")).has_value());
+    EXPECT_FALSE(ecPublicKeyFromCertDer(T::selfSignedCert(T::ecKey("brainpoolP256r1").get(), "bp")).has_value());
+    EXPECT_FALSE(ecPublicKeyFromCertDer(T::selfSignedCert(T::namedKey("ED25519").get(), "ed")).has_value());
+    const std::vector<std::uint8_t> garbage{0x30, 0x03, 0x02, 0x01, 0x00};
+    EXPECT_FALSE(ecPublicKeyFromCertDer(garbage).has_value());
+}
+
+// The ID the agent computes when the card gives none, the way OpenSC does:
+// SHA-1 of the RSA modulus, of the EC X coordinate, else of the
+// subjectPublicKey bits -- and of the whole DER when nothing parses. Never empty.
+TEST(RsaPublicKey, FallbackKeyIdFollowsTheKeyFamily)
+{
+    namespace T = LibreSCRS::Agent::Test;
+    auto rsa = T::rsaKey();
+    const auto rsaDer = T::selfSignedCert(rsa.get(), "rsa");
+    const auto rsaPub = rsaPublicKeyFromCertDer(rsaDer);
+    ASSERT_TRUE(rsaPub.has_value());
+    EXPECT_EQ(fallbackKeyIdFromCertDer(rsaDer), sha1Of(rsaPub->modulus));
+
+    auto ec = T::ecKey("P-384");
+    const auto ecDer = T::selfSignedCert(ec.get(), "ec");
+    const auto ecPub = ecPublicKeyFromCertDer(ecDer);
+    ASSERT_TRUE(ecPub.has_value());
+    EXPECT_EQ(fallbackKeyIdFromCertDer(ecDer), sha1Of(ecPub->x));
+
+    auto ed = T::namedKey("ED25519");
+    const auto edDer = T::selfSignedCert(ed.get(), "ed");
+    const unsigned char* p = edDer.data();
+    std::unique_ptr<X509, decltype(&X509_free)> cert{d2i_X509(nullptr, &p, static_cast<long>(edDer.size())),
+                                                     &X509_free};
+    ASSERT_NE(cert, nullptr);
+    const ASN1_BIT_STRING* bits = X509_get0_pubkey_bitstr(cert.get());
+    EXPECT_EQ(fallbackKeyIdFromCertDer(edDer),
+              sha1Of(std::span<const std::uint8_t>{bits->data, static_cast<std::size_t>(bits->length)}));
+
+    const std::vector<std::uint8_t> garbage{0x30, 0x03, 0x02, 0x01, 0x00};
+    EXPECT_EQ(fallbackKeyIdFromCertDer(garbage), sha1Of(garbage));
+}
+
+// The peer point of a key agreement is checked against the curve of the
+// card's certificate: on it, uncompressed, not at infinity, of the curve's size.
+TEST(RsaPublicKey, APeerPointMustLieOnTheCertificatesCurve)
+{
+    namespace T = LibreSCRS::Agent::Test;
+    auto card = T::ecKey("P-384");
+    const auto der = T::selfSignedCert(card.get(), "card");
+    auto peer = T::ecKey("P-384");
+    const auto good = T::encodedPublicPoint(peer.get());
+    EXPECT_TRUE(ecPeerPointOnCertCurve(der, good));
+
+    auto offCurve = good;
+    offCurve.back() ^= 0x01;
+    EXPECT_FALSE(ecPeerPointOnCertCurve(der, offCurve)) << "a flipped Y bit leaves the curve";
+    auto compressed = good;
+    compressed[0] = 0x02;
+    EXPECT_FALSE(ecPeerPointOnCertCurve(der, compressed));
+    EXPECT_FALSE(ecPeerPointOnCertCurve(der, std::vector<std::uint8_t>{0x00}));
+    EXPECT_FALSE(ecPeerPointOnCertCurve(der, std::span<const std::uint8_t>{good.data(), good.size() - 1}));
+    EXPECT_FALSE(ecPeerPointOnCertCurve(der, T::encodedPublicPoint(T::ecKey("P-256").get())))
+        << "a P-256 point against a P-384 key";
+    EXPECT_FALSE(ecPeerPointOnCertCurve(T::selfSignedCert(T::rsaKey().get(), "rsa"), good));
+}
+
+// The agent's PublicKey answer: an RSA certificate's modulus and exponent, an
+// EC certificate's point on its curve, and nothing for any other key.
+TEST(RsaPublicKey, TheServedPublicKeyIsTheCertificatesOwn)
+{
+    namespace T = LibreSCRS::Agent::Test;
+    const auto rsa = publicKeyFromCertDer(T::selfSignedCert(T::rsaKey().get(), "RSA"));
+    ASSERT_TRUE(rsa.has_value());
+    ASSERT_TRUE(std::holds_alternative<RsaPublicKey>(*rsa));
+    EXPECT_EQ(std::get<RsaPublicKey>(*rsa).modulus.size(), 256u);
+
+    const auto ec = publicKeyFromCertDer(T::selfSignedCert(T::ecKey("P-384").get(), "LK"));
+    ASSERT_TRUE(ec.has_value());
+    ASSERT_TRUE(std::holds_alternative<EcPublicKey>(*ec));
+    EXPECT_EQ(std::get<EcPublicKey>(*ec).crv, "P-384");
+    EXPECT_EQ(std::get<EcPublicKey>(*ec).x.size(), 48u);
+
+    EXPECT_FALSE(publicKeyFromCertDer(T::selfSignedCert(T::namedKey("ED25519").get(), "Ed")).has_value());
+    EXPECT_FALSE(publicKeyFromCertDer(std::vector<std::uint8_t>{0x30, 0x03, 0x02, 0x01, 0x00}).has_value());
 }
