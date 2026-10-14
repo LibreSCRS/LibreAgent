@@ -60,29 +60,25 @@ void Pkcs11Broker::certDer(const std::string& reader, const std::string& certId,
 }
 
 void Pkcs11Broker::publicKey(const std::string& reader, const std::string& certId, const Caller& caller,
-                             Reply<CryptoOutcome, std::vector<std::uint8_t>, std::vector<std::uint8_t>> reply)
+                             Reply<CryptoOutcome, PublicKey> reply)
 {
-    // Public data (the RSA modulus + exponent live in the cert): no consent, no
-    // lease, no authz — same posture as CertDer.
+    // Public data (the key lives in the cert): no consent, no lease, no authz --
+    // same posture as CertDer.
     const auto cardKey = m_deps.resolveCardKey(reader);
     if (!cardKey) {
         reply.fail(CryptoOutcome::UnknownCard);
         return;
     }
-    m_deps.publicKey(reader, certId,
-                     [reply, label = caller.label, idPrefix = certIdPrefix(certId)](std::optional<PublicKey> pk) {
-                         if (!pk) {
-                             reply.fail(CryptoOutcome::KeyNotFound);
-                             return;
-                         }
-                         if (pk->modulus.empty() || pk->exponent.empty()) {
-                             // Resolved, but the key is not RSA (no modulus/exponent to serve).
-                             reply.fail(CryptoOutcome::NotSupported);
-                             return;
-                         }
-                         log::infof("pkcs11: PublicKey cert={} caller={}", idPrefix, label);
-                         reply.ok(pk->modulus, pk->exponent);
-                     });
+    m_deps.publicKey(
+        reader, certId,
+        [reply, label = caller.label, idPrefix = certIdPrefix(certId)](std::expected<PublicKey, CryptoOutcome> pk) {
+            if (!pk) {
+                reply.fail(pk.error());
+                return;
+            }
+            log::infof("pkcs11: PublicKey cert={} caller={}", idPrefix, label);
+            reply.ok(*pk);
+        });
 }
 
 void Pkcs11Broker::login(const std::string& reader, const Caller& caller, Reply<LoginOutcome, std::uint32_t> reply)
@@ -260,9 +256,10 @@ void Pkcs11Broker::runCrypto(const char* opName, std::initializer_list<Mechanism
                  log::infof("pkcs11: {} auth-failed card={} caller={} (lease revoked)", opName, card.value(), label);
              }
              // Forward the seam outcome 1:1 (KeyNotFound / AuthFailed / NotSupported
-             // / Cancelled / CardError, and RateLimited when the flow's prompt gate
-             // refused a prompt). A CryptoResult never carries a broker-gate value
-             // (UnknownCard / UserNotLoggedIn).
+             // / Cancelled / CardError, RateLimited when the flow's prompt gate
+             // refused a prompt, and InvalidInput when the request does not fit
+             // the key -- the lease stays). A CryptoResult never carries a
+             // broker-gate value (UnknownCard / UserNotLoggedIn).
              reply.fail(result.outcome);
          });
 }
@@ -271,11 +268,9 @@ void Pkcs11Broker::signRaw(const std::string& reader, const std::string& certId,
                            const MechanismParams& params, std::span<const std::uint8_t> input, const Caller& caller,
                            Reply<CryptoOutcome, std::vector<std::uint8_t>> reply)
 {
-    // The signRaw seam handles both RSA-PKCS#1 (CKM_RSA_PKCS) and pre-hashed
-    // ECDSA (CKM_ECDSA); it picks the family by the resolved key's algorithm, and
-    // both mechanisms ride MechParamsEmpty.
-    runCrypto("SignRaw", {Mechanism::RsaPkcs1Sign, Mechanism::EcdsaSign}, m_deps.signRaw, mechanism, params, reader,
-              certId, input, caller, std::move(reply));
+    // Three sign primitives are wired, each run as itself on MechParamsEmpty.
+    runCrypto("SignRaw", {Mechanism::RsaPkcs1Sign, Mechanism::Sha256RsaPkcs1Sign, Mechanism::EcdsaSign}, m_deps.signRaw,
+              mechanism, params, reader, certId, input, caller, std::move(reply));
 }
 
 void Pkcs11Broker::decrypt(const std::string& reader, const std::string& certId, Mechanism mechanism,

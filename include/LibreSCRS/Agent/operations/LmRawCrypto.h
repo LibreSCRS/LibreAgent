@@ -1,13 +1,16 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 // SPDX-FileCopyrightText: 2026 hirashix0
 #pragma once
+#include <LibreSCRS/Agent/crypto/Mechanism.h>
 #include <LibreSCRS/Agent/operations/CardPluginRouting.h> // CandidateList
+#include <LibreSCRS/Agent/operations/LmSeams.h>           // SigningSelection
 #include <LibreSCRS/CancelToken.h>
 #include <LibreSCRS/Plugin/PluginTypes.h> // SignMechanism
 #include <LibreSCRS/Secure/String.h>
 #include <LibreSCRS/SmartCard/CardSession.h>
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <span>
 #include <string>
 #include <vector>
@@ -27,6 +30,10 @@ namespace LibreSCRS::Agent::Operations {
 //                   consent per operation and the op was given no PIN. The key
 //                   was not used and no PIN was presented; RawCryptoFlow asks
 //                   for the PIN and retries.
+//   InvalidInput -> the request does not fit the key: a mechanism of the other
+//                   family, an input of the wrong length, or (derive) a peer
+//                   point not on the key's curve. Decided before any PIN
+//                   prompt; the host maps it to InvalidRequest.
 enum class RawCryptoStatus : std::uint8_t {
     Ok,
     KeyNotFound,
@@ -34,6 +41,7 @@ enum class RawCryptoStatus : std::uint8_t {
     CardError,
     NotSupported,
     ConsentRequired,
+    InvalidInput,
 };
 
 struct RawCryptoResult
@@ -46,8 +54,35 @@ struct RawCryptoResult
     bool alwaysAuthenticate = false;
 };
 
-// Raw on-card SIGN over @p input. Routes certId -> (plugin, keyFID) off
-// the live @p session via selectSigningCandidate. The caller never supplies the
+// What the preflight decided, and the key it resolved for the operation.
+struct RawCryptoPreflight
+{
+    RawCryptoStatus status = RawCryptoStatus::CardError; // default fails closed
+    std::optional<SigningSelection> key;                 // engaged iff status == Ok
+};
+
+// The check a raw operation passes before anyone is asked for a PIN. Resolves
+// certId against the card in the reader now (selectSigningCandidate -- the read
+// the operation then uses, so the card is read once), reads the key family and
+// size off its certificate, and refuses:
+//   KeyNotFound  -- no such certificate, or it pairs with no key;
+//   NotSupported -- a decryption the certificate's keyUsage forbids, or a
+//                   mechanism this agent does not run;
+//   InvalidInput -- a mechanism of the other family for the key (ECDSA on RSA,
+//                   RSA on EC, a decryption with an EC key), a caller-built
+//                   RSA-PKCS block for a key on a PACE (CAN) card, which
+//                   hashes the message itself, a message to hash on the card
+//                   for any other RSA key, an input of the wrong length
+//                   (ECDSA: 32/48/64; RSA-PKCS sign: 1..k-11;
+//                   SHA256-RSA-PKCS: not empty; RSA-PKCS decrypt: exactly k).
+// No PIN is asked for or presented and the key is not used. The read runs on
+// the held session, so on a cold PACE channel it may need the CAN, which
+// normally comes from the credential cache.
+[[nodiscard]] RawCryptoPreflight preflight(const CandidateList& candidates, const std::string& certId,
+                                           Mechanism mechanism, std::span<const std::uint8_t> input,
+                                           LibreSCRS::SmartCard::CardSession& session);
+
+// Raw on-card operations with a key preflight() resolved. The caller never supplies the
 // PIN: @p pin is the eSign secret RawCryptoFlow collected from the agent prompter
 // (PIN-as-consent), or null when the held channel is already PIN-verified for
 // this lease.
@@ -58,24 +93,6 @@ struct RawCryptoResult
 // separate verifyPIN call: a key the card wants the PIN for on every operation
 // (PIV 9C) loses its verified state between two plugin calls. A refused PIN
 // comes back as the plugin's PinIncorrect / PinBlocked => AuthFailed.
-//
-// MECHANISM FAMILY BY THE RESOLVED KEY'S ALGORITHM: the resolved
-// certificate's public key decides the family. An ECDSA key takes the
-// pre-hashed ECDSA path (@p input is the pre-computed digest; the plugin
-// signs it with no on-card hashing). Everything else — including an
-// unparseable certificate — keeps the RSA flow.
-//
-// THE RSA FAMILIES — self-dispatch on the resolving plugin:
-//   * Hash-on-card SSCDs (NAM / IAS-ECC, pkcs15-backed) override doSign for
-//     SignMechanism::RSA_SHA256 over the RAW message and own the atomic
-//     verify + MSE(0x28) + PSO inside PKCS15Card::sign.
-//   * DigestInfo cards (PKS / opensc-backed) do NOT override doSign for
-//     RSA_SHA256: that call returns NotImplemented (no card I/O, no PIN use) and
-//     we fall through to SignMechanism::RSA_PKCS over the caller-supplied
-//     DigestInfo.
-// The PKCS#11 module advertises exactly ONE mechanism per card, so @p input
-// already carries the right form (raw message for the hash-on-card family,
-// DigestInfo for the DigestInfo family).
 //
 // PIN LIFETIME: the lease holds only a verified-state boolean; the plugin may
 // hold the deposited PIN. For a key the card marks for consent per operation a
@@ -91,16 +108,20 @@ struct RawCryptoResult
 // lease; sign directly". An empty @p pin is refused as AuthFailed before the
 // key is used: handed to the plugin it would erase the deposit, and the card
 // would run the operation on whatever the held session is verified for.
-[[nodiscard]] RawCryptoResult signRaw(const CandidateList& candidates, const std::string& certId,
+
+// Raw on-card SIGN with the key @p key resolved by preflight(), running exactly
+// @p mechanism: RsaPkcs1Sign -> SignMechanism::RSA_PKCS (the caller's complete
+// block), Sha256RsaPkcs1Sign -> RSA_SHA256 (the raw message, hashed on the
+// card), EcdsaSign -> ECDSA_SHA256/384/512 by the digest's length (answered as
+// r||s). A plugin that lacks the mechanism answers NotSupported; nothing else
+// is tried. Consent and PIN lifetime as described above.
+[[nodiscard]] RawCryptoResult signRaw(const SigningSelection& key, Mechanism mechanism,
                                       std::span<const std::uint8_t> input, const LibreSCRS::Secure::String* pin,
                                       LibreSCRS::SmartCard::CardSession& session, LibreSCRS::CancelToken token);
 
-// Raw RSA PKCS#1 v1.5 DECRYPT of @p ciphertext. Same routing, same consent
-// rule and same PIN lifetime as signRaw (a non-null @p pin is handed to the
-// plugin for this operation and erased after it); then CardPlugin::decipher
-// with DecipherMechanism::RSA_PKCS1_V15. A certificate whose keyUsage forbids
-// decryption answers NotSupported before the consent rule, so a refused
-// decryption never asks for a PIN.
+// Raw RSA PKCS#1 v1.5 DECRYPT (@p mechanism must be RsaPkcs1Decrypt) with the
+// key resolved by preflight(), which has already refused a key whose
+// certificate forbids decryption. Same consent rule and PIN lifetime as signRaw.
 //
 // PER-FAMILY ROUTING:
 //   * PKS (opensc-backed) overrides doDecipher -> Ok / plaintext.
@@ -109,7 +130,7 @@ struct RawCryptoResult
 //     RawCryptoStatus::NotSupported. The NAM token does not advertise CKF_DECRYPT,
 //     so the host never reaches this for a NAM key; the explicit NotSupported
 //     here is the defence-in-depth backstop.
-[[nodiscard]] RawCryptoResult decryptRaw(const CandidateList& candidates, const std::string& certId,
+[[nodiscard]] RawCryptoResult decryptRaw(const SigningSelection& key, Mechanism mechanism,
                                          std::span<const std::uint8_t> ciphertext, const LibreSCRS::Secure::String* pin,
                                          LibreSCRS::SmartCard::CardSession& session, LibreSCRS::CancelToken token);
 
@@ -122,25 +143,19 @@ void eraseDepositedPin(const CandidateList& candidates, LibreSCRS::SmartCard::Ca
 // True iff the X.509 certificate @p der carries a keyUsage that permits RSA
 // decryption (keyEncipherment or dataEncipherment), OR carries no keyUsage
 // extension / is unparseable (permissive — the on-card op stays the final
-// authority). Used by decryptRaw to reject routing a decrypt to a sign-only key:
+// authority). Preflight asks only for an RSA key: a certificate it cannot
+// parse is classified as another kind of key and refused InvalidInput before
+// this runs. Used by preflight to reject routing a decrypt to a sign-only key:
 // for PKS the signature key (ksc, no keyEncipherment) is decrypt-incapable
 // and sc_pkcs15_decipher hard-fails NOT_ALLOWED on it; gating here surfaces
 // NotSupported (-> CKR_KEY_FUNCTION_NOT_PERMITTED) instead of a raw CardError.
 // Exposed for unit testing the pure DER predicate.
 [[nodiscard]] bool certKeyUsagePermitsDecrypt(std::span<const std::uint8_t> der);
 
-// True iff the X.509 certificate @p der advertises an ECDSA public key —
-// the signRaw mechanism-family criterion. Unparseable DER and every other
-// algorithm report false: the RSA flow stays the default and the card
-// remains the final authority. Exposed for unit testing the pure DER
-// predicate.
-[[nodiscard]] bool certPublicKeyIsEcdsa(std::span<const std::uint8_t> der);
-
-// The pre-hashed ECDSA sign mechanism whose canonical digest length matches
-// @p digestLength: <=32 -> ECDSA_SHA256, <=48 -> ECDSA_SHA384, longer ->
-// ECDSA_SHA512. The resolving plugin signs the bytes as-given (no on-card
-// hashing), so the value only names the digest family for the transport.
-// Exposed for unit testing the pure mapping.
-[[nodiscard]] LibreSCRS::Plugin::SignMechanism ecdsaMechanismForDigestLength(std::size_t digestLength) noexcept;
+// The pre-hashed ECDSA sign mechanism for a digest of exactly @p digestLength
+// bytes: 32 -> ECDSA_SHA256, 48 -> ECDSA_SHA384, 64 -> ECDSA_SHA512; nullopt
+// for any other length. Exposed for unit testing the pure mapping.
+[[nodiscard]] std::optional<LibreSCRS::Plugin::SignMechanism>
+ecdsaMechanismForDigest(std::size_t digestLength) noexcept;
 
 } // namespace LibreSCRS::Agent::Operations

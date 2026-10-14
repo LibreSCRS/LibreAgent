@@ -4,17 +4,20 @@
 #include <LibreSCRS/Agent/Identity.h> // CallerToken, ObjectId
 #include <LibreSCRS/Agent/Reply.h>
 #include <LibreSCRS/Agent/crypto/Mechanism.h>
+#include <LibreSCRS/Agent/operations/RsaPublicKey.h>
 #include <LibreSCRS/Agent/operations/RateLimiter.h>
 #include <LibreSCRS/Agent/pkcs11/LeaseManager.h>
 #include <LibreSCRS/CancelToken.h>
 #include <chrono>
 #include <cstdint>
+#include <expected>
 #include <functional>
 #include <initializer_list>
 #include <memory>
 #include <optional>
 #include <span>
 #include <string>
+#include <variant>
 #include <vector>
 
 namespace LibreSCRS::Agent {
@@ -82,12 +85,10 @@ public:
         std::string label;   // sanitised display label — audit only
     };
 
-    // RSA public key components (unpadded big-endian, PKCS#11 CKA_* convention).
-    struct PublicKey
-    {
-        std::vector<std::uint8_t> modulus;
-        std::vector<std::uint8_t> exponent;
-    };
+    // A certificate's public key: an RSA modulus + exponent (unpadded
+    // big-endian, the PKCS#11 CKA_* convention) or an EC point on a NIST curve
+    // (fixed-width x and y). Any other key has no public key on this surface.
+    using PublicKey = std::variant<Operations::RsaPublicKey, Operations::EcPublicKey>;
 
     // Hermetic outcome of a raw crypto op, mirroring RawCryptoFlow::Outcome but
     // kept wire/LM-free here so the host stays unit-testable. The seam produces
@@ -113,6 +114,12 @@ public:
         /// (Error.RateLimited). Append-only: added after UserNotLoggedIn,
         /// never reordered.
         RateLimited,
+        /// The request does not fit the key -- a mechanism of the other family,
+        /// an input of the wrong length, a peer point off the key's curve --
+        /// refused by the agent before any PIN prompt. Produced by the seam;
+        /// the lease is untouched. The backend maps it to InvalidRequest.
+        /// Append-only: added after RateLimited.
+        InvalidInput,
     };
     struct CryptoResult
     {
@@ -158,13 +165,14 @@ public:
     // capture only by value / shared_ptr — the dispatch frame is long gone by the
     // time the worker runs. Tests inject seams that complete @p done inline.
 
-    // CertDer / PublicKey seams: resolve certId -> DER / RSA(modulus,exponent) off
-    // the card on @p reader. nullopt on miss (-> Error.KeyNotFound); an engaged
-    // PublicKey with EMPTY fields signals "resolved but not RSA" (-> NotSupported).
+    // CertDer / PublicKey seams: resolve certId -> DER / public key off the card
+    // on @p reader. CertDer: nullopt on miss (-> Error.KeyNotFound). PublicKey:
+    // KeyNotFound when the certificate is absent, NotSupported when its key is
+    // neither RSA nor EC on a NIST curve.
     using CertDerSeam = std::function<void(const std::string& reader, const std::string& certId,
                                            std::function<void(std::optional<std::vector<std::uint8_t>>)> done)>;
     using PublicKeySeam = std::function<void(const std::string& reader, const std::string& certId,
-                                             std::function<void(std::optional<PublicKey>)> done)>;
+                                             std::function<void(std::expected<PublicKey, CryptoOutcome>)> done)>;
 
     // Login seam: open + classify the card channel on @p reader; @p done carries
     // whether the channel was established (the lease is granted on Ok).
@@ -231,7 +239,7 @@ public:
     void certDer(const std::string& reader, const std::string& certId, const Caller& caller,
                  Reply<CryptoOutcome, std::vector<std::uint8_t>> reply);
     void publicKey(const std::string& reader, const std::string& certId, const Caller& caller,
-                   Reply<CryptoOutcome, std::vector<std::uint8_t>, std::vector<std::uint8_t>> reply);
+                   Reply<CryptoOutcome, PublicKey> reply);
     void login(const std::string& reader, const Caller& caller, Reply<LoginOutcome, std::uint32_t> reply);
     void signRaw(const std::string& reader, const std::string& certId, Mechanism mechanism,
                  const MechanismParams& params, std::span<const std::uint8_t> input, const Caller& caller,
@@ -250,11 +258,10 @@ public:
 
 private:
     // Shared SignRaw/Decrypt body: FIRST reject any @p mechanism NOT in the set
-    // this path wires (fail-closed NotSupported). The signRaw seam handles the
-    // RSA (RsaPkcs1Sign) and pre-hashed ECDSA (EcdsaSign) private-key sign
-    // primitives — both ride MechParamsEmpty and the seam picks RSA-vs-ECDSA by
-    // the resolved key's algorithm — so both are wired; the decrypt seam wires
-    // RsaPkcs1Decrypt only. Every other arm (RSA-PSS / OAEP / ECDH / the
+    // this path wires (fail-closed NotSupported). The signRaw seam runs exactly
+    // the mechanism it is handed — RsaPkcs1Sign, Sha256RsaPkcs1Sign or
+    // EcdsaSign, all on MechParamsEmpty; the decrypt seam runs RsaPkcs1Decrypt.
+    // Every other arm (RSA-PSS / OAEP / ECDH / the
     // public-key encrypt arms) stays rejected here: forwarding one would run it
     // as the seam's default primitive. Then lease-gate (touch) synchronously and
     // run the seam on the worker; the continuation forwards the seam

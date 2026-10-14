@@ -179,12 +179,40 @@ struct Harness
     int allowPromptCalls = 0;
     bool wireGate = true; // false: the host hands the flow no prompt gate at all
     int sessionOpens = 0; // card-session opens the holder's factory served
+    // The injected preflight: resolves a key (or refuses) the way
+    // LmRawCrypto::preflight does, before any prompt.
+    RawCryptoStatus preflightStatus = RawCryptoStatus::Ok;
+    int preflightCalls = 0;
+    std::optional<Mechanism> preflightMechanism;
+    std::optional<Mechanism> opMechanism;
+    bool wirePreflight = true; // false: the host hands the flow no preflight at all
+    // The key file each operation was handed. Each preflight resolves a key of
+    // its own (file 1, 2, ...), so a test can tell which resolution reached it.
+    std::vector<std::uint16_t> opKeyFIDs;
+
+    RawCryptoPreflightOp preflightOp()
+    {
+        return [this](const CandidateList&, const std::string&, Mechanism m, std::span<const std::uint8_t>,
+                      LibreSCRS::SmartCard::CardSession&) -> RawCryptoPreflight {
+            ++preflightCalls;
+            preflightMechanism = m;
+            if (preflightStatus != RawCryptoStatus::Ok) {
+                return RawCryptoPreflight{.status = preflightStatus, .key = std::nullopt};
+            }
+            LibreSCRS::Plugin::CertificateData cd;
+            cd.keyFID = static_cast<std::uint16_t>(preflightCalls);
+            return RawCryptoPreflight{.status = RawCryptoStatus::Ok,
+                                      .key = SigningSelection{.plugin = nullptr, .cert = std::move(cd)}};
+        };
+    }
 
     RawCryptoOp op()
     {
-        return [this](const CandidateList&, const std::string&, std::span<const std::uint8_t>,
+        return [this](const SigningSelection& key, Mechanism m, std::span<const std::uint8_t>,
                       const LibreSCRS::Secure::String* pin, LibreSCRS::SmartCard::CardSession&,
                       LibreSCRS::CancelToken) -> RawCryptoResult {
+            opMechanism = m;
+            opKeyFIDs.push_back(key.cert.keyFID.value_or(0));
             ++opCalls;
             if (keyAlwaysAuthenticates && pin == nullptr) {
                 return RawCryptoResult{RawCryptoStatus::ConsentRequired, {}, true};
@@ -228,6 +256,7 @@ struct Harness
             .cardKey = "card-A",
             .requester = "test-client",
             .certId = "abc123",
+            .preflight = wirePreflight ? preflightOp() : RawCryptoPreflightOp{},
             .signOp = op(),
             .decryptOp = op(),
             .token = source.token(),
@@ -263,7 +292,7 @@ const std::vector<std::uint8_t> kInput{0x01, 0x02, 0x03, 0x04};
 TEST(RawCryptoFlow, SignSuccessReturnsBytes)
 {
     Harness h;
-    auto r = h.make().runSign(kInput);
+    auto r = h.make().runSign(Mechanism::RsaPkcs1Sign, kInput);
     EXPECT_EQ(r.outcome, RawCryptoFlow::Outcome::Ok);
     EXPECT_EQ(r.bytes, (std::vector<std::uint8_t>{'S', 'I', 'G'}));
     auto acq = h.holder->acquire();
@@ -283,7 +312,7 @@ TEST(RawCryptoFlow, PinIsCollectedViaThePrompterAndVerifiedOnTheRealPath)
     // that re-reads the provider.
     Harness h;
     h.cardPin = "1234"; // matches FakePrompter's default
-    auto r = h.make().runSign(kInput);
+    auto r = h.make().runSign(Mechanism::RsaPkcs1Sign, kInput);
     EXPECT_EQ(r.outcome, RawCryptoFlow::Outcome::Ok);
     EXPECT_EQ(h.prompter.pinCalls, 1) << "the PIN came from the agent prompter";
     EXPECT_EQ(h.verifyCalls, 1) << "the terminal op received the PIN to verify on the first op";
@@ -299,7 +328,7 @@ TEST(RawCryptoFlow, WrongPinFromTheCardMapsAuthFailed)
     // lease + the next op re-prompts).
     Harness h;
     h.cardPin = "9999"; // prompter returns "1234" -> mismatch
-    auto r = h.make().runSign(kInput);
+    auto r = h.make().runSign(Mechanism::RsaPkcs1Sign, kInput);
     EXPECT_EQ(r.outcome, RawCryptoFlow::Outcome::AuthFailed);
     EXPECT_EQ(h.verifyCalls, 1) << "the verify ran on the real path";
     EXPECT_FALSE(h.pinVerified) << "a failed verify must NOT mark the lease verified";
@@ -316,14 +345,14 @@ TEST(RawCryptoFlow, FirstOpVerifiesThenSubsequentOpsSkipTheReprompt)
     Harness h;
     h.cardPin = "1234";
     auto flow1 = h.make();
-    EXPECT_EQ(flow1.runSign(kInput).outcome, RawCryptoFlow::Outcome::Ok);
+    EXPECT_EQ(flow1.runSign(Mechanism::RsaPkcs1Sign, kInput).outcome, RawCryptoFlow::Outcome::Ok);
     EXPECT_EQ(h.prompter.pinCalls, 1);
     EXPECT_EQ(h.verifyCalls, 1);
     EXPECT_TRUE(h.pinVerified) << "a successful verify+op marks the lease verified";
     EXPECT_TRUE(h.channelVerified) << "the verify armed the held channel";
 
     auto flow2 = h.make(); // new flow object, SAME lease state (pinVerified true)
-    EXPECT_EQ(flow2.runSign(kInput).outcome, RawCryptoFlow::Outcome::Ok);
+    EXPECT_EQ(flow2.runSign(Mechanism::RsaPkcs1Sign, kInput).outcome, RawCryptoFlow::Outcome::Ok);
     EXPECT_EQ(h.prompter.pinCalls, 1) << "no re-prompt on a verified lease";
     EXPECT_EQ(h.verifyCalls, 1) << "no re-verify on a verified lease";
     EXPECT_TRUE(h.sawNullPinOnce) << "the subsequent op ran with a null (already-verified) PIN";
@@ -344,7 +373,7 @@ TEST(RawCryptoFlow, RecoversWhenTheHeldChannelDropsUnderAVerifiedLease)
     h.cardPin = "1234";
 
     // First op: prompt + verify + mark verified (arms the channel + the lease).
-    EXPECT_EQ(h.make().runSign(kInput).outcome, RawCryptoFlow::Outcome::Ok);
+    EXPECT_EQ(h.make().runSign(Mechanism::RsaPkcs1Sign, kInput).outcome, RawCryptoFlow::Outcome::Ok);
     EXPECT_EQ(h.prompter.pinCalls, 1);
     EXPECT_TRUE(h.pinVerified);
     EXPECT_TRUE(h.channelVerified);
@@ -355,7 +384,7 @@ TEST(RawCryptoFlow, RecoversWhenTheHeldChannelDropsUnderAVerifiedLease)
 
     // Second op: skips the verify (lease still verified), the dropped channel
     // CardErrors, the flow recovers by re-prompting + re-verifying + retrying once.
-    auto r = h.make().runSign(kInput);
+    auto r = h.make().runSign(Mechanism::RsaPkcs1Sign, kInput);
     EXPECT_EQ(r.outcome, RawCryptoFlow::Outcome::Ok) << "the flow recovered from the dropped channel";
     EXPECT_EQ(r.bytes, (std::vector<std::uint8_t>{'S', 'I', 'G'}));
     EXPECT_EQ(h.prompter.pinCalls, 2) << "recovery raised exactly one fresh PIN prompt";
@@ -377,7 +406,7 @@ TEST(RawCryptoFlow, RecoveryRetryThatStillFailsSurfacesTheError)
     h.channelVerified = false;                                    // channel already dropped (idle-close)
     h.opResult = RawCryptoResult{RawCryptoStatus::CardError, {}}; // a card that keeps failing
 
-    auto r = h.make().runSign(kInput);
+    auto r = h.make().runSign(Mechanism::RsaPkcs1Sign, kInput);
     EXPECT_EQ(r.outcome, RawCryptoFlow::Outcome::CardError);
     EXPECT_EQ(h.prompter.pinCalls, 1) << "exactly one recovery prompt, then give up";
     EXPECT_FALSE(h.pinVerified) << "the lease was cleared on the verify-state-loss path";
@@ -389,9 +418,9 @@ TEST(RawCryptoFlow, AKeyTheCardMarksAsksForThePinOnEverySignature)
     // presents it and must NOT warm the lease; the second asks again.
     Harness h;
     h.keyAlwaysAuthenticates = true;
-    EXPECT_EQ(h.make().runSign(kInput).outcome, RawCryptoFlow::Outcome::Ok);
+    EXPECT_EQ(h.make().runSign(Mechanism::RsaPkcs1Sign, kInput).outcome, RawCryptoFlow::Outcome::Ok);
     EXPECT_FALSE(h.pinVerified) << "a per-operation key must not mark the lease verified";
-    EXPECT_EQ(h.make().runSign(kInput).outcome, RawCryptoFlow::Outcome::Ok);
+    EXPECT_EQ(h.make().runSign(Mechanism::RsaPkcs1Sign, kInput).outcome, RawCryptoFlow::Outcome::Ok);
     EXPECT_EQ(h.prompter.pinCalls, 2) << "two signatures, two prompts";
     EXPECT_EQ(h.verifyCalls, 2);
 }
@@ -404,7 +433,7 @@ TEST(RawCryptoFlow, AKeyTheCardMarksAsksEvenUnderAWarmLease)
     h.pinVerified = true;
     h.channelVerified = true;
     h.keyAlwaysAuthenticates = true;
-    const auto r = h.make().runSign(kInput);
+    const auto r = h.make().runSign(Mechanism::RsaPkcs1Sign, kInput);
     EXPECT_EQ(r.outcome, RawCryptoFlow::Outcome::Ok);
     EXPECT_EQ(h.prompter.pinCalls, 1);
     EXPECT_EQ(h.verifyCalls, 1) << "the retry carried this operation's PIN";
@@ -422,7 +451,7 @@ TEST(RawCryptoFlow, AMarkedKeyNeverReArmsALeaseResetDuringItsConsent)
     h.channelVerified = true;
     h.keyAlwaysAuthenticates = true;
     h.prompter.onPin = [&h] { h.pinVerified = false; };
-    EXPECT_EQ(h.make().runSign(kInput).outcome, RawCryptoFlow::Outcome::Ok);
+    EXPECT_EQ(h.make().runSign(Mechanism::RsaPkcs1Sign, kInput).outcome, RawCryptoFlow::Outcome::Ok);
     EXPECT_EQ(h.prompter.pinCalls, 1);
     EXPECT_FALSE(h.pinVerified) << "a marked key never arms the lease, not even on the retry";
 }
@@ -434,23 +463,23 @@ TEST(RawCryptoFlow, EveryPromptAsksTheHostFirst)
     marked.pinVerified = true;
     marked.channelVerified = true;
     marked.keyAlwaysAuthenticates = true;
-    EXPECT_EQ(marked.make().runSign(kInput).outcome, RawCryptoFlow::Outcome::Ok);
+    EXPECT_EQ(marked.make().runSign(Mechanism::RsaPkcs1Sign, kInput).outcome, RawCryptoFlow::Outcome::Ok);
     EXPECT_EQ(marked.allowPromptCalls, 1);
 
     Harness ordinary; // an ordinary key under the same lease prompts for nothing
     ordinary.pinVerified = true;
     ordinary.channelVerified = true;
-    EXPECT_EQ(ordinary.make().runSign(kInput).outcome, RawCryptoFlow::Outcome::Ok);
+    EXPECT_EQ(ordinary.make().runSign(Mechanism::RsaPkcs1Sign, kInput).outcome, RawCryptoFlow::Outcome::Ok);
     EXPECT_EQ(ordinary.allowPromptCalls, 0);
 
     Harness lost; // the recovery re-prompt is a prompt too
     lost.pinVerified = true;
     lost.channelVerified = false;
-    EXPECT_EQ(lost.make().runSign(kInput).outcome, RawCryptoFlow::Outcome::Ok);
+    EXPECT_EQ(lost.make().runSign(Mechanism::RsaPkcs1Sign, kInput).outcome, RawCryptoFlow::Outcome::Ok);
     EXPECT_EQ(lost.allowPromptCalls, 1);
 
     Harness cold; // and so is the first prompt of a lease
-    EXPECT_EQ(cold.make().runSign(kInput).outcome, RawCryptoFlow::Outcome::Ok);
+    EXPECT_EQ(cold.make().runSign(Mechanism::RsaPkcs1Sign, kInput).outcome, RawCryptoFlow::Outcome::Ok);
     EXPECT_EQ(cold.allowPromptCalls, 1);
 }
 
@@ -458,11 +487,12 @@ TEST(RawCryptoFlow, ARefusedPromptRaisesNothingAndSaysRateLimited)
 {
     Harness h;
     h.promptAllowed = false;
-    const auto r = h.make().runSign(kInput);
+    const auto r = h.make().runSign(Mechanism::RsaPkcs1Sign, kInput);
     EXPECT_EQ(r.outcome, RawCryptoFlow::Outcome::RateLimited);
     EXPECT_EQ(h.prompter.pinCalls, 0) << "a refused prompt is never shown";
     EXPECT_EQ(h.opCalls, 0) << "and the card is never touched";
     EXPECT_EQ(h.sessionOpens, 0) << "a refused cold prompt does not even open the card session";
+    EXPECT_EQ(h.preflightCalls, 0) << "a caller over its budget is not even checked against the key";
 
     // A refused re-prompt under a warm lease: the marked key is never used.
     Harness warm;
@@ -470,7 +500,7 @@ TEST(RawCryptoFlow, ARefusedPromptRaisesNothingAndSaysRateLimited)
     warm.channelVerified = true;
     warm.keyAlwaysAuthenticates = true;
     warm.promptAllowed = false;
-    EXPECT_EQ(warm.make().runSign(kInput).outcome, RawCryptoFlow::Outcome::RateLimited);
+    EXPECT_EQ(warm.make().runSign(Mechanism::RsaPkcs1Sign, kInput).outcome, RawCryptoFlow::Outcome::RateLimited);
     EXPECT_EQ(warm.prompter.pinCalls, 0);
     EXPECT_EQ(warm.verifyCalls, 0) << "no PIN reached the card";
 }
@@ -481,16 +511,17 @@ TEST(RawCryptoFlow, AFlowHandedNoPromptGateRaisesNoPrompt)
     // prompts: no gate is a refusal, never an unlimited budget.
     Harness h;
     h.wireGate = false;
-    EXPECT_EQ(h.make().runSign(kInput).outcome, RawCryptoFlow::Outcome::RateLimited);
+    EXPECT_EQ(h.make().runSign(Mechanism::RsaPkcs1Sign, kInput).outcome, RawCryptoFlow::Outcome::RateLimited);
     EXPECT_EQ(h.prompter.pinCalls, 0);
     EXPECT_EQ(h.sessionOpens, 0);
+    EXPECT_EQ(h.preflightCalls, 0) << "a caller over its budget is not even checked against the key";
 
     Harness warm; // the re-prompt for a marked key is refused the same way
     warm.wireGate = false;
     warm.pinVerified = true;
     warm.channelVerified = true;
     warm.keyAlwaysAuthenticates = true;
-    EXPECT_EQ(warm.make().runSign(kInput).outcome, RawCryptoFlow::Outcome::RateLimited);
+    EXPECT_EQ(warm.make().runSign(Mechanism::RsaPkcs1Sign, kInput).outcome, RawCryptoFlow::Outcome::RateLimited);
     EXPECT_EQ(warm.prompter.pinCalls, 0);
     EXPECT_EQ(warm.verifyCalls, 0);
 }
@@ -504,7 +535,7 @@ TEST(RawCryptoFlow, AnEmptyPinIsADismissedPromptNotAPin)
     // the one prompt it cost is charged once.
     Harness h;
     h.prompter.pinResult = PromptResult{PromptStatus::Ok, LibreSCRS::Secure::String{}, ""};
-    EXPECT_EQ(h.make().runSign(kInput).outcome, RawCryptoFlow::Outcome::Cancelled);
+    EXPECT_EQ(h.make().runSign(Mechanism::RsaPkcs1Sign, kInput).outcome, RawCryptoFlow::Outcome::Cancelled);
     EXPECT_EQ(h.opCalls, 0) << "no operation without a PIN";
     EXPECT_FALSE(h.pinVerified) << "an empty answer never warms the lease";
     EXPECT_EQ(h.allowPromptCalls, 1);
@@ -516,7 +547,7 @@ TEST(RawCryptoFlow, AnEmptyPinIsADismissedPromptNotAPin)
     warm.channelVerified = true;
     warm.keyAlwaysAuthenticates = true;
     warm.prompter.pinResult = PromptResult{PromptStatus::Ok, LibreSCRS::Secure::String{}, ""};
-    EXPECT_EQ(warm.make().runDecrypt(kInput).outcome, RawCryptoFlow::Outcome::Cancelled);
+    EXPECT_EQ(warm.make().runDecrypt(Mechanism::RsaPkcs1Decrypt, kInput).outcome, RawCryptoFlow::Outcome::Cancelled);
     EXPECT_EQ(warm.opCalls, 1) << "only the PIN-less probe that asked for consent";
     EXPECT_EQ(warm.verifyCalls, 0) << "no PIN, empty or not, reached the card";
     EXPECT_EQ(warm.allowPromptCalls, 1);
@@ -528,13 +559,15 @@ TEST(RawCryptoFlow, AMarkedKeyThenAnOrdinaryKeyCostsAtMostOnePrompt)
     // ordinary key's next op under the warm lease then fails on the card, and
     // the recovery asks once: one extra prompt, never a failed signature.
     Harness h;
-    ASSERT_EQ(h.make().runSign(kInput).outcome, RawCryptoFlow::Outcome::Ok); // ordinary key: prompt, lease warm
+    ASSERT_EQ(h.make().runSign(Mechanism::RsaPkcs1Sign, kInput).outcome,
+              RawCryptoFlow::Outcome::Ok); // ordinary key: prompt, lease warm
     ASSERT_TRUE(h.pinVerified);
     h.keyAlwaysAuthenticates = true;
-    ASSERT_EQ(h.make().runSign(kInput).outcome, RawCryptoFlow::Outcome::Ok); // marked key: its own prompt
+    ASSERT_EQ(h.make().runSign(Mechanism::RsaPkcs1Sign, kInput).outcome,
+              RawCryptoFlow::Outcome::Ok); // marked key: its own prompt
     h.keyAlwaysAuthenticates = false;
     h.dropChannelOnNextNullPinOp = true; // the erased deposit, as the card sees it
-    const auto r = h.make().runSign(kInput);
+    const auto r = h.make().runSign(Mechanism::RsaPkcs1Sign, kInput);
     EXPECT_EQ(r.outcome, RawCryptoFlow::Outcome::Ok);
     EXPECT_EQ(h.prompter.pinCalls, 3) << "first, marked, and exactly one recovery";
     EXPECT_TRUE(h.pinVerified) << "the recovered ordinary key re-arms the lease";
@@ -545,7 +578,7 @@ TEST(RawCryptoFlow, DecryptRoutesToDecryptOp)
     Harness h;
     h.cardPin = "1234";
     h.opResult = RawCryptoResult{RawCryptoStatus::Ok, {'P', 'T'}};
-    auto r = h.make().runDecrypt(kInput);
+    auto r = h.make().runDecrypt(Mechanism::RsaPkcs1Decrypt, kInput);
     EXPECT_EQ(r.outcome, RawCryptoFlow::Outcome::Ok);
     EXPECT_EQ(r.bytes, (std::vector<std::uint8_t>{'P', 'T'}));
     EXPECT_EQ(h.verifyCalls, 1) << "decrypt also verifies the PIN on the real path";
@@ -556,7 +589,7 @@ TEST(RawCryptoFlow, KeyNotFoundMaps)
     Harness h;
     h.cardPin = "1234";
     h.opResult = RawCryptoResult{RawCryptoStatus::KeyNotFound, {}};
-    auto r = h.make().runSign(kInput);
+    auto r = h.make().runSign(Mechanism::RsaPkcs1Sign, kInput);
     EXPECT_EQ(r.outcome, RawCryptoFlow::Outcome::KeyNotFound);
 }
 
@@ -567,7 +600,7 @@ TEST(RawCryptoFlow, NotSupportedMaps)
     Harness h;
     h.cardPin = "1234";
     h.opResult = RawCryptoResult{RawCryptoStatus::NotSupported, {}};
-    auto r = h.make().runSign(kInput);
+    auto r = h.make().runSign(Mechanism::RsaPkcs1Sign, kInput);
     EXPECT_EQ(r.outcome, RawCryptoFlow::Outcome::NotSupported);
 }
 
@@ -576,7 +609,7 @@ TEST(RawCryptoFlow, CardErrorMaps)
     Harness h;
     h.cardPin = "1234";
     h.opResult = RawCryptoResult{RawCryptoStatus::CardError, {}};
-    auto r = h.make().runSign(kInput);
+    auto r = h.make().runSign(Mechanism::RsaPkcs1Sign, kInput);
     EXPECT_EQ(r.outcome, RawCryptoFlow::Outcome::CardError);
 }
 
@@ -587,7 +620,7 @@ TEST(RawCryptoFlow, PrompterCancelMapsCancelled)
     // never a card fault). The op never runs.
     Harness h;
     h.prompter.pinResult = PromptResult{PromptStatus::Cancelled, std::nullopt, ""};
-    auto r = h.make().runSign(kInput);
+    auto r = h.make().runSign(Mechanism::RsaPkcs1Sign, kInput);
     EXPECT_EQ(r.outcome, RawCryptoFlow::Outcome::Cancelled);
     EXPECT_EQ(h.opCalls, 0) << "no card op attempted when consent was declined";
 }
@@ -598,7 +631,7 @@ TEST(RawCryptoFlow, PrompterErrorMapsCardError)
     // CardError, never reach the card op.
     Harness h;
     h.prompter.pinResult = PromptResult{PromptStatus::Error, std::nullopt, "prompter gone"};
-    auto r = h.make().runSign(kInput);
+    auto r = h.make().runSign(Mechanism::RsaPkcs1Sign, kInput);
     EXPECT_EQ(r.outcome, RawCryptoFlow::Outcome::CardError);
     EXPECT_EQ(h.opCalls, 0);
 }
@@ -608,7 +641,113 @@ TEST(RawCryptoFlow, OpenFailedMapsCardError)
     Harness h;
     h.failWith = LibreSCRS::SmartCard::OpenError{LibreSCRS::SmartCard::OpenError::Kind::ReaderUnavailable,
                                                  LibreSCRS::LocalizedText{}};
-    auto r = h.make().runSign(kInput);
+    auto r = h.make().runSign(Mechanism::RsaPkcs1Sign, kInput);
     EXPECT_EQ(r.outcome, RawCryptoFlow::Outcome::CardError);
     EXPECT_EQ(h.opCalls, 0) << "no card op attempted when the session never opened";
+}
+
+// A request the key refuses (wrong family, wrong length, a point off the
+// curve) never asks for a PIN and never reaches the key. A cold lease was
+// charged its prompt when the request arrived, before the card session was
+// opened; a verified lease stays verified.
+TEST(RawCryptoFlow, ARequestTheKeyRefusesRaisesNoPinPrompt)
+{
+    Harness cold;
+    cold.preflightStatus = RawCryptoStatus::InvalidInput;
+    EXPECT_EQ(cold.make().runSign(Mechanism::EcdsaSign, kInput).outcome, RawCryptoFlow::Outcome::InvalidInput);
+    EXPECT_EQ(cold.allowPromptCalls, 1) << "the cold prompt is charged on entry, before the session opens";
+    EXPECT_EQ(cold.sessionOpens, 1);
+    EXPECT_EQ(cold.preflightCalls, 1);
+    EXPECT_EQ(cold.prompter.pinCalls, 0) << "no PIN prompt for a request the key refuses";
+    EXPECT_EQ(cold.opCalls, 0);
+
+    Harness warm;
+    warm.pinVerified = true;
+    warm.channelVerified = true;
+    warm.preflightStatus = RawCryptoStatus::InvalidInput;
+    EXPECT_EQ(warm.make().runSign(Mechanism::EcdsaSign, kInput).outcome, RawCryptoFlow::Outcome::InvalidInput);
+    EXPECT_EQ(warm.prompter.pinCalls, 0);
+    EXPECT_EQ(warm.allowPromptCalls, 0) << "a verified lease is never charged";
+    EXPECT_TRUE(warm.pinVerified) << "a refusal before the card never resets the lease";
+}
+
+// KeyNotFound and NotSupported decided before the prompt ask for nothing either.
+TEST(RawCryptoFlow, ARefusalFromThePreflightAsksForNothing)
+{
+    for (const auto s : {RawCryptoStatus::KeyNotFound, RawCryptoStatus::NotSupported}) {
+        Harness h;
+        h.preflightStatus = s;
+        const auto r = h.make().runDecrypt(Mechanism::RsaPkcs1Decrypt, kInput);
+        EXPECT_NE(r.outcome, RawCryptoFlow::Outcome::Ok);
+        EXPECT_EQ(h.prompter.pinCalls, 0);
+        EXPECT_EQ(h.opCalls, 0);
+    }
+}
+
+// The mechanism the caller named reaches both the check and the operation.
+TEST(RawCryptoFlow, TheMechanismReachesThePreflightAndTheOperation)
+{
+    Harness h;
+    EXPECT_EQ(h.make().runSign(Mechanism::EcdsaSign, kInput).outcome, RawCryptoFlow::Outcome::Ok);
+    EXPECT_EQ(h.preflightMechanism, Mechanism::EcdsaSign);
+    EXPECT_EQ(h.opMechanism, Mechanism::EcdsaSign);
+}
+
+// After a dropped channel the key is resolved again on the fresh one; a
+// consent re-prompt for a marked key reuses the key already resolved.
+TEST(RawCryptoFlow, ARecoveryRetryResolvesTheKeyAgain)
+{
+    Harness lost;
+    lost.pinVerified = true;
+    lost.channelVerified = true;
+    lost.dropChannelOnNextNullPinOp = true;
+    EXPECT_EQ(lost.make().runSign(Mechanism::RsaPkcs1Sign, kInput).outcome, RawCryptoFlow::Outcome::Ok);
+    EXPECT_EQ(lost.preflightCalls, 2);
+
+    Harness marked;
+    marked.pinVerified = true;
+    marked.channelVerified = true;
+    marked.keyAlwaysAuthenticates = true;
+    EXPECT_EQ(marked.make().runSign(Mechanism::RsaPkcs1Sign, kInput).outcome, RawCryptoFlow::Outcome::Ok);
+    EXPECT_EQ(marked.preflightCalls, 1);
+}
+
+// The operation runs with exactly the key the preflight resolved -- on a
+// recovery retry, the one resolved again on the fresh channel, not the first.
+TEST(RawCryptoFlow, TheOperationUsesTheKeyThePreflightResolved)
+{
+    Harness h;
+    EXPECT_EQ(h.make().runSign(Mechanism::RsaPkcs1Sign, kInput).outcome, RawCryptoFlow::Outcome::Ok);
+    EXPECT_EQ(h.opKeyFIDs, (std::vector<std::uint16_t>{1}));
+
+    Harness lost;
+    lost.pinVerified = true;
+    lost.channelVerified = true;
+    lost.dropChannelOnNextNullPinOp = true;
+    EXPECT_EQ(lost.make().runSign(Mechanism::RsaPkcs1Sign, kInput).outcome, RawCryptoFlow::Outcome::Ok);
+    EXPECT_EQ(lost.opKeyFIDs, (std::vector<std::uint16_t>{1, 2}));
+}
+
+// A flow handed no preflight refuses as a card error before any prompt and
+// before the key is used.
+TEST(RawCryptoFlow, AFlowHandedNoPreflightRefusesBeforeAnyPrompt)
+{
+    Harness h;
+    h.wirePreflight = false;
+    EXPECT_EQ(h.make().runSign(Mechanism::RsaPkcs1Sign, kInput).outcome, RawCryptoFlow::Outcome::CardError);
+    EXPECT_EQ(h.prompter.pinCalls, 0);
+    EXPECT_EQ(h.opCalls, 0);
+}
+
+// The operation's own InvalidInput (a mechanism the terminal cannot map) is
+// surfaced, never read as a dropped channel.
+TEST(RawCryptoFlow, AnInvalidInputFromTheOperationIsNotAChannelLoss)
+{
+    Harness h;
+    h.pinVerified = true;
+    h.channelVerified = true;
+    h.opResult = RawCryptoResult{RawCryptoStatus::InvalidInput, {}};
+    EXPECT_EQ(h.make().runSign(Mechanism::RsaPkcs1Sign, kInput).outcome, RawCryptoFlow::Outcome::InvalidInput);
+    EXPECT_EQ(h.prompter.pinCalls, 0);
+    EXPECT_TRUE(h.pinVerified);
 }

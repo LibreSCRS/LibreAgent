@@ -393,7 +393,7 @@ void driveTerminalWedge(RawCryptoStatus wedgeStatus, Latch& latch, std::atomic<b
         worker = std::thread([pinState, credentials, serializer, prompter, holder, wedgeStatus, &latch,
                               &enteredTerminal, &completed] {
             auto terminalOp = [&latch, &enteredTerminal,
-                               wedgeStatus](const CandidateList&, const std::string&, std::span<const std::uint8_t>,
+                               wedgeStatus](const SigningSelection&, Mechanism, std::span<const std::uint8_t>,
                                             const LibreSCRS::Secure::String*, LibreSCRS::SmartCard::CardSession&,
                                             LibreSCRS::CancelToken) -> RawCryptoResult {
                 enteredTerminal.store(true, std::memory_order_release);
@@ -414,6 +414,12 @@ void driveTerminalWedge(RawCryptoStatus wedgeStatus, Latch& latch, std::atomic<b
                 .cardKey = "card-A",
                 .requester = "test-client",
                 .certId = "abc123",
+                .preflight =
+                    [](const CandidateList&, const std::string&, Mechanism, std::span<const std::uint8_t>,
+                       LibreSCRS::SmartCard::CardSession&) {
+                        return RawCryptoPreflight{.status = RawCryptoStatus::Ok,
+                                                  .key = SigningSelection{.plugin = nullptr, .cert = {}}};
+                    },
                 .signOp = terminalOp,
                 .decryptOp = terminalOp,
                 .token = flowCancel.token(),
@@ -422,7 +428,7 @@ void driveTerminalWedge(RawCryptoStatus wedgeStatus, Latch& latch, std::atomic<b
                 .clearPinVerified = pinState.clearVerified,
                 .allowPrompt = pinState.allowPrompt,
             }};
-            static_cast<void>(flow.runSign(kWedgeInput));
+            static_cast<void>(flow.runSign(Mechanism::RsaPkcs1Sign, kWedgeInput));
             completed.store(true, std::memory_order_release);
         });
     };
@@ -432,8 +438,11 @@ void driveTerminalWedge(RawCryptoStatus wedgeStatus, Latch& latch, std::atomic<b
         .authorizer = authz,
         .certDer = [](const std::string&, const std::string&,
                       std::function<void(std::optional<std::vector<std::uint8_t>>)> done) { done(std::nullopt); },
-        .publicKey = [](const std::string&, const std::string&,
-                        std::function<void(std::optional<Pkcs11Broker::PublicKey>)> done) { done(std::nullopt); },
+        .publicKey =
+            [](const std::string&, const std::string&,
+               std::function<void(std::expected<Pkcs11Broker::PublicKey, Pkcs11Broker::CryptoOutcome>)> done) {
+                done(std::unexpected(Pkcs11Broker::CryptoOutcome::KeyNotFound));
+            },
         .login = [](const std::string&,
                     std::function<void(Pkcs11Broker::LoginOutcome)> done) { done(Pkcs11Broker::LoginOutcome::Ok); },
         .signRaw = seam,
@@ -629,8 +638,11 @@ void driveLoginWedge(bool cancelBeforeRelease, Latch& latch, std::atomic<bool>& 
         .authorizer = authz,
         .certDer = [](const std::string&, const std::string&,
                       std::function<void(std::optional<std::vector<std::uint8_t>>)> done) { done(std::nullopt); },
-        .publicKey = [](const std::string&, const std::string&,
-                        std::function<void(std::optional<Pkcs11Broker::PublicKey>)> done) { done(std::nullopt); },
+        .publicKey =
+            [](const std::string&, const std::string&,
+               std::function<void(std::expected<Pkcs11Broker::PublicKey, Pkcs11Broker::CryptoOutcome>)> done) {
+                done(std::unexpected(Pkcs11Broker::CryptoOutcome::KeyNotFound));
+            },
         .login = loginSeam,
         .signRaw = [](const std::string&, const std::string&, Mechanism, const MechanismParams&,
                       std::span<const std::uint8_t>, const std::string&, const Pkcs11Broker::LeasePinState&,
@@ -757,8 +769,11 @@ TEST(PrompterKeepAliveDrain, CompletionWedgeSkipsBrokerDerefOnShutdownCancel)
         .authorizer = authz,
         .certDer = [](const std::string&, const std::string&,
                       std::function<void(std::optional<std::vector<std::uint8_t>>)> done) { done(std::nullopt); },
-        .publicKey = [](const std::string&, const std::string&,
-                        std::function<void(std::optional<Pkcs11Broker::PublicKey>)> done) { done(std::nullopt); },
+        .publicKey =
+            [](const std::string&, const std::string&,
+               std::function<void(std::expected<Pkcs11Broker::PublicKey, Pkcs11Broker::CryptoOutcome>)> done) {
+                done(std::unexpected(Pkcs11Broker::CryptoOutcome::KeyNotFound));
+            },
         .login = [](const std::string&,
                     std::function<void(Pkcs11Broker::LoginOutcome)> done) { done(Pkcs11Broker::LoginOutcome::Ok); },
         .signRaw = seam,

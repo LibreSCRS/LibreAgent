@@ -202,7 +202,10 @@ pk-decrypt        = ( t: "Pkcs11.Decrypt",   reader: handle, cert: cert-id, mech
 ; the digest (32, 48 or 64 bytes), answered with r||s, each half ceil(bits/8)
 ; bytes. An unknown token is answered InvalidRequest. The agent checks the
 ; mechanism against the key, and the input's length, before any PIN prompt; a
-; refusal is InvalidRequest and asks for no PIN. (On a cold lease the prompt
+; refusal is InvalidRequest and asks for no PIN. rsa-pkcs and sha256-rsa-pkcs
+; are each refused (InvalidRequest, before any prompt) for an RSA key whose
+; card does not take that form: rsa-pkcs for the RSA key of a card that hashes
+; it, sha256-rsa-pkcs for any other RSA key. (On a cold lease the prompt
 ; budget is charged when the request arrives, before the card is touched.)
 pk-sign-mech    = "rsa-pkcs" / "sha256-rsa-pkcs" / "ecdsa"
 pk-decrypt-mech = "rsa-pkcs"

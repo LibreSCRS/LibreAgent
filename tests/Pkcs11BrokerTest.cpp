@@ -19,12 +19,14 @@
 #include <gtest/gtest.h>
 #include <chrono>
 #include <cstdint>
+#include <expected>
 #include <filesystem>
 #include <functional>
 #include <memory>
 #include <optional>
 #include <span>
 #include <string>
+#include <variant>
 #include <vector>
 
 using namespace LibreSCRS::Agent;
@@ -86,8 +88,8 @@ struct Harness
     // Seam control knobs. The card is now an opaque per-insertion ObjectId.
     std::optional<ObjectId> cardKey{ObjectId{7}};
     std::optional<std::vector<std::uint8_t>> certDerResult{kDer};
-    std::optional<Pkcs11Broker::PublicKey> publicKeyResult{
-        Pkcs11Broker::PublicKey{.modulus = {0xAB, 0xCD}, .exponent = {0x01, 0x00, 0x01}}};
+    std::expected<Pkcs11Broker::PublicKey, Pkcs11Broker::CryptoOutcome> publicKeyResult{
+        Pkcs11Broker::PublicKey{Operations::RsaPublicKey{.modulus = {0xAB, 0xCD}, .exponent = {0x01, 0x00, 0x01}}}};
     Pkcs11Broker::LoginOutcome loginOutcome{Pkcs11Broker::LoginOutcome::Ok};
     Pkcs11Broker::CryptoResult signResult{Pkcs11Broker::CryptoOutcome::Ok, {'S', 'I', 'G'}};
     Pkcs11Broker::CryptoResult decryptResult{Pkcs11Broker::CryptoOutcome::Ok, {'P', 'T'}};
@@ -176,7 +178,7 @@ TEST(Pkcs11Broker, CertDerThrowsUnknownCardWhenNoCard)
     }
 }
 
-// PublicKey is public data (no consent/lease) returning the RSA
+// PublicKey is public data (no consent/lease) returning, for an RSA key, the
 // modulus + exponent the crypto-free module serves as CKA_MODULUS /
 // CKA_PUBLIC_EXPONENT.
 TEST(Pkcs11Broker, PublicKeyReturnsModulusAndExponent)
@@ -184,14 +186,29 @@ TEST(Pkcs11Broker, PublicKeyReturnsModulusAndExponent)
     Harness h;
     auto obj = h.make();
     const auto pk = callPublicKey(obj, kReader, kCertId, appCaller());
-    EXPECT_EQ(pk.modulus, (std::vector<std::uint8_t>{0xAB, 0xCD}));
-    EXPECT_EQ(pk.exponent, (std::vector<std::uint8_t>{0x01, 0x00, 0x01}));
+    const auto& rsa = std::get<Operations::RsaPublicKey>(pk);
+    EXPECT_EQ(rsa.modulus, (std::vector<std::uint8_t>{0xAB, 0xCD}));
+    EXPECT_EQ(rsa.exponent, (std::vector<std::uint8_t>{0x01, 0x00, 0x01}));
+}
+
+// An EC key's public point is served the same way, at fixed width.
+TEST(Pkcs11Broker, PublicKeyServesAnEcPoint)
+{
+    Harness h;
+    h.publicKeyResult = Pkcs11Broker::PublicKey{Operations::EcPublicKey{
+        .crv = "P-384", .x = std::vector<std::uint8_t>(48, 0x11), .y = std::vector<std::uint8_t>(48, 0x22)}};
+    auto obj = h.make();
+    const auto pk = callPublicKey(obj, kReader, kCertId, appCaller());
+    const auto* ec = std::get_if<Operations::EcPublicKey>(&pk);
+    ASSERT_NE(ec, nullptr);
+    EXPECT_EQ(ec->crv, "P-384");
+    EXPECT_EQ(ec->x.size(), 48u);
 }
 
 TEST(Pkcs11Broker, PublicKeyThrowsKeyNotFoundOnMiss)
 {
     Harness h;
-    h.publicKeyResult = std::nullopt;
+    h.publicKeyResult = std::unexpected(Pkcs11Broker::CryptoOutcome::KeyNotFound);
     auto obj = h.make();
     try {
         static_cast<void>(callPublicKey(obj, kReader, kCertId, appCaller()));
@@ -201,11 +218,12 @@ TEST(Pkcs11Broker, PublicKeyThrowsKeyNotFoundOnMiss)
     }
 }
 
-TEST(Pkcs11Broker, PublicKeyThrowsNotSupportedWhenNotRsa)
+// A certificate whose key is neither RSA nor EC on a NIST curve: the seam's
+// refusal reaches the caller as it is.
+TEST(Pkcs11Broker, PublicKeyRefusesAKeyOfAnotherKind)
 {
     Harness h;
-    // Resolved (engaged optional) but EMPTY fields == "not an RSA key".
-    h.publicKeyResult = Pkcs11Broker::PublicKey{};
+    h.publicKeyResult = std::unexpected(Pkcs11Broker::CryptoOutcome::NotSupported);
     auto obj = h.make();
     try {
         static_cast<void>(callPublicKey(obj, kReader, kCertId, appCaller()));
@@ -592,6 +610,32 @@ TEST(Pkcs11Broker, SignRawAcceptsEcdsaMechanismEndToEnd)
     EXPECT_EQ(signRawMechanismOutcome(obj, Mechanism::EcdsaSign, appCaller()), Pkcs11Broker::CryptoOutcome::Ok);
     EXPECT_EQ(h.signCalls, 1) << "the seam must run for the wired ECDSA arm";
     EXPECT_EQ(sawSign, Mechanism::EcdsaSign) << "the broker forwards CKM_ECDSA to the seam unchanged";
+}
+
+// A card that hashes on-card is asked for exactly that mechanism.
+TEST(Pkcs11Broker, SignRawForwardsTheHashOnCardMechanism)
+{
+    Harness h;
+    auto obj = h.make();
+    static_cast<void>(callLogin(obj, kReader, appCaller()));
+    EXPECT_EQ(signRawMechanismOutcome(obj, Mechanism::Sha256RsaPkcs1Sign, appCaller()),
+              Pkcs11Broker::CryptoOutcome::Ok);
+    EXPECT_EQ(h.signCalls, 1);
+}
+
+// A request the key refuses is the caller's mistake, not the card's: it
+// reaches the caller as such and the lease stays.
+TEST(Pkcs11Broker, AnInvalidInputKeepsTheLease)
+{
+    Harness h;
+    h.signResult = Pkcs11Broker::CryptoResult{Pkcs11Broker::CryptoOutcome::InvalidInput, {}};
+    auto obj = h.make();
+    static_cast<void>(callLogin(obj, kReader, appCaller()));
+    EXPECT_EQ(signRawMechanismOutcome(obj, Mechanism::EcdsaSign, appCaller()),
+              Pkcs11Broker::CryptoOutcome::InvalidInput);
+    h.signResult = Pkcs11Broker::CryptoResult{Pkcs11Broker::CryptoOutcome::Ok, {'S'}};
+    EXPECT_EQ(signRawMechanismOutcome(obj, Mechanism::EcdsaSign, appCaller()), Pkcs11Broker::CryptoOutcome::Ok)
+        << "no new login was needed";
 }
 
 TEST(Pkcs11Broker, DecryptRejectsNonWiredMechanismNotSupported)

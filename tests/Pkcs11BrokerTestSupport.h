@@ -12,13 +12,14 @@
 #include <LibreSCRS/Agent/pkcs11/Pkcs11Broker.h>
 #include <LibreSCRS/Agent/Reply.h>
 #include <cstdint>
+#include <expected>
 #include <functional>
 #include <memory>
 #include <optional>
 #include <span>
 #include <stdexcept>
 #include <string>
-#include <tuple>
+#include <variant>
 #include <vector>
 
 namespace LibreSCRS::Agent::testsupport {
@@ -59,20 +60,17 @@ inline Pkcs11Broker::PublicKey callPublicKey(Pkcs11Broker& obj, const std::strin
                                              const Pkcs11Broker::Caller& caller)
 {
     using CO = Pkcs11Broker::CryptoOutcome;
-    auto cap = std::make_shared<Captured<CO, std::tuple<std::vector<std::uint8_t>, std::vector<std::uint8_t>>>>();
+    auto cap = std::make_shared<Captured<CO, Pkcs11Broker::PublicKey>>();
     obj.publicKey(reader, certId, caller,
-                  Reply<CO, std::vector<std::uint8_t>, std::vector<std::uint8_t>>{
-                      [cap](const std::vector<std::uint8_t>& m, const std::vector<std::uint8_t>& e) {
-                          cap->value = std::make_tuple(m, e);
-                      },
-                      [cap](CO oc) { cap->outcome = oc; }, CO::CardError});
+                  Reply<CO, Pkcs11Broker::PublicKey>{[cap](const Pkcs11Broker::PublicKey& k) { cap->value = k; },
+                                                     [cap](CO oc) { cap->outcome = oc; }, CO::CardError});
     if (cap->outcome) {
         throw *cap->outcome;
     }
     if (!cap->value) {
         throw std::logic_error{"PublicKey reply not fulfilled inline"};
     }
-    return Pkcs11Broker::PublicKey{.modulus = std::get<0>(*cap->value), .exponent = std::get<1>(*cap->value)};
+    return *cap->value;
 }
 
 inline std::uint32_t callLogin(Pkcs11Broker& obj, const std::string& reader, const Pkcs11Broker::Caller& caller)
@@ -140,10 +138,13 @@ certDerSeam(std::function<std::optional<std::vector<std::uint8_t>>(const std::st
 }
 
 inline Pkcs11Broker::PublicKeySeam
-publicKeySeam(std::function<std::optional<Pkcs11Broker::PublicKey>(const std::string&, const std::string&)> fn)
+publicKeySeam(std::function<std::expected<Pkcs11Broker::PublicKey, Pkcs11Broker::CryptoOutcome>(const std::string&,
+                                                                                                const std::string&)>
+                  fn)
 {
-    return [fn = std::move(fn)](const std::string& reader, const std::string& certId,
-                                std::function<void(std::optional<Pkcs11Broker::PublicKey>)> done) {
+    return [fn = std::move(fn)](
+               const std::string& reader, const std::string& certId,
+               std::function<void(std::expected<Pkcs11Broker::PublicKey, Pkcs11Broker::CryptoOutcome>)> done) {
         done(fn(reader, certId));
     };
 }

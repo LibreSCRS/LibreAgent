@@ -218,7 +218,7 @@ private:
     // flow's post-prompt gate + skips the completion where it can; where the wedge
     // is past the gate (a terminal op / nested CAN/MRZ prompt) it touches only the
     // co-owned context, never freed memory.
-    void runRawCryptoOnWorker(bool isSign, const std::string& reader, const std::string& certId,
+    void runRawCryptoOnWorker(Mechanism mechanism, const std::string& reader, const std::string& certId,
                               std::span<const std::uint8_t> bytes, const std::string& requester,
                               const Pkcs11Broker::LeasePinState& pinState,
                               std::function<void(Pkcs11Broker::CryptoResult)> done);

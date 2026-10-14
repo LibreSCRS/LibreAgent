@@ -161,8 +161,6 @@ private:
 // Allocation-free and noexcept.
 [[nodiscard]] bool signingDiagnosticIsModuleLoadFailure(const std::optional<std::string>& diagnosticDetail) noexcept;
 
-// Result of resolving a signing request's certId against the present card: the
-// candidate plugin that owns the cert and the exact CertificateData selected.
 // The key family and size the agent reports for a certificate, from its
 // SubjectPublicKeyInfo: RSA only for rsaEncryption (an RSASSA-PSS key cannot do
 // PKCS#1 v1.5), EC only on P-256/P-384/P-521, Other for everything else.
@@ -175,6 +173,8 @@ struct CertKeyClass
 };
 [[nodiscard]] CertKeyClass classifyCertKey(const LibreSCRS::Certificate::ParsedCertificate& cert);
 
+// Result of resolving a signing request's certId against the present card: the
+// candidate plugin that owns the cert and the exact CertificateData selected.
 struct SigningSelection
 {
     std::shared_ptr<const LibreSCRS::Plugin::CardPlugin> plugin;

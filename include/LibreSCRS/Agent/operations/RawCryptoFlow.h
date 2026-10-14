@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 // SPDX-FileCopyrightText: 2026 hirashix0
 #pragma once
+#include <LibreSCRS/Agent/crypto/Mechanism.h>
 #include <LibreSCRS/Agent/operations/CardPluginRouting.h> // CandidateList
 #include <LibreSCRS/Agent/operations/LmRawCrypto.h>       // RawCryptoResult
 #include <LibreSCRS/Agent/operations/Seams.h>
@@ -27,8 +28,9 @@ class CardSessionHolder;
 // PIN-as-consent collection + status mapping) is unit-testable against fakes
 // with no live card. Production binds Operations::signRaw /
 // Operations::decryptRaw; tests inject a fake that models the PIN check + the
-// on-card op. Same signature for sign and decrypt — the routed candidates +
-// certId select the key, the bytes are input/ciphertext.
+// on-card op. Same signature for sign and decrypt — the bytes are
+// input/ciphertext. The op receives the key the preflight resolved -- it reads
+// nothing off the card itself -- and the mechanism the caller named.
 //
 // @p pin carries the PIN-as-consent secret the flow just collected from the
 // agent prompter:
@@ -58,8 +60,15 @@ class CardSessionHolder;
 // card marks, the op erases it itself. The PIN bytes the flow passes are owned
 // by its Secure::String for the duration of the call and cleansed when it drops.
 using RawCryptoOp = std::function<RawCryptoResult(
-    const CandidateList& candidates, const std::string& certId, std::span<const std::uint8_t> bytes,
+    const SigningSelection& key, Mechanism mechanism, std::span<const std::uint8_t> bytes,
     const LibreSCRS::Secure::String* pin, LibreSCRS::SmartCard::CardSession& session, LibreSCRS::CancelToken token)>;
+
+// The check before any prompt (production: Operations::preflight): resolves
+// certId among the candidates off the held session and refuses a request the
+// key cannot take. Its key is the one handed to the RawCryptoOp.
+using RawCryptoPreflightOp =
+    std::function<RawCryptoPreflight(const CandidateList& candidates, const std::string& certId, Mechanism mechanism,
+                                     std::span<const std::uint8_t> input, LibreSCRS::SmartCard::CardSession& session)>;
 
 // References-only dependency bundle, mirroring SignFlowDeps minus the AdES
 // signer/params (the raw path has no SigningEngineProvider, no document
@@ -75,6 +84,9 @@ struct RawCryptoFlowDeps
     std::string cardKey;
     std::string requester;
     std::string certId; // selects the exact key/cert (SHA-256(DER))
+    // Checks the request against the key before any prompt (see
+    // LmRawCrypto::preflight); its key is the one the op then uses.
+    RawCryptoPreflightOp preflight;
     RawCryptoOp signOp;
     RawCryptoOp decryptOp;
     LibreSCRS::CancelToken token;
@@ -125,7 +137,7 @@ struct RawCryptoFlowDeps
 class RawCryptoFlow
 {
 public:
-    enum class Outcome { Ok, Cancelled, KeyNotFound, AuthFailed, NotSupported, CardError, RateLimited };
+    enum class Outcome { Ok, Cancelled, KeyNotFound, AuthFailed, NotSupported, CardError, RateLimited, InvalidInput };
     struct Result
     {
         Outcome outcome{Outcome::CardError}; // default fails closed
@@ -135,12 +147,12 @@ public:
 
     explicit RawCryptoFlow(RawCryptoFlowDeps deps);
 
-    [[nodiscard]] Result runSign(std::span<const std::uint8_t> input);
-    [[nodiscard]] Result runDecrypt(std::span<const std::uint8_t> ciphertext);
+    [[nodiscard]] Result runSign(Mechanism mechanism, std::span<const std::uint8_t> input);
+    [[nodiscard]] Result runDecrypt(Mechanism mechanism, std::span<const std::uint8_t> ciphertext);
 
 private:
     enum class Op { Sign, Decrypt };
-    [[nodiscard]] Result run(Op op, std::span<const std::uint8_t> bytes);
+    [[nodiscard]] Result run(Op op, Mechanism mechanism, std::span<const std::uint8_t> bytes);
 
     RawCryptoFlowDeps m_deps;
 };

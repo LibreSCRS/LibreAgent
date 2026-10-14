@@ -69,7 +69,7 @@ IdentityTest 3
 KeyActivationFlowTest 10
 LeaseManagerTest 18
 LmCertReaderKatTest 20
-LmRawCryptoTest 29
+LmRawCryptoTest 33
 LmSeamsCompileTest 1
 LmSeamsRoutingTest 14
 LmSigningRequestBuilderTest 8
@@ -82,7 +82,7 @@ OperationBaseTest 7
 OperationManagerTest 17
 OperationPhaseTest 2
 PinChangeFlowTest 31
-Pkcs11BrokerTest 32
+Pkcs11BrokerTest 35
 Pkcs11LeaseInvalidationTest 4
 Pkcs11SecurityTest 9
 PresenceModelTest 21
@@ -99,7 +99,7 @@ PropertyChangedVocabGuardTest 2
 PropertyEmissionThrottlerTest 5
 RateLimiterTest 4
 RawCryptoCaptureGuardTest 11
-RawCryptoFlowTest 21
+RawCryptoFlowTest 28
 ReadCertificatesOperationTest 2
 ReadIdentityOperationTest 3
 ReadTokenInfoOperationTest 5

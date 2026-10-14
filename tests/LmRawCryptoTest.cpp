@@ -10,7 +10,10 @@
 // surface so the host's status->wire mapping cannot drift.
 #include <LibreSCRS/Agent/operations/LmRawCrypto.h>
 
+#include "TestCertMint.h"
+
 #include <LibreSCRS/Agent/util/Sha256Hex.h>
+#include <LibreSCRS/Auth/AuthRequirement.h>
 #include <LibreSCRS/Auth/ErrorKeys.h>
 #include <LibreSCRS/Plugin/CardPlugin.h>
 #include <LibreSCRS/Secure/String.h>
@@ -32,6 +35,7 @@
 #include <vector>
 
 using namespace LibreSCRS::Agent::Operations;
+using LibreSCRS::Agent::Mechanism;
 
 namespace {
 
@@ -158,36 +162,6 @@ std::vector<std::uint8_t> makeEcDer(const char* curve)
 
 } // namespace
 
-// Mechanism-family criterion (pure DER predicate): the resolved certificate's
-// public-key algorithm routes an EC key to the pre-hashed ECDSA path; RSA and
-// unparseable certs keep the RSA flow.
-TEST(LmRawCrypto, EcdsaFamilyCriterionReadsThePublicKeyAlgorithm)
-{
-    const auto ec = makeEcDer("P-384");
-    ASSERT_FALSE(ec.empty());
-    EXPECT_TRUE(certPublicKeyIsEcdsa(ec)) << "a P-384 cert must route to the ECDSA family";
-
-    const auto rsa = makeV3DerWithKeyUsage("digitalSignature");
-    ASSERT_FALSE(rsa.empty());
-    EXPECT_FALSE(certPublicKeyIsEcdsa(rsa)) << "an RSA cert must keep the RSA flow";
-
-    const std::vector<std::uint8_t> garbage{0x00, 0x01, 0x02, 0x03};
-    EXPECT_FALSE(certPublicKeyIsEcdsa(garbage)) << "unparseable DER must keep the RSA flow";
-}
-
-// The pre-hashed ECDSA mechanism only names the digest family for transport
-// (the plugin signs the bytes as-given); the mapping is by canonical digest
-// length with SHA-512 as the long-input catch-all.
-TEST(LmRawCrypto, EcdsaMechanismFollowsDigestLength)
-{
-    using M = LibreSCRS::Plugin::SignMechanism;
-    EXPECT_EQ(ecdsaMechanismForDigestLength(32), M::ECDSA_SHA256); // SHA-256
-    EXPECT_EQ(ecdsaMechanismForDigestLength(48), M::ECDSA_SHA384); // SHA-384
-    EXPECT_EQ(ecdsaMechanismForDigestLength(64), M::ECDSA_SHA512); // SHA-512
-    EXPECT_EQ(ecdsaMechanismForDigestLength(20), M::ECDSA_SHA256); // SHA-1-sized rides the smallest
-    EXPECT_EQ(ecdsaMechanismForDigestLength(49), M::ECDSA_SHA512); // between 384 and 512 -> catch-all
-}
-
 // --- signRaw end-to-end mechanism routing (hermetic, no card) -------------
 //
 // selectSigningCandidate resolves certId against the candidate's
@@ -229,6 +203,7 @@ public:
     }
     std::vector<CertificateData> readCertificates(LibreSCRS::SmartCard::CardSession&) const override
     {
+        ++m_readCalls;
         return {m_cert};
     }
     PINResult verifyPIN(LibreSCRS::SmartCard::CardSession&, const LibreSCRS::Secure::String&) const override
@@ -250,8 +225,13 @@ public:
     {
         m_cert.alwaysAuthenticate = on;
     }
+    LibreSCRS::Auth::PreReadAuthMethod preReadAuth(LibreSCRS::SmartCard::CardSession&) const override
+    {
+        return m_preReadAuth;
+    }
 
     // Mutable capture (the crypto NVIs are const).
+    mutable int m_readCalls = 0;
     mutable int m_verifyCalls = 0;
     mutable int m_signCalls = 0;
     mutable int m_decipherCalls = 0;
@@ -262,6 +242,8 @@ public:
     bool m_throwOnSign = false;
     // false: a DigestInfo card, which has no hash-on-card RSA_SHA256.
     bool m_signsHashOnCard = true;
+    // Can: a PACE card whose RSA key hashes the message itself.
+    LibreSCRS::Auth::PreReadAuthMethod m_preReadAuth = LibreSCRS::Auth::PreReadAuthMethod::None;
     SignResultOutcome m_signOutcome = SignResultOutcome::Ok;
     DecipherResultOutcome m_decipherOutcome = DecipherResultOutcome::Ok;
 
@@ -323,6 +305,15 @@ CertificateData rsaCert(std::uint16_t keyFid, bool alwaysAuthenticate)
     return cd;
 }
 
+// The key a preflight would hand the operation: the same routing, read once.
+SigningSelection resolved(const CandidateList& candidates, const std::string& certId,
+                          LibreSCRS::SmartCard::CardSession& session)
+{
+    auto selection = selectSigningCandidate(candidates, certId, session);
+    EXPECT_TRUE(selection.has_value()) << "the stub owns the certificate";
+    return selection.value_or(SigningSelection{});
+}
+
 } // namespace
 
 TEST(LmRawCrypto, SignRawRoutesEcKeyToEcdsaMechanism)
@@ -336,7 +327,8 @@ TEST(LmRawCrypto, SignRawRoutesEcKeyToEcdsaMechanism)
 
     // A 48-byte (SHA-384) digest drives the SHA-384 mechanism.
     const std::vector<std::uint8_t> digest(48, 0xAB);
-    const auto result = signRaw(candidates, certId, digest, &pin, *session, LibreSCRS::CancelToken{});
+    const auto result = signRaw(resolved(candidates, certId, *session), Mechanism::EcdsaSign, digest, &pin, *session,
+                                LibreSCRS::CancelToken{});
 
     EXPECT_EQ(result.status, RawCryptoStatus::Ok);
     ASSERT_TRUE(stub->m_lastSignMechanism.has_value());
@@ -359,7 +351,8 @@ TEST(LmRawCrypto, SignRawEcPathFailsClosedOnWrongPin)
     LibreSCRS::Secure::String pin{"000000"};
 
     const std::vector<std::uint8_t> digest(48, 0xAB);
-    const auto result = signRaw(candidates, certId, digest, &pin, *session, LibreSCRS::CancelToken{});
+    const auto result = signRaw(resolved(candidates, certId, *session), Mechanism::EcdsaSign, digest, &pin, *session,
+                                LibreSCRS::CancelToken{});
 
     EXPECT_EQ(result.status, RawCryptoStatus::AuthFailed);
     EXPECT_EQ(stub->m_verifyCalls, 0) << "no separate VERIFY before the operation";
@@ -376,7 +369,8 @@ TEST(LmRawCrypto, SignRawEcMechanismFollowsDigestLength)
     LibreSCRS::Secure::String pin{"654321"};
 
     const std::vector<std::uint8_t> digest(32, 0xCD); // SHA-256 sized
-    const auto result = signRaw(candidates, certId, digest, &pin, *session, LibreSCRS::CancelToken{});
+    const auto result = signRaw(resolved(candidates, certId, *session), Mechanism::EcdsaSign, digest, &pin, *session,
+                                LibreSCRS::CancelToken{});
 
     EXPECT_EQ(result.status, RawCryptoStatus::Ok);
     ASSERT_TRUE(stub->m_lastSignMechanism.has_value());
@@ -394,7 +388,8 @@ TEST(LmRawCrypto, SignRawWithoutAPinAsksForConsentOnAKeyTheCardMarks)
     auto session = LibreSCRS::SmartCard::detail::makeDetachedCardSession("FakeReader");
 
     const std::vector<std::uint8_t> input(51, 0x30);
-    const auto result = signRaw(candidates, certId, input, /*pin=*/nullptr, *session, LibreSCRS::CancelToken{});
+    const auto result = signRaw(resolved(candidates, certId, *session), Mechanism::RsaPkcs1Sign, input, /*pin=*/nullptr,
+                                *session, LibreSCRS::CancelToken{});
 
     EXPECT_EQ(result.status, RawCryptoStatus::ConsentRequired);
     EXPECT_TRUE(result.alwaysAuthenticate);
@@ -411,7 +406,8 @@ TEST(LmRawCrypto, DecryptRawWithoutAPinAsksForConsentOnAKeyTheCardMarks)
     auto session = LibreSCRS::SmartCard::detail::makeDetachedCardSession("FakeReader");
 
     const std::vector<std::uint8_t> ciphertext(256, 0x42);
-    const auto result = decryptRaw(candidates, certId, ciphertext, nullptr, *session, LibreSCRS::CancelToken{});
+    const auto result = decryptRaw(resolved(candidates, certId, *session), Mechanism::RsaPkcs1Decrypt, ciphertext,
+                                   nullptr, *session, LibreSCRS::CancelToken{});
 
     EXPECT_EQ(result.status, RawCryptoStatus::ConsentRequired);
     EXPECT_EQ(stub->m_verifyCalls, 0);
@@ -427,7 +423,8 @@ TEST(LmRawCrypto, AnOrdinaryKeyWithoutAPinSignsUnderTheLease)
     auto session = LibreSCRS::SmartCard::detail::makeDetachedCardSession("FakeReader");
 
     const std::vector<std::uint8_t> input(51, 0x30);
-    const auto result = signRaw(candidates, certId, input, nullptr, *session, LibreSCRS::CancelToken{});
+    const auto result = signRaw(resolved(candidates, certId, *session), Mechanism::RsaPkcs1Sign, input, nullptr,
+                                *session, LibreSCRS::CancelToken{});
 
     EXPECT_EQ(result.status, RawCryptoStatus::Ok);
     EXPECT_FALSE(result.alwaysAuthenticate);
@@ -445,7 +442,8 @@ TEST(LmRawCrypto, AMarkedKeyKeepsNoPinPastItsOperation)
     LibreSCRS::Secure::String pin{"654321"};
 
     const std::vector<std::uint8_t> input(32, 0x11);
-    const auto result = signRaw(candidates, certId, input, &pin, *session, LibreSCRS::CancelToken{});
+    const auto result = signRaw(resolved(candidates, certId, *session), Mechanism::RsaPkcs1Sign, input, &pin, *session,
+                                LibreSCRS::CancelToken{});
 
     EXPECT_EQ(result.status, RawCryptoStatus::Ok);
     EXPECT_TRUE(result.alwaysAuthenticate);
@@ -469,7 +467,8 @@ TEST(LmRawCrypto, AnOrdinaryKeyKeepsItsPinForTheLease)
     LibreSCRS::Secure::String pin{"654321"};
 
     const std::vector<std::uint8_t> input(32, 0x11);
-    const auto result = signRaw(candidates, certId, input, &pin, *session, LibreSCRS::CancelToken{});
+    const auto result = signRaw(resolved(candidates, certId, *session), Mechanism::RsaPkcs1Sign, input, &pin, *session,
+                                LibreSCRS::CancelToken{});
     ASSERT_EQ(result.status, RawCryptoStatus::Ok);
     EXPECT_FALSE(result.alwaysAuthenticate);
     EXPECT_EQ(stub->m_verifyCalls, 0);
@@ -490,7 +489,9 @@ TEST(LmRawCrypto, ARefusedPinOnAnOrdinaryKeyIsErased)
     LibreSCRS::Secure::String pin{"000000"};
 
     const std::vector<std::uint8_t> digest(32, 0xCD);
-    EXPECT_EQ(signRaw(candidates, certId, digest, &pin, *session, LibreSCRS::CancelToken{}).status,
+    EXPECT_EQ(signRaw(resolved(candidates, certId, *session), Mechanism::EcdsaSign, digest, &pin, *session,
+                      LibreSCRS::CancelToken{})
+                  .status,
               RawCryptoStatus::AuthFailed);
     ASSERT_EQ(stub->m_credentialWrites.size(), 2u);
     EXPECT_EQ(stub->m_credentialWrites[1], (std::pair<std::string, bool>{"pin", true}));
@@ -508,7 +509,9 @@ TEST(LmRawCrypto, AFailedOperationOnAnOrdinaryKeyErasesItsPin)
     LibreSCRS::Secure::String pin{"654321"};
 
     const std::vector<std::uint8_t> input(32, 0x11);
-    EXPECT_EQ(signRaw(candidates, certId, input, &pin, *session, LibreSCRS::CancelToken{}).status,
+    EXPECT_EQ(signRaw(resolved(candidates, certId, *session), Mechanism::RsaPkcs1Sign, input, &pin, *session,
+                      LibreSCRS::CancelToken{})
+                  .status,
               RawCryptoStatus::CardError);
     ASSERT_EQ(stub->m_credentialWrites.size(), 2u);
     EXPECT_TRUE(stub->m_credentialWrites[1].second);
@@ -525,7 +528,8 @@ TEST(LmRawCrypto, AnOrdinaryKeysPinIsErasedWhenTheOperationThrows)
     LibreSCRS::Secure::String pin{"654321"};
 
     const std::vector<std::uint8_t> input(32, 0x11);
-    EXPECT_THROW((void)signRaw(candidates, certId, input, &pin, *session, LibreSCRS::CancelToken{}),
+    EXPECT_THROW((void)signRaw(resolved(candidates, certId, *session), Mechanism::RsaPkcs1Sign, input, &pin, *session,
+                               LibreSCRS::CancelToken{}),
                  std::runtime_error);
     ASSERT_EQ(stub->m_credentialWrites.size(), 2u);
     EXPECT_TRUE(stub->m_credentialWrites[1].second) << "erased on the way out of the exception";
@@ -544,7 +548,9 @@ TEST(LmRawCrypto, AKeptPinTheCardRefusesIsErased)
     auto session = LibreSCRS::SmartCard::detail::makeDetachedCardSession("FakeReader");
 
     const std::vector<std::uint8_t> digest(32, 0xCD);
-    EXPECT_EQ(signRaw(candidates, certId, digest, /*pin=*/nullptr, *session, LibreSCRS::CancelToken{}).status,
+    EXPECT_EQ(signRaw(resolved(candidates, certId, *session), Mechanism::EcdsaSign, digest, /*pin=*/nullptr, *session,
+                      LibreSCRS::CancelToken{})
+                  .status,
               RawCryptoStatus::AuthFailed);
     ASSERT_EQ(stub->m_credentialWrites.size(), 1u);
     EXPECT_EQ(stub->m_credentialWrites[0], (std::pair<std::string, bool>{"pin", true}));
@@ -560,7 +566,9 @@ TEST(LmRawCrypto, AKeptPinTheCardRefusesForADecryptionIsErased)
     auto session = LibreSCRS::SmartCard::detail::makeDetachedCardSession("FakeReader");
 
     const std::vector<std::uint8_t> ciphertext(256, 0x42);
-    EXPECT_EQ(decryptRaw(candidates, certId, ciphertext, nullptr, *session, LibreSCRS::CancelToken{}).status,
+    EXPECT_EQ(decryptRaw(resolved(candidates, certId, *session), Mechanism::RsaPkcs1Decrypt, ciphertext, nullptr,
+                         *session, LibreSCRS::CancelToken{})
+                  .status,
               RawCryptoStatus::AuthFailed);
     ASSERT_EQ(stub->m_credentialWrites.size(), 1u);
     EXPECT_EQ(stub->m_credentialWrites[0], (std::pair<std::string, bool>{"pin", true}));
@@ -576,10 +584,14 @@ TEST(LmRawCrypto, TheConsentRuleIsReadFromTheCardOnEveryCall)
     auto session = LibreSCRS::SmartCard::detail::makeDetachedCardSession("FakeReader");
     const std::vector<std::uint8_t> input(51, 0x30);
 
-    EXPECT_EQ(signRaw(candidates, certId, input, nullptr, *session, LibreSCRS::CancelToken{}).status,
+    EXPECT_EQ(signRaw(resolved(candidates, certId, *session), Mechanism::RsaPkcs1Sign, input, nullptr, *session,
+                      LibreSCRS::CancelToken{})
+                  .status,
               RawCryptoStatus::Ok);
     stub->setAlwaysAuthenticate(true);
-    EXPECT_EQ(signRaw(candidates, certId, input, nullptr, *session, LibreSCRS::CancelToken{}).status,
+    EXPECT_EQ(signRaw(resolved(candidates, certId, *session), Mechanism::RsaPkcs1Sign, input, nullptr, *session,
+                      LibreSCRS::CancelToken{})
+                  .status,
               RawCryptoStatus::ConsentRequired);
 }
 
@@ -595,7 +607,8 @@ TEST(LmRawCrypto, ErasingThePinNeverThrowsOutOfTheOperation)
     const std::vector<std::uint8_t> input(32, 0x11);
 
     RawCryptoResult result;
-    EXPECT_NO_THROW(result = signRaw(candidates, certId, input, &pin, *session, LibreSCRS::CancelToken{}));
+    EXPECT_NO_THROW(result = signRaw(resolved(candidates, certId, *session), Mechanism::RsaPkcs1Sign, input, &pin,
+                                     *session, LibreSCRS::CancelToken{}));
     EXPECT_EQ(result.status, RawCryptoStatus::Ok);
 }
 
@@ -612,7 +625,8 @@ TEST(LmRawCrypto, AMarkedKeySignsWithThePinInOneCall)
     LibreSCRS::Secure::String pin{"654321"};
 
     const std::vector<std::uint8_t> digest(32, 0xCD);
-    const auto result = signRaw(candidates, certId, digest, &pin, *session, LibreSCRS::CancelToken{});
+    const auto result = signRaw(resolved(candidates, certId, *session), Mechanism::EcdsaSign, digest, &pin, *session,
+                                LibreSCRS::CancelToken{});
 
     EXPECT_EQ(result.status, RawCryptoStatus::Ok);
     EXPECT_EQ(stub->m_verifyCalls, 0) << "no separate VERIFY before the operation";
@@ -632,7 +646,8 @@ TEST(LmRawCrypto, AMarkedKeyDecryptsWithThePinInOneCall)
     LibreSCRS::Secure::String pin{"654321"};
 
     const std::vector<std::uint8_t> ciphertext(256, 0x42);
-    const auto result = decryptRaw(candidates, certId, ciphertext, &pin, *session, LibreSCRS::CancelToken{});
+    const auto result = decryptRaw(resolved(candidates, certId, *session), Mechanism::RsaPkcs1Decrypt, ciphertext, &pin,
+                                   *session, LibreSCRS::CancelToken{});
 
     EXPECT_EQ(result.status, RawCryptoStatus::Ok);
     EXPECT_TRUE(result.alwaysAuthenticate);
@@ -658,7 +673,9 @@ TEST(LmRawCrypto, AWrongPinOnAMarkedKeyIsAnAuthFailure)
     LibreSCRS::Secure::String pin{"000000"};
 
     const std::vector<std::uint8_t> digest(32, 0xCD);
-    EXPECT_EQ(signRaw(candidates, certId, digest, &pin, *session, LibreSCRS::CancelToken{}).status,
+    EXPECT_EQ(signRaw(resolved(candidates, certId, *session), Mechanism::EcdsaSign, digest, &pin, *session,
+                      LibreSCRS::CancelToken{})
+                  .status,
               RawCryptoStatus::AuthFailed);
     ASSERT_EQ(stub->m_credentialWrites.size(), 2u);
     EXPECT_TRUE(stub->m_credentialWrites[1].second) << "erased on the failure path as well";
@@ -676,7 +693,9 @@ TEST(LmRawCrypto, ABlockedPinOnAMarkedKeyIsAnAuthFailure)
     LibreSCRS::Secure::String pin{"000000"};
 
     const std::vector<std::uint8_t> digest(32, 0xCD);
-    EXPECT_EQ(signRaw(candidates, certId, digest, &pin, *session, LibreSCRS::CancelToken{}).status,
+    EXPECT_EQ(signRaw(resolved(candidates, certId, *session), Mechanism::EcdsaSign, digest, &pin, *session,
+                      LibreSCRS::CancelToken{})
+                  .status,
               RawCryptoStatus::AuthFailed);
 }
 
@@ -691,15 +710,17 @@ TEST(LmRawCrypto, AWrongPinOnAMarkedKeysDecryptionIsAnAuthFailure)
     LibreSCRS::Secure::String pin{"000000"};
 
     const std::vector<std::uint8_t> ciphertext(256, 0x42);
-    EXPECT_EQ(decryptRaw(candidates, certId, ciphertext, &pin, *session, LibreSCRS::CancelToken{}).status,
+    EXPECT_EQ(decryptRaw(resolved(candidates, certId, *session), Mechanism::RsaPkcs1Decrypt, ciphertext, &pin, *session,
+                         LibreSCRS::CancelToken{})
+                  .status,
               RawCryptoStatus::AuthFailed);
 }
 
-TEST(LmRawCrypto, TheDigestInfoFallbackPresentsThePinThroughThePluginToo)
+TEST(LmRawCrypto, TheRsaPkcsMechanismPresentsThePinThroughThePluginToo)
 {
-    // A DigestInfo card has no hash-on-card mechanism; the fallback to RSA_PKCS
-    // keeps the deposited PIN for the plugin to present inside the sign, with
-    // no separate VERIFY in between.
+    // A DigestInfo card signs RSA_PKCS over the caller's block; the deposited
+    // PIN is presented by the plugin inside the sign, with no separate VERIFY
+    // in between.
     auto cert = rsaCert(0x9A, /*alwaysAuthenticate=*/false);
     const std::string certId = sha256Hex(cert.derBytes);
     auto stub = std::make_shared<RecordingStubPlugin>("opensc", cert, PINResultOutcome::Ok);
@@ -709,12 +730,14 @@ TEST(LmRawCrypto, TheDigestInfoFallbackPresentsThePinThroughThePluginToo)
     LibreSCRS::Secure::String pin{"654321"};
 
     const std::vector<std::uint8_t> digestInfo(51, 0x30);
-    const auto result = signRaw(candidates, certId, digestInfo, &pin, *session, LibreSCRS::CancelToken{});
+    const auto result = signRaw(resolved(candidates, certId, *session), Mechanism::RsaPkcs1Sign, digestInfo, &pin,
+                                *session, LibreSCRS::CancelToken{});
 
     EXPECT_EQ(result.status, RawCryptoStatus::Ok);
     ASSERT_TRUE(stub->m_lastSignMechanism.has_value());
     EXPECT_EQ(*stub->m_lastSignMechanism, SignMechanism::RSA_PKCS);
-    EXPECT_EQ(stub->m_verifyCalls, 0) << "no separate VERIFY before the fallback sign";
+    EXPECT_EQ(stub->m_verifyCalls, 0) << "no separate VERIFY before the sign";
+    EXPECT_EQ(stub->m_signCalls, 1);
     ASSERT_EQ(stub->m_credentialWrites.size(), 1u) << "deposited once, kept for the lease";
     EXPECT_FALSE(stub->m_credentialWrites[0].second);
 }
@@ -733,10 +756,14 @@ TEST(LmRawCrypto, AnEmptyPinIsNeverHandedToThePlugin)
     const LibreSCRS::Secure::String empty;
 
     const std::vector<std::uint8_t> input(32, 0x11);
-    EXPECT_EQ(signRaw(candidates, certId, input, &empty, *session, LibreSCRS::CancelToken{}).status,
+    EXPECT_EQ(signRaw(resolved(candidates, certId, *session), Mechanism::RsaPkcs1Sign, input, &empty, *session,
+                      LibreSCRS::CancelToken{})
+                  .status,
               RawCryptoStatus::AuthFailed);
     const std::vector<std::uint8_t> ciphertext(256, 0x42);
-    EXPECT_EQ(decryptRaw(candidates, certId, ciphertext, &empty, *session, LibreSCRS::CancelToken{}).status,
+    EXPECT_EQ(decryptRaw(resolved(candidates, certId, *session), Mechanism::RsaPkcs1Decrypt, ciphertext, &empty,
+                         *session, LibreSCRS::CancelToken{})
+                  .status,
               RawCryptoStatus::AuthFailed);
     EXPECT_EQ(stub->m_signCalls, 0);
     EXPECT_EQ(stub->m_decipherCalls, 0);
@@ -759,7 +786,169 @@ TEST(LmRawCrypto, AMarkedKeyThatMayNotDecryptAsksForNoConsent)
     auto session = LibreSCRS::SmartCard::detail::makeDetachedCardSession("FakeReader");
 
     const std::vector<std::uint8_t> ciphertext(256, 0x42);
-    EXPECT_EQ(decryptRaw(candidates, certId, ciphertext, nullptr, *session, LibreSCRS::CancelToken{}).status,
+    EXPECT_EQ(preflight(candidates, certId, Mechanism::RsaPkcs1Decrypt, ciphertext, *session).status,
               RawCryptoStatus::NotSupported);
     EXPECT_EQ(stub->m_decipherCalls, 0);
+}
+
+// The digest IS the ECDSA mechanism's input, so its length names the hash --
+// exactly, no rounding: 20 (SHA-1) and 51 (a DigestInfo) are refused.
+TEST(LmRawCrypto, EcdsaMechanismIsTheDigestsOwn)
+{
+    using M = LibreSCRS::Plugin::SignMechanism;
+    EXPECT_EQ(ecdsaMechanismForDigest(32), M::ECDSA_SHA256);
+    EXPECT_EQ(ecdsaMechanismForDigest(48), M::ECDSA_SHA384);
+    EXPECT_EQ(ecdsaMechanismForDigest(64), M::ECDSA_SHA512);
+    for (std::size_t bad : {std::size_t{0}, std::size_t{20}, std::size_t{49}, std::size_t{51}, std::size_t{65}}) {
+        EXPECT_FALSE(ecdsaMechanismForDigest(bad).has_value()) << bad;
+    }
+}
+
+// A mechanism of the wrong family for the key is refused before anything
+// else: no PIN is deposited, the key is not used.
+TEST(LmRawCrypto, PreflightRefusesAMechanismOfTheWrongFamily)
+{
+    namespace T = LibreSCRS::Agent::Test;
+    CertificateData ec;
+    ec.derBytes = T::selfSignedCert(T::ecKey("P-384").get(), "LK", "critical,digitalSignature,keyEncipherment");
+    ec.keyFID = std::uint16_t{0x47};
+    auto ecStub = std::make_shared<RecordingStubPlugin>("pkcs15", ec, PINResultOutcome::Ok);
+    auto rsa = rsaCert(0x9A, /*alwaysAuthenticate=*/false);
+    auto rsaStub = std::make_shared<RecordingStubPlugin>("opensc", rsa, PINResultOutcome::Ok);
+    auto session = LibreSCRS::SmartCard::detail::makeDetachedCardSession("FakeReader");
+
+    const std::vector<std::uint8_t> digestInfo(51, 0x30);
+    EXPECT_EQ(preflight({ecStub}, sha256Hex(ec.derBytes), Mechanism::RsaPkcs1Sign, digestInfo, *session).status,
+              RawCryptoStatus::InvalidInput);
+    EXPECT_EQ(preflight({ecStub}, sha256Hex(ec.derBytes), Mechanism::RsaPkcs1Decrypt,
+                        std::vector<std::uint8_t>(96, 0x01), *session)
+                  .status,
+              RawCryptoStatus::InvalidInput)
+        << "an EC key with keyEncipherment still does not decrypt";
+    EXPECT_EQ(preflight({rsaStub}, sha256Hex(rsa.derBytes), Mechanism::EcdsaSign, std::vector<std::uint8_t>(32, 0x01),
+                        *session)
+                  .status,
+              RawCryptoStatus::InvalidInput);
+    EXPECT_EQ(ecStub->m_signCalls + ecStub->m_decipherCalls + rsaStub->m_signCalls, 0);
+    EXPECT_TRUE(ecStub->m_credentialWrites.empty());
+    EXPECT_TRUE(rsaStub->m_credentialWrites.empty());
+}
+
+// Lengths the card would refuse -- or worse, answer with a plain 6A80 that ends
+// a PACE secure-messaging session -- are refused here instead.
+TEST(LmRawCrypto, PreflightRefusesAnInputOfTheWrongLength)
+{
+    namespace T = LibreSCRS::Agent::Test;
+    CertificateData ec;
+    ec.derBytes = T::selfSignedCert(T::ecKey("P-384").get(), "LK", "critical,digitalSignature");
+    ec.keyFID = std::uint16_t{0x47};
+    auto rsa = rsaCert(0x9A, /*alwaysAuthenticate=*/false); // 2048 bits: k = 256
+    auto session = LibreSCRS::SmartCard::detail::makeDetachedCardSession("FakeReader");
+    const CandidateList ecCand{std::make_shared<RecordingStubPlugin>("pkcs15", ec, PINResultOutcome::Ok)};
+    const CandidateList rsaCand{std::make_shared<RecordingStubPlugin>("opensc", rsa, PINResultOutcome::Ok)};
+    auto hashing = std::make_shared<RecordingStubPlugin>("pkcs15", rsa, PINResultOutcome::Ok);
+    hashing->m_preReadAuth = LibreSCRS::Auth::PreReadAuthMethod::Can;
+    const CandidateList paceCand{hashing};
+    const auto ecId = sha256Hex(ec.derBytes);
+    const auto rsaId = sha256Hex(rsa.derBytes);
+    const auto status = [&](const CandidateList& c, const std::string& id, Mechanism m, std::size_t len) {
+        return preflight(c, id, m, std::vector<std::uint8_t>(len, 0x01), *session).status;
+    };
+    EXPECT_EQ(status(ecCand, ecId, Mechanism::EcdsaSign, 20), RawCryptoStatus::InvalidInput);
+    EXPECT_EQ(status(ecCand, ecId, Mechanism::EcdsaSign, 51), RawCryptoStatus::InvalidInput);
+    EXPECT_EQ(status(ecCand, ecId, Mechanism::EcdsaSign, 48), RawCryptoStatus::Ok);
+    EXPECT_EQ(status(rsaCand, rsaId, Mechanism::RsaPkcs1Sign, 0), RawCryptoStatus::InvalidInput);
+    EXPECT_EQ(status(rsaCand, rsaId, Mechanism::RsaPkcs1Sign, 246), RawCryptoStatus::InvalidInput); // > k - 11
+    EXPECT_EQ(status(rsaCand, rsaId, Mechanism::RsaPkcs1Sign, 245), RawCryptoStatus::Ok);
+    EXPECT_EQ(status(paceCand, rsaId, Mechanism::Sha256RsaPkcs1Sign, 0), RawCryptoStatus::InvalidInput);
+    EXPECT_EQ(status(paceCand, rsaId, Mechanism::Sha256RsaPkcs1Sign, 4096), RawCryptoStatus::Ok);
+    EXPECT_EQ(status(rsaCand, rsaId, Mechanism::RsaPkcs1Decrypt, 255), RawCryptoStatus::InvalidInput);
+    EXPECT_EQ(status(rsaCand, rsaId, Mechanism::RsaPkcs1Decrypt, 256), RawCryptoStatus::Ok);
+}
+
+// The preflight's read is the one the operation uses: one read of the card's
+// certificates for the whole signature, and the resolved key is the one asked for.
+TEST(LmRawCrypto, PreflightResolvesTheKeyTheOperationThenUses)
+{
+    auto cert = rsaCert(0x9A, /*alwaysAuthenticate=*/false);
+    const std::string certId = sha256Hex(cert.derBytes);
+    auto stub = std::make_shared<RecordingStubPlugin>("opensc", cert, PINResultOutcome::Ok);
+    auto session = LibreSCRS::SmartCard::detail::makeDetachedCardSession("FakeReader");
+    LibreSCRS::Secure::String pin{"654321"};
+    const std::vector<std::uint8_t> digestInfo(51, 0x30);
+
+    const auto checked = preflight({stub}, certId, Mechanism::RsaPkcs1Sign, digestInfo, *session);
+    ASSERT_EQ(checked.status, RawCryptoStatus::Ok);
+    ASSERT_TRUE(checked.key.has_value());
+    EXPECT_EQ(sha256Hex(checked.key->cert.derBytes), certId);
+    EXPECT_EQ(
+        signRaw(*checked.key, Mechanism::RsaPkcs1Sign, digestInfo, &pin, *session, LibreSCRS::CancelToken{}).status,
+        RawCryptoStatus::Ok);
+    EXPECT_EQ(stub->m_readCalls, 1) << "the card's certificates are read once per signature";
+}
+
+// The operation runs exactly the mechanism the caller named. A plugin that
+// lacks it answers NotSupported -- there is no second, different try.
+TEST(LmRawCrypto, SignRawCallsExactlyTheRequestedPluginMechanism)
+{
+    auto cert = rsaCert(0x9A, /*alwaysAuthenticate=*/false);
+    const std::string certId = sha256Hex(cert.derBytes);
+    auto session = LibreSCRS::SmartCard::detail::makeDetachedCardSession("FakeReader");
+    LibreSCRS::Secure::String pin{"654321"};
+    const std::vector<std::uint8_t> input(51, 0x30);
+
+    auto hashOnCard = std::make_shared<RecordingStubPlugin>("pkcs15", cert, PINResultOutcome::Ok);
+    EXPECT_EQ(signRaw(resolved({hashOnCard}, certId, *session), Mechanism::Sha256RsaPkcs1Sign, input, &pin, *session,
+                      LibreSCRS::CancelToken{})
+                  .status,
+              RawCryptoStatus::Ok);
+    EXPECT_EQ(hashOnCard->m_lastSignMechanism, SignMechanism::RSA_SHA256);
+    EXPECT_EQ(hashOnCard->m_signCalls, 1);
+
+    auto digestInfoCard = std::make_shared<RecordingStubPlugin>("opensc", cert, PINResultOutcome::Ok);
+    digestInfoCard->m_signsHashOnCard = false;
+    EXPECT_EQ(signRaw(resolved({digestInfoCard}, certId, *session), Mechanism::Sha256RsaPkcs1Sign, input, &pin,
+                      *session, LibreSCRS::CancelToken{})
+                  .status,
+              RawCryptoStatus::NotSupported)
+        << "a card without on-card hashing is told so, never handed the block as a DigestInfo";
+    EXPECT_EQ(digestInfoCard->m_signCalls, 1) << "no fallback to another mechanism";
+}
+
+// A PACE card's RSA key hashes the message on the card, so a caller-built
+// PKCS#1 block cannot be signed with it, and any other card's RSA key takes
+// only such a block, never a message to hash: each is refused before any PIN
+// prompt, for every client alike, rather than after the PIN in the plugin.
+// The mechanism each key does take, and ECDSA with an EC key on a PACE card,
+// still pass.
+TEST(LmRawCrypto, PreflightGivesAnRsaKeyOnlyTheMechanismItsCardTakes)
+{
+    namespace T = LibreSCRS::Agent::Test;
+    auto rsa = rsaCert(0x9A, /*alwaysAuthenticate=*/false);
+    auto pace = std::make_shared<RecordingStubPlugin>("pkcs15", rsa, PINResultOutcome::Ok);
+    pace->m_preReadAuth = LibreSCRS::Auth::PreReadAuthMethod::Can;
+    auto plain = std::make_shared<RecordingStubPlugin>("opensc", rsa, PINResultOutcome::Ok);
+    CertificateData ec;
+    ec.derBytes = T::selfSignedCert(T::ecKey("P-384").get(), "LK", "critical,digitalSignature");
+    ec.keyFID = std::uint16_t{0x47};
+    auto paceEc = std::make_shared<RecordingStubPlugin>("pkcs15", ec, PINResultOutcome::Ok);
+    paceEc->m_preReadAuth = LibreSCRS::Auth::PreReadAuthMethod::Can;
+    auto session = LibreSCRS::SmartCard::detail::makeDetachedCardSession("FakeReader");
+    const auto rsaId = sha256Hex(rsa.derBytes);
+    const std::vector<std::uint8_t> digestInfo(51, 0x30);
+
+    EXPECT_EQ(preflight({pace}, rsaId, Mechanism::RsaPkcs1Sign, digestInfo, *session).status,
+              RawCryptoStatus::InvalidInput);
+    EXPECT_EQ(preflight({pace}, rsaId, Mechanism::Sha256RsaPkcs1Sign, digestInfo, *session).status,
+              RawCryptoStatus::Ok);
+    EXPECT_EQ(preflight({plain}, rsaId, Mechanism::RsaPkcs1Sign, digestInfo, *session).status, RawCryptoStatus::Ok);
+    EXPECT_EQ(preflight({plain}, rsaId, Mechanism::Sha256RsaPkcs1Sign, digestInfo, *session).status,
+              RawCryptoStatus::InvalidInput)
+        << "a card that does not hash is never handed a message to hash";
+    EXPECT_EQ(
+        preflight({paceEc}, sha256Hex(ec.derBytes), Mechanism::EcdsaSign, std::vector<std::uint8_t>(48, 0x01), *session)
+            .status,
+        RawCryptoStatus::Ok);
+    EXPECT_EQ(pace->m_signCalls + plain->m_signCalls + paceEc->m_signCalls, 0);
+    EXPECT_TRUE(pace->m_credentialWrites.empty());
 }

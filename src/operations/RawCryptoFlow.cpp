@@ -53,25 +53,34 @@ RawCryptoFlow::Outcome mapStatus(RawCryptoStatus s) noexcept
         // Only meaningful for an op given no PIN, which run() handles before
         // mapping. Reaching here means an op with a PIN answered it: fail closed.
         return RawCryptoFlow::Outcome::CardError;
+    case RawCryptoStatus::InvalidInput:
+        return RawCryptoFlow::Outcome::InvalidInput;
     }
     return RawCryptoFlow::Outcome::CardError;
+}
+
+// A preflight refusal as the flow's outcome. Ok without a key is a broken
+// preflight, never a pass.
+RawCryptoFlow::Outcome refusalOutcome(RawCryptoStatus s) noexcept
+{
+    return s == RawCryptoStatus::Ok ? RawCryptoFlow::Outcome::CardError : mapStatus(s);
 }
 
 } // namespace
 
 RawCryptoFlow::RawCryptoFlow(RawCryptoFlowDeps deps) : m_deps(std::move(deps)) {}
 
-RawCryptoFlow::Result RawCryptoFlow::runSign(std::span<const std::uint8_t> input)
+RawCryptoFlow::Result RawCryptoFlow::runSign(Mechanism mechanism, std::span<const std::uint8_t> input)
 {
-    return run(Op::Sign, input);
+    return run(Op::Sign, mechanism, input);
 }
 
-RawCryptoFlow::Result RawCryptoFlow::runDecrypt(std::span<const std::uint8_t> ciphertext)
+RawCryptoFlow::Result RawCryptoFlow::runDecrypt(Mechanism mechanism, std::span<const std::uint8_t> ciphertext)
 {
-    return run(Op::Decrypt, ciphertext);
+    return run(Op::Decrypt, mechanism, ciphertext);
 }
 
-RawCryptoFlow::Result RawCryptoFlow::run(Op op, std::span<const std::uint8_t> bytes)
+RawCryptoFlow::Result RawCryptoFlow::run(Op op, Mechanism mechanism, std::span<const std::uint8_t> bytes)
 {
     // A cold lease always prompts. Charge that prompt before anything is
     // opened, so a refused caller costs no session, no channel, no card I/O
@@ -137,6 +146,23 @@ RawCryptoFlow::Result RawCryptoFlow::run(Op op, std::span<const std::uint8_t> by
 
     if (m_deps.token.isCancelled()) {
         return makeCancelled();
+    }
+
+    // Checked after the cold prompt was charged (above) and before any PIN is
+    // asked for: the key is resolved off the card in the reader now -- the
+    // read the operation then uses -- and a mechanism of the other family, an
+    // input of the wrong length or a point off the key's curve is refused here.
+    // No PIN prompt, no use of the key, and the lease stays as it was. The read
+    // is the same public one CertDer and PublicKey make; on a cold PACE channel
+    // it may need the CAN, which normally comes from the credential cache.
+    // No preflight wired is a refusal (CardError), like an unwired prompt gate.
+    const auto runPreflight = [&] {
+        return m_deps.preflight ? m_deps.preflight(signCands, m_deps.certId, mechanism, bytes, *session)
+                                : RawCryptoPreflight{};
+    };
+    RawCryptoPreflight checked = runPreflight();
+    if (checked.status != RawCryptoStatus::Ok || !checked.key.has_value()) {
+        return makeError(refusalOutcome(checked.status), "pkcs11: request refused before any PIN prompt");
     }
 
     // Collect the PIN-as-consent from the agent prompter + drive the watchdog
@@ -217,7 +243,7 @@ RawCryptoFlow::Result RawCryptoFlow::run(Op op, std::span<const std::uint8_t> by
     // which the op answers with ConsentRequired before using the key.
     const RawCryptoOp& terminal = (op == Op::Sign) ? m_deps.signOp : m_deps.decryptOp;
     const LibreSCRS::Secure::String* pinPtr = pin ? &*pin : nullptr;
-    RawCryptoResult result = terminal(signCands, m_deps.certId, bytes, pinPtr, *session, m_deps.token);
+    RawCryptoResult result = terminal(*checked.key, mechanism, bytes, pinPtr, *session, m_deps.token);
     Outcome outcome = mapStatus(result.status);
 
     // Two reasons a verify-skipped op needs the PIN after all, one retry for both:
@@ -232,6 +258,11 @@ RawCryptoFlow::Result RawCryptoFlow::run(Op op, std::span<const std::uint8_t> by
     //    card fault, so the verified state is cleared, the PIN asked for once
     //    more and the op retried ONCE. A second failure is surfaced below: one
     //    extra prompt at worst, never a wedged lease.
+    //    A plugin refusal that repeats on every try (a key handle that names
+    //    two keys, a reply that does not verify) is CardError too, and costs
+    //    the same one prompt; whatever can be decided before the card -- the
+    //    key's family, the input's length, an RSA mechanism the key's card
+    //    does not take -- the preflight refuses before the first prompt.
     const bool consentAsked = alreadyVerified && result.status == RawCryptoStatus::ConsentRequired;
     const bool channelLost = alreadyVerified && !consentAsked && outcome == Outcome::CardError;
     if (consentAsked || channelLost) {
@@ -241,6 +272,13 @@ RawCryptoFlow::Result RawCryptoFlow::run(Op op, std::span<const std::uint8_t> by
         if (m_deps.token.isCancelled()) {
             return makeCancelled();
         }
+        if (channelLost) {
+            // A fresh channel: resolve the key on it again, as the first try did.
+            checked = runPreflight();
+            if (checked.status != RawCryptoStatus::Ok || !checked.key.has_value()) {
+                return makeError(refusalOutcome(checked.status), "pkcs11: request refused before any PIN prompt");
+            }
+        }
         auto got = obtainPin(/*charge=*/true);
         if (auto* done = std::get_if<Result>(&got)) {
             return std::move(*done);
@@ -249,7 +287,7 @@ RawCryptoFlow::Result RawCryptoFlow::run(Op op, std::span<const std::uint8_t> by
             return makeCancelled();
         }
         pin = std::move(std::get<LibreSCRS::Secure::String>(got));
-        result = terminal(signCands, m_deps.certId, bytes, &*pin, *session, m_deps.token);
+        result = terminal(*checked.key, mechanism, bytes, &*pin, *session, m_deps.token);
         outcome = mapStatus(result.status);
         if (outcome == Outcome::Ok && !result.alwaysAuthenticate && m_deps.markPinVerified) {
             // The retry presented the PIN and succeeded: re-arm the lease

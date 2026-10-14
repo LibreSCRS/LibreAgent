@@ -10,6 +10,7 @@
 #include <LibreSCRS/CancelToken.h>
 #include <chrono>
 #include <cstdint>
+#include <expected>
 #include <memory>
 #include <optional>
 #include <span>
@@ -31,11 +32,11 @@ public:
 };
 
 // Run one RawCryptoFlow op (sign or decrypt) on the worker thread with @p holder
-// and translate RawCryptoFlow::Outcome -> the broker's CryptoOutcome. @p isSign
-// picks the terminal op + the runSign/runDecrypt entry. The credential provider
+// and translate RawCryptoFlow::Outcome -> the broker's CryptoOutcome.
+// @p mechanism picks the runSign/runDecrypt entry and is the one the op runs. The credential provider
 // raised inside the flow collects the PIN via the agent prompter (PIN-as-consent,
 // uncached) — never off the wire.
-Pkcs11Broker::CryptoResult runRawCrypto(bool isSign, Operations::CardSessionHolder& holder,
+Pkcs11Broker::CryptoResult runRawCrypto(Mechanism mechanism, Operations::CardSessionHolder& holder,
                                         Operations::PrompterClientBase& prompter,
                                         Operations::PromptSerializer& serializer, CredentialCache& cache,
                                         const std::string& cardKey, const std::string& requester,
@@ -58,6 +59,7 @@ Pkcs11Broker::CryptoResult runRawCrypto(bool isSign, Operations::CardSessionHold
         .cardKey = cardKey,
         .requester = requester,
         .certId = certId,
+        .preflight = Operations::preflight,
         .signOp = Operations::signRaw,
         .decryptOp = Operations::decryptRaw,
         .token = std::move(token),
@@ -66,7 +68,8 @@ Pkcs11Broker::CryptoResult runRawCrypto(bool isSign, Operations::CardSessionHold
         .clearPinVerified = pinState.clearVerified,
         .allowPrompt = pinState.allowPrompt,
     }};
-    const auto r = isSign ? flow.runSign(bytes) : flow.runDecrypt(bytes);
+    const auto r =
+        (mechanism == Mechanism::RsaPkcs1Decrypt) ? flow.runDecrypt(mechanism, bytes) : flow.runSign(mechanism, bytes);
     using FO = Operations::RawCryptoFlow::Outcome;
     using HO = Pkcs11Broker::CryptoOutcome;
     HO outcome = HO::CardError;
@@ -91,6 +94,9 @@ Pkcs11Broker::CryptoResult runRawCrypto(bool isSign, Operations::CardSessionHold
         break;
     case FO::RateLimited:
         outcome = HO::RateLimited;
+        break;
+    case FO::InvalidInput:
+        outcome = HO::InvalidInput;
         break;
     }
     return Pkcs11Broker::CryptoResult{.outcome = outcome, .bytes = r.bytes};
@@ -184,7 +190,7 @@ void AgentCore::exportCertDerOnWorker(const std::string& reader, const std::stri
         }));
 }
 
-void AgentCore::runRawCryptoOnWorker(bool isSign, const std::string& reader, const std::string& certId,
+void AgentCore::runRawCryptoOnWorker(Mechanism mechanism, const std::string& reader, const std::string& certId,
                                      std::span<const std::uint8_t> bytes, const std::string& requester,
                                      const Pkcs11Broker::LeasePinState& pinState,
                                      std::function<void(Pkcs11Broker::CryptoResult)> done)
@@ -229,8 +235,8 @@ void AgentCore::runRawCryptoOnWorker(bool isSign, const std::string& reader, con
     const bool queued = m_opManager.enqueueOnReaderWorker(
         rc->readerId, rc->readerName,
         [done, input, cardKey = rc->cardKey, requester, certId, pinState, ctx,
-         isSign](Operations::CardSessionHolder& holder) {
-            auto result = runRawCrypto(isSign, holder, *ctx->prompter, *ctx->serializer, *ctx->credentials, cardKey,
+         mechanism](Operations::CardSessionHolder& holder) {
+            auto result = runRawCrypto(mechanism, holder, *ctx->prompter, *ctx->serializer, *ctx->credentials, cardKey,
                                        requester, certId, *input, pinState, ctx->shutdown);
             if (ctx->shutdown.isCancelled()) {
                 // teardown: skip the completion (broker + reply channel gone). @p
@@ -261,25 +267,26 @@ Pkcs11Broker::Deps AgentCore::makeBrokerDeps(Pkcs11Broker::ResolveCardKeySeam re
             },
         .publicKey =
             [this](const std::string& reader, const std::string& certId,
-                   std::function<void(std::optional<Pkcs11Broker::PublicKey>)> done) {
+                   std::function<void(std::expected<Pkcs11Broker::PublicKey, Pkcs11Broker::CryptoOutcome>)> done) {
                 // Public data: export the cert DER (same worker-thread path as
-                // CertDer) then extract the RSA modulus + exponent from its SPKI on
-                // the worker. nullopt when the cert is absent (-> KeyNotFound); an
-                // engaged PublicKey with EMPTY fields signals "resolved but not RSA"
-                // (-> NotSupported).
+                // CertDer), then read the key off its SubjectPublicKeyInfo on the
+                // worker -- RSA (rsaEncryption) or EC on a NIST curve. Any other
+                // key has no public key on this surface.
                 exportCertDerOnWorker(reader, certId,
                                       [done = std::move(done)](std::optional<std::vector<std::uint8_t>> der) {
                                           if (!der) {
-                                              done(std::nullopt);
+                                              done(std::unexpected(Pkcs11Broker::CryptoOutcome::KeyNotFound));
                                               return;
                                           }
-                                          auto rsa = Operations::rsaPublicKeyFromCertDer(*der);
-                                          if (!rsa) {
-                                              done(Pkcs11Broker::PublicKey{});
+                                          if (auto rsa = Operations::rsaPublicKeyFromCertDer(*der)) {
+                                              done(Pkcs11Broker::PublicKey{std::move(*rsa)});
                                               return;
                                           }
-                                          done(Pkcs11Broker::PublicKey{.modulus = std::move(rsa->modulus),
-                                                                       .exponent = std::move(rsa->exponent)});
+                                          if (auto ec = Operations::ecPublicKeyFromCertDer(*der)) {
+                                              done(Pkcs11Broker::PublicKey{std::move(*ec)});
+                                              return;
+                                          }
+                                          done(std::unexpected(Pkcs11Broker::CryptoOutcome::NotSupported));
                                       });
             },
         .login =
@@ -317,16 +324,16 @@ Pkcs11Broker::Deps AgentCore::makeBrokerDeps(Pkcs11Broker::ResolveCardKeySeam re
                 }
             },
         .signRaw =
-            [this](const std::string& reader, const std::string& certId, Mechanism /*mechanism*/,
+            [this](const std::string& reader, const std::string& certId, Mechanism mechanism,
                    const MechanismParams& /*params*/, std::span<const std::uint8_t> bytes, const std::string& requester,
                    const Pkcs11Broker::LeasePinState& pinState, std::function<void(Pkcs11Broker::CryptoResult)> done) {
-                runRawCryptoOnWorker(/*isSign=*/true, reader, certId, bytes, requester, pinState, std::move(done));
+                runRawCryptoOnWorker(mechanism, reader, certId, bytes, requester, pinState, std::move(done));
             },
         .decrypt =
-            [this](const std::string& reader, const std::string& certId, Mechanism /*mechanism*/,
+            [this](const std::string& reader, const std::string& certId, Mechanism mechanism,
                    const MechanismParams& /*params*/, std::span<const std::uint8_t> bytes, const std::string& requester,
                    const Pkcs11Broker::LeasePinState& pinState, std::function<void(Pkcs11Broker::CryptoResult)> done) {
-                runRawCryptoOnWorker(/*isSign=*/false, reader, certId, bytes, requester, pinState, std::move(done));
+                runRawCryptoOnWorker(mechanism, reader, certId, bytes, requester, pinState, std::move(done));
             },
         .resolveCardKey = std::move(resolveCardKey),
         // The broker's runCrypto completion wrapper re-checks this token (a

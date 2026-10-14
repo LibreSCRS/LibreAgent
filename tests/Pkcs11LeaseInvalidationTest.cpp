@@ -12,6 +12,7 @@
 #include <gtest/gtest.h>
 #include <chrono>
 #include <cstdint>
+#include <expected>
 #include <memory>
 #include <optional>
 #include <span>
@@ -51,10 +52,11 @@ struct Harness
                 certDerSeam([](const std::string&, const std::string&) -> std::optional<std::vector<std::uint8_t>> {
                     return std::vector<std::uint8_t>{};
                 }),
-            .publicKey =
-                publicKeySeam([](const std::string&, const std::string&) -> std::optional<Pkcs11Broker::PublicKey> {
-                    return Pkcs11Broker::PublicKey{.modulus = {0xAB}, .exponent = {0x01, 0x00, 0x01}};
-                }),
+            .publicKey = publicKeySeam([](const std::string&, const std::string&)
+                                           -> std::expected<Pkcs11Broker::PublicKey, Pkcs11Broker::CryptoOutcome> {
+                return Pkcs11Broker::PublicKey{
+                    Operations::RsaPublicKey{.modulus = {0xAB}, .exponent = {0x01, 0x00, 0x01}}};
+            }),
             .login = loginSeam([](const std::string&) { return Pkcs11Broker::LoginOutcome::Ok; }),
             .signRaw = cryptoSeam([](const std::string&, const std::string&, std::span<const std::uint8_t>,
                                      const std::string&, const Pkcs11Broker::LeasePinState&) {

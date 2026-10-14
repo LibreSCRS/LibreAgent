@@ -2,16 +2,17 @@
 // SPDX-FileCopyrightText: 2026 hirashix0
 #include <LibreSCRS/Agent/operations/LmRawCrypto.h>
 
+#include <LibreSCRS/Agent/SecureZero.h>
 #include <LibreSCRS/Agent/backend/Logging.h>
 #include <LibreSCRS/Agent/operations/LmSeams.h> // selectSigningCandidate, SigningSelection
 
+#include <LibreSCRS/Auth/AuthRequirement.h> // PreReadAuthMethod
 #include <LibreSCRS/Certificate/ParsedCertificate.h>
 #include <LibreSCRS/Plugin/CardPlugin.h>
 #include <LibreSCRS/Plugin/PluginTypes.h>
 #include <LibreSCRS/Secure/Buffer.h>
 #include <LibreSCRS/Secure/String.h>
 
-#include <algorithm>
 #include <cstdint>
 #include <optional>
 
@@ -165,53 +166,118 @@ bool certKeyUsagePermitsDecrypt(std::span<const std::uint8_t> der)
     return false;
 }
 
-bool certPublicKeyIsEcdsa(std::span<const std::uint8_t> der)
-{
-    auto parsed = LibreSCRS::Certificate::ParsedCertificate::fromDer(der);
-    if (!parsed) {
-        return false; // unparseable -> the RSA flow stays the default
-    }
-    return parsed->publicKey().algorithm == LibreSCRS::Certificate::PublicKeyAlgorithm::ECDSA;
-}
-
-LibreSCRS::Plugin::SignMechanism ecdsaMechanismForDigestLength(std::size_t digestLength) noexcept
+std::optional<LibreSCRS::Plugin::SignMechanism> ecdsaMechanismForDigest(std::size_t digestLength) noexcept
 {
     using M = LibreSCRS::Plugin::SignMechanism;
-    if (digestLength <= 32) {
+    switch (digestLength) {
+    case 32:
         return M::ECDSA_SHA256;
-    }
-    if (digestLength <= 48) {
+    case 48:
         return M::ECDSA_SHA384;
+    case 64:
+        return M::ECDSA_SHA512;
+    default:
+        return std::nullopt;
     }
-    return M::ECDSA_SHA512;
 }
 
-RawCryptoResult signRaw(const CandidateList& candidates, const std::string& certId, std::span<const std::uint8_t> input,
-                        const LibreSCRS::Secure::String* pin, LibreSCRS::SmartCard::CardSession& session,
-                        LibreSCRS::CancelToken token)
+RawCryptoPreflight preflight(const CandidateList& candidates, const std::string& certId, Mechanism mechanism,
+                             std::span<const std::uint8_t> input, LibreSCRS::SmartCard::CardSession& session)
 {
+    const auto refuse = [](RawCryptoStatus s) { return RawCryptoPreflight{.status = s, .key = std::nullopt}; };
     // Anti-TOCTOU routing reused from the AdES path: resolve certId against the
     // card present NOW, returning the owning plugin + the exact CertificateData.
     auto selection = selectSigningCandidate(candidates, certId, session);
     if (!selection || !selection->cert.keyFID.has_value()) {
+        return refuse(RawCryptoStatus::KeyNotFound);
+    }
+    auto parsed = LibreSCRS::Certificate::ParsedCertificate::fromDer(selection->cert.derBytes);
+    const CertKeyClass key = parsed ? classifyCertKey(*parsed) : CertKeyClass{};
+    const std::size_t k = (key.bits + 7) / 8; // RSA modulus bytes; EC field bytes
+    switch (mechanism) {
+    case Mechanism::RsaPkcs1Sign:
+        // PKCS#1 v1.5 type 01 padding needs at least 11 bytes of the modulus.
+        if (key.type != KeyType::Rsa || input.empty() || input.size() + 11 > k) {
+            return refuse(RawCryptoStatus::InvalidInput);
+        }
+        // A PACE card's RSA key hashes the message on the card and takes no
+        // caller-built block; the PKCS#11 module offers it the hash-on-card
+        // mechanism only. Refused here, before the PIN, for every client.
+        if (selection->plugin->preReadAuth(session) == LibreSCRS::Auth::PreReadAuthMethod::Can) {
+            return refuse(RawCryptoStatus::InvalidInput);
+        }
+        break;
+    case Mechanism::Sha256RsaPkcs1Sign:
+        // The raw message; the frame bound caps it from above. Only a PACE
+        // card's RSA key hashes it on the card; any other takes a caller-built
+        // block and is never handed a message to hash.
+        if (key.type != KeyType::Rsa || input.empty() ||
+            selection->plugin->preReadAuth(session) != LibreSCRS::Auth::PreReadAuthMethod::Can) {
+            return refuse(RawCryptoStatus::InvalidInput);
+        }
+        break;
+    case Mechanism::EcdsaSign:
+        if (key.type != KeyType::Ec || !ecdsaMechanismForDigest(input.size())) {
+            return refuse(RawCryptoStatus::InvalidInput);
+        }
+        break;
+    case Mechanism::RsaPkcs1Decrypt:
+        if (key.type != KeyType::Rsa) {
+            return refuse(RawCryptoStatus::InvalidInput);
+        }
+        // For PKS the signature key (no keyEncipherment) is decrypt-incapable and
+        // the card hard-fails NOT_ALLOWED; refused before consent, so a refused
+        // decryption never asks for a PIN.
+        if (!certKeyUsagePermitsDecrypt(selection->cert.derBytes)) {
+            log::warn("rawcrypto: a decryption with a key whose certificate keyUsage forbids it");
+            return refuse(RawCryptoStatus::NotSupported);
+        }
+        if (input.size() != k) {
+            return refuse(RawCryptoStatus::InvalidInput);
+        }
+        break;
+    default:
+        return refuse(RawCryptoStatus::NotSupported);
+    }
+    return RawCryptoPreflight{.status = RawCryptoStatus::Ok, .key = std::move(selection)};
+}
+
+RawCryptoResult signRaw(const SigningSelection& key, Mechanism mechanism, std::span<const std::uint8_t> input,
+                        const LibreSCRS::Secure::String* pin, LibreSCRS::SmartCard::CardSession& session,
+                        LibreSCRS::CancelToken token)
+{
+    if (!key.plugin || !key.cert.keyFID.has_value()) {
         return err(RawCryptoStatus::KeyNotFound);
     }
+    using SM = LibreSCRS::Plugin::SignMechanism;
+    std::optional<SM> pluginMechanism;
+    switch (mechanism) {
+    case Mechanism::RsaPkcs1Sign:
+        pluginMechanism = SM::RSA_PKCS;
+        break;
+    case Mechanism::Sha256RsaPkcs1Sign:
+        pluginMechanism = SM::RSA_SHA256;
+        break;
+    case Mechanism::EcdsaSign:
+        pluginMechanism = ecdsaMechanismForDigest(input.size());
+        break;
+    default:
+        break;
+    }
+    if (!pluginMechanism) {
+        return err(RawCryptoStatus::InvalidInput); // the preflight refuses these first
+    }
     // Consent per operation is the card's rule, read from the card in the
-    // reader now -- never from the request or from a cached read. Without a
-    // PIN for THIS operation such a key is not touched.
-    const bool perOperation = selection->cert.alwaysAuthenticate;
+    // reader now. Without a PIN for THIS operation such a key is not touched.
+    const bool perOperation = key.cert.alwaysAuthenticate;
     if (perOperation && pin == nullptr) {
         return RawCryptoResult{.status = RawCryptoStatus::ConsentRequired, .bytes = {}, .alwaysAuthenticate = true};
     }
     // A PIN goes to the plugin, which verifies it and uses the key in one card
-    // transaction; a separate VERIFY first would let the card forget it in
-    // between (PIV 9C). For a key the card marks it is erased again on every
-    // way out (only the PIN; the CAN stays). For an ordinary key it stays for
-    // the lease once the operation succeeded -- a hash-on-card card signs only
-    // with a deposited PIN -- and is erased on any failure, also when the PIN
-    // was kept from an earlier operation. The eraser is armed before the
-    // deposit, so a deposit that throws half-way is erased as well.
-    auto& plugin = depositPlugin(*selection);
+    // transaction. Erased again on every way out for a marked key; kept for
+    // the lease only after an ordinary key's success. The eraser is armed
+    // before the deposit, so a deposit that throws half-way is erased as well.
+    auto& plugin = depositPlugin(key);
     PinDepositEraser eraser{plugin, session};
     if (pin != nullptr && pin->empty()) {
         // An empty value would erase the deposit, and the card would run the
@@ -221,43 +287,7 @@ RawCryptoResult signRaw(const CandidateList& candidates, const std::string& cert
     if (pin != nullptr) {
         plugin.setCredentials(session, "pin", *pin);
     }
-    // Mechanism family by the RESOLVED KEY'S ALGORITHM (the certificate is
-    // the authority): an EC key takes the pre-hashed ECDSA path — both the
-    // hash-on-card probe and the DigestInfo fallback below are RSA-shaped.
-    // The PKCS#11 module hands the pre-computed digest for CKM_ECDSA, so
-    // @p input IS the hash.
-    if (certPublicKeyIsEcdsa(selection->cert.derBytes)) {
-        auto sr = selection->plugin->sign(session, *selection->cert.keyFID, input,
-                                          ecdsaMechanismForDigestLength(input.size()), token);
-        RawCryptoResult out;
-        out.status = mapSignOutcome(sr.outcome);
-        out.alwaysAuthenticate = perOperation;
-        eraser.keepForTheLease(!perOperation && out.status == RawCryptoStatus::Ok);
-        if (out.status == RawCryptoStatus::Ok) {
-            out.bytes = sr.signature;
-        } else if (out.status == RawCryptoStatus::NotSupported) {
-            log::warn("rawcrypto: signRaw resolved an EC key but the plugin has no ECDSA primitive");
-        }
-        return out;
-    }
-    // Two RSA card families, one consent model (the PIN deposited above, if
-    // any, is presented by the plugin inside whichever sign runs):
-    //   * Hash-on-card SSCDs (NAM / IAS-ECC pkcs15) expose doSign(RSA_SHA256)
-    //     over the RAW message and own the atomic verify + MSE(0x28) + PSO
-    //     inside PKCS15Card::sign.
-    //   * DigestInfo cards (PKS / opensc) sign with raw RSA_PKCS over a
-    //     caller-supplied DigestInfo.
-    // Self-dispatch: try the hash-on-card mechanism first; a plugin without it
-    // returns NotImplemented (no card I/O, no PIN use) and we fall through to
-    // RSA_PKCS. The module advertises exactly one mechanism per card, so
-    // `input` already carries the right form (raw message for NAM, DigestInfo
-    // for PKS).
-    auto sr = selection->plugin->sign(session, *selection->cert.keyFID, input,
-                                      LibreSCRS::Plugin::SignMechanism::RSA_SHA256, token);
-    if (sr.outcome == LibreSCRS::Plugin::SignResultOutcome::NotImplemented) {
-        sr = selection->plugin->sign(session, *selection->cert.keyFID, input,
-                                     LibreSCRS::Plugin::SignMechanism::RSA_PKCS, token);
-    }
+    auto sr = key.plugin->sign(session, *key.cert.keyFID, input, *pluginMechanism, token);
     RawCryptoResult out;
     out.status = mapSignOutcome(sr.outcome);
     out.alwaysAuthenticate = perOperation;
@@ -265,41 +295,30 @@ RawCryptoResult signRaw(const CandidateList& candidates, const std::string& cert
     if (out.status == RawCryptoStatus::Ok) {
         out.bytes = sr.signature;
     } else if (out.status == RawCryptoStatus::NotSupported) {
-        // Neither a hash-on-card (RSA_SHA256) nor a DigestInfo (RSA_PKCS) sign
-        // primitive on the resolving plugin. Surface explicitly so the host
-        // returns CKR_FUNCTION_NOT_SUPPORTED rather than a silent failure.
-        log::warn("rawcrypto: signRaw resolved to a plugin with no usable sign primitive");
+        log::warn("rawcrypto: the resolving plugin does not implement the requested sign mechanism");
     }
     return out;
 }
 
-RawCryptoResult decryptRaw(const CandidateList& candidates, const std::string& certId,
-                           std::span<const std::uint8_t> ciphertext, const LibreSCRS::Secure::String* pin,
-                           LibreSCRS::SmartCard::CardSession& session, LibreSCRS::CancelToken token)
+RawCryptoResult decryptRaw(const SigningSelection& key, Mechanism mechanism, std::span<const std::uint8_t> ciphertext,
+                           const LibreSCRS::Secure::String* pin, LibreSCRS::SmartCard::CardSession& session,
+                           LibreSCRS::CancelToken token)
 {
-    auto selection = selectSigningCandidate(candidates, certId, session);
-    if (!selection || !selection->cert.keyFID.has_value()) {
+    if (!key.plugin || !key.cert.keyFID.has_value()) {
         return err(RawCryptoStatus::KeyNotFound);
     }
-    // Key-usage routing assertion: the resolved key must permit decrypt. For
-    // PKS the signature key (ksc, no keyEncipherment) is decrypt-incapable and
-    // sc_pkcs15_decipher hard-fails NOT_ALLOWED; surface NotSupported (->
-    // CKR_KEY_FUNCTION_NOT_PERMITTED) rather than a raw CardError so the app gets
-    // a meaningful failure. The decrypt-capable key (kxc, keyEncipherment) passes.
-    // Checked before consent: a refused decryption must not cost a PIN prompt.
-    if (!certKeyUsagePermitsDecrypt(selection->cert.derBytes)) {
-        log::warn("rawcrypto: decryptRaw resolved to a key whose certificate keyUsage forbids decryption");
-        return err(RawCryptoStatus::NotSupported);
+    if (mechanism != Mechanism::RsaPkcs1Decrypt) {
+        return err(RawCryptoStatus::InvalidInput);
     }
     // The card's per-operation consent rule, as in signRaw.
-    const bool perOperation = selection->cert.alwaysAuthenticate;
+    const bool perOperation = key.cert.alwaysAuthenticate;
     if (perOperation && pin == nullptr) {
         return RawCryptoResult{.status = RawCryptoStatus::ConsentRequired, .bytes = {}, .alwaysAuthenticate = true};
     }
     // The PIN for this operation goes to the plugin and lives as in signRaw:
     // VERIFY and the decipher in one card transaction, erased on every way out
     // for a marked key, kept for the lease only after an ordinary key's success.
-    auto& plugin = depositPlugin(*selection);
+    auto& plugin = depositPlugin(key);
     PinDepositEraser eraser{plugin, session};
     if (pin != nullptr && pin->empty()) {
         return err(RawCryptoStatus::AuthFailed); // as in signRaw
@@ -307,8 +326,8 @@ RawCryptoResult decryptRaw(const CandidateList& candidates, const std::string& c
     if (pin != nullptr) {
         plugin.setCredentials(session, "pin", *pin);
     }
-    auto dr = selection->plugin->decipher(session, *selection->cert.keyFID, ciphertext,
-                                          LibreSCRS::Plugin::DecipherMechanism::RSA_PKCS1_V15, token);
+    auto dr = key.plugin->decipher(session, *key.cert.keyFID, ciphertext,
+                                   LibreSCRS::Plugin::DecipherMechanism::RSA_PKCS1_V15, token);
     RawCryptoResult out;
     out.status = mapDecipherOutcome(dr.outcome);
     out.alwaysAuthenticate = perOperation;
@@ -322,9 +341,7 @@ RawCryptoResult decryptRaw(const CandidateList& candidates, const std::string& c
         // the (trusted) PKCS#11 module over the owner-scoped socket.
         const LibreSCRS::Secure::Buffer recovered{std::span<const std::uint8_t>{dr.plaintext}};
         out.bytes.assign(recovered.data(), recovered.data() + recovered.size());
-        if (!dr.plaintext.empty()) {
-            std::fill(dr.plaintext.begin(), dr.plaintext.end(), std::uint8_t{0});
-        }
+        LibreSCRS::Agent::secureZero(dr.plaintext);
     } else if (out.status == RawCryptoStatus::NotSupported) {
         // The resolving plugin is the pkcs15/NAM family (no doDecipher override).
         // Surface the gap explicitly so the host returns
