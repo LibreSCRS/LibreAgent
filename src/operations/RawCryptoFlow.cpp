@@ -72,15 +72,31 @@ RawCryptoFlow::RawCryptoFlow(RawCryptoFlowDeps deps) : m_deps(std::move(deps)) {
 
 RawCryptoFlow::Result RawCryptoFlow::runSign(Mechanism mechanism, std::span<const std::uint8_t> input)
 {
-    return run(Op::Sign, mechanism, input);
+    return runOp(Op::Sign, mechanism, input);
 }
 
 RawCryptoFlow::Result RawCryptoFlow::runDecrypt(Mechanism mechanism, std::span<const std::uint8_t> ciphertext)
 {
-    return run(Op::Decrypt, mechanism, ciphertext);
+    return runOp(Op::Decrypt, mechanism, ciphertext);
 }
 
-RawCryptoFlow::Result RawCryptoFlow::run(Op op, Mechanism mechanism, std::span<const std::uint8_t> bytes)
+RawCryptoFlow::Result RawCryptoFlow::runDerive(std::span<const std::uint8_t> peerPoint)
+{
+    return runOp(Op::Derive, Mechanism::EcdhDerive, peerPoint);
+}
+
+RawCryptoFlow::Result RawCryptoFlow::run(Mechanism mechanism, std::span<const std::uint8_t> bytes)
+{
+    if (mechanism == Mechanism::EcdhDerive) {
+        return runDerive(bytes);
+    }
+    if (mechanism == Mechanism::RsaPkcs1Decrypt) {
+        return runDecrypt(mechanism, bytes);
+    }
+    return runSign(mechanism, bytes);
+}
+
+RawCryptoFlow::Result RawCryptoFlow::runOp(Op op, Mechanism mechanism, std::span<const std::uint8_t> bytes)
 {
     // A cold lease always prompts. Charge that prompt before anything is
     // opened, so a refused caller costs no session, no channel, no card I/O
@@ -92,6 +108,9 @@ RawCryptoFlow::Result RawCryptoFlow::run(Op op, Mechanism mechanism, std::span<c
     if (!alreadyVerified && !promptAllowed()) {
         return makeError(Outcome::RateLimited, "pkcs11: PIN prompt refused by the per-caller limit");
     }
+    // The category token the prompter shows: a key agreement is named apart
+    // from a signature or a decryption.
+    const char* const artifact = (op == Op::Derive) ? "pkcs11-derive" : "pkcs11";
 
     // Open the held session (shared with the read/sign flows via FlowPrelude).
     auto opened = FlowPrelude::openSession(m_deps.holder, m_deps.token);
@@ -135,9 +154,8 @@ RawCryptoFlow::Result RawCryptoFlow::run(Op op, Mechanism mechanism, std::span<c
     // Per-operation retry context, captured HERE at the top of run() -- never
     // later (see IdentityReadFlow's identical field for the full rationale).
     auto attempts = std::make_shared<AttemptContext>(cache.refusalGenerationFor(cardKey));
-    LibreSCRS::Auth::CredentialProvider provider =
-        FlowPrelude::makeReadCredentialProvider(cache, prompter, serializer, phaseSink, cardKey, requester,
-                                                /*artifact=*/"pkcs11", token, attempts, prompterFailed);
+    LibreSCRS::Auth::CredentialProvider provider = FlowPrelude::makeReadCredentialProvider(
+        cache, prompter, serializer, phaseSink, cardKey, requester, artifact, token, attempts, prompterFailed);
     // Install with a UAF scope guard: the provider captures the per-op phaseSink
     // by reference, but `session` is owned by the CardSessionHolder and outlives
     // this flow, so the guard resets the session's provider to a stateless no-op
@@ -164,6 +182,13 @@ RawCryptoFlow::Result RawCryptoFlow::run(Op op, Mechanism mechanism, std::span<c
     if (checked.status != RawCryptoStatus::Ok || !checked.key.has_value()) {
         return makeError(refusalOutcome(checked.status), "pkcs11: request refused before any PIN prompt");
     }
+    // The terminal per-family raw op. None wired is a refusal as well, before
+    // any PIN prompt -- never a throw on the reader's worker.
+    const RawCryptoOp& terminal =
+        (op == Op::Sign) ? m_deps.signOp : ((op == Op::Decrypt) ? m_deps.decryptOp : m_deps.deriveOp);
+    if (!terminal) {
+        return makeError(Outcome::CardError, "pkcs11: no operation wired for the request");
+    }
 
     // Collect the PIN-as-consent from the agent prompter + drive the watchdog
     // phases. Returns {Ok, pin} on success; on cancel/prompter-failure returns a
@@ -173,7 +198,7 @@ RawCryptoFlow::Result RawCryptoFlow::run(Op op, Mechanism mechanism, std::span<c
         SerializingPrompter gated{serializer, prompter, token, cardKey};
         PromptOptions opts;
         opts.requester = requester;
-        opts.artifact = "pkcs11";
+        opts.artifact = artifact;
         phaseSink.setPhase(static_cast<std::uint32_t>(OperationPhase::AwaitingConsent));
         // SerializingPrompter reports an empty answer as Cancelled, so a PIN
         // that gets past here is never empty.
@@ -235,13 +260,12 @@ RawCryptoFlow::Result RawCryptoFlow::run(Op op, Mechanism mechanism, std::span<c
         return makeCancelled();
     }
 
-    // Terminal per-family raw op (PIN deposit + sign / decipher inside the
-    // production seam). A non-null @p pin is presented by the plugin in the
+    // The terminal op (PIN deposit + sign / decipher inside the production
+    // seam). A non-null @p pin is presented by the plugin in the
     // operation's own card transaction (first op of a lease); a null @p pin
     // means the held channel is already verified and the op signs/deciphers
     // directly -- unless the card marks the key for consent per operation,
     // which the op answers with ConsentRequired before using the key.
-    const RawCryptoOp& terminal = (op == Op::Sign) ? m_deps.signOp : m_deps.decryptOp;
     const LibreSCRS::Secure::String* pinPtr = pin ? &*pin : nullptr;
     RawCryptoResult result = terminal(*checked.key, mechanism, bytes, pinPtr, *session, m_deps.token);
     Outcome outcome = mapStatus(result.status);
@@ -261,8 +285,9 @@ RawCryptoFlow::Result RawCryptoFlow::run(Op op, Mechanism mechanism, std::span<c
     //    A plugin refusal that repeats on every try (a key handle that names
     //    two keys, a reply that does not verify) is CardError too, and costs
     //    the same one prompt; whatever can be decided before the card -- the
-    //    key's family, the input's length, an RSA mechanism the key's card
-    //    does not take -- the preflight refuses before the first prompt.
+    //    key's family, the input's length, the peer's point, an RSA mechanism
+    //    the key's card does not take -- the preflight refuses
+    //    before the first prompt.
     const bool consentAsked = alreadyVerified && result.status == RawCryptoStatus::ConsentRequired;
     const bool channelLost = alreadyVerified && !consentAsked && outcome == Outcome::CardError;
     if (consentAsked || channelLost) {

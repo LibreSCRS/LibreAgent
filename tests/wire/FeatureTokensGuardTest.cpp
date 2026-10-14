@@ -84,10 +84,9 @@ std::vector<std::string> cddlFeatureVocabulary(const std::string& cddl)
 // pre-advertised before its surface exists. Order is not wire-significant
 // (both wires carry `features`/`Manager1.Features` as an unordered set), so
 // this compares membership, not position.
-TEST(FeatureTokensGuard,
-     LiveArrayContainsCredentialsCardTypeTokenInfoTrustStatusTsaUrlVisualSignLayoutPreviewIdentityStreamAndBatchSign)
+TEST(FeatureTokensGuard, LiveArrayContainsEveryServedTokenIncludingEcKeys)
 {
-    ASSERT_EQ(LibreSCRS::Agent::kAgentFeatures.size(), 9U);
+    ASSERT_EQ(LibreSCRS::Agent::kAgentFeatures.size(), 10U);
     const std::vector<std::string_view> tokens(LibreSCRS::Agent::kAgentFeatures.begin(),
                                                LibreSCRS::Agent::kAgentFeatures.end());
     EXPECT_NE(std::find(tokens.begin(), tokens.end(), std::string_view{"credentials"}), tokens.end());
@@ -99,6 +98,7 @@ TEST(FeatureTokensGuard,
     EXPECT_NE(std::find(tokens.begin(), tokens.end(), std::string_view{"layout-preview"}), tokens.end());
     EXPECT_NE(std::find(tokens.begin(), tokens.end(), std::string_view{"identity-stream"}), tokens.end());
     EXPECT_NE(std::find(tokens.begin(), tokens.end(), std::string_view{"batch-sign"}), tokens.end());
+    EXPECT_NE(std::find(tokens.begin(), tokens.end(), std::string_view{"ec-keys"}), tokens.end());
 }
 
 // Test-local sample block (NOT the real CDDL) shaped like the vocabulary

@@ -75,6 +75,19 @@ Pkcs11Broker::CryptoOutcome decryptMechanismOutcome(Pkcs11Broker& obj, Mechanism
     return **cap;
 }
 
+Pkcs11Broker::CryptoOutcome deriveOutcome(Pkcs11Broker& obj, const MechanismParams& params)
+{
+    using CO = Pkcs11Broker::CryptoOutcome;
+    auto cap = std::make_shared<std::optional<CO>>();
+    obj.derive(kReader, kCertId, params, appCaller(),
+               Reply<CO, std::vector<std::uint8_t>>{[cap](const std::vector<std::uint8_t>&) { *cap = CO::Ok; },
+                                                    [cap](CO oc) { *cap = oc; }, CO::CardError});
+    if (!cap->has_value()) {
+        throw std::logic_error{"derive reply not fulfilled inline"};
+    }
+    return **cap;
+}
+
 // Drives Pkcs11Broker with controllable seams + an injected clock.
 struct Harness
 {
@@ -93,6 +106,10 @@ struct Harness
     Pkcs11Broker::LoginOutcome loginOutcome{Pkcs11Broker::LoginOutcome::Ok};
     Pkcs11Broker::CryptoResult signResult{Pkcs11Broker::CryptoOutcome::Ok, {'S', 'I', 'G'}};
     Pkcs11Broker::CryptoResult decryptResult{Pkcs11Broker::CryptoOutcome::Ok, {'P', 'T'}};
+    Pkcs11Broker::CryptoResult deriveResult{Pkcs11Broker::CryptoOutcome::Ok, std::vector<std::uint8_t>(48, 0x5A)};
+    int deriveCalls{0};
+    bool wireDerive = true; // false: the host leaves Deps::derive unset
+    std::vector<std::uint8_t> capturedDerivePoint;
 
     int loginCalls{0};
     int signCalls{0};
@@ -134,6 +151,14 @@ struct Harness
                 capturedDecryptRequester = requester;
                 return decryptResult;
             }),
+            .derive = !wireDerive ? Pkcs11Broker::CryptoSeam{}
+                                  : cryptoSeam([this](const std::string&, const std::string&,
+                                                      std::span<const std::uint8_t> bytes, const std::string&,
+                                                      const Pkcs11Broker::LeasePinState&) {
+                                        ++deriveCalls;
+                                        capturedDerivePoint.assign(bytes.begin(), bytes.end());
+                                        return deriveResult;
+                                    }),
             .resolveCardKey = [this](const std::string&) { return cardKey; },
             .shutdown = shutdown,
             .now = [this]() { return clockNow; },
@@ -755,4 +780,59 @@ TEST(Pkcs11BrokerOwnedByAgentCore, LoginCardErrorWhenReaderUnresolved)
     } catch (Pkcs11Broker::LoginOutcome oc) {
         EXPECT_EQ(oc, Pkcs11Broker::LoginOutcome::CardError);
     }
+}
+
+// --- Derive ---------------------------------------------------------------
+
+// Only ECDH with CKD_NULL and no shared data is run; the point is what the seam gets.
+TEST(Pkcs11Broker, DeriveRunsCkdNullOnly)
+{
+    Harness h;
+    auto obj = h.make();
+    callLogin(obj, kReader, appCaller());
+    const std::vector<std::uint8_t> point(97, 0x04);
+    EXPECT_EQ(deriveOutcome(obj, MechParamsEcdh{.peerPublicPoint = point, .kdf = 2, .sharedData = {}}),
+              Pkcs11Broker::CryptoOutcome::NotSupported);
+    EXPECT_EQ(deriveOutcome(obj, MechParamsEcdh{.peerPublicPoint = point, .kdf = kEcdhKdfNull, .sharedData = {0x01}}),
+              Pkcs11Broker::CryptoOutcome::NotSupported);
+    EXPECT_EQ(deriveOutcome(obj, MechParamsEmpty{}), Pkcs11Broker::CryptoOutcome::NotSupported);
+    EXPECT_EQ(h.deriveCalls, 0);
+    EXPECT_EQ(deriveOutcome(obj, MechParamsEcdh{.peerPublicPoint = point, .kdf = kEcdhKdfNull, .sharedData = {}}),
+              Pkcs11Broker::CryptoOutcome::Ok);
+    EXPECT_EQ(h.capturedDerivePoint, point);
+}
+
+TEST(Pkcs11Broker, DeriveIsLeaseGatedLikeASignature)
+{
+    Harness h;
+    auto obj = h.make();
+    EXPECT_EQ(deriveOutcome(obj, MechParamsEcdh{.peerPublicPoint = {0x04}, .kdf = kEcdhKdfNull, .sharedData = {}}),
+              Pkcs11Broker::CryptoOutcome::UserNotLoggedIn);
+    EXPECT_EQ(h.deriveCalls, 0);
+}
+
+TEST(Pkcs11Broker, ARefusedPointKeepsTheLease)
+{
+    Harness h;
+    h.deriveResult = Pkcs11Broker::CryptoResult{Pkcs11Broker::CryptoOutcome::InvalidInput, {}};
+    auto obj = h.make();
+    callLogin(obj, kReader, appCaller());
+    const MechParamsEcdh params{.peerPublicPoint = {0x04}, .kdf = kEcdhKdfNull, .sharedData = {}};
+    EXPECT_EQ(deriveOutcome(obj, params), Pkcs11Broker::CryptoOutcome::InvalidInput);
+    h.deriveResult = Pkcs11Broker::CryptoResult{Pkcs11Broker::CryptoOutcome::Ok, {0x5A}};
+    EXPECT_EQ(deriveOutcome(obj, params), Pkcs11Broker::CryptoOutcome::Ok);
+}
+
+// A host that routes a derive but wires no seam for it answers NotSupported:
+// never an exception out of the bus thread, never a lease touched.
+TEST(Pkcs11Broker, AnUnwiredDeriveIsNotSupported)
+{
+    Harness h;
+    h.wireDerive = false;
+    auto obj = h.make();
+    callLogin(obj, kReader, appCaller());
+    Pkcs11Broker::CryptoOutcome outcome{Pkcs11Broker::CryptoOutcome::Ok};
+    EXPECT_NO_THROW(
+        outcome = deriveOutcome(obj, MechParamsEcdh{.peerPublicPoint = {0x04}, .kdf = kEcdhKdfNull, .sharedData = {}}));
+    EXPECT_EQ(outcome, Pkcs11Broker::CryptoOutcome::NotSupported);
 }

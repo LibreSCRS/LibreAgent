@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 // SPDX-FileCopyrightText: 2026 hirashix0
 #include <LibreSCRS/Agent/AgentCore.h>
+#include <LibreSCRS/Agent/SecureZero.h>
 #include <LibreSCRS/Agent/operations/CardSessionHolder.h>
 #include <LibreSCRS/Agent/operations/CertDerExport.h>
 #include <LibreSCRS/Agent/operations/LmRawCrypto.h>
@@ -31,9 +32,9 @@ public:
     void setPhase(std::uint32_t) noexcept override {}
 };
 
-// Run one RawCryptoFlow op (sign or decrypt) on the worker thread with @p holder
+// Run one RawCryptoFlow op (sign, decrypt or derive) on the worker thread with @p holder
 // and translate RawCryptoFlow::Outcome -> the broker's CryptoOutcome.
-// @p mechanism picks the runSign/runDecrypt entry and is the one the op runs. The credential provider
+// @p mechanism picks the flow's entry (RawCryptoFlow::run) and is the one the op runs. The credential provider
 // raised inside the flow collects the PIN via the agent prompter (PIN-as-consent,
 // uncached) — never off the wire.
 Pkcs11Broker::CryptoResult runRawCrypto(Mechanism mechanism, Operations::CardSessionHolder& holder,
@@ -50,7 +51,7 @@ Pkcs11Broker::CryptoResult runRawCrypto(Mechanism mechanism, Operations::CardSes
     // at its post-prompt gate BEFORE touching the credential cache / lease /
     // terminal op — none of which the abandoned worker may safely reach once the
     // aggregate is gone.
-    Operations::RawCryptoFlow flow{Operations::RawCryptoFlowDeps{
+    Operations::RawCryptoFlowDeps deps{
         .holder = holder,
         .prompter = prompter,
         .serializer = serializer,
@@ -59,17 +60,23 @@ Pkcs11Broker::CryptoResult runRawCrypto(Mechanism mechanism, Operations::CardSes
         .cardKey = cardKey,
         .requester = requester,
         .certId = certId,
-        .preflight = Operations::preflight,
-        .signOp = Operations::signRaw,
-        .decryptOp = Operations::decryptRaw,
+        // Empty here: bindLmRawCrypto fills the four slots below.
+        .preflight = {},
+        .signOp = {},
+        .decryptOp = {},
+        .deriveOp = {},
         .token = std::move(token),
         .isPinVerified = pinState.isVerified,
         .markPinVerified = pinState.markVerified,
         .clearPinVerified = pinState.clearVerified,
         .allowPrompt = pinState.allowPrompt,
-    }};
-    const auto r =
-        (mechanism == Mechanism::RsaPkcs1Decrypt) ? flow.runDecrypt(mechanism, bytes) : flow.runSign(mechanism, bytes);
+    };
+    // The preflight and the three card operations, each in its own slot.
+    Operations::bindLmRawCrypto(deps);
+    Operations::RawCryptoFlow flow{std::move(deps)};
+    // Not const: the bytes (a plaintext or a derived secret) are moved out,
+    // never copied.
+    auto r = flow.run(mechanism, bytes);
     using FO = Operations::RawCryptoFlow::Outcome;
     using HO = Pkcs11Broker::CryptoOutcome;
     HO outcome = HO::CardError;
@@ -99,7 +106,7 @@ Pkcs11Broker::CryptoResult runRawCrypto(Mechanism mechanism, Operations::CardSes
         outcome = HO::InvalidInput;
         break;
     }
-    return Pkcs11Broker::CryptoResult{.outcome = outcome, .bytes = r.bytes};
+    return Pkcs11Broker::CryptoResult{.outcome = outcome, .bytes = std::move(r.bytes)};
 }
 
 } // namespace
@@ -238,6 +245,9 @@ void AgentCore::runRawCryptoOnWorker(Mechanism mechanism, const std::string& rea
          mechanism](Operations::CardSessionHolder& holder) {
             auto result = runRawCrypto(mechanism, holder, *ctx->prompter, *ctx->serializer, *ctx->credentials, cardKey,
                                        requester, certId, *input, pinState, ctx->shutdown);
+            // A plaintext or a derived secret: wiped on every way out, the
+            // teardown skip included. Handed on, it is moved and leaves nothing.
+            const SecureZeroOnExit wipe{result.bytes};
             if (ctx->shutdown.isCancelled()) {
                 // teardown: skip the completion (broker + reply channel gone). @p
                 // done's deferred reply still fires fail-closed at zombie drain via
@@ -278,12 +288,8 @@ Pkcs11Broker::Deps AgentCore::makeBrokerDeps(Pkcs11Broker::ResolveCardKeySeam re
                                               done(std::unexpected(Pkcs11Broker::CryptoOutcome::KeyNotFound));
                                               return;
                                           }
-                                          if (auto rsa = Operations::rsaPublicKeyFromCertDer(*der)) {
-                                              done(Pkcs11Broker::PublicKey{std::move(*rsa)});
-                                              return;
-                                          }
-                                          if (auto ec = Operations::ecPublicKeyFromCertDer(*der)) {
-                                              done(Pkcs11Broker::PublicKey{std::move(*ec)});
+                                          if (auto key = Operations::publicKeyFromCertDer(*der)) {
+                                              done(std::move(*key));
                                               return;
                                           }
                                           done(std::unexpected(Pkcs11Broker::CryptoOutcome::NotSupported));
@@ -330,6 +336,12 @@ Pkcs11Broker::Deps AgentCore::makeBrokerDeps(Pkcs11Broker::ResolveCardKeySeam re
                 runRawCryptoOnWorker(mechanism, reader, certId, bytes, requester, pinState, std::move(done));
             },
         .decrypt =
+            [this](const std::string& reader, const std::string& certId, Mechanism mechanism,
+                   const MechanismParams& /*params*/, std::span<const std::uint8_t> bytes, const std::string& requester,
+                   const Pkcs11Broker::LeasePinState& pinState, std::function<void(Pkcs11Broker::CryptoResult)> done) {
+                runRawCryptoOnWorker(mechanism, reader, certId, bytes, requester, pinState, std::move(done));
+            },
+        .derive =
             [this](const std::string& reader, const std::string& certId, Mechanism mechanism,
                    const MechanismParams& /*params*/, std::span<const std::uint8_t> bytes, const std::string& requester,
                    const Pkcs11Broker::LeasePinState& pinState, std::function<void(Pkcs11Broker::CryptoResult)> done) {

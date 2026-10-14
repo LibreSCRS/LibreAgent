@@ -17,6 +17,8 @@
 
 namespace LibreSCRS::Agent::Operations {
 
+struct RawCryptoFlowDeps;
+
 // Hermetic status the PKCS#11 host (Pkcs11Broker) maps onto the wire:
 //   Ok           -> bytes returned
 //   KeyNotFound  -> certId did not resolve / the cert carries no keyFID
@@ -47,7 +49,7 @@ enum class RawCryptoStatus : std::uint8_t {
 struct RawCryptoResult
 {
     RawCryptoStatus status = RawCryptoStatus::CardError; // default fails closed
-    std::vector<std::uint8_t> bytes;                     // signature or plaintext on Ok
+    std::vector<std::uint8_t> bytes;                     // signature, plaintext or secret on Ok
     // The resolved key's card rule (CertificateData::alwaysAuthenticate), read
     // off the card this op ran against: a verification for such a key is not
     // remembered for the lease.
@@ -74,7 +76,10 @@ struct RawCryptoPreflight
 //                   hashes the message itself, a message to hash on the card
 //                   for any other RSA key, an input of the wrong length
 //                   (ECDSA: 32/48/64; RSA-PKCS sign: 1..k-11;
-//                   SHA256-RSA-PKCS: not empty; RSA-PKCS decrypt: exactly k).
+//                   SHA256-RSA-PKCS: not empty; RSA-PKCS decrypt: exactly k),
+//                   (derive) a peer point that is not 1 + 2*ceil(bits/8) bytes,
+//                   not uncompressed or not on the key's curve, or a key the
+//                   plugin does not derive with.
 // No PIN is asked for or presented and the key is not used. The read runs on
 // the held session, so on a cold PACE channel it may need the CAN, which
 // normally comes from the credential cache.
@@ -133,6 +138,23 @@ struct RawCryptoPreflight
 [[nodiscard]] RawCryptoResult decryptRaw(const SigningSelection& key, Mechanism mechanism,
                                          std::span<const std::uint8_t> ciphertext, const LibreSCRS::Secure::String* pin,
                                          LibreSCRS::SmartCard::CardSession& session, LibreSCRS::CancelToken token);
+
+// ECDH (@p mechanism must be EcdhDerive) with the key resolved by preflight(),
+// which has already checked @p peerPoint against the key's curve:
+// CardPlugin::decipher with DecipherMechanism::ECDH_RAW, answered with the raw
+// shared secret Z of ceil(bits/8) bytes; a plugin answer of another length is
+// CardError and is not passed on. Z is a secret: it is copied out of the plugin's result
+// through a cleansing buffer and the plugin's copy is wiped, but the returned
+// bytes are a plain vector the caller wipes once it has handed them on.
+// Same consent rule and PIN lifetime as signRaw.
+[[nodiscard]] RawCryptoResult deriveRaw(const SigningSelection& key, Mechanism mechanism,
+                                        std::span<const std::uint8_t> peerPoint, const LibreSCRS::Secure::String* pin,
+                                        LibreSCRS::SmartCard::CardSession& session, LibreSCRS::CancelToken token);
+
+// Binds this file's operations into @p deps, each in its own slot:
+// preflight, signRaw, decryptRaw and deriveRaw. The agent's PKCS#11 calls run
+// the raw-crypto flow with exactly these; nothing else in @p deps is touched.
+void bindLmRawCrypto(RawCryptoFlowDeps& deps);
 
 // Erases the PIN deposited for @p session (CardPlugin::setCredentials with an
 // empty "pin") on every plugin in @p candidates, and nothing else. For a

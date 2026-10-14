@@ -422,6 +422,7 @@ void driveTerminalWedge(RawCryptoStatus wedgeStatus, Latch& latch, std::atomic<b
                     },
                 .signOp = terminalOp,
                 .decryptOp = terminalOp,
+                .deriveOp = terminalOp,
                 .token = flowCancel.token(),
                 .isPinVerified = pinState.isVerified,
                 .markPinVerified = pinState.markVerified,

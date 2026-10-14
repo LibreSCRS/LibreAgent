@@ -35,9 +35,16 @@ namespace LibreSCRS::Agent {
 /// position). Kept in lockstep with the CDDL comment documenting the same
 /// vocabulary (`wire/librescrs-agent.cddl`, near `hello-ack`) by a guard test
 /// (`tests/wire/FeatureTokensGuardTest.cpp`) — update both together.
-inline constexpr std::array<std::string_view, 9> kAgentFeatures{
+///
+/// `"ec-keys"` (@since 5.0): EC keys end to end on both wires -- every
+/// certificate's key facts (`keyId`, `keyType`, `keyBits`, `canDerive`), the
+/// EC arm of `Pkcs11.PublicKey`, the required `mech` on `Pkcs11.SignRaw` and
+/// `Pkcs11.Decrypt`, and `Pkcs11.Derive`. A client sends `Pkcs11.Derive` only to
+/// an agent that serves this token: one without it drops the connection on
+/// the unknown request.
+inline constexpr std::array<std::string_view, 10> kAgentFeatures{
     "credentials", "card-type",      "token-info",      "trust-status", "tsa-url",
-    "visual-sign", "layout-preview", "identity-stream", "batch-sign",
+    "visual-sign", "layout-preview", "identity-stream", "batch-sign",   "ec-keys",
 };
 
 // kPlannedFeatures — reserved tokens with NO serving surface yet, so they are

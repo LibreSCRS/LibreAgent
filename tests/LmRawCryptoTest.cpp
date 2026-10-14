@@ -236,12 +236,15 @@ public:
     mutable int m_signCalls = 0;
     mutable int m_decipherCalls = 0;
     mutable std::optional<SignMechanism> m_lastSignMechanism;
+    mutable std::optional<DecipherMechanism> m_lastDecipherMechanism;
     // (key, the value was empty) per setCredentials call, in order.
     std::vector<std::pair<std::string, bool>> m_credentialWrites;
     bool m_throwOnErase = false;
     bool m_throwOnSign = false;
     // false: a DigestInfo card, which has no hash-on-card RSA_SHA256.
     bool m_signsHashOnCard = true;
+    // The length of the secret an ECDH answers with (a P-384 key's is 48).
+    std::size_t m_ecdhSecretLength = 48;
     // Can: a PACE card whose RSA key hashes the message itself.
     LibreSCRS::Auth::PreReadAuthMethod m_preReadAuth = LibreSCRS::Auth::PreReadAuthMethod::None;
     SignResultOutcome m_signOutcome = SignResultOutcome::Ok;
@@ -272,12 +275,15 @@ protected:
         return r;
     }
     DecipherResult doDecipher(LibreSCRS::SmartCard::CardSession&, std::uint16_t, std::span<const std::uint8_t>,
-                              DecipherMechanism) const override
+                              DecipherMechanism mechanism) const override
     {
         ++m_decipherCalls;
+        m_lastDecipherMechanism = mechanism;
         DecipherResult r;
         r.outcome = m_decipherOutcome;
-        if (r.outcome == DecipherResultOutcome::Ok) {
+        if (r.outcome == DecipherResultOutcome::Ok && mechanism == DecipherMechanism::ECDH_RAW) {
+            r.plaintext.assign(m_ecdhSecretLength, 0x5A);
+        } else if (r.outcome == DecipherResultOutcome::Ok) {
             r.plaintext = {0x11, 0x22};
         }
         return r;
@@ -951,4 +957,186 @@ TEST(LmRawCrypto, PreflightGivesAnRsaKeyOnlyTheMechanismItsCardTakes)
         RawCryptoStatus::Ok);
     EXPECT_EQ(pace->m_signCalls + plain->m_signCalls + paceEc->m_signCalls, 0);
     EXPECT_TRUE(pace->m_credentialWrites.empty());
+}
+
+// --- deriveRaw: ECDH with the resolved key ---------------------------------
+
+namespace {
+
+CertificateData lkDeriveCert(bool canDerive, LibreSCRS::Agent::Test::PkeyPtr& keyOut)
+{
+    namespace T = LibreSCRS::Agent::Test;
+    keyOut = T::ecKey("P-384");
+    CertificateData cd;
+    cd.derBytes = T::selfSignedCert(keyOut.get(), "LK", "critical,digitalSignature,keyAgreement");
+    cd.keyFID = std::uint16_t{0x47};
+    cd.canDerive = canDerive;
+    return cd;
+}
+
+} // namespace
+
+TEST(LmRawCrypto, DeriveRunsEcdhRawOnTheResolvedKey)
+{
+    namespace T = LibreSCRS::Agent::Test;
+    T::PkeyPtr key{nullptr, &EVP_PKEY_free};
+    auto cd = lkDeriveCert(/*canDerive=*/true, key);
+    auto stub = std::make_shared<RecordingStubPlugin>("opensc", cd, PINResultOutcome::Ok);
+    auto session = LibreSCRS::SmartCard::detail::makeDetachedCardSession("FakeReader");
+    LibreSCRS::Secure::String pin{"654321"};
+    const auto peer = T::encodedPublicPoint(T::ecKey("P-384").get());
+
+    const auto checked = preflight({stub}, sha256Hex(cd.derBytes), Mechanism::EcdhDerive, peer, *session);
+    ASSERT_EQ(checked.status, RawCryptoStatus::Ok);
+    ASSERT_TRUE(checked.key.has_value());
+    const auto result = deriveRaw(*checked.key, Mechanism::EcdhDerive, peer, &pin, *session, LibreSCRS::CancelToken{});
+    EXPECT_EQ(result.status, RawCryptoStatus::Ok);
+    EXPECT_EQ(result.bytes, std::vector<std::uint8_t>(48, 0x5A));
+    EXPECT_EQ(stub->m_lastDecipherMechanism, DecipherMechanism::ECDH_RAW);
+    ASSERT_EQ(stub->m_credentialWrites.size(), 1u) << "deposited once, kept for an ordinary key's lease";
+}
+
+// The secret is ceil(bits/8) bytes of the key's curve, as the wire promises
+// its clients: a plugin answer of any other length is a card error, and
+// none of it is handed on.
+TEST(LmRawCrypto, ADeriveAnswerOfAnotherLengthIsACardError)
+{
+    namespace T = LibreSCRS::Agent::Test;
+    T::PkeyPtr key{nullptr, &EVP_PKEY_free};
+    auto cd = lkDeriveCert(/*canDerive=*/true, key);
+    auto session = LibreSCRS::SmartCard::detail::makeDetachedCardSession("FakeReader");
+    LibreSCRS::Secure::String pin{"654321"};
+    const auto peer = T::encodedPublicPoint(T::ecKey("P-384").get());
+    for (const std::size_t length : {std::size_t{47}, std::size_t{49}, std::size_t{0}}) {
+        auto stub = std::make_shared<RecordingStubPlugin>("opensc", cd, PINResultOutcome::Ok);
+        stub->m_ecdhSecretLength = length;
+        const auto r = deriveRaw(resolved({stub}, sha256Hex(cd.derBytes), *session), Mechanism::EcdhDerive, peer, &pin,
+                                 *session, LibreSCRS::CancelToken{});
+        EXPECT_EQ(r.status, RawCryptoStatus::CardError) << length;
+        EXPECT_TRUE(r.bytes.empty()) << length;
+    }
+}
+
+TEST(LmRawCrypto, ADeriveWithoutAPinOnAMarkedKeyAsksForConsent)
+{
+    namespace T = LibreSCRS::Agent::Test;
+    T::PkeyPtr key{nullptr, &EVP_PKEY_free};
+    auto cd = lkDeriveCert(/*canDerive=*/true, key);
+    cd.alwaysAuthenticate = true;
+    auto stub = std::make_shared<RecordingStubPlugin>("opensc", cd, PINResultOutcome::Ok);
+    auto session = LibreSCRS::SmartCard::detail::makeDetachedCardSession("FakeReader");
+    const auto peer = T::encodedPublicPoint(T::ecKey("P-384").get());
+    const auto r = deriveRaw(resolved({stub}, sha256Hex(cd.derBytes), *session), Mechanism::EcdhDerive, peer, nullptr,
+                             *session, LibreSCRS::CancelToken{});
+    EXPECT_EQ(r.status, RawCryptoStatus::ConsentRequired);
+    EXPECT_EQ(stub->m_decipherCalls, 0);
+}
+
+// The peer point is checked against the card key's curve before any prompt:
+// a wrong length, a compressed or infinity point, a point off the curve, a
+// point of another curve -- all refused, none reaches the card (a plain 6A80
+// under PACE secure messaging would end the session).
+TEST(LmRawCrypto, PreflightRefusesAPointTheKeysCurveDoesNotHold)
+{
+    namespace T = LibreSCRS::Agent::Test;
+    T::PkeyPtr key{nullptr, &EVP_PKEY_free};
+    auto cd = lkDeriveCert(/*canDerive=*/true, key);
+    auto stub = std::make_shared<RecordingStubPlugin>("opensc", cd, PINResultOutcome::Ok);
+    auto session = LibreSCRS::SmartCard::detail::makeDetachedCardSession("FakeReader");
+    const auto id = sha256Hex(cd.derBytes);
+    const auto good = T::encodedPublicPoint(T::ecKey("P-384").get());
+    EXPECT_EQ(preflight({stub}, id, Mechanism::EcdhDerive, good, *session).status, RawCryptoStatus::Ok);
+    auto offCurve = good;
+    offCurve.back() ^= 0x01;
+    auto compressed = good;
+    compressed[0] = 0x02;
+    const std::vector<std::vector<std::uint8_t>> bad{offCurve, compressed, std::vector<std::uint8_t>{0x00},
+                                                     std::vector<std::uint8_t>(good.begin(), good.end() - 1),
+                                                     T::encodedPublicPoint(T::ecKey("P-256").get())};
+    for (const auto& point : bad) {
+        EXPECT_EQ(preflight({stub}, id, Mechanism::EcdhDerive, point, *session).status, RawCryptoStatus::InvalidInput)
+            << point.size();
+    }
+    EXPECT_EQ(stub->m_decipherCalls, 0);
+    EXPECT_TRUE(stub->m_credentialWrites.empty());
+}
+
+TEST(LmRawCrypto, PreflightRefusesDeriveOnAKeyThePluginCannotDriveWith)
+{
+    namespace T = LibreSCRS::Agent::Test;
+    T::PkeyPtr key{nullptr, &EVP_PKEY_free};
+    auto cd = lkDeriveCert(/*canDerive=*/false, key);
+    auto session = LibreSCRS::SmartCard::detail::makeDetachedCardSession("FakeReader");
+    const auto peer = T::encodedPublicPoint(T::ecKey("P-384").get());
+    auto stub = std::make_shared<RecordingStubPlugin>("pkcs15", cd, PINResultOutcome::Ok);
+    EXPECT_EQ(preflight({stub}, sha256Hex(cd.derBytes), Mechanism::EcdhDerive, peer, *session).status,
+              RawCryptoStatus::InvalidInput);
+    auto rsa = rsaCert(0x9A, false);
+    rsa.canDerive = true;
+    auto rsaStub = std::make_shared<RecordingStubPlugin>("opensc", rsa, PINResultOutcome::Ok);
+    EXPECT_EQ(preflight({rsaStub}, sha256Hex(rsa.derBytes), Mechanism::EcdhDerive, peer, *session).status,
+              RawCryptoStatus::InvalidInput);
+}
+
+// The PIN guards signRaw keeps, held for a derive too: an empty PIN never
+// reaches the plugin and leaves only erasures behind -- otherwise the card
+// would run ECDH on whatever the held session is already verified for.
+TEST(LmRawCrypto, ADeriveWithAnEmptyPinNeverReachesThePlugin)
+{
+    namespace T = LibreSCRS::Agent::Test;
+    T::PkeyPtr key{nullptr, &EVP_PKEY_free};
+    auto cd = lkDeriveCert(/*canDerive=*/true, key);
+    auto stub = std::make_shared<RecordingStubPlugin>("opensc", cd, PINResultOutcome::Ok);
+    auto session = LibreSCRS::SmartCard::detail::makeDetachedCardSession("FakeReader");
+    const LibreSCRS::Secure::String empty;
+    const auto peer = T::encodedPublicPoint(T::ecKey("P-384").get());
+    EXPECT_EQ(deriveRaw(resolved({stub}, sha256Hex(cd.derBytes), *session), Mechanism::EcdhDerive, peer, &empty,
+                        *session, LibreSCRS::CancelToken{})
+                  .status,
+              RawCryptoStatus::AuthFailed);
+    EXPECT_EQ(stub->m_decipherCalls, 0);
+    for (const auto& write : stub->m_credentialWrites) {
+        EXPECT_EQ(write, (std::pair<std::string, bool>{"pin", true})) << "only erasures, never a deposit";
+    }
+}
+
+// A key the card marks for consent per operation keeps no PIN past its derive.
+TEST(LmRawCrypto, AMarkedKeysPinIsErasedAfterADerive)
+{
+    namespace T = LibreSCRS::Agent::Test;
+    T::PkeyPtr key{nullptr, &EVP_PKEY_free};
+    auto cd = lkDeriveCert(/*canDerive=*/true, key);
+    cd.alwaysAuthenticate = true;
+    auto stub = std::make_shared<RecordingStubPlugin>("opensc", cd, PINResultOutcome::Ok);
+    auto session = LibreSCRS::SmartCard::detail::makeDetachedCardSession("FakeReader");
+    LibreSCRS::Secure::String pin{"654321"};
+    const auto peer = T::encodedPublicPoint(T::ecKey("P-384").get());
+    const auto r = deriveRaw(resolved({stub}, sha256Hex(cd.derBytes), *session), Mechanism::EcdhDerive, peer, &pin,
+                             *session, LibreSCRS::CancelToken{});
+    EXPECT_EQ(r.status, RawCryptoStatus::Ok);
+    EXPECT_TRUE(r.alwaysAuthenticate);
+    ASSERT_EQ(stub->m_credentialWrites.size(), 2u);
+    EXPECT_EQ(stub->m_credentialWrites[0], (std::pair<std::string, bool>{"pin", false}))
+        << "the PIN is handed to the plugin for this derive";
+    EXPECT_EQ(stub->m_credentialWrites[1], (std::pair<std::string, bool>{"pin", true}))
+        << "and erased once the derive is done";
+}
+
+// The card refused the PIN: it must not stay behind for the plugin to present again.
+TEST(LmRawCrypto, ARefusedPinOnADeriveIsErased)
+{
+    namespace T = LibreSCRS::Agent::Test;
+    T::PkeyPtr key{nullptr, &EVP_PKEY_free};
+    auto cd = lkDeriveCert(/*canDerive=*/true, key);
+    auto stub = std::make_shared<RecordingStubPlugin>("opensc", cd, PINResultOutcome::Ok);
+    stub->m_decipherOutcome = DecipherResultOutcome::PinIncorrect;
+    auto session = LibreSCRS::SmartCard::detail::makeDetachedCardSession("FakeReader");
+    LibreSCRS::Secure::String pin{"000000"};
+    const auto peer = T::encodedPublicPoint(T::ecKey("P-384").get());
+    EXPECT_EQ(deriveRaw(resolved({stub}, sha256Hex(cd.derBytes), *session), Mechanism::EcdhDerive, peer, &pin, *session,
+                        LibreSCRS::CancelToken{})
+                  .status,
+              RawCryptoStatus::AuthFailed);
+    ASSERT_EQ(stub->m_credentialWrites.size(), 2u);
+    EXPECT_EQ(stub->m_credentialWrites[1], (std::pair<std::string, bool>{"pin", true}));
 }

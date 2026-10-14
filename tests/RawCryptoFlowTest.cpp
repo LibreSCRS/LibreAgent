@@ -15,6 +15,7 @@
 #include <LibreSCRS/Agent/operations/CardSessionHolder.h>
 #include <LibreSCRS/Agent/operations/OperationBase.h> // Phase enum, OperationPhaseSink
 #include <LibreSCRS/Agent/operations/PromptSerializer.h>
+#include <LibreSCRS/Agent/operations/LmRawCrypto.h> // bindLmRawCrypto
 #include <LibreSCRS/Agent/operations/RawCryptoFlow.h>
 
 #include <LibreSCRS/Auth/AuthRequirement.h>
@@ -101,9 +102,11 @@ public:
     int pinCalls = 0;
     PromptResult pinResult{PromptStatus::Ok, LibreSCRS::Secure::String{"1234"}, ""};
     std::function<void()> onPin; // runs while the human is "typing"
-    PromptResult requestPin(const PromptOptions&) override
+    std::string lastArtifact;    // the category token of the last PIN prompt
+    PromptResult requestPin(const PromptOptions& opts) override
     {
         ++pinCalls;
+        lastArtifact = opts.artifact;
         if (onPin) {
             onPin();
         }
@@ -189,6 +192,8 @@ struct Harness
     // The key file each operation was handed. Each preflight resolves a key of
     // its own (file 1, 2, ...), so a test can tell which resolution reached it.
     std::vector<std::uint16_t> opKeyFIDs;
+    std::string lastOp;    // which terminal the flow called: "sign", "decrypt" or "derive"
+    std::string unwiredOp; // "sign", "decrypt" or "derive": the host hands the flow no such op
 
     RawCryptoPreflightOp preflightOp()
     {
@@ -206,11 +211,12 @@ struct Harness
         };
     }
 
-    RawCryptoOp op()
+    RawCryptoOp op(std::string name = "sign")
     {
-        return [this](const SigningSelection& key, Mechanism m, std::span<const std::uint8_t>,
-                      const LibreSCRS::Secure::String* pin, LibreSCRS::SmartCard::CardSession&,
-                      LibreSCRS::CancelToken) -> RawCryptoResult {
+        return [this, name = std::move(name)](const SigningSelection& key, Mechanism m, std::span<const std::uint8_t>,
+                                              const LibreSCRS::Secure::String* pin, LibreSCRS::SmartCard::CardSession&,
+                                              LibreSCRS::CancelToken) -> RawCryptoResult {
+            lastOp = name;
             opMechanism = m;
             opKeyFIDs.push_back(key.cert.keyFID.value_or(0));
             ++opCalls;
@@ -246,8 +252,13 @@ struct Harness
 
     RawCryptoFlow make()
     {
+        return RawCryptoFlow{deps()};
+    }
+
+    RawCryptoFlowDeps deps()
+    {
         holder = makeHolder(failWith, candidates, [this] { ++sessionOpens; });
-        return RawCryptoFlow{RawCryptoFlowDeps{
+        return RawCryptoFlowDeps{
             .holder = *holder,
             .prompter = prompter,
             .serializer = serializer,
@@ -257,8 +268,9 @@ struct Harness
             .requester = "test-client",
             .certId = "abc123",
             .preflight = wirePreflight ? preflightOp() : RawCryptoPreflightOp{},
-            .signOp = op(),
-            .decryptOp = op(),
+            .signOp = unwiredOp == "sign" ? RawCryptoOp{} : op("sign"),
+            .decryptOp = unwiredOp == "decrypt" ? RawCryptoOp{} : op("decrypt"),
+            .deriveOp = unwiredOp == "derive" ? RawCryptoOp{} : op("derive"),
             .token = source.token(),
             .isPinVerified = [this]() { return pinVerified; },
             .markPinVerified = [this]() { pinVerified = true; },
@@ -268,7 +280,7 @@ struct Harness
                 return promptAllowed;
             }}
                                     : std::function<bool()>{},
-        }};
+        };
     }
 };
 
@@ -739,6 +751,22 @@ TEST(RawCryptoFlow, AFlowHandedNoPreflightRefusesBeforeAnyPrompt)
     EXPECT_EQ(h.opCalls, 0);
 }
 
+// An operation the host did not wire is refused like a missing preflight: a
+// card error before any PIN prompt, never a throw on the reader's worker.
+TEST(RawCryptoFlow, AFlowHandedNoOperationRefusesBeforeAnyPrompt)
+{
+    for (const std::string missing : {"sign", "decrypt", "derive"}) {
+        Harness h;
+        h.unwiredOp = missing;
+        auto flow = h.make();
+        const auto r = missing == "sign"      ? flow.runSign(Mechanism::RsaPkcs1Sign, kInput)
+                       : missing == "decrypt" ? flow.runDecrypt(Mechanism::RsaPkcs1Decrypt, kInput)
+                                              : flow.runDerive(kInput);
+        EXPECT_EQ(r.outcome, RawCryptoFlow::Outcome::CardError) << missing;
+        EXPECT_EQ(h.prompter.pinCalls, 0) << missing;
+    }
+}
+
 // The operation's own InvalidInput (a mechanism the terminal cannot map) is
 // surfaced, never read as a dropped channel.
 TEST(RawCryptoFlow, AnInvalidInputFromTheOperationIsNotAChannelLoss)
@@ -750,4 +778,88 @@ TEST(RawCryptoFlow, AnInvalidInputFromTheOperationIsNotAChannelLoss)
     EXPECT_EQ(h.make().runSign(Mechanism::RsaPkcs1Sign, kInput).outcome, RawCryptoFlow::Outcome::InvalidInput);
     EXPECT_EQ(h.prompter.pinCalls, 0);
     EXPECT_TRUE(h.pinVerified);
+}
+
+// A key agreement is named apart from a signature in the prompt.
+TEST(RawCryptoFlow, ADeriveAsksWithItsOwnPromptToken)
+{
+    Harness derive;
+    EXPECT_EQ(derive.make().runDerive(kInput).outcome, RawCryptoFlow::Outcome::Ok);
+    EXPECT_EQ(derive.prompter.lastArtifact, "pkcs11-derive");
+    Harness sign;
+    EXPECT_EQ(sign.make().runSign(Mechanism::EcdsaSign, kInput).outcome, RawCryptoFlow::Outcome::Ok);
+    EXPECT_EQ(sign.prompter.lastArtifact, "pkcs11");
+}
+
+// A derive is charged, checked and consented exactly like a signature.
+TEST(RawCryptoFlow, ADeriveRunsTheDeriveOpWithEcdh)
+{
+    Harness h;
+    h.opResult = RawCryptoResult{RawCryptoStatus::Ok, std::vector<std::uint8_t>(32, 0x5A)};
+    const auto r = h.make().runDerive(kInput);
+    EXPECT_EQ(r.outcome, RawCryptoFlow::Outcome::Ok);
+    EXPECT_EQ(r.bytes, std::vector<std::uint8_t>(32, 0x5A));
+    EXPECT_EQ(h.lastOp, "derive");
+    EXPECT_EQ(h.preflightMechanism, Mechanism::EcdhDerive);
+    EXPECT_EQ(h.opMechanism, Mechanism::EcdhDerive);
+    EXPECT_EQ(h.allowPromptCalls, 1);
+    EXPECT_TRUE(h.pinVerified);
+}
+
+TEST(RawCryptoFlow, ADeriveWithAMarkedKeyAsksEveryTime)
+{
+    Harness h;
+    h.pinVerified = true;
+    h.channelVerified = true;
+    h.keyAlwaysAuthenticates = true;
+    EXPECT_EQ(h.make().runDerive(kInput).outcome, RawCryptoFlow::Outcome::Ok);
+    EXPECT_EQ(h.prompter.pinCalls, 1);
+    EXPECT_EQ(h.lastOp, "derive");
+    EXPECT_TRUE(h.pinVerified) << "the lease's state is right for the card's other keys";
+}
+
+// The agent's PKCS#11 calls reach the flow through run(): a key agreement
+// derives (and is named so in the prompt), an RSA decryption decrypts, every
+// signature signs.
+TEST(RawCryptoFlow, EachMechanismReachesItsOwnOperation)
+{
+    struct Case
+    {
+        Mechanism mechanism;
+        const char* op;
+        const char* artifact;
+    };
+    for (const Case& c :
+         {Case{Mechanism::EcdhDerive, "derive", "pkcs11-derive"}, Case{Mechanism::RsaPkcs1Decrypt, "decrypt", "pkcs11"},
+          Case{Mechanism::RsaPkcs1Sign, "sign", "pkcs11"}, Case{Mechanism::Sha256RsaPkcs1Sign, "sign", "pkcs11"},
+          Case{Mechanism::EcdsaSign, "sign", "pkcs11"}}) {
+        Harness h;
+        EXPECT_EQ(h.make().run(c.mechanism, kInput).outcome, RawCryptoFlow::Outcome::Ok) << c.op;
+        EXPECT_EQ(h.lastOp, c.op) << static_cast<int>(c.mechanism);
+        EXPECT_EQ(h.opMechanism, c.mechanism) << c.op;
+        EXPECT_EQ(h.prompter.lastArtifact, c.artifact) << c.op;
+    }
+}
+
+// What the agent runs: its own preflight and the three card operations, each
+// in its own slot. A decryption bound where the key agreement belongs, or no
+// preflight at all, is caught here rather than on a card.
+TEST(RawCryptoFlow, TheAgentBindsEachOperationToItsOwnSlot)
+{
+    using OpFn = RawCryptoResult (*)(const SigningSelection&, Mechanism, std::span<const std::uint8_t>,
+                                     const LibreSCRS::Secure::String*, LibreSCRS::SmartCard::CardSession&,
+                                     LibreSCRS::CancelToken);
+    using PreflightFn = RawCryptoPreflight (*)(const CandidateList&, const std::string&, Mechanism,
+                                               std::span<const std::uint8_t>, LibreSCRS::SmartCard::CardSession&);
+    Harness h;
+    RawCryptoFlowDeps deps = h.deps();
+    bindLmRawCrypto(deps);
+    const auto target = [](const RawCryptoOp& f) { return f.target<OpFn>() ? *f.target<OpFn>() : nullptr; };
+    ASSERT_NE(deps.preflight.target<PreflightFn>(), nullptr);
+    EXPECT_EQ(*deps.preflight.target<PreflightFn>(), &preflight);
+    EXPECT_EQ(target(deps.signOp), &signRaw);
+    EXPECT_EQ(target(deps.decryptOp), &decryptRaw);
+    EXPECT_EQ(target(deps.deriveOp), &deriveRaw);
+    EXPECT_EQ(deps.certId, "abc123") << "the binding touches nothing but the four seams";
+    EXPECT_TRUE(deps.allowPrompt);
 }

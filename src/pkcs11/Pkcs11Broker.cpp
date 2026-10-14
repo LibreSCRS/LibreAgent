@@ -2,6 +2,7 @@
 // SPDX-FileCopyrightText: 2026 hirashix0
 #include <LibreSCRS/Agent/pkcs11/Pkcs11Broker.h>
 #include <LibreSCRS/Agent/backend/Authorizer.h>
+#include <LibreSCRS/Agent/SecureZero.h>
 #include <LibreSCRS/Agent/backend/Logging.h>
 
 #include <algorithm>
@@ -178,6 +179,12 @@ void Pkcs11Broker::runCrypto(const char* opName, std::initializer_list<Mechanism
         reply.fail(CryptoOutcome::NotSupported);
         return;
     }
+    // A host that wires no seam for this operation does not run it: refused
+    // like an unwired mechanism, never an exception out of the caller's thread.
+    if (!seam) {
+        reply.fail(CryptoOutcome::NotSupported);
+        return;
+    }
     const auto cardKey = m_deps.resolveCardKey(reader);
     if (!cardKey) {
         reply.fail(CryptoOutcome::UnknownCard);
@@ -226,6 +233,9 @@ void Pkcs11Broker::runCrypto(const char* opName, std::initializer_list<Mechanism
     seam(reader, certId, mechanism, params, bytes, caller.label, pinState,
          [this, shutdown = m_deps.shutdown, reply, key, opName, label = caller.label, card = *cardKey,
           idPrefix = certIdPrefix(certId)](CryptoResult result) {
+             // A plaintext or a derived secret: this copy is wiped on every way
+             // out, once the reply has taken its own.
+             const LibreSCRS::Agent::SecureZeroOnExit wipe{result.bytes};
              if (result.outcome == CryptoOutcome::Ok) {
                  // Audit EVERY op (caller identity + op + certId prefix), never the
                  // bytes. Decrypt is a local oracle, so the same line
@@ -285,6 +295,20 @@ void Pkcs11Broker::decrypt(const std::string& reader, const std::string& certId,
     // the prompter grows a confirm-only method (a 3-component addition).
     runCrypto("Decrypt", {Mechanism::RsaPkcs1Decrypt}, m_deps.decrypt, mechanism, params, reader, certId, ciphertext,
               caller, std::move(reply));
+}
+
+void Pkcs11Broker::derive(const std::string& reader, const std::string& certId, const MechanismParams& params,
+                          const Caller& caller, Reply<CryptoOutcome, std::vector<std::uint8_t>> reply)
+{
+    // Only the raw secret is wired. A key-derivation function arrives as a
+    // request of its own, so a KDF named here is refused rather than ignored.
+    const auto* ecdh = std::get_if<MechParamsEcdh>(&params);
+    if (ecdh == nullptr || ecdh->kdf != kEcdhKdfNull || !ecdh->sharedData.empty()) {
+        reply.fail(CryptoOutcome::NotSupported);
+        return;
+    }
+    runCrypto("Derive", {Mechanism::EcdhDerive}, m_deps.derive, Mechanism::EcdhDerive, params, reader, certId,
+              ecdh->peerPublicPoint, caller, std::move(reply));
 }
 
 void Pkcs11Broker::onCardRemoved(ObjectId cardKey)

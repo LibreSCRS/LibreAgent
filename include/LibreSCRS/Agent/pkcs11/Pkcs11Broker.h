@@ -88,7 +88,7 @@ public:
     // A certificate's public key: an RSA modulus + exponent (unpadded
     // big-endian, the PKCS#11 CKA_* convention) or an EC point on a NIST curve
     // (fixed-width x and y). Any other key has no public key on this surface.
-    using PublicKey = std::variant<Operations::RsaPublicKey, Operations::EcPublicKey>;
+    using PublicKey = Operations::CertPublicKey;
 
     // Hermetic outcome of a raw crypto op, mirroring RawCryptoFlow::Outcome but
     // kept wire/LM-free here so the host stays unit-testable. The seam produces
@@ -211,6 +211,7 @@ public:
         LoginSeam login;
         CryptoSeam signRaw;
         CryptoSeam decrypt;
+        CryptoSeam derive; // ECDH, CKD_NULL: bytes are the peer's point
         ResolveCardKeySeam resolveCardKey;
         // Agent-wide shutdown-cancel token. The runCrypto completion wrapper
         // value-captures a copy so it can re-check cancellation immediately
@@ -247,6 +248,12 @@ public:
     void decrypt(const std::string& reader, const std::string& certId, Mechanism mechanism,
                  const MechanismParams& params, std::span<const std::uint8_t> ciphertext, const Caller& caller,
                  Reply<CryptoOutcome, std::vector<std::uint8_t>> reply);
+    // ECDH with the card's key (CKM_ECDH1_DERIVE, CKD_NULL): lease-gated and
+    // audited like SignRaw. @p params must be MechParamsEcdh with kdf ==
+    // kEcdhKdfNull and no shared data -- anything else is NotSupported, never
+    // run as plain ECDH. The reply carries the raw secret Z.
+    void derive(const std::string& reader, const std::string& certId, const MechanismParams& params,
+                const Caller& caller, Reply<CryptoOutcome, std::vector<std::uint8_t>> reply);
 
     // Logout is synchronous: pure lease bookkeeping, no card I/O.
     void logout(const std::string& reader, const Caller& caller);
@@ -257,17 +264,18 @@ public:
     void onClientDisconnected(const CallerToken& client);
 
 private:
-    // Shared SignRaw/Decrypt body: FIRST reject any @p mechanism NOT in the set
+    // Shared SignRaw/Decrypt/Derive body: FIRST reject any @p mechanism NOT in the set
     // this path wires (fail-closed NotSupported). The signRaw seam runs exactly
     // the mechanism it is handed — RsaPkcs1Sign, Sha256RsaPkcs1Sign or
-    // EcdsaSign, all on MechParamsEmpty; the decrypt seam runs RsaPkcs1Decrypt.
-    // Every other arm (RSA-PSS / OAEP / ECDH / the
+    // EcdsaSign, all on MechParamsEmpty; the decrypt seam runs RsaPkcs1Decrypt;
+    // the derive seam runs EcdhDerive (CKD_NULL, checked by derive()).
+    // Every other arm (RSA-PSS / OAEP / the
     // public-key encrypt arms) stays rejected here: forwarding one would run it
     // as the seam's default primitive. Then lease-gate (touch) synchronously and
     // run the seam on the worker; the continuation forwards the seam
     // CryptoOutcome to @p reply (bytes on Ok), revokes the lease on auth-fail,
     // audits, and fulfils @p reply. @p opName is the audit/log label
-    // ("SignRaw"|"Decrypt").
+    // ("SignRaw"|"Decrypt"|"Derive").
     void runCrypto(const char* opName, std::initializer_list<Mechanism> allowedMechanisms, const CryptoSeam& seam,
                    Mechanism mechanism, const MechanismParams& params, const std::string& reader,
                    const std::string& certId, std::span<const std::uint8_t> bytes, const Caller& caller,

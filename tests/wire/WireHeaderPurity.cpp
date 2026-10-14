@@ -59,7 +59,7 @@ static_assert(static_cast<int>(CredentialOutcome::CardRemoved) == 9);
 // Messages.h ever stops including it.
 static_assert(sizeof(SyncError) == 1);
 
-static_assert(LibreSCRS::Agent::kAgentFeatures.size() == 9);
+static_assert(LibreSCRS::Agent::kAgentFeatures.size() == 10);
 
 // The key-type and mechanism vocabularies are std-only and constexpr, so the
 // facade -- which links no crypto and no core -- can read them. Pinned here,

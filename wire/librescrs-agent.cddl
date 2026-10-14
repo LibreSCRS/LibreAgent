@@ -397,7 +397,9 @@ reply-ok = ( hello-ack // op-started // state // cert-list // cert-der // public
 ; a client tolerates any EXTRA token a newer agent advertises (see the gate
 ; note above). This comment documents which tokens are actually LIVE today; a
 ; guard test (tests/wire/FeatureTokensGuardTest.cpp) keeps it and the array in
-; lockstep, so an append to one without the other fails closed:
+; lockstep, so an append to one without the other fails closed. The token
+; ec-keys means EC keys end to end: cert-info key facts, the EC public-key arm,
+; the required mech on raw sign and decrypt, and Pkcs11.Derive.
 ;   "credentials"
 ;   "card-type"
 ;   "token-info"
@@ -407,6 +409,7 @@ reply-ok = ( hello-ack // op-started // state // cert-list // cert-der // public
 ;   "layout-preview"
 ;   "identity-stream"
 ;   "batch-sign"
+;   "ec-keys"
 hello-ack     = ( kind: "HelloAck", agentVer: tstr, features: [* tstr] )   ; agentVer<->Manager1.Version; features<->Manager1.Features
 op-started    = ( op: uint )    ; async op id (ReadIdentity/GetPhoto/ReadCertificates/ReadTokenInfo/Sign/SignBatch/
                                 ;   ListCredentials/ManagePin/ActivateSigningKey)

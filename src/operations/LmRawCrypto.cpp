@@ -4,7 +4,9 @@
 
 #include <LibreSCRS/Agent/SecureZero.h>
 #include <LibreSCRS/Agent/backend/Logging.h>
-#include <LibreSCRS/Agent/operations/LmSeams.h> // selectSigningCandidate, SigningSelection
+#include <LibreSCRS/Agent/operations/LmSeams.h>       // selectSigningCandidate, SigningSelection
+#include <LibreSCRS/Agent/operations/RawCryptoFlow.h> // RawCryptoFlowDeps
+#include <LibreSCRS/Agent/operations/RsaPublicKey.h>  // ecPeerPointOnCertCurve
 
 #include <LibreSCRS/Auth/AuthRequirement.h> // PreReadAuthMethod
 #include <LibreSCRS/Certificate/ParsedCertificate.h>
@@ -137,6 +139,14 @@ LibreSCRS::Plugin::CardPlugin& depositPlugin(const SigningSelection& selection)
 
 } // namespace
 
+void bindLmRawCrypto(RawCryptoFlowDeps& deps)
+{
+    deps.preflight = preflight;
+    deps.signOp = signRaw;
+    deps.decryptOp = decryptRaw;
+    deps.deriveOp = deriveRaw;
+}
+
 void eraseDepositedPin(const CandidateList& candidates, LibreSCRS::SmartCard::CardSession& session) noexcept
 {
     for (const auto& candidate : candidates) {
@@ -236,6 +246,19 @@ RawCryptoPreflight preflight(const CandidateList& candidates, const std::string&
             return refuse(RawCryptoStatus::InvalidInput);
         }
         break;
+    case Mechanism::EcdhDerive:
+        // A key agreement needs an EC key the plugin will derive with, and the
+        // peer's uncompressed point on that key's curve. Checked here because
+        // the plugin cannot name the curve (its field length does not), and a
+        // malformed point under PACE secure messaging ends the session.
+        if (key.type != KeyType::Ec || !selection->cert.canDerive) {
+            return refuse(RawCryptoStatus::InvalidInput);
+        }
+        if (input.size() != 1 + 2 * k || input.front() != 0x04 ||
+            !ecPeerPointOnCertCurve(selection->cert.derBytes, input)) {
+            return refuse(RawCryptoStatus::InvalidInput);
+        }
+        break;
     default:
         return refuse(RawCryptoStatus::NotSupported);
     }
@@ -300,16 +323,18 @@ RawCryptoResult signRaw(const SigningSelection& key, Mechanism mechanism, std::s
     return out;
 }
 
-RawCryptoResult decryptRaw(const SigningSelection& key, Mechanism mechanism, std::span<const std::uint8_t> ciphertext,
-                           const LibreSCRS::Secure::String* pin, LibreSCRS::SmartCard::CardSession& session,
-                           LibreSCRS::CancelToken token)
+namespace {
+
+// The body decryptRaw and deriveRaw share: one CardPlugin::decipher with
+// @p pluginMechanism under the consent rule and PIN lifetime of signRaw, the
+// result copied out through a cleansing buffer and the plugin's copy wiped on
+// every outcome (a plaintext and a derived secret alike). The caller has
+// checked that the request's mechanism is the one @p pluginMechanism runs.
+RawCryptoResult decipherWithKey(const SigningSelection& key, LibreSCRS::Plugin::DecipherMechanism pluginMechanism,
+                                std::span<const std::uint8_t> input, const LibreSCRS::Secure::String* pin,
+                                LibreSCRS::SmartCard::CardSession& session, LibreSCRS::CancelToken token,
+                                const char* notSupportedWarning)
 {
-    if (!key.plugin || !key.cert.keyFID.has_value()) {
-        return err(RawCryptoStatus::KeyNotFound);
-    }
-    if (mechanism != Mechanism::RsaPkcs1Decrypt) {
-        return err(RawCryptoStatus::InvalidInput);
-    }
     // The card's per-operation consent rule, as in signRaw.
     const bool perOperation = key.cert.alwaysAuthenticate;
     if (perOperation && pin == nullptr) {
@@ -326,28 +351,67 @@ RawCryptoResult decryptRaw(const SigningSelection& key, Mechanism mechanism, std
     if (pin != nullptr) {
         plugin.setCredentials(session, "pin", *pin);
     }
-    auto dr = key.plugin->decipher(session, *key.cert.keyFID, ciphertext,
-                                   LibreSCRS::Plugin::DecipherMechanism::RSA_PKCS1_V15, token);
+    auto dr = key.plugin->decipher(session, *key.cert.keyFID, input, pluginMechanism, token);
     RawCryptoResult out;
     out.status = mapDecipherOutcome(dr.outcome);
     out.alwaysAuthenticate = perOperation;
     eraser.keepForTheLease(!perOperation && out.status == RawCryptoStatus::Ok);
     if (out.status == RawCryptoStatus::Ok) {
-        // The recovered plaintext is SENSITIVE. Hold it in a cleansing
-        // Secure::Buffer, copy the bytes the host must return, then let the
-        // Secure::Buffer scrub its storage on scope exit; also wipe the LM
-        // result vector's copy so no plaintext lingers in a non-cleansing heap
-        // allocation. The host owns cleansing the bytes it ultimately hands to
-        // the (trusted) PKCS#11 module over the owner-scoped socket.
+        // SENSITIVE: copied out through a cleansing Secure::Buffer, so no
+        // intermediate copy lingers; the returned vector is the host's to
+        // wipe once it has handed the bytes on (Pkcs11Broker does).
         const LibreSCRS::Secure::Buffer recovered{std::span<const std::uint8_t>{dr.plaintext}};
         out.bytes.assign(recovered.data(), recovered.data() + recovered.size());
-        LibreSCRS::Agent::secureZero(dr.plaintext);
     } else if (out.status == RawCryptoStatus::NotSupported) {
-        // The resolving plugin is the pkcs15/NAM family (no doDecipher override).
-        // Surface the gap explicitly so the host returns
-        // CKR_FUNCTION_NOT_SUPPORTED rather than a silent failure. Mirrors the
-        // matching warn in signRaw. See the header's PER-FAMILY ROUTING note.
-        log::warn("rawcrypto: decryptRaw resolved to a plugin without a raw-decipher primitive (pkcs15/NAM family)");
+        log::warn(notSupportedWarning);
+    }
+    LibreSCRS::Agent::secureZero(dr.plaintext);
+    return out;
+}
+
+} // namespace
+
+RawCryptoResult decryptRaw(const SigningSelection& key, Mechanism mechanism, std::span<const std::uint8_t> ciphertext,
+                           const LibreSCRS::Secure::String* pin, LibreSCRS::SmartCard::CardSession& session,
+                           LibreSCRS::CancelToken token)
+{
+    if (!key.plugin || !key.cert.keyFID.has_value()) {
+        return err(RawCryptoStatus::KeyNotFound);
+    }
+    if (mechanism != Mechanism::RsaPkcs1Decrypt) {
+        return err(RawCryptoStatus::InvalidInput);
+    }
+    // NotSupported is the pkcs15/NAM family (no doDecipher override), surfaced
+    // so the host returns CKR_FUNCTION_NOT_SUPPORTED rather than a silent
+    // failure. See the header's PER-FAMILY ROUTING note.
+    return decipherWithKey(key, LibreSCRS::Plugin::DecipherMechanism::RSA_PKCS1_V15, ciphertext, pin, session, token,
+                           "rawcrypto: decryptRaw resolved to a plugin without a raw-decipher primitive "
+                           "(pkcs15/NAM family)");
+}
+
+RawCryptoResult deriveRaw(const SigningSelection& key, Mechanism mechanism, std::span<const std::uint8_t> peerPoint,
+                          const LibreSCRS::Secure::String* pin, LibreSCRS::SmartCard::CardSession& session,
+                          LibreSCRS::CancelToken token)
+{
+    if (!key.plugin || !key.cert.keyFID.has_value()) {
+        return err(RawCryptoStatus::KeyNotFound);
+    }
+    if (mechanism != Mechanism::EcdhDerive) {
+        return err(RawCryptoStatus::InvalidInput); // the preflight refuses these first
+    }
+    auto out = decipherWithKey(key, LibreSCRS::Plugin::DecipherMechanism::ECDH_RAW, peerPoint, pin, session, token,
+                               "rawcrypto: deriveRaw resolved to a plugin without ECDH for this key");
+    // The secret is ceil(bits/8) bytes of the key's curve -- what the wire
+    // promises every client. A plugin answer of another length is not passed on.
+    if (out.status == RawCryptoStatus::Ok) {
+        const auto parsed = LibreSCRS::Certificate::ParsedCertificate::fromDer(key.cert.derBytes);
+        const CertKeyClass curve = parsed ? classifyCertKey(*parsed) : CertKeyClass{};
+        if (curve.type != KeyType::Ec || out.bytes.size() != (curve.bits + 7) / 8) {
+            LibreSCRS::Agent::secureZero(out.bytes);
+            out.bytes.clear();
+            out.status = RawCryptoStatus::CardError;
+            log::warn("rawcrypto: the plugin answered a key agreement with a secret of the wrong length");
+        }
     }
     return out;
 }

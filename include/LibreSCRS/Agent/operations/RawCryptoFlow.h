@@ -26,10 +26,10 @@ class CardSessionHolder;
 
 // The terminal raw-crypto op, injected so the flow's orchestration (open +
 // PIN-as-consent collection + status mapping) is unit-testable against fakes
-// with no live card. Production binds Operations::signRaw /
-// Operations::decryptRaw; tests inject a fake that models the PIN check + the
-// on-card op. Same signature for sign and decrypt — the bytes are
-// input/ciphertext. The op receives the key the preflight resolved -- it reads
+// with no live card. Production binds Operations::signRaw / decryptRaw /
+// deriveRaw (and preflight) with bindLmRawCrypto; tests inject a fake that
+// models the PIN check + the on-card op. Same signature for sign, decrypt and derive — the bytes are
+// input/ciphertext/peer point. The op receives the key the preflight resolved -- it reads
 // nothing off the card itself -- and the mechanism the caller named.
 //
 // @p pin carries the PIN-as-consent secret the flow just collected from the
@@ -86,9 +86,12 @@ struct RawCryptoFlowDeps
     std::string certId; // selects the exact key/cert (SHA-256(DER))
     // Checks the request against the key before any prompt (see
     // LmRawCrypto::preflight); its key is the one the op then uses.
+    // No preflight or no op wired for the request is a refusal (CardError)
+    // before any prompt.
     RawCryptoPreflightOp preflight;
     RawCryptoOp signOp;
     RawCryptoOp decryptOp;
+    RawCryptoOp deriveOp; // ECDH; the flow names it `pkcs11-derive` in the prompt
     LibreSCRS::CancelToken token;
     // Lease-scoped PIN state (NEVER the PIN itself — only a boolean):
     //   isPinVerified()   -> true iff an op with the PIN already succeeded for
@@ -141,7 +144,7 @@ public:
     struct Result
     {
         Outcome outcome{Outcome::CardError}; // default fails closed
-        std::vector<std::uint8_t> bytes;     // signature or plaintext on Ok
+        std::vector<std::uint8_t> bytes;     // signature, plaintext or secret on Ok
         std::string msgFallback;
     };
 
@@ -149,10 +152,15 @@ public:
 
     [[nodiscard]] Result runSign(Mechanism mechanism, std::span<const std::uint8_t> input);
     [[nodiscard]] Result runDecrypt(Mechanism mechanism, std::span<const std::uint8_t> ciphertext);
+    [[nodiscard]] Result runDerive(std::span<const std::uint8_t> peerPoint);
+    // The entry for @p mechanism, as the agent's PKCS#11 calls reach it:
+    // EcdhDerive derives, RsaPkcs1Decrypt decrypts, anything else is a
+    // signature (whose preflight refuses what is not one).
+    [[nodiscard]] Result run(Mechanism mechanism, std::span<const std::uint8_t> bytes);
 
 private:
-    enum class Op { Sign, Decrypt };
-    [[nodiscard]] Result run(Op op, Mechanism mechanism, std::span<const std::uint8_t> bytes);
+    enum class Op { Sign, Decrypt, Derive };
+    [[nodiscard]] Result runOp(Op op, Mechanism mechanism, std::span<const std::uint8_t> bytes);
 
     RawCryptoFlowDeps m_deps;
 };
