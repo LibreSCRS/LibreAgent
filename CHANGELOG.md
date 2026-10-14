@@ -11,6 +11,21 @@ Notable user-visible changes per release. Format follows
   `alwaysAuthenticate`:** whether the card asks for the PIN before every
   operation with a certificate's key.
 
+- **EC keys end to end.** Every certificate reports its key's `keyId` (the
+  card's own PKCS#11 `CKA_ID`), `keyType`, `keyBits` and `canDerive`
+  (`cert-info`, `CertificateInfo`, whose key type is the new public enum
+  `LibreSCRS::AgentClient::KeyType`); the `public-key` reply serves EC points;
+  the `Pkcs11.Derive` request runs ECDH with the card's key (the raw secret at
+  the curve's field width, CKD_NULL); the `ec-keys` feature token. The PKCS#11
+  module offers EC keys with `CKA_EC_PARAMS`/`CKA_EC_POINT`, `CKM_ECDSA` and
+  `CKM_ECDH1_DERIVE`, and holds derived secret keys as session objects; a
+  template asking for more bytes than the secret has is refused before the
+  card is asked.
+
+- **`LibreSCRS/Agent/SecureZero.h`**: `secureZero`, the agent stack's one
+  zeroization routine (it replaces the wire library's own), and
+  `SecureZeroOnExit`, which wipes a byte buffer on every way out of a scope.
+
 - **`SocketAgentClient` can check who serves the agent socket.** It takes an
   optional check of the serving process, run on every connect before any byte
   is sent, so a host that knows what the agent should look like (a code
@@ -221,6 +236,19 @@ Three targets ship, each independently usable:
   prompt.** Nothing reaches the card; key activation used to send an empty
   VERIFY.
 
+- **Raw signature and decryption requests carry a required `mech`**; the agent
+  runs exactly that mechanism, and checks it against the key, the input's
+  length and a key agreement's peer point. A mismatch — and an RSA mechanism
+  the key's card does not take: a caller-built PKCS#1 block for the key of a
+  PACE card, which hashes the message itself, or a message to hash for any
+  other RSA key — is refused with `InvalidRequest` before any PIN prompt. A refused
+  request leaves the lease's verified state as it was; on a lease that has not
+  asked for the PIN yet, it still counts against the caller's prompt budget. `CKA_ID` is the card's own key ID instead of a per-card
+  counter. Every certificate's key type decides its PKCS#11 attributes and
+  mechanisms; the hash-on-card mechanism applies to RSA keys only; a key of
+  another type (`OTHER`) is not published by the PKCS#11 module, while
+  document signing through the agent is unchanged.
+
 - **Minimum CMake is now 3.28** (was 3.24), for
   `FetchContent_Declare(... EXCLUDE_FROM_ALL)` — which is what keeps the
   vendored QCBOR dependency's own install rules out of the installed
@@ -303,6 +331,18 @@ Three targets ship, each independently usable:
 - **Exclusive card-access arbitration** between the agent's own flows
   and external PKCS#11 clients via the lease/broker model, with the
   first PKCS#11 cold-lease PIN prompt rate-limited.
+- **A decrypted block and a derived secret are wiped from every copy the
+  agent and the PKCS#11 module hold**, on every way out an exception included:
+  the plugin's buffer, the agent's result (also when the agent shuts down
+  mid-operation), the broker's copy once the reply has its own, the module's
+  received frame and decoded reply, and a derived key's value when the key is
+  destroyed.
+- **Encoding a floating-point value no longer runs into undefined behaviour in
+  the CBOR library's shortest-form reduction.** QCBOR shifted by an
+  out-of-range amount for most values that do not shorten (0.1 among them),
+  and the decoder's canonical re-encode reached that from any peer's request.
+  The encoder now picks the width up front for exactly those values; the
+  bytes on the wire are unchanged.
 
 ### Packaging
 
