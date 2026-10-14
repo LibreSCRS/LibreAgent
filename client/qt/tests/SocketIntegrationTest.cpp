@@ -981,6 +981,10 @@ TEST(SocketIntegration, CertificatesEndToEnd)
     fc.notAfter = QStringLiteral("2031-06-01T00:00:00Z");
     fc.trustStatus = 0U; // Trusted
     fc.alwaysAuthenticate = true;
+    fc.keyId = QByteArray::fromHex("F7134B02");
+    fc.keyType = QStringLiteral("EC");
+    fc.keyBits = 384;
+    fc.canDerive = true;
     cfg.certScript = {fc};
     SocketHarness h(cfg);
 
@@ -1004,6 +1008,52 @@ TEST(SocketIntegration, CertificatesEndToEnd)
     EXPECT_EQ(c.notAfter, QDateTime::fromString(QStringLiteral("2031-06-01T00:00:00Z"), Qt::ISODate));
     EXPECT_EQ(c.trust, TrustStatus::Trusted);
     EXPECT_TRUE(c.alwaysAuthenticate);
+    EXPECT_EQ(c.keyId, QByteArray::fromHex("F7134B02")) << "the card's key ID must reach the client";
+    EXPECT_EQ(c.keyType, KeyType::Ec);
+    EXPECT_EQ(c.keyBits, 384u);
+    EXPECT_TRUE(c.canDerive);
+}
+
+// The adjacent booleans (signingCapable, alwaysAuthenticate, canDerive) are
+// separate fields; each certificate sets a different combination so that
+// swapping any two of them is caught.
+TEST(SocketIntegration, CertificateBooleansKeepTheirPlaces)
+{
+    struct Flags
+    {
+        bool signingCapable;
+        bool alwaysAuthenticate;
+        bool canDerive;
+    };
+    const Flags flags[] = {{true, false, false}, {false, true, true}, {true, true, false}, {false, false, true}};
+    FakeSocketAgent::Config cfg;
+    cfg.capabilities = Cap::Pki;
+    for (int i = 0; i < 4; ++i) {
+        FakeSocketCert fc;
+        fc.certId = QStringLiteral("cert-flags-%1").arg(i);
+        fc.subjectCn = QStringLiteral("Flags %1").arg(i);
+        fc.signingCapable = flags[i].signingCapable;
+        fc.alwaysAuthenticate = flags[i].alwaysAuthenticate;
+        fc.canDerive = flags[i].canDerive;
+        cfg.certScript.push_back(fc);
+    }
+    SocketHarness h(cfg);
+
+    auto client = makeClient(h);
+    AgentCard* card = client->card(QLatin1String(kCardId));
+    ASSERT_NE(card, nullptr);
+    AgentOperation* op = card->readCertificates();
+    ASSERT_NE(op, nullptr);
+    ASSERT_TRUE(waitFor([&]() { return op->isFinished(); }));
+    EXPECT_EQ(op->status(), OperationStatus::Ok);
+
+    const QList<CertificateInfo> certs = op->certificatesResult();
+    ASSERT_EQ(certs.size(), 4);
+    for (int i = 0; i < 4; ++i) {
+        EXPECT_EQ(certs[i].signingCapable, flags[i].signingCapable) << i;
+        EXPECT_EQ(certs[i].alwaysAuthenticate, flags[i].alwaysAuthenticate) << i;
+        EXPECT_EQ(certs[i].canDerive, flags[i].canDerive) << i;
+    }
 }
 
 // The certificate warm is a DELIBERATE no-op on this wire, and this is the

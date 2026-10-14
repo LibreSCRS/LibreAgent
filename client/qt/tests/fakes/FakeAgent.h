@@ -423,20 +423,24 @@ private:
 
 /// @brief One scripted certificate the FakeAgent's Certificates1.Result emits.
 ///        Carries the full real-wire field-set so the cert Result can be
-///        hand-marshalled into the raw (sba{sa{s(ssv)}}uasasub) struct.
+///        hand-marshalled into the raw (sba{sa{s(ssv)}}uasasubaysub) struct.
 struct FakeCert
 {
     QString certId;
     bool signingCapable = false;
     QString subjectCn;
-    QString issuerCn = {};                 ///< issuer/cn field group (display only)
-    QString notBefore = {};                ///< validity/notBefore field group (display only)
-    QString notAfter = {};                 ///< validity/notAfter field group (display only)
-    uint keyUsageBits = 0;                 ///< u keyUsageBits
-    QStringList extendedKeyUsageOids = {}; ///< as EKU OIDs
-    QStringList chainSubjectCns = {};      ///< as ordered leaf..root CN chain
-    uint trustStatus = 255;                ///< u trustStatus (255 = Unknown; 5 = Revoked, 6 = OfflineUnverified)
-    bool alwaysAuthenticate = false;       ///< b: the card asks for the PIN before every use
+    QString issuerCn = {};                        ///< issuer/cn field group (display only)
+    QString notBefore = {};                       ///< validity/notBefore field group (display only)
+    QString notAfter = {};                        ///< validity/notAfter field group (display only)
+    uint keyUsageBits = 0;                        ///< u keyUsageBits
+    QStringList extendedKeyUsageOids = {};        ///< as EKU OIDs
+    QStringList chainSubjectCns = {};             ///< as ordered leaf..root CN chain
+    uint trustStatus = 255;                       ///< u trustStatus (255 = Unknown; 5 = Revoked, 6 = OfflineUnverified)
+    bool alwaysAuthenticate = false;              ///< b: the card asks for the PIN before every use
+    QByteArray keyId = QByteArrayLiteral("\x01"); ///< ay keyId: never empty on the wire
+    QString keyType = QStringLiteral("RSA");      ///< s keyType token
+    uint keyBits = 2048;                          ///< u keyBits
+    bool canDerive = false;                       ///< b canDerive
     /// Tokens riding the "security" fields-group (dict-key growth), mirroring
     /// trustStatus -- e.g. {"revoked"} for trustStatus=5, {"offline-unverified"}
     /// for trustStatus=6. Empty by default (matches the wire from before the
@@ -516,7 +520,7 @@ private:
     ///        m_photoEmptyMap is set, emits a genuinely EMPTY map (no entries) to
     ///        exercise the consumer's empty-map guard rather than the empty-fd one.
     void emitPhotoResult();
-    /// @brief Hand-marshal the cert script into the raw a(sba{sa{s(ssv)}}uasasub)
+    /// @brief Hand-marshal the cert script into the raw a(sba{sa{s(ssv)}}uasasubaysub)
     ///        struct and send it as a Certificates1.Result signal, bypassing the
     ///        client's operator<< so the client's operator>> is tested against a
     ///        payload it did NOT itself produce.

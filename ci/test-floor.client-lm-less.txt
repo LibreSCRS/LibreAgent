@@ -24,11 +24,11 @@ ClientQtSeamTest 45
 ClientQtSecurityChecksTest 14
 ClientQtSecurityVocabularyTest 5
 ClientQtSharedAgentClientTest 2
-ClientQtSocketIntegrationTest 52
+ClientQtSocketIntegrationTest 53
 ClientQtSyncErrorTest 10
 ClientQtTokenMapTest 14
-ClientQtTransportParityTest 97
-ClientQtTypesTest 16
+ClientQtTransportParityTest 99
+ClientQtTypesTest 17
 FakeAgentWireShapeTest 9
 FdHarvestTest 5
 FeatureTokensGuardTest 3

@@ -330,7 +330,7 @@ TEST(AgentCard, PropertiesChangedInvalidatedTakesGetAllFallback)
 }
 
 // the client's CertInfoWire operator>> must demarshal a REAL-shaped,
-// foreign-marshalled (sba{sa{s(ssv)}}uasasub) payload — built by the FakeAgent
+// foreign-marshalled (sba{sa{s(ssv)}}uasasubaysub) payload — built by the FakeAgent
 // with raw beginStructure/beginMap, NOT the client's own operator<< — carrying
 // issuer + notBefore/notAfter field-groups, a non-empty EKU list, a
 // multi-entry CN chain, and a non-Trusted trust verdict. operator>> must

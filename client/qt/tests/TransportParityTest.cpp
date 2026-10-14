@@ -278,7 +278,11 @@ struct ParityCert
     QString notAfter;
     quint32 trustStatus = 0;         // 0 = Trusted, matching both fakes' CertTrustStatus wire numbering
     bool alwaysAuthenticate = false; // the card asks for the PIN before every use of this key
-    QStringList securityStatus;      // tokens riding the "security" fields-group, mirroring trustStatus
+    QByteArray keyId = QByteArrayLiteral("\x01");
+    QString keyType = QStringLiteral("RSA");
+    quint32 keyBits = 2048;
+    bool canDerive = false;
+    QStringList securityStatus; // tokens riding the "security" fields-group, mirroring trustStatus
     // The certificate-metadata trailing members, scripted identically on both
     // fakes so the typed CertificateInfo members they land in can be asserted
     // by ONE scenario body against BOTH wires. chainSubjectCns is scripted
@@ -537,6 +541,10 @@ private:
             fc.notAfter = c.notAfter;
             fc.trustStatus = c.trustStatus;
             fc.alwaysAuthenticate = c.alwaysAuthenticate;
+            fc.keyId = c.keyId;
+            fc.keyType = c.keyType;
+            fc.keyBits = c.keyBits;
+            fc.canDerive = c.canDerive;
             fc.securityStatus = c.securityStatus;
             fc.keyUsageBits = c.keyUsageBits;
             fc.extendedKeyUsageOids = c.extendedKeyUsageOids;
@@ -787,6 +795,10 @@ private:
             fc.notAfter = c.notAfter;
             fc.trustStatus = c.trustStatus;
             fc.alwaysAuthenticate = c.alwaysAuthenticate;
+            fc.keyId = c.keyId;
+            fc.keyType = c.keyType;
+            fc.keyBits = c.keyBits;
+            fc.canDerive = c.canDerive;
             fc.securityStatus = c.securityStatus;
             fc.keyUsageBits = c.keyUsageBits;
             fc.extendedKeyUsageOids = c.extendedKeyUsageOids;
@@ -1176,6 +1188,10 @@ TYPED_TEST(TransportParity, CertificatesEndToEnd)
     pc.notAfter = QStringLiteral("2031-06-01T00:00:00Z");
     pc.trustStatus = 0; // Trusted
     pc.alwaysAuthenticate = true;
+    pc.keyId = QByteArray::fromHex("F7134B02");
+    pc.keyType = QStringLiteral("EC");
+    pc.keyBits = 384;
+    pc.canDerive = true;
     // Certificate metadata: two KeyUsage bits set (nonRepudiation ordinal 1 +
     // keyEncipherment ordinal 2 -> 0x06), so a marshaller that shipped a
     // constant, a truncated value or a single bit is visibly wrong; a
@@ -1217,6 +1233,10 @@ TYPED_TEST(TransportParity, CertificatesEndToEnd)
     EXPECT_EQ(c.chainSubjectCns, (QStringList{QStringLiteral("Parity Signer"), QStringLiteral("Parity CA")}))
         << "the leaf..root chain must arrive complete and in order";
     EXPECT_TRUE(c.alwaysAuthenticate) << "the card's consent rule must reach the client on both wires";
+    EXPECT_EQ(c.keyId, QByteArray::fromHex("F7134B02")) << "the card's key ID must reach the client on both wires";
+    EXPECT_EQ(c.keyType, KeyType::Ec);
+    EXPECT_EQ(c.keyBits, 384u);
+    EXPECT_TRUE(c.canDerive);
 
     // One source of truth: the three members above no longer ALSO ride the
     // untyped pass-through map. `trustStatusWire` still does -- no typed
@@ -1229,6 +1249,51 @@ TYPED_TEST(TransportParity, CertificatesEndToEnd)
     // would pass on a transport that stopped carrying the key at all.
     EXPECT_TRUE(c.extra.contains(QStringLiteral("trustStatusWire")));
     EXPECT_EQ(c.extra.value(QStringLiteral("trustStatusWire")).toUInt(), 0u);
+}
+
+// The adjacent booleans (signingCapable, alwaysAuthenticate, canDerive) ride the
+// wire apart from one another; each certificate sets a different combination so
+// that swapping any two of them is caught on both wires.
+TYPED_TEST(TransportParity, CertificateBooleansKeepTheirPlaces)
+{
+    using Env = typename TypeParam::Env;
+    ParityConfig cfg;
+    cfg.capabilities = Cap::Pki;
+    struct Flags
+    {
+        bool signingCapable;
+        bool alwaysAuthenticate;
+        bool canDerive;
+    };
+    const Flags flags[] = {{true, false, false}, {false, true, true}, {true, true, false}, {false, false, true}};
+    for (int i = 0; i < 4; ++i) {
+        ParityCert pc;
+        pc.certId = QStringLiteral("cert-flags-%1").arg(i);
+        pc.subjectCn = QStringLiteral("Flags %1").arg(i);
+        pc.issuerCn = QStringLiteral("Parity CA");
+        pc.notBefore = QStringLiteral("2021-06-01T00:00:00Z");
+        pc.notAfter = QStringLiteral("2031-06-01T00:00:00Z");
+        pc.signingCapable = flags[i].signingCapable;
+        pc.alwaysAuthenticate = flags[i].alwaysAuthenticate;
+        pc.canDerive = flags[i].canDerive;
+        cfg.certScript.push_back(pc);
+    }
+    Env env(cfg);
+
+    AgentCard* card = env.card();
+    ASSERT_NE(card, nullptr);
+    AgentOperation* op = card->readCertificates();
+    ASSERT_NE(op, nullptr);
+    ASSERT_TRUE(waitFor([&]() { return op->isFinished(); }));
+    EXPECT_EQ(op->status(), OperationStatus::Ok);
+
+    const QList<CertificateInfo> certs = op->certificatesResult();
+    ASSERT_EQ(certs.size(), 4);
+    for (int i = 0; i < 4; ++i) {
+        EXPECT_EQ(certs[i].signingCapable, flags[i].signingCapable) << i;
+        EXPECT_EQ(certs[i].alwaysAuthenticate, flags[i].alwaysAuthenticate) << i;
+        EXPECT_EQ(certs[i].canDerive, flags[i].canDerive) << i;
+    }
 }
 
 // The whole cert-info `fields` dict, one body against both wires.

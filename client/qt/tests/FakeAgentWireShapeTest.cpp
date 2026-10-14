@@ -87,8 +87,8 @@ TEST(FakeAgentWireShape, CertificateShapesMatchAgentXml)
     EXPECT_EQ(registeredSignature<CertFieldWire>(), QByteArray("(ssv)"));
     EXPECT_EQ(registeredSignature<CertFieldGroupWire>(), QByteArray("a{s(ssv)}"));
     EXPECT_EQ(registeredSignature<CertFieldGroupsWire>(), QByteArray("a{sa{s(ssv)}}"));
-    EXPECT_EQ(registeredSignature<CertInfoWire>(), QByteArray("(sba{sa{s(ssv)}}uasasub)"));
-    EXPECT_EQ(registeredSignature<CertListWire>(), QByteArray("a(sba{sa{s(ssv)}}uasasub)"));
+    EXPECT_EQ(registeredSignature<CertInfoWire>(), QByteArray("(sba{sa{s(ssv)}}uasasubaysub)"));
+    EXPECT_EQ(registeredSignature<CertListWire>(), QByteArray("a(sba{sa{s(ssv)}}uasasubaysub)"));
 }
 
 // Photo1 hands out sealed memfds keyed "groupKey:fieldKey", so the value is `h`

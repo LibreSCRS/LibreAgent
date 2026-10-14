@@ -240,3 +240,13 @@ TEST(ClientTimeoutsValueType, HasTheDocumentedMillisecondBudgets)
     EXPECT_LT(kHandshakeTimeoutMs, kDefaultCallTimeoutMs);
     EXPECT_LT(kDefaultCallTimeoutMs, kLongOperationTimeoutMs);
 }
+
+// A certificate the agent has not described has no key facts yet.
+TEST(Types, CertificateInfoKeyFactsDefaultToUnknown)
+{
+    const CertificateInfo info;
+    EXPECT_TRUE(info.keyId.isEmpty());
+    EXPECT_EQ(info.keyType, KeyType::Other);
+    EXPECT_EQ(info.keyBits, 0u);
+    EXPECT_FALSE(info.canDerive);
+}

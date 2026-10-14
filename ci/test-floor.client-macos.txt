@@ -18,10 +18,10 @@ ClientQtSealedPayloadTest 9
 ClientQtSeamTest 45
 ClientQtSecurityChecksTest 14
 ClientQtSecurityVocabularyTest 5
-ClientQtSocketIntegrationTest 51
+ClientQtSocketIntegrationTest 52
 ClientQtSyncErrorTest 10
 ClientQtTokenMapTest 14
-ClientQtTypesTest 16
+ClientQtTypesTest 17
 FdHarvestTest 5
 FeatureTokensGuardTest 3
 FrameReassemblerTest 8

@@ -9,6 +9,7 @@
 #include "../ConfigKeys.h"
 #include "../CscaAnchorKeys.h"
 #include "../FieldExtraKeys.h"
+#include "../KeyTypeMapping.h"
 #include "../dbus/AgentDBus.h"    // shared object/interface name spellings (constants only, no QtDBus)
 #include "../dbus/ErrorNameMap.h" // the short-name half doubles as the socket sync-error map
 
@@ -424,6 +425,11 @@ QList<CertificateInfo> toCertificateInfos(const std::vector<Wire::CertInfo>& cer
         info.id = fromStd(cert.certId);
         info.signingCapable = cert.signingCapable;
         info.alwaysAuthenticate = cert.alwaysAuthenticate;
+        info.keyId =
+            QByteArray(reinterpret_cast<const char*>(cert.keyId.data()), static_cast<qsizetype>(cert.keyId.size()));
+        info.keyType = detail::toClientKeyType(cert.keyType);
+        info.keyBits = cert.keyBits;
+        info.canDerive = cert.canDerive;
         info.subject = certFieldValue(cert, "subject", "cn");
         info.issuer = certFieldValue(cert, "issuer", "cn");
         info.notBefore = QDateTime::fromString(certFieldValue(cert, "validity", "notBefore"), Qt::ISODate);
