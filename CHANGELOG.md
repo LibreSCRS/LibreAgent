@@ -22,8 +22,8 @@ Notable user-visible changes per release. Format follows
   template asking for more bytes than the secret has is refused before the
   card is asked.
 
-- **`LibreSCRS/Agent/SecureZero.h`**: `secureZero`, the agent stack's one
-  zeroization routine (it replaces the wire library's own), and
+- **One zeroization routine for the agent stack.** `LibreSCRS/Agent/SecureZero.h`
+  provides `secureZero` (it replaces the wire library's own) and
   `SecureZeroOnExit`, which wipes a byte buffer on every way out of a scope.
 
 - **`SocketAgentClient` can check who serves the agent socket.** It takes an
