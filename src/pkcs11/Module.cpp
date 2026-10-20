@@ -34,9 +34,11 @@
 #include <condition_variable>
 #include <cstdint>
 #include <cstring>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <span>
 #include <string>
 
 namespace {
@@ -60,6 +62,9 @@ struct Library
     // host's factory at link time, and the core has no business naming it.
     std::unique_ptr<AgentClient> client = makeAgentClient();
     SessionState state;
+    // Certificate DER by certId. The id is the DER's SHA-256, so an entry can
+    // never stand for another certificate, and each one is read from the card once.
+    std::map<std::string, std::vector<std::uint8_t>> certDers;
 };
 
 std::mutex g_mutex;
@@ -783,6 +788,91 @@ CK_DECLARE_FUNCTION(CK_RV, C_GetObjectSize)(CK_SESSION_HANDLE hSession, CK_OBJEC
 
 namespace {
 
+// The element at the front of @p in -- its whole encoding and its content --
+// and @p in moved past it. DER: low tag numbers, definite lengths only.
+struct DerElement
+{
+    std::span<const std::uint8_t> whole;
+    std::span<const std::uint8_t> content;
+};
+
+std::optional<DerElement> takeDerElement(std::span<const std::uint8_t>& in)
+{
+    if (in.size() < 2 || (in[0] & 0x1F) == 0x1F)
+        return std::nullopt;
+    std::size_t header = 2;
+    std::size_t length = in[1];
+    if ((length & 0x80) != 0) {
+        const std::size_t octets = length & 0x7F;
+        if (octets == 0 || octets > sizeof(std::size_t) || in.size() < header + octets)
+            return std::nullopt;
+        length = 0;
+        for (std::size_t i = 0; i < octets; ++i)
+            length = (length << 8) | in[header + i];
+        header += octets;
+    }
+    if (in.size() - header < length)
+        return std::nullopt;
+    const DerElement out{in.first(header + length), in.subspan(header, length)};
+    in = in.subspan(header + length);
+    return out;
+}
+
+// CKA_SERIAL_NUMBER / CKA_ISSUER / CKA_SUBJECT: that TBSCertificate field
+// exactly as the certificate encodes it -- a loader compares these bytes with
+// the ones it decodes from CKA_VALUE, so they are cut, never rebuilt.
+// RFC 5280 4.1 fixes the order, and DER keeps it:
+//   Certificate    ::= SEQUENCE { tbsCertificate, signatureAlgorithm, signatureValue }
+//   TBSCertificate ::= SEQUENCE { version [0] EXPLICIT DEFAULT v1, serialNumber INTEGER,
+//                                 signature SEQUENCE, issuer Name, validity SEQUENCE,
+//                                 subject Name, ... }
+// so the fields are taken off the front one after another; only version may be absent.
+std::optional<std::span<const std::uint8_t>> certificateField(std::span<const std::uint8_t> der, CK_ATTRIBUTE_TYPE type)
+{
+    const auto take = [](std::span<const std::uint8_t>& in, std::uint8_t tag) {
+        auto e = takeDerElement(in);
+        return e && e->whole[0] == tag ? e : std::nullopt;
+    };
+    const auto cert = take(der, 0x30);
+    if (!cert)
+        return std::nullopt;
+    auto certContent = cert->content;
+    const auto tbs = take(certContent, 0x30);
+    if (!tbs)
+        return std::nullopt;
+    auto fields = tbs->content;
+    if (!fields.empty() && fields[0] == 0xA0 && !takeDerElement(fields))
+        return std::nullopt;
+    const auto serial = take(fields, 0x02);
+    const auto signature = take(fields, 0x30);
+    const auto issuer = take(fields, 0x30);
+    const auto validity = take(fields, 0x30);
+    const auto subject = take(fields, 0x30);
+    if (!serial || !signature || !issuer || !validity || !subject)
+        return std::nullopt;
+    switch (type) {
+    case CKA_SERIAL_NUMBER:
+        return serial->whole;
+    case CKA_ISSUER:
+        return issuer->whole;
+    case CKA_SUBJECT:
+        return subject->whole;
+    default:
+        return std::nullopt;
+    }
+}
+
+// The certificate's DER: from the agent the first time, then as kept.
+BytesResult certDerOf(const Slot& slot, const Object& obj)
+{
+    if (const auto it = g_lib->certDers.find(obj.certId); it != g_lib->certDers.end())
+        return {Status::Ok, it->second};
+    auto der = g_lib->client->certDer(slot.readerPath, obj.certId);
+    if (der.status == Status::Ok)
+        g_lib->certDers.emplace(obj.certId, der.bytes);
+    return der;
+}
+
 // Serve one attribute for an object. Returns CKR_OK (filled / sized) or
 // CKR_ATTRIBUTE_TYPE_INVALID. Implements the buffer-size protocol:
 // pValue==NULL -> set ulValueLen; small buffer -> ulValueLen = -1 +
@@ -939,10 +1029,24 @@ CK_RV serveAttribute(const Slot& slot, const Object& obj, CK_ATTRIBUTE& attr)
         // Certificate DER, fetched lazily from the agent (public data).
         if (obj.cls != CKO_CERTIFICATE)
             return CKR_ATTRIBUTE_TYPE_INVALID;
-        auto der = g_lib->client->certDer(slot.readerPath, obj.certId);
+        auto der = certDerOf(slot, obj);
         if (der.status != Status::Ok)
             return ckrFromStatus(der.status); // CKR_DEVICE_ERROR / _REMOVED per bus state
         return give(der.bytes.data(), der.bytes.size());
+    }
+    case CKA_SERIAL_NUMBER:
+    case CKA_ISSUER:
+    case CKA_SUBJECT: {
+        // Cut from the same DER CKA_VALUE serves; one that does not parse has none.
+        if (obj.cls != CKO_CERTIFICATE)
+            return CKR_ATTRIBUTE_TYPE_INVALID;
+        auto der = certDerOf(slot, obj);
+        if (der.status != Status::Ok)
+            return ckrFromStatus(der.status);
+        const auto field = certificateField(der.bytes, attr.type);
+        if (!field)
+            return CKR_ATTRIBUTE_TYPE_INVALID;
+        return give(field->data(), field->size());
     }
     default:
         return CKR_ATTRIBUTE_TYPE_INVALID;
@@ -1022,6 +1126,32 @@ CK_DECLARE_FUNCTION(CK_RV, C_FindObjectsInit)(CK_SESSION_HANDLE hSession, CK_ATT
     if (s->find.active)
         return CKR_OPERATION_ACTIVE;
     s->find.matches = g_lib->state.findMatches(hSession, s->slot, pTemplate, ulCount);
+    // A certificate's names live in its DER, which the model does not hold:
+    // compare them as C_GetAttributeValue serves them, so a search by subject,
+    // or by issuer and serial, finds that certificate and nothing else.
+    if (const Slot* slot = g_lib->state.slotById(s->slot); slot != nullptr && pTemplate != NULL_PTR) {
+        std::erase_if(s->find.matches, [&](CK_OBJECT_HANDLE h) {
+            const Object* obj = SessionState::isDerivedHandle(h) ? nullptr : g_lib->state.resolveObject(s->slot, h);
+            for (CK_ULONG i = 0; i < ulCount; ++i) {
+                const CK_ATTRIBUTE& want = pTemplate[i];
+                if ((want.type != CKA_SUBJECT && want.type != CKA_ISSUER && want.type != CKA_SERIAL_NUMBER) ||
+                    want.pValue == NULL_PTR)
+                    continue;
+                if (obj == nullptr)
+                    return true;
+                // Size first: the template's length is the caller's, the field's is ours.
+                CK_ATTRIBUTE probe{want.type, NULL_PTR, 0};
+                if (serveAttribute(*slot, *obj, probe) != CKR_OK || probe.ulValueLen != want.ulValueLen)
+                    return true;
+                std::vector<std::uint8_t> have(probe.ulValueLen);
+                probe.pValue = have.data();
+                if (serveAttribute(*slot, *obj, probe) != CKR_OK ||
+                    std::memcmp(have.data(), want.pValue, have.size()) != 0)
+                    return true;
+            }
+            return false;
+        });
+    }
     s->find.next = 0;
     s->find.active = true;
     return CKR_OK;

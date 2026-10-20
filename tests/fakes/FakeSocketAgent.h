@@ -108,7 +108,8 @@ struct FakeCert
     std::string crv; ///< EC only: what PkPublicKey answers
     std::vector<std::uint8_t> ecX;
     std::vector<std::uint8_t> ecY;
-    bool ecPointSeated = false; ///< setEcPoint() was called
+    bool ecPointSeated = false;    ///< setEcPoint() was called
+    std::vector<std::uint8_t> der; ///< what GetCertDer answers; empty -> kCannedDer
 };
 
 /// @brief One scripted reader, and the card (if any) seated in it.
@@ -157,6 +158,8 @@ public:
     ///        told. Seat an empty point here to send a malformed one on purpose.
     void setEcPoint(const std::string& certId, std::string crv, std::vector<std::uint8_t> x,
                     std::vector<std::uint8_t> y);
+    /// @brief The DER GetCertDer answers for @p certId, in place of kCannedDer.
+    void setCertDer(const std::string& certId, std::vector<std::uint8_t> der);
 
     /// @brief Make @p call sleep before it answers.
     void delayCall(Call call, std::chrono::milliseconds d);

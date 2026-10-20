@@ -150,6 +150,17 @@ void FakeSocketAgent::setEcPoint(const std::string& certId, std::string crv, std
     }
 }
 
+void FakeSocketAgent::setCertDer(const std::string& certId, std::vector<std::uint8_t> der)
+{
+    const std::lock_guard lock{m_mutex};
+    for (auto& r : m_readers) {
+        for (auto& c : r.certs) {
+            if (c.certId == certId)
+                c.der = der;
+        }
+    }
+}
+
 void FakeSocketAgent::delayCall(Call call, std::chrono::milliseconds d)
 {
     const std::lock_guard lock{m_mutex};
@@ -503,11 +514,21 @@ bool FakeSocketAgent::answer(int fd, const W::RequestEnvelope& env)
         return send(W::toCbor(W::OpFinished{op, Operations::OperationStatus::Ok, ErrorCode::None, {}, {}}));
     }
 
-    if (std::holds_alternative<W::GetCertDer>(env.body)) {
+    if (const auto* get = std::get_if<W::GetCertDer>(&env.body)) {
         applyScript(Call::GetCertDer);
         if (const auto e = scriptedFailure(Call::GetCertDer))
             return refuse(*e);
-        return send(W::makeReply(env.req, W::CertDerReply{kCannedDer}));
+        std::vector<std::uint8_t> der = kCannedDer;
+        {
+            const std::lock_guard lock{m_mutex};
+            for (const auto& r : m_readers) {
+                for (const auto& c : r.certs) {
+                    if (c.certId == get->cert && !c.der.empty())
+                        der = c.der;
+                }
+            }
+        }
+        return send(W::makeReply(env.req, W::CertDerReply{der}));
     }
 
     if (const auto* pk = std::get_if<W::PkPublicKey>(&env.body)) {

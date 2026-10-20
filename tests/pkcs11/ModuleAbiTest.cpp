@@ -6,6 +6,7 @@
 // C_Initialize wires them together.
 
 #include "SocketFixture.h"
+#include "TestCertificates.h"
 
 #include <LibreSCRS/Agent/wire/SyncError.h>
 #include <LibreSCRS/Agent/pkcs11/pkcs11.h>
@@ -670,6 +671,139 @@ TEST(ModuleAbi, CertValueFetchFailureMapsToDeviceError)
 
     CK_ATTRIBUTE val[] = {{CKA_VALUE, nullptr, 0}};
     EXPECT_EQ(m.fn->C_GetAttributeValue(session, cert, val, 1), CKR_DEVICE_ERROR);
+}
+
+// NSS reads a token certificate's subject, issuer and serial together with its
+// DER, in one call, and files the certificate under them; one without them is
+// never offered for client authentication. They are the certificate's own bytes.
+TEST(ModuleAbi, ACertificateServesItsNamesAndSerialAsEncoded)
+{
+    SocketFixture agent(true, "None", [](FakeSocketAgent& f) { f.setCertDer(kCertId, kTestLeafDer); });
+    LoadedModule m;
+    ASSERT_EQ(m.fn->C_Initialize(nullptr), CKR_OK);
+    CK_SESSION_HANDLE session = 0;
+    ASSERT_EQ(m.fn->C_OpenSession(firstPresentSlot(m.fn), CKF_SERIAL_SESSION, nullptr, nullptr, &session), CKR_OK);
+    const CK_OBJECT_HANDLE cert = findOne(m.fn, session, CKO_CERTIFICATE);
+    ASSERT_NE(cert, CK_INVALID_HANDLE);
+
+    CK_ATTRIBUTE sizes[] = {
+        {CKA_VALUE, nullptr, 0}, {CKA_SUBJECT, nullptr, 0}, {CKA_ISSUER, nullptr, 0}, {CKA_SERIAL_NUMBER, nullptr, 0}};
+    ASSERT_EQ(m.fn->C_GetAttributeValue(session, cert, sizes, 4), CKR_OK);
+    EXPECT_EQ(attrBytes(m.fn, session, cert, CKA_SUBJECT), kTestLeafSubject);
+    EXPECT_EQ(attrBytes(m.fn, session, cert, CKA_ISSUER), kTestLeafIssuer);
+    EXPECT_EQ(attrBytes(m.fn, session, cert, CKA_SERIAL_NUMBER), kTestLeafSerial);
+}
+
+// A search by subject, or by issuer and serial, is how NSS finds a certificate's
+// issuer and tells two certificates apart: it finds that certificate, no other.
+TEST(ModuleAbi, FindObjectsMatchesACertificateByItsNames)
+{
+    constexpr const char* kCaCert = "cert-ca";
+    SocketFixture agent(true, "None", [](FakeSocketAgent& f) {
+        f.setCertDer(kCertId, kTestLeafDer);
+        f.addCert(kCard0, kCaCert, /*signingCapable=*/true, 0, "LibreSCRS Test CA");
+        f.setCertDer(kCaCert, kTestCaDer);
+    });
+    LoadedModule m;
+    ASSERT_EQ(m.fn->C_Initialize(nullptr), CKR_OK);
+    CK_SESSION_HANDLE session = 0;
+    ASSERT_EQ(m.fn->C_OpenSession(firstPresentSlot(m.fn), CKF_SERIAL_SESSION, nullptr, nullptr, &session), CKR_OK);
+    const auto find = [&](std::vector<CK_ATTRIBUTE> tmpl) {
+        EXPECT_EQ(m.fn->C_FindObjectsInit(session, tmpl.data(), static_cast<CK_ULONG>(tmpl.size())), CKR_OK);
+        CK_OBJECT_HANDLE objs[16];
+        CK_ULONG n = 0;
+        EXPECT_EQ(m.fn->C_FindObjects(session, objs, 16, &n), CKR_OK);
+        EXPECT_EQ(m.fn->C_FindObjectsFinal(session), CKR_OK);
+        return std::vector<CK_OBJECT_HANDLE>(objs, objs + n);
+    };
+    const auto derOf = [&](const std::vector<CK_OBJECT_HANDLE>& found) {
+        return found.size() == 1 ? attrBytes(m.fn, session, found[0], CKA_VALUE) : std::vector<std::uint8_t>{};
+    };
+    auto caSubject = kTestLeafIssuer; // the leaf's issuer is the CA's subject
+    auto leafSubject = kTestLeafSubject;
+    auto leafIssuer = kTestLeafIssuer;
+    auto leafSerial = kTestLeafSerial;
+    std::vector<std::uint8_t> nobody(kTestLeafSubject);
+    nobody.back() ^= 0x01;
+
+    EXPECT_EQ(derOf(find({{CKA_SUBJECT, caSubject.data(), caSubject.size()}})), kTestCaDer)
+        << "the CA alone: not the certificate it issued, and no key";
+    EXPECT_EQ(derOf(find({{CKA_SUBJECT, leafSubject.data(), leafSubject.size()}})), kTestLeafDer);
+    EXPECT_EQ(derOf(find({{CKA_ISSUER, leafIssuer.data(), leafIssuer.size()},
+                          {CKA_SERIAL_NUMBER, leafSerial.data(), leafSerial.size()}})),
+              kTestLeafDer)
+        << "the CA has the same issuer; the serial tells them apart";
+    EXPECT_TRUE(find({{CKA_SUBJECT, nobody.data(), nobody.size()}}).empty());
+}
+
+// The template's length is the caller's word: one no certificate field can have
+// is no match, never an allocation of that size across the C boundary.
+TEST(ModuleAbi, FindObjectsByANameOfImpossibleLengthFindsNothing)
+{
+    SocketFixture agent(true, "None", [](FakeSocketAgent& f) { f.setCertDer(kCertId, kTestLeafDer); });
+    LoadedModule m;
+    ASSERT_EQ(m.fn->C_Initialize(nullptr), CKR_OK);
+    CK_SESSION_HANDLE session = 0;
+    ASSERT_EQ(m.fn->C_OpenSession(firstPresentSlot(m.fn), CKF_SERIAL_SESSION, nullptr, nullptr, &session), CKR_OK);
+    auto subject = kTestLeafSubject;
+    CK_ATTRIBUTE tmpl[] = {{CKA_SUBJECT, subject.data(), ~CK_ULONG{0} >> 1}};
+    ASSERT_EQ(m.fn->C_FindObjectsInit(session, tmpl, 1), CKR_OK);
+    CK_OBJECT_HANDLE objs[4];
+    CK_ULONG n = 0;
+    EXPECT_EQ(m.fn->C_FindObjects(session, objs, 4, &n), CKR_OK);
+    EXPECT_EQ(n, 0u);
+    EXPECT_EQ(m.fn->C_FindObjectsFinal(session), CKR_OK);
+}
+
+// Each certificate DER the agent sends is a read of the card -- over secure
+// messaging on a contactless one -- and NSS asks for the DER, both names and the
+// serial of every certificate in one call, then searches by them. The module
+// reads each certificate once; its id is the DER's SHA-256, so what it keeps
+// cannot stand for another certificate.
+TEST(ModuleAbi, ACertificateIsReadFromTheCardOnce)
+{
+    SocketFixture agent(true, "None", [](FakeSocketAgent& f) { f.setCertDer(kCertId, kTestLeafDer); });
+    LoadedModule m;
+    ASSERT_EQ(m.fn->C_Initialize(nullptr), CKR_OK);
+    CK_SESSION_HANDLE session = 0;
+    ASSERT_EQ(m.fn->C_OpenSession(firstPresentSlot(m.fn), CKF_SERIAL_SESSION, nullptr, nullptr, &session), CKR_OK);
+    const CK_OBJECT_HANDLE cert = findOne(m.fn, session, CKO_CERTIFICATE);
+    ASSERT_NE(cert, CK_INVALID_HANDLE);
+
+    CK_ATTRIBUTE sizes[] = {
+        {CKA_VALUE, nullptr, 0}, {CKA_SUBJECT, nullptr, 0}, {CKA_ISSUER, nullptr, 0}, {CKA_SERIAL_NUMBER, nullptr, 0}};
+    ASSERT_EQ(m.fn->C_GetAttributeValue(session, cert, sizes, 4), CKR_OK);
+    EXPECT_EQ(attrBytes(m.fn, session, cert, CKA_SUBJECT), kTestLeafSubject);
+    auto subject = kTestLeafSubject;
+    CK_ATTRIBUTE bySubject[] = {{CKA_SUBJECT, subject.data(), subject.size()}};
+    ASSERT_EQ(m.fn->C_FindObjectsInit(session, bySubject, 1), CKR_OK);
+    ASSERT_EQ(m.fn->C_FindObjectsFinal(session), CKR_OK);
+    EXPECT_EQ(agent.fake->callCount(Call::GetCertDer), 1);
+}
+
+// A certificate whose DER does not parse has no names: the attribute is absent,
+// as on any object without one, and a search by name does not find it.
+TEST(ModuleAbi, AMalformedCertificateHasNoNames)
+{
+    SocketFixture agent; // the double's canned DER is a truncated header
+    LoadedModule m;
+    ASSERT_EQ(m.fn->C_Initialize(nullptr), CKR_OK);
+    CK_SESSION_HANDLE session = 0;
+    ASSERT_EQ(m.fn->C_OpenSession(firstPresentSlot(m.fn), CKF_SERIAL_SESSION, nullptr, nullptr, &session), CKR_OK);
+    const CK_OBJECT_HANDLE cert = findOne(m.fn, session, CKO_CERTIFICATE);
+    ASSERT_NE(cert, CK_INVALID_HANDLE);
+
+    CK_RV rv = CKR_OK;
+    (void)attrBytes(m.fn, session, cert, CKA_SUBJECT, &rv);
+    EXPECT_EQ(rv, CKR_ATTRIBUTE_TYPE_INVALID);
+    auto subject = kTestLeafSubject;
+    CK_ATTRIBUTE bySubject[] = {{CKA_SUBJECT, subject.data(), subject.size()}};
+    ASSERT_EQ(m.fn->C_FindObjectsInit(session, bySubject, 1), CKR_OK);
+    CK_OBJECT_HANDLE objs[4];
+    CK_ULONG n = 0;
+    EXPECT_EQ(m.fn->C_FindObjects(session, objs, 4, &n), CKR_OK);
+    EXPECT_EQ(m.fn->C_FindObjectsFinal(session), CKR_OK);
+    EXPECT_EQ(n, 0u);
 }
 
 // A second C_Login while already logged in returns CKR_USER_ALREADY_LOGGED_IN.
