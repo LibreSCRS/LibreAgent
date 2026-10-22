@@ -1054,3 +1054,85 @@ TEST(OperationManager, AThrowingInsertionProbeIsReportedAsAnOpenError)
     ASSERT_TRUE(probed.has_value());
     EXPECT_FALSE(probed->has_value()) << "a throwing seam is not an unserved card";
 }
+
+namespace {
+
+// Set only on reader A's worker thread, around the open that stands in for a
+// card call that takes long: the factory runs on the thread that called
+// acquire(), so this tells reader A's open from reader B's.
+thread_local bool tlSlowOpen = false;
+
+} // namespace
+
+// Readers do not wait for each other. Reader A's card call -- an open that
+// stands in for a session grant or a slow transmit -- does not return until
+// reader B has run 200 operations, each opening and closing its card. Had B's
+// operations queued behind A's call, none of them could finish while A is
+// still inside it. No clock decides the verdict: A is released by B's last
+// operation, and the waits below only bound a failing run.
+TEST(OperationManager, ReaderBIsNotDelayedByReaderA)
+{
+    constexpr int kOperations = 200;
+    const ObjectId readerA{1};
+    const ObjectId readerB{2};
+
+    std::mutex m;
+    std::condition_variable cv;
+    bool aInSlowCall = false;
+    bool releaseA = false;
+    std::atomic<bool> aDone{false};
+    std::atomic<int> bDone{0};
+    OperationManager mgr;
+    mgr.setSessionFactoryForTest(
+        [&](const std::string& r)
+            -> std::expected<std::shared_ptr<LibreSCRS::SmartCard::CardSession>, LibreSCRS::SmartCard::OpenError> {
+            if (tlSlowOpen) {
+                std::unique_lock lock(m);
+                aInSlowCall = true;
+                cv.notify_all();
+                cv.wait_for(lock, 10s, [&] { return releaseA; });
+            }
+            return LibreSCRS::SmartCard::detail::makeDetachedCardSession(r);
+        });
+
+    mgr.enqueueHolderProbeForTest(readerA, [&](CardSessionHolder& h) {
+        tlSlowOpen = true;
+        (void)h.acquire();
+        tlSlowOpen = false;
+        aDone.store(true);
+    });
+    {
+        std::unique_lock lock(m);
+        ASSERT_TRUE(cv.wait_for(lock, 5s, [&] { return aInSlowCall; })) << "reader A never entered its slow call";
+    }
+
+    for (int i = 0; i < kOperations; ++i) {
+        mgr.enqueueHolderProbeForTest(readerB, [&](CardSessionHolder& h) {
+            (void)h.acquire();
+            h.invalidate();
+            bDone.fetch_add(1);
+        });
+    }
+    const auto start = std::chrono::steady_clock::now();
+    while (bDone.load() < kOperations && std::chrono::steady_clock::now() - start < 5s) {
+        std::this_thread::sleep_for(2ms);
+    }
+    const bool aStillInItsCall = !aDone.load();
+    const int bFinished = bDone.load();
+    {
+        const std::lock_guard lock(m);
+        releaseA = true;
+    }
+    cv.notify_all();
+
+    EXPECT_EQ(bFinished, kOperations) << "reader B's operations waited for reader A's call";
+    EXPECT_TRUE(aStillInItsCall) << "reader A's call ended before reader B finished: the case proved nothing";
+
+    // Reader A's worker must finish before the manager goes: an abandoned
+    // worker would outlive the factory's captures on this stack.
+    const auto doneBy = std::chrono::steady_clock::now();
+    while (!aDone.load() && std::chrono::steady_clock::now() - doneBy < 5s) {
+        std::this_thread::sleep_for(5ms);
+    }
+    ASSERT_TRUE(aDone.load());
+}
