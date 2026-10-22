@@ -139,12 +139,12 @@ TEST(CardSessionHolder, ResolvesPreReadAuthOnceAndClearsOnInvalidate)
     CardSessionHolder h{"R", makeCountingFactory(opens), makeCandidateResolver(candidates),
                         std::make_shared<LibreSCRS::SmartCard::CardMap>()};
 
-    EXPECT_EQ(h.fullResolution().preReadAuth, PreReadAuthMethod::Can);
-    EXPECT_EQ(h.fullResolution().preReadAuth, PreReadAuthMethod::Can);
+    EXPECT_EQ(h.fullResolution().value().preReadAuth, PreReadAuthMethod::Can);
+    EXPECT_EQ(h.fullResolution().value().preReadAuth, PreReadAuthMethod::Can);
     EXPECT_EQ(preReadCalls, 1) << "pre-read auth is memoized per held session (plugin queried once)";
 
     h.invalidate();
-    EXPECT_EQ(h.fullResolution().preReadAuth, PreReadAuthMethod::Can);
+    EXPECT_EQ(h.fullResolution().value().preReadAuth, PreReadAuthMethod::Can);
     EXPECT_EQ(preReadCalls, 2) << "invalidate() clears the memo so the next call re-resolves";
 }
 
@@ -158,9 +158,10 @@ TEST(CardSessionHolder, FullResolutionFromHeldSession)
                         std::make_shared<LibreSCRS::SmartCard::CardMap>()};
 
     auto r = h.fullResolution();
-    EXPECT_EQ(r.capabilities, static_cast<std::uint32_t>(Cap::IdentityData | Cap::PKI));
-    EXPECT_EQ(r.preReadAuth, PreReadAuthMethod::Can);
-    EXPECT_FALSE(r.candidates.empty());
+    ASSERT_TRUE(r.has_value());
+    EXPECT_EQ(r->capabilities, static_cast<std::uint32_t>(Cap::IdentityData | Cap::PKI));
+    EXPECT_EQ(r->preReadAuth, PreReadAuthMethod::Can);
+    EXPECT_FALSE(r->candidates.empty());
     EXPECT_EQ(opens, 1) << "fullResolution() resolves on the single held session";
 }
 

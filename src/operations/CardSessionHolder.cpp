@@ -2,6 +2,7 @@
 // SPDX-FileCopyrightText: 2026 hirashix0
 #include <LibreSCRS/Agent/operations/CardSessionHolder.h>
 
+#include <LibreSCRS/Auth/ErrorKeys.h>    // genericComm (a resolution that threw)
 #include <LibreSCRS/Plugin/CardPlugin.h> // clearCredentials on teardown
 
 #include <utility>
@@ -117,20 +118,29 @@ LibreSCRS::Auth::PreReadAuthMethod CardSessionHolder::preReadAuth() noexcept
     }
 }
 
-CapabilityResolver::CardResolution CardSessionHolder::fullResolution() noexcept
+std::expected<CapabilityResolver::CardResolution, LibreSCRS::SmartCard::OpenError>
+CardSessionHolder::fullResolution() noexcept
 {
-    // Copies the candidate vector and constructs the resolution struct (both may
-    // throw bad_alloc); honour the noexcept contract by degrading to an empty
-    // resolution (caps 0, None) on failure.
     try {
         auto acquired = acquire();
         if (!acquired) {
-            return {};
+            return std::unexpected{std::move(acquired.error())};
+        }
+        if (acquired->candidates.empty()) {
+            // No plugin serves this card: holding its session would only keep
+            // the reader taken for kIdleClose. The next operation re-opens.
+            invalidate(); // noexcept
+            return CapabilityResolver::CardResolution{};
         }
         return CapabilityResolver::CardResolution{acquired->candidates, unionCapabilities(acquired->candidates),
                                                   preReadAuth()};
     } catch (...) {
-        return {};
+        // A seam that throws (the factory, the resolver) or an allocation that
+        // fails has not told us what the card is: report it the way a failed
+        // open is reported, so the caller asks again.
+        return std::unexpected{LibreSCRS::SmartCard::OpenError{LibreSCRS::SmartCard::OpenError::Kind::ProtocolError,
+                                                               LibreSCRS::Auth::ErrorKeys::genericComm(),
+                                                               std::string{"card resolution threw"}}};
     }
 }
 

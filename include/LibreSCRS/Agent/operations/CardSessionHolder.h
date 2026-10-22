@@ -101,10 +101,16 @@ public:
     /// @brief Full resolution from the held session: candidate plugin list,
     ///        the union of their declared capabilities, and the pre-read auth
     ///        method. Reuses CapabilityResolver::CardResolution. Opens the
-    ///        session if not already open; returns a default-constructed
-    ///        resolution (empty candidates, caps 0, None) on open failure.
-    ///        Worker-thread only.
-    [[nodiscard]] CapabilityResolver::CardResolution fullResolution() noexcept;
+    ///        session if not already open.
+    /// @return The resolution when the card could be probed -- a definitive
+    ///         answer. Empty candidates (caps 0, None) mean no plugin serves the
+    ///         card, whose session is then closed at once rather than held for
+    ///         kIdleClose; asking again would only open it again. The OpenError
+    ///         when the session could not be opened (or a seam threw): nothing
+    ///         is known about the card, and the caller may ask again.
+    ///         Worker-thread only.
+    [[nodiscard]] std::expected<CapabilityResolver::CardResolution, LibreSCRS::SmartCard::OpenError>
+    fullResolution() noexcept;
 
     /// @brief Power hold: keep a connection to the card open while no
     ///        operation is using it, so the card stays powered and the

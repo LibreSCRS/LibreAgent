@@ -200,8 +200,10 @@ public:
     // second connection: a session in use is left as it is, and once idle it is
     // demoted into the hold -- every credential, cached PACE secret and secure
     // channel erased -- so secrets stay bounded by kIdleClose. The next
-    // operation promotes it back. The host holds on export of such a card and
-    // releases in its card-removed hook. Like invalidateReaderSession, this only
+    // operation promotes it back. The host holds on export of such a card when
+    // a plugin serves it -- the insertion probe has already released a card
+    // none serves, and a hold would only take the reader back -- and releases
+    // in its card-removed hook. Like invalidateReaderSession, this only
     // flags the worker (under its mutex) and wakes it; the worker applies it on
     // its own thread before its next op. No-op when no worker exists.
     void setReaderHold(ObjectId reader, bool hold);
