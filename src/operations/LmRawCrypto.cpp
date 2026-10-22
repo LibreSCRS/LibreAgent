@@ -197,6 +197,7 @@ RawCryptoPreflight preflight(const CandidateList& candidates, const std::string&
     const auto refuse = [](RawCryptoStatus s) { return RawCryptoPreflight{.status = s, .key = std::nullopt}; };
     // Anti-TOCTOU routing reused from the AdES path: resolve certId against the
     // card present NOW, returning the owning plugin + the exact CertificateData.
+    // Every refusal, KeyAmbiguous included, is KeyNotFound here.
     auto selection = selectSigningCandidate(candidates, certId, session);
     if (!selection || !selection->cert.keyFID.has_value()) {
         return refuse(RawCryptoStatus::KeyNotFound);
@@ -262,7 +263,7 @@ RawCryptoPreflight preflight(const CandidateList& candidates, const std::string&
     default:
         return refuse(RawCryptoStatus::NotSupported);
     }
-    return RawCryptoPreflight{.status = RawCryptoStatus::Ok, .key = std::move(selection)};
+    return RawCryptoPreflight{.status = RawCryptoStatus::Ok, .key = std::move(*selection)};
 }
 
 RawCryptoResult signRaw(const SigningSelection& key, Mechanism mechanism, std::span<const std::uint8_t> input,

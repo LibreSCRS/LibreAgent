@@ -71,7 +71,7 @@ LeaseManagerTest 18
 LmCertReaderKatTest 20
 LmRawCryptoTest 41
 LmSeamsCompileTest 1
-LmSeamsRoutingTest 14
+LmSeamsRoutingTest 12
 LmSigningRequestBuilderTest 8
 LmTrustVerifierTest 1
 LoggingTest 2

@@ -218,7 +218,7 @@ struct SignOutcome
         CommunicationError,
         Cancelled,
         SigningEngineError,
-        EngineUnavailable, // engine/security module could not load (deployment)
+        EngineUnavailable, // the signing engine could not be started (deployment)
         InvalidDocument,   // the document to sign is invalid/unreadable (client input)
     };
     Status status{Status::CommunicationError};
