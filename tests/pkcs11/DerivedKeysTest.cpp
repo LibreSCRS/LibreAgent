@@ -10,6 +10,7 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <chrono>
 #include <cstdint>
 #include <optional>
 #include <stdexcept>
@@ -250,7 +251,7 @@ SessionState twoCards()
 CK_SESSION_HANDLE loggedInSession(SessionState& st, CK_SLOT_ID slot)
 {
     const CK_SESSION_HANDLE h = st.openSession(slot, CKF_SERIAL_SESSION);
-    st.session(h)->loggedIn = true;
+    st.setLoggedIn(slot, std::chrono::steady_clock::now());
     return h;
 }
 
@@ -272,24 +273,22 @@ std::vector<CK_OBJECT_HANDLE> secretsSeenBy(const SessionState& st, CK_SESSION_H
 
 } // namespace
 
-// A derived key is a private object of its slot: a logged-in session there
-// finds it, a public session there and a logged-in session elsewhere do not.
+// A derived key is a private object of its slot: every session there finds it
+// while the token is logged in -- the login is the token's, so a session opened
+// later does too -- and a session of another slot does not.
 TEST(DerivedKeyStore, OnlyALoggedInSessionOfItsSlotSeesAKey)
 {
     SessionState st = twoCards();
     const CK_SESSION_HANDLE creator = loggedInSession(st, 0);
-    const CK_SESSION_HANDLE sibling = loggedInSession(st, 0);
-    const CK_SESSION_HANDLE pub = st.openSession(0, CKF_SERIAL_SESSION);
+    const CK_SESSION_HANDLE later = st.openSession(0, CKF_SERIAL_SESSION);
     const CK_SESSION_HANDLE elsewhere = loggedInSession(st, 1);
     const CK_OBJECT_HANDLE h = keep(st, 0, creator);
     EXPECT_TRUE(SessionState::isDerivedHandle(h));
 
     EXPECT_NE(st.derivedKey(creator, h), nullptr);
-    EXPECT_NE(st.derivedKey(sibling, h), nullptr);
-    EXPECT_EQ(st.derivedKey(pub, h), nullptr) << "a public session";
+    EXPECT_NE(st.derivedKey(later, h), nullptr) << "a session opened after the login";
     EXPECT_EQ(st.derivedKey(elsewhere, h), nullptr) << "a session of another slot";
-    EXPECT_EQ(secretsSeenBy(st, sibling, 0), std::vector<CK_OBJECT_HANDLE>{h});
-    EXPECT_TRUE(secretsSeenBy(st, pub, 0).empty());
+    EXPECT_EQ(secretsSeenBy(st, later, 0), std::vector<CK_OBJECT_HANDLE>{h});
     EXPECT_TRUE(secretsSeenBy(st, elsewhere, 1).empty());
 
     EXPECT_TRUE(st.destroyDerivedKey(h));

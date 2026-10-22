@@ -881,6 +881,106 @@ TEST(ModuleAbi, AnExpiredLeaseReturnsTheSessionToPublic)
     EXPECT_EQ(info.state, CKS_RO_PUBLIC_SESSION);
 }
 
+CK_STATE sessionState(CK_FUNCTION_LIST_PTR fn, CK_SESSION_HANDLE session)
+{
+    CK_SESSION_INFO info{};
+    EXPECT_EQ(fn->C_GetSessionInfo(session, &info), CKR_OK);
+    return info.state;
+}
+
+// PKCS#11 v2.40 section 5.6: a login is the application's, on the token. Every
+// session of that token is a user session from C_Login on, the ones opened
+// afterwards too, and C_Logout on any of them ends it for all.
+TEST(ModuleAbi, ALoginCoversEverySessionOfTheToken)
+{
+    SocketFixture agent;
+    LoadedModule m;
+    ASSERT_EQ(m.fn->C_Initialize(nullptr), CKR_OK);
+    const CK_SLOT_ID slot = firstPresentSlot(m.fn);
+    CK_SESSION_HANDLE a = 0;
+    CK_SESSION_HANDLE b = 0;
+    ASSERT_EQ(m.fn->C_OpenSession(slot, CKF_SERIAL_SESSION, nullptr, nullptr, &a), CKR_OK);
+    ASSERT_EQ(m.fn->C_OpenSession(slot, CKF_SERIAL_SESSION, nullptr, nullptr, &b), CKR_OK);
+
+    ASSERT_EQ(m.fn->C_Login(a, CKU_USER, nullptr, 0), CKR_OK);
+    EXPECT_EQ(sessionState(m.fn, b), CKS_RO_USER_FUNCTIONS) << "a session opened before the login";
+    CK_SESSION_HANDLE c = 0;
+    ASSERT_EQ(m.fn->C_OpenSession(slot, CKF_SERIAL_SESSION, nullptr, nullptr, &c), CKR_OK);
+    EXPECT_EQ(sessionState(m.fn, c), CKS_RO_USER_FUNCTIONS) << "a session opened after the login";
+    EXPECT_EQ(m.fn->C_Login(b, CKU_USER, nullptr, 0), CKR_USER_ALREADY_LOGGED_IN);
+
+    ASSERT_EQ(m.fn->C_Logout(b), CKR_OK);
+    EXPECT_EQ(sessionState(m.fn, a), CKS_RO_PUBLIC_SESSION);
+    EXPECT_EQ(sessionState(m.fn, c), CKS_RO_PUBLIC_SESSION);
+}
+
+// NSS asks whether it is logged in on a session of its own, and signs on
+// another. When the agent says the login is gone on the signing session, the
+// session NSS asks on must say so too, or NSS never logs in again and every
+// later signature fails the same way.
+TEST(ModuleAbi, ALapseSeenOnOneSessionEndsTheLoginOfAll)
+{
+    SocketFixture agent;
+    LoadedModule m;
+    ASSERT_EQ(m.fn->C_Initialize(nullptr), CKR_OK);
+    const CK_SLOT_ID slot = firstPresentSlot(m.fn);
+    CK_SESSION_HANDLE asked = 0;
+    CK_SESSION_HANDLE signing = 0;
+    ASSERT_EQ(m.fn->C_OpenSession(slot, CKF_SERIAL_SESSION, nullptr, nullptr, &asked), CKR_OK);
+    ASSERT_EQ(m.fn->C_OpenSession(slot, CKF_SERIAL_SESSION, nullptr, nullptr, &signing), CKR_OK);
+    ASSERT_EQ(m.fn->C_Login(asked, CKU_USER, nullptr, 0), CKR_OK);
+    const CK_OBJECT_HANDLE key = findPrivateKey(m.fn, signing);
+    ASSERT_NE(key, CK_INVALID_HANDLE);
+
+    agent.fake->failCall(Call::PkSignRaw, W::SyncError::UserNotLoggedIn);
+    CK_MECHANISM mech{CKM_RSA_PKCS, nullptr, 0};
+    ASSERT_EQ(m.fn->C_SignInit(signing, &mech, key), CKR_OK);
+    std::vector<CK_BYTE> data(32, 0x11);
+    CK_BYTE sig[512];
+    CK_ULONG sigLen = sizeof(sig);
+    ASSERT_EQ(m.fn->C_Sign(signing, data.data(), data.size(), sig, &sigLen), CKR_USER_NOT_LOGGED_IN);
+
+    EXPECT_EQ(sessionState(m.fn, asked), CKS_RO_PUBLIC_SESSION);
+    EXPECT_EQ(m.fn->C_Login(asked, CKU_USER, nullptr, 0), CKR_OK) << "the application logs in afresh";
+}
+
+// The state names the session's own kind: read/write sessions of a logged-in
+// token read as read/write user sessions.
+TEST(ModuleAbi, ARwSessionReadsAsRwUser)
+{
+    SocketFixture agent;
+    LoadedModule m;
+    ASSERT_EQ(m.fn->C_Initialize(nullptr), CKR_OK);
+    const CK_SLOT_ID slot = firstPresentSlot(m.fn);
+    CK_SESSION_HANDLE ro = 0;
+    CK_SESSION_HANDLE rw = 0;
+    ASSERT_EQ(m.fn->C_OpenSession(slot, CKF_SERIAL_SESSION, nullptr, nullptr, &ro), CKR_OK);
+    ASSERT_EQ(m.fn->C_OpenSession(slot, CKF_SERIAL_SESSION | CKF_RW_SESSION, nullptr, nullptr, &rw), CKR_OK);
+    EXPECT_EQ(sessionState(m.fn, rw), CKS_RW_PUBLIC_SESSION);
+    ASSERT_EQ(m.fn->C_Login(ro, CKU_USER, nullptr, 0), CKR_OK);
+    EXPECT_EQ(sessionState(m.fn, rw), CKS_RW_USER_FUNCTIONS);
+    EXPECT_EQ(sessionState(m.fn, ro), CKS_RO_USER_FUNCTIONS);
+}
+
+// A login is on the card it was made with. Once that card leaves the reader the
+// token's sessions are public, whatever card is seated afterwards.
+TEST(ModuleAbi, ANewCardInTheReaderEndsTheLogin)
+{
+    SocketFixture agent;
+    LoadedModule m;
+    ASSERT_EQ(m.fn->C_Initialize(nullptr), CKR_OK);
+    const CK_SLOT_ID slot = firstPresentSlot(m.fn);
+    CK_SESSION_HANDLE session = 0;
+    ASSERT_EQ(m.fn->C_OpenSession(slot, CKF_SERIAL_SESSION, nullptr, nullptr, &session), CKR_OK);
+    ASSERT_EQ(m.fn->C_Login(session, CKU_USER, nullptr, 0), CKR_OK);
+
+    agent.fake->swapCard("another-card");
+    CK_SLOT_ID slots[8];
+    CK_ULONG n = 8;
+    ASSERT_EQ(m.fn->C_GetSlotList(CK_FALSE, slots, &n), CKR_OK); // the refresh sees the other card
+    EXPECT_EQ(sessionState(m.fn, session), CKS_RO_PUBLIC_SESSION);
+}
+
 // For a key the card marks, every call that reaches the card is a PIN prompt.
 // So asking how long the signature will be -- with no buffer, or with one too
 // small -- is answered from the key's modulus and never reaches the agent's
@@ -1504,28 +1604,26 @@ TEST(ModuleAbi, AReadableDerivedKeyGivesItsLastBytes)
     EXPECT_EQ(deriveWith(rig.m.fn, rig.session, rig.base, p384Point(), tmpl, 10, &key), CKR_OK);
 }
 
-// A derived key belongs to the application: another logged-in session of it
-// finds the key, a public one does not, and it goes when its creator closes.
+// A derived key belongs to the application: another session of it finds the
+// key, and it goes when its creator closes.
 TEST(ModuleAbi, DerivedKeysLiveForTheirApplication)
 {
     DeriveRig rig;
     CK_OBJECT_HANDLE key = CK_INVALID_HANDLE;
     ASSERT_EQ(deriveWith(rig.m.fn, rig.session, rig.base, p384Point(), nullptr, 0, &key), CKR_OK);
     const CK_SLOT_ID slot = firstPresentSlot(rig.m.fn);
+    // The login is the token's: a session opened after it is a user session
+    // and sees the application's private objects without logging in again.
     CK_SESSION_HANDLE other = 0;
-    CK_SESSION_HANDLE pub = 0;
+    CK_SESSION_HANDLE last = 0;
     ASSERT_EQ(rig.m.fn->C_OpenSession(slot, CKF_SERIAL_SESSION, nullptr, nullptr, &other), CKR_OK);
-    ASSERT_EQ(rig.m.fn->C_OpenSession(slot, CKF_SERIAL_SESSION, nullptr, nullptr, &pub), CKR_OK);
-    ASSERT_EQ(rig.m.fn->C_Login(other, CKU_USER, nullptr, 0), CKR_OK);
+    ASSERT_EQ(rig.m.fn->C_OpenSession(slot, CKF_SERIAL_SESSION, nullptr, nullptr, &last), CKR_OK);
     EXPECT_EQ(findOne(rig.m.fn, other, CKO_SECRET_KEY), key);
-    EXPECT_EQ(findOne(rig.m.fn, pub, CKO_SECRET_KEY), CK_INVALID_HANDLE)
-        << "a private object, unseen by a public session";
     ASSERT_EQ(rig.m.fn->C_CloseSession(other), CKR_OK);
     EXPECT_EQ(findOne(rig.m.fn, rig.session, CKO_SECRET_KEY), key) << "closing another session leaves it";
-    ASSERT_EQ(rig.m.fn->C_Login(pub, CKU_USER, nullptr, 0), CKR_OK);
     ASSERT_EQ(rig.m.fn->C_CloseSession(rig.session), CKR_OK);
     CK_RV rv = CKR_OK;
-    (void)attrBytes(rig.m.fn, pub, key, CKA_VALUE_LEN, &rv);
+    (void)attrBytes(rig.m.fn, last, key, CKA_VALUE_LEN, &rv);
     EXPECT_EQ(rv, CKR_OBJECT_HANDLE_INVALID) << "closing its creator destroys it";
 }
 

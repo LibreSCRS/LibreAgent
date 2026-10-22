@@ -183,8 +183,9 @@ CK_RV ckrFromStatus(Status s, CK_RV invalidInputRv = CKR_GENERAL_ERROR)
 }
 
 // The agent answers UserNotLoggedIn when the lease is gone (idle, lifetime,
-// card removed). The session is PUBLIC again from that answer on, so a loader
-// that reads the state logs in afresh instead of being told it still is.
+// card removed). Every session of the token is PUBLIC again from that answer
+// on -- not only the one that signed: NSS asks whether it is logged in on a
+// session of its own, and logs in afresh only when that one says it is not.
 void dropLoginOnLapsedLease(Status s, CK_SESSION_HANDLE hSession)
 {
     if (s != Status::UserNotLoggedIn)
@@ -192,11 +193,8 @@ void dropLoginOnLapsedLease(Status s, CK_SESSION_HANDLE hSession)
     std::lock_guard lk(g_mutex);
     if (!g_lib)
         return;
-    if (Session* sess = g_lib->state.session(hSession)) {
-        sess->loggedIn = false;
-        // ...and the private session objects of that token go with the login.
-        g_lib->state.destroyDerivedKeysOfSlot(sess->slot);
-    }
+    if (const Session* sess = g_lib->state.session(hSession))
+        g_lib->state.endLogin(sess->slot);
 }
 
 // The signature length a key produces, from the model alone: an RSA
@@ -608,7 +606,7 @@ CK_DECLARE_FUNCTION(CK_RV, C_GetSessionInfo)(CK_SESSION_HANDLE hSession, CK_SESS
         return CKR_SESSION_HANDLE_INVALID;
     *pInfo = CK_SESSION_INFO{};
     pInfo->slotID = s->slot;
-    if (s->loggedIn)
+    if (g_lib->state.isLoggedIn(s->slot))
         pInfo->state = (s->flags & CKF_RW_SESSION) ? CKS_RW_USER_FUNCTIONS : CKS_RO_USER_FUNCTIONS;
     else
         pInfo->state = (s->flags & CKF_RW_SESSION) ? CKS_RW_PUBLIC_SESSION : CKS_RO_PUBLIC_SESSION;
@@ -675,7 +673,7 @@ CK_DECLARE_FUNCTION(CK_RV, C_Login)
         // A repeat CKU_USER login is an error; a CKU_CONTEXT_SPECIFIC re-auth is
         // EXPECTED while USER-logged-in (it re-confirms consent for the pending
         // operation), so it must fall through and refresh the lease.
-        if (userType == CKU_USER && s->loggedIn)
+        if (userType == CKU_USER && g_lib->state.isLoggedIn(s->slot))
             return CKR_USER_ALREADY_LOGGED_IN; // spec conformance (benign for NSS)
         const Slot* slot = g_lib->state.slotById(s->slot);
         if (!slot || !slot->tokenPresent)
@@ -701,8 +699,8 @@ CK_DECLARE_FUNCTION(CK_RV, C_Login)
     {
         std::lock_guard lk(g_mutex);
         if (g_lib && res.status == Status::Ok) {
-            if (Session* s = g_lib->state.session(hSession))
-                s->loggedIn = true;
+            if (const Session* s = g_lib->state.session(hSession))
+                g_lib->state.setLoggedIn(s->slot, std::chrono::steady_clock::now());
         }
     }
     if (res.status != Status::Ok)
@@ -723,9 +721,8 @@ CK_DECLARE_FUNCTION(CK_RV, C_Logout)(CK_SESSION_HANDLE hSession)
     const Slot* slot = g_lib->state.slotById(s->slot);
     if (slot)
         (void)g_lib->client->logout(slot->readerPath);
-    s->loggedIn = false;
     // The token's private session objects end with the login.
-    g_lib->state.destroyDerivedKeysOfSlot(s->slot);
+    g_lib->state.endLogin(s->slot);
     return CKR_OK;
     PKCS11_CATCH
 }
@@ -1891,7 +1888,7 @@ CK_DECLARE_FUNCTION(CK_RV, C_DeriveKey)
             return CKR_SESSION_HANDLE_INVALID;
         if (pMechanism->mechanism != CKM_ECDH1_DERIVE || !slotHasMechanism(*slot, CKM_ECDH1_DERIVE))
             return CKR_MECHANISM_INVALID;
-        if (!s->loggedIn)
+        if (!g_lib->state.isLoggedIn(s->slot))
             return CKR_USER_NOT_LOGGED_IN;
         if (pMechanism->pParameter == NULL_PTR || pMechanism->ulParameterLen != sizeof(CK_ECDH1_DERIVE_PARAMS))
             return CKR_MECHANISM_PARAM_INVALID;
@@ -1965,7 +1962,7 @@ CK_DECLARE_FUNCTION(CK_RV, C_DeriveKey)
     const Slot* now = g_lib->state.slotById(slotId);
     if (now == nullptr || !now->tokenPresent || now->tokenSerial != tokenSerial)
         return CKR_DEVICE_REMOVED;
-    if (!s->loggedIn)
+    if (!g_lib->state.isLoggedIn(s->slot))
         return CKR_USER_NOT_LOGGED_IN;
     DerivedKey key;
     key.slot = slotId;

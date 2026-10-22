@@ -15,7 +15,7 @@ FrameReassemblerTest 8
 FramingTest 11
 LoadModuleTest 4
 MessagesRoundTripTest 26
-ModuleAbiTest 50
+ModuleAbiTest 59
 ObjectModelTest 23
 PropertyChangedVocabGuardTest 2
 RealCardCryptoVerifyTest 3

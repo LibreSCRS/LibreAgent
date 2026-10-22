@@ -23,8 +23,8 @@ constexpr unsigned kSlotShift = 32;
 
 void SessionState::setModel(ObjectModel model)
 {
-    // The token each slot showed before this refresh: a derived key belongs to
-    // the card it was derived with, and goes when that card does.
+    // The token each slot showed before this refresh: a login and a derived key
+    // belong to the card they were made with, and go when that card does.
     std::map<CK_SLOT_ID, std::string> before;
     for (const auto& [id, idx] : m_slotIndex) {
         const Slot& s = m_model.slots[idx];
@@ -47,11 +47,11 @@ void SessionState::setModel(ObjectModel model)
     }
 
     // A token that named no serial cannot be told from the next one, so its
-    // keys do not survive a refresh at all.
+    // login and keys do not survive a refresh at all.
     for (const auto& [id, serial] : before) {
         const Slot* now = slotById(id);
         if (serial.empty() || now == nullptr || !now->tokenPresent || now->tokenSerial != serial) {
-            destroyDerivedKeysOfSlot(id);
+            endLogin(id);
         }
     }
 }
@@ -94,12 +94,20 @@ Session* SessionState::session(CK_SESSION_HANDLE h)
 bool SessionState::closeSession(CK_SESSION_HANDLE h)
 {
     destroyDerivedKeysOfSession(h);
-    return m_sessions.erase(h) > 0;
+    const auto it = m_sessions.find(h);
+    if (it == m_sessions.end())
+        return false;
+    const CK_SLOT_ID slot = it->second.slot;
+    m_sessions.erase(it);
+    // The login ends with the application's last session on the token.
+    if (!slotHasSessions(slot))
+        endLogin(slot);
+    return true;
 }
 
 void SessionState::closeAllSessions(CK_SLOT_ID slot)
 {
-    destroyDerivedKeysOfSlot(slot);
+    endLogin(slot);
     for (auto it = m_sessions.begin(); it != m_sessions.end();) {
         if (it->second.slot == slot)
             it = m_sessions.erase(it);
@@ -114,6 +122,45 @@ bool SessionState::slotHasSessions(CK_SLOT_ID slot) const
         if (s.slot == slot)
             return true;
     return false;
+}
+
+bool SessionState::isLoggedIn(CK_SLOT_ID slot) const
+{
+    const auto it = m_logins.find(slot);
+    return it != m_logins.end() && it->second.loggedIn;
+}
+
+void SessionState::setLoggedIn(CK_SLOT_ID slot, std::chrono::steady_clock::time_point now)
+{
+    SlotLogin& l = m_logins[slot];
+    l.loggedIn = true;
+    ++l.generation;
+    l.checkedAt = now;
+}
+
+void SessionState::endLogin(CK_SLOT_ID slot)
+{
+    if (auto it = m_logins.find(slot); it != m_logins.end())
+        it->second.loggedIn = false;
+    destroyDerivedKeysOfSlot(slot);
+}
+
+std::uint64_t SessionState::loginGeneration(CK_SLOT_ID slot) const
+{
+    const auto it = m_logins.find(slot);
+    return it == m_logins.end() ? 0 : it->second.generation;
+}
+
+bool SessionState::loginCheckDue(CK_SLOT_ID slot, std::chrono::steady_clock::time_point now) const
+{
+    const auto it = m_logins.find(slot);
+    return it != m_logins.end() && it->second.loggedIn && now - it->second.checkedAt >= kLoginCheckInterval;
+}
+
+void SessionState::markLoginChecked(CK_SLOT_ID slot, std::chrono::steady_clock::time_point now)
+{
+    if (auto it = m_logins.find(slot); it != m_logins.end())
+        it->second.checkedAt = now;
 }
 
 CK_OBJECT_HANDLE SessionState::encodeHandle(CK_SLOT_ID slot, std::size_t objIndex)
@@ -232,7 +279,7 @@ const DerivedKey* SessionState::derivedKey(CK_SESSION_HANDLE session, CK_OBJECT_
     const auto k = m_derived.find(h);
     if (s == m_sessions.end() || k == m_derived.end())
         return nullptr;
-    if (k->second.slot != s->second.slot || !s->second.loggedIn)
+    if (k->second.slot != s->second.slot || !isLoggedIn(s->second.slot))
         return nullptr;
     return &k->second;
 }
