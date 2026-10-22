@@ -4,7 +4,7 @@
 CborRelocationTest 3
 CborRoundTripTest 14
 CddlVocabularyTest 17
-ClientCodecTest 83
+ClientCodecTest 84
 DerivedKeysTest 16
 EcEncodingTest 7
 EcInteropTest 2

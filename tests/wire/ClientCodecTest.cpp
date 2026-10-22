@@ -172,6 +172,7 @@ TEST(ClientCodec, EncodeRequestEveryTypeRoundTripsThroughServerParse)
     expectRequestRoundTrip(14, GetSignResult{42});
     expectRequestRoundTrip(15, PkLogin{"reader/0"});
     expectRequestRoundTrip(16, PkLogout{"reader/0"});
+    expectRequestRoundTrip(29, PkLoginState{"reader/0"});
     expectRequestRoundTrip(17, PkPublicKey{"reader/0", "certid"});
     expectRequestRoundTrip(18, PkSignRaw{"reader/0", "certid", "rsa-pkcs", {0xDE, 0xAD}});
     expectRequestRoundTrip(19, PkDecrypt{"reader/0", "certid", "rsa-pkcs", {0xBE, 0xEF}});
@@ -481,6 +482,15 @@ TEST(ClientCodec, RawSignatureReplyRoundTrips)
 {
     expectReplyRoundTrip(10, RawSignatureReply{{0xAA, 0xBB}},
                          [](std::uint64_t r, const RawSignatureReply& a) { return makeReply(r, a); });
+}
+
+// Whether a login still holds rides its own arm, both answers distinct from an
+// ack: a client that read "not logged in" as "ok" would keep a dead login.
+TEST(ClientCodec, LoginStateReplyRoundTrips)
+{
+    const auto make = [](std::uint64_t r, const LoginStateReply& a) { return makeReply(r, a); };
+    expectReplyRoundTrip(12, LoginStateReply{true}, make);
+    expectReplyRoundTrip(13, LoginStateReply{false}, make);
 }
 
 // The derived secret Z rides its own reply arm, told apart by its key.

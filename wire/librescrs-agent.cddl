@@ -68,7 +68,7 @@ error-code = &( None: 0, CardRemoved: 1, CredentialWrong: 2, CredentialBlocked: 
 request  = { req: uint, req-body }
 req-body = ( hello // get-state // read-identity // get-photo //
   read-certificates // read-token-info // sign // sign-batch // get-cert-der // get-config // set-config // reset-config //
-  cancel-op // get-sign-result // pk-login // pk-logout // pk-public-key // pk-sign-raw // pk-decrypt // pk-derive //
+  cancel-op // get-sign-result // pk-login // pk-logout // pk-login-state // pk-public-key // pk-sign-raw // pk-decrypt // pk-derive //
   list-credentials // manage-pin // activate-signing-key // layout-visual // get-appearance-font //
   import-csca-master-list // forget-csca-anchors )
 
@@ -191,6 +191,9 @@ cancel-op         = ( t: "CancelOp", op: uint )
 get-sign-result   = ( t: "GetSignResult", op: uint )                    ; recovery is Sign-ONLY (Sign1.GetResult)
 pk-login          = ( t: "Pkcs11.Login",     reader: handle )                       ; reader-addressed
 pk-logout         = ( t: "Pkcs11.Logout",    reader: handle )                       ; reader-addressed
+; Whether this caller's login on the card in the reader still holds; asking
+; does not extend it. Sent only to an agent that serves "login-state".
+pk-login-state    = ( t: "Pkcs11.LoginState", reader: handle )                      ; reader-addressed
 pk-public-key     = ( t: "Pkcs11.PublicKey", reader: handle, cert: cert-id )        ; reader-addressed; RSA n/e or EC crv/x/y by the key's type
 pk-sign-raw       = ( t: "Pkcs11.SignRaw",   reader: handle, cert: cert-id, mech: pk-sign-mech, data: bstr )    ; reader-addressed
 pk-decrypt        = ( t: "Pkcs11.Decrypt",   reader: handle, cert: cert-id, mech: pk-decrypt-mech, data: bstr ) ; reader-addressed
@@ -378,7 +381,7 @@ sync-error = "UnknownCard" / "KeyNotFound" / "NotAuthorized" / "UserNotLoggedIn"
              "InputTooLarge" / "RateLimited" / "UnknownCredential" / "InvalidRequest" / "NoResult" /
              "MasterListReplayed" / "Cancelled"
 reply-ok = ( hello-ack // op-started // state // cert-list // cert-der // public-key //
-             config // ack // raw-signature // derived-secret // sign-recovery // layout // appearance-font //
+             config // ack // login-state // raw-signature // derived-secret // sign-recovery // layout // appearance-font //
              csca-anchor-state // forgotten-anchors )
 ; `features` advertises optional request families this agent understands; the
 ; client MUST gate the credential requests (ListCredentials / ManagePin /
@@ -420,6 +423,7 @@ public-key    = ( kty: "RSA", n: bstr, e: bstr //             ; RSA: modulus + p
                   kty: "EC",  crv: tstr, x: bstr, y: bstr )   ; EC: "P-256"/"P-384"/"P-521", x and y ceil(bits/8) bytes each, left-padded; a client refuses any other curve or width
 config        = ( entries: { * config-key => any } )
 ack           = ( ok: true )
+login-state   = ( active: bool )           ; Pkcs11.LoginState result
 raw-signature = ( sig: bstr )              ; Pkcs11.SignRaw / Decrypt result
 derived-secret = ( z: bstr )             ; Pkcs11.Derive result: the raw ECDH secret Z, ceil(bits/8) bytes -- a secret
 sign-recovery = ( result: sign-result )    ; GetSignResult reply (Sign-only, within the grace window)

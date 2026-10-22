@@ -592,6 +592,9 @@ CborValue encodeRequestBody(const Request& body)
             } else if constexpr (std::is_same_v<T, PkLogout>) {
                 m.emplace("t", CborValue("Pkcs11.Logout"));
                 m.emplace("reader", CborValue(r.reader));
+            } else if constexpr (std::is_same_v<T, PkLoginState>) {
+                m.emplace("t", CborValue("Pkcs11.LoginState"));
+                m.emplace("reader", CborValue(r.reader));
             } else if constexpr (std::is_same_v<T, PkPublicKey>) {
                 m.emplace("t", CborValue("Pkcs11.PublicKey"));
                 m.emplace("reader", CborValue(r.reader));
@@ -839,6 +842,12 @@ std::expected<RequestEnvelope, WireError> parseRequest(std::span<const std::uint
             return std::unexpected(reader.error());
         }
         env.body = PkLogout{std::move(*reader)};
+    } else if (t == "Pkcs11.LoginState") {
+        auto reader = oneString("reader");
+        if (!reader) {
+            return std::unexpected(reader.error());
+        }
+        env.body = PkLoginState{std::move(*reader)};
     } else if (t == "Pkcs11.PublicKey") {
         auto reader = fText(*m, "reader");
         if (!reader) {
@@ -1070,6 +1079,15 @@ CborValue makeReply(std::uint64_t req, const AckReply&)
     CborValue reply = makeReplyBase(req);
     Map arm;
     arm.emplace("ok", CborValue(true));
+    mergeInto(reply, std::move(arm));
+    return reply;
+}
+
+CborValue makeReply(std::uint64_t req, const LoginStateReply& r)
+{
+    CborValue reply = makeReplyBase(req);
+    Map arm;
+    arm.emplace("active", CborValue(r.active));
     mergeInto(reply, std::move(arm));
     return reply;
 }

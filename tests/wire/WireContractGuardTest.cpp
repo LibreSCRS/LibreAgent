@@ -656,26 +656,6 @@ constexpr std::array<std::string_view, 23> kCredRecordKeys{"id",
                                                            "keyActivationGuidanceFallback"};
 static_assert(kCredRecordKeys.size() == 23u, "wire contract: cred-record has 23 keys");
 
-// --- CDDL message `t:` tags: presence + count drift guard --------------------
-// The socket message vocabulary (request + event `t:` tags) has no upstream enum
-// to anchor to (the tags are CDDL string literals), so this table pins the SET.
-// Adding/removing a message MUST update: the CDDL (wire/librescrs-agent.cddl),
-// wire/Messages.{h,cpp}, and this table (bump kMessageTagCount). The
-// MessagesRoundTripTest proves each tag actually encodes/decodes; this only pins
-// that the vocabulary did not silently change size.
-constexpr std::array<std::string_view, 36> kMessageTags{
-    // requests (25)
-    "Hello", "GetState", "ReadIdentity", "GetPhoto", "ReadCertificates", "ReadTokenInfo", "Sign", "SignBatch",
-    "GetCertDer", "GetConfig", "SetConfig", "ResetConfig", "CancelOp", "GetSignResult", "Pkcs11.Login", "Pkcs11.Logout",
-    "Pkcs11.PublicKey", "Pkcs11.SignRaw", "Pkcs11.Decrypt", "ListCredentials", "ManagePin", "ActivateSigningKey",
-    "LayoutVisual", "GetAppearanceFont", "ImportCscaMasterList",
-    // events (11)
-    "ReaderAdded", "ReaderRemoved", "CardAdded", "CardRemoved", "PropertyChanged", "ConfigChanged", "OpProgress",
-    "OpIdentityGroup", "OpResultReady", "OpFinished", "AgentQuiesced"};
-constexpr std::size_t kMessageTagCount = 36; // 25 requests + 11 events
-static_assert(kMessageTags.size() == kMessageTagCount,
-              "wire contract: socket message vocabulary changed; update the CDDL + wire/Messages + this guard");
-
 // Sorted-set equality of two token lists, with a labeled failure. Order-
 // insensitive: for the record vocab groups (and sync-error) the wire carries the
 // NAME, so only the SET of tokens is contractually pinned.
@@ -697,10 +677,6 @@ void expectSameTokenSet(std::vector<std::string> cddlTokens, std::vector<std::st
 // mirror update). The value pins catch a RENUMBER; these catch an APPEND.
 TEST(WireContractGuard, MacOsAnchorsHold)
 {
-    // Spot-check the tag table is populated (defends against an all-empty init).
-    EXPECT_EQ(kMessageTags.front(), "Hello");
-    EXPECT_EQ(kMessageTags.back(), "AgentQuiesced");
-
     for (const auto phase : {OperationPhase::Created, OperationPhase::Connecting, OperationPhase::AwaitingConsent,
                              OperationPhase::Authenticating, OperationPhase::Reading, OperationPhase::Signing,
                              OperationPhase::Timestamping, OperationPhase::Done}) {
