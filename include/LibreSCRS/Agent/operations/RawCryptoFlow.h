@@ -54,11 +54,12 @@ class CardSessionHolder;
 // The flow itself never caches the PIN, only a lease-scoped boolean (see
 // RawCryptoFlowDeps); the plugin holds the deposit: for an ordinary key it
 // stays after a successful op to serve the lease's null-PIN ops (the
-// hash-on-card pkcs15/IAS-ECC family signs only with it) and is wiped on
-// holder teardown (CardSessionHolder::invalidate -> clearCredentials, on card
-// removal / idle close); after a failed op, and after every op with a key the
-// card marks, the op erases it itself. The PIN bytes the flow passes are owned
-// by its Secure::String for the duration of the call and cleansed when it drops.
+// hash-on-card pkcs15/IAS-ECC family signs only with it) and is wiped when the
+// holder ends the session's use (clearCredentials: on card removal, on idle
+// close, and when the idle session is demoted into the power hold); after a
+// failed op, and after every op with a key the card marks, the op erases it
+// itself. The PIN bytes the flow passes are owned by its Secure::String for the
+// duration of the call and cleansed when it drops.
 using RawCryptoOp = std::function<RawCryptoResult(
     const SigningSelection& key, Mechanism mechanism, std::span<const std::uint8_t> bytes,
     const LibreSCRS::Secure::String* pin, LibreSCRS::SmartCard::CardSession& session, LibreSCRS::CancelToken token)>;

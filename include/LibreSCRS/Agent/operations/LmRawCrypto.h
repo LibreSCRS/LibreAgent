@@ -107,12 +107,13 @@ struct RawCryptoPreflight
 // session-keyed storage after a successful operation (the hash-on-card family
 // signs only with it) and is erased by any failure — also a refusal of a PIN
 // kept from an earlier operation — by a successful PIN change
-// (eraseDepositedPin) and on session teardown
-// (CardSessionHolder::invalidate -> clearCredentials). The lease decides who
-// may use it: a null @p pin on an ordinary key means "already verified this
-// lease; sign directly". An empty @p pin is refused as AuthFailed before the
-// key is used: handed to the plugin it would erase the deposit, and the card
-// would run the operation on whatever the held session is verified for.
+// (eraseDepositedPin) and when the holder ends the session's use
+// (clearCredentials: card removal, idle close, demote into the power hold).
+// The lease decides who may use it: a null @p pin on an ordinary key means
+// "already verified this lease; sign directly". An empty @p pin is refused as
+// AuthFailed before the key is used: handed to the plugin it would erase the
+// deposit, and the card would run the operation on whatever the held session
+// is verified for.
 
 // Raw on-card SIGN with the key @p key resolved by preflight(), running exactly
 // @p mechanism: RsaPkcs1Sign -> SignMechanism::RSA_PKCS (the caller's complete

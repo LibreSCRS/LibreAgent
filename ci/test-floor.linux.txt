@@ -13,7 +13,7 @@ CardKeyTrackerTest 9
 CardPluginRoutingTest 5
 CardReadCacheTest 19
 CardReadSnapshotTest 4
-CardSessionHolderTest 17
+CardSessionHolderTest 16
 CardTypeArbitrationTest 8
 CborRelocationTest 3
 CborRoundTripTest 14
@@ -79,7 +79,7 @@ MessagesRoundTripTest 26
 MrzPayloadTest 18
 ObjectRegistryTest 12
 OperationBaseTest 7
-OperationManagerTest 17
+OperationManagerTest 15
 OperationPhaseTest 2
 PinChangeFlowTest 31
 Pkcs11BrokerTest 43
