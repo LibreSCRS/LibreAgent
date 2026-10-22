@@ -178,12 +178,6 @@ public:
     // before the first enqueue for any reader. Production never calls this.
     void setHolderClockForTest(CardSessionHolder::Clock clock);
 
-    // Test seam: the secure-channel probe handed to every holder workerFor
-    // builds, so a bus-less test drives the hold decision without a card. MUST
-    // be called before the first enqueue for any reader. Production never calls
-    // this — the holder defaults to CardSession::hasLiveSecureChannel.
-    void setHolderSmProbeForTest(CardSessionHolder::SmProbe probe);
-
     // Test seam: enqueue a probe that runs ON THE WORKER THREAD with a
     // reference to the reader's CardSessionHolder. Lets a bus-less test drive a
     // worker-thread holder->acquire() (the bus-less enqueueForTest path does NOT
@@ -198,17 +192,18 @@ public:
     // exists for the reader (nothing is held).
     void invalidateReaderSession(ObjectId reader);
 
-    // Hold (or release) a bare power hold on the reader: while held, the
-    // reader's worker keeps a second CardSession open that is never resolved,
-    // never handed to a plugin and never transmits, so the card stays powered.
-    // A dual-interface CONTACT card kept powered starves the contactless twin of
-    // the same single-chip card, which stops the CL slot from reporting an
-    // endless phantom insert/remove. The logical session is NOT affected: it
-    // still idle-closes after kIdleClose, so secrets stay bounded. The host
-    // holds on export of such a card and releases in its card-removed hook.
-    // Like invalidateReaderSession, this only flags the worker (under its mutex)
-    // and wakes it; the worker applies the hold on its own thread before its
-    // next op and renews it on every idle sweep. No-op when no worker exists.
+    // Hold (or release) the power hold on the reader: while held, the reader's
+    // one connection stays open even when no operation uses it, so the card
+    // stays powered. A dual-interface CONTACT card kept powered starves the
+    // contactless twin of the same single-chip card, which stops the CL slot
+    // from reporting an endless phantom insert/remove. The hold is never a
+    // second connection: a session in use is left as it is, and once idle it is
+    // demoted into the hold -- every credential, cached PACE secret and secure
+    // channel erased -- so secrets stay bounded by kIdleClose. The next
+    // operation promotes it back. The host holds on export of such a card and
+    // releases in its card-removed hook. Like invalidateReaderSession, this only
+    // flags the worker (under its mutex) and wakes it; the worker applies it on
+    // its own thread before its next op. No-op when no worker exists.
     void setReaderHold(ObjectId reader, bool hold);
 
     // Test seam: the hold flag as the host last set it (false when no worker
@@ -336,7 +331,7 @@ private:
         bool pendingInvalidate{false};
         // Set by setReaderHold (monitor/bus thread) under `mutex`; applied by the
         // worker thread (acquireHold / releaseHold on the holder) when
-        // `holdDirty` wakes it, and renewed on every idle sweep. Plain bools
+        // `holdDirty` wakes it, and by every idle sweep. Plain bools
         // guarded by `mutex`, like pendingInvalidate, so they participate in the
         // cv wait predicate under the one lock.
         bool hold{false};
@@ -427,7 +422,6 @@ private:
     // worker at construction like m_testSessionFactory.
     std::chrono::milliseconds m_idleSweep{CardSessionHolder::kIdleClose};
     CardSessionHolder::Clock m_testHolderClock;
-    CardSessionHolder::SmProbe m_testHolderSmProbe;
     std::mutex m_workersMutex;
     // std::map over unordered_map for consistency with the rest of the
     // manager's id-keyed tables; reader churn is low so ordering overhead is

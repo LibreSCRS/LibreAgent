@@ -133,7 +133,7 @@ std::shared_ptr<OperationManager::ReaderWorker> OperationManager::workerFor(Obje
                 }
                 return resolver->resolveCandidates(atr, s);
             },
-            std::make_shared<LibreSCRS::SmartCard::CardMap>(), m_testHolderClock, m_testHolderSmProbe);
+            std::make_shared<LibreSCRS::SmartCard::CardMap>(), m_testHolderClock);
         worker->idleSweep = m_idleSweep;
         auto* raw = worker.get();
         raw->worker = std::jthread([this, raw](std::stop_token st) { workerLoop(*raw, std::move(st)); });
@@ -161,15 +161,14 @@ void OperationManager::workerLoop(ReaderWorker& worker, std::stop_token st)
         if (st.stop_requested()) {
             break;
         }
-        // 1. Card removed: drop the power hold (nothing left to keep powered) and
-        //    close the shared CardSession, both on this (the only) thread allowed
+        // 1. Card removed: close the shared CardSession and drop the power hold
+        //    (nothing left to keep powered), on this (the only) thread allowed
         //    to touch the holder; then re-loop so the next op re-opens.
         if (worker.pendingInvalidate) {
             worker.pendingInvalidate = false;
             lock.unlock();
             if (worker.holder) {
-                worker.holder->releaseHold(); // noexcept
-                worker.holder->invalidate();  // noexcept
+                worker.holder->invalidate(); // noexcept; drops the hold too
             }
             continue;
         }
@@ -190,21 +189,16 @@ void OperationManager::workerLoop(ReaderWorker& worker, std::stop_token st)
             continue;
         }
         if (!ready) {
-            // 3. Idle sweep. First renew the hold (release + re-acquire: heals a
-            //    handle a resume or a foreign reset invalidated, at the cost of two
-            //    pcscd calls per sweep; a SHARED re-connect on a powered card does
-            //    not reset it and the zero-handle window is far below pcscd's
-            //    power-off grace), THEN close the logical session if it has been
-            //    idle long enough — unconditionally: the hold, not the logical
-            //    session, is what keeps the card powered, so secrets stay bounded.
-            //    Holder access is worker-thread-only and never under worker.mutex.
-            //    The three steps are ONE holder call so both the hold decision
-            //    and the idle close are judged against a single reading of the
-            //    clock; see CardSessionHolder::renewHoldAndCloseIfIdle.
+            // 3. Idle sweep: an idle session is demoted into the power hold
+            //    when one is wanted (its secrets erased, the connection kept)
+            //    and closed otherwise; a reader with no session gets its hold.
+            //    One holder call, judged against one reading of the clock.
+            //    Holder access is worker-thread-only and never under
+            //    worker.mutex.
             const bool hold = worker.hold;
             lock.unlock();
             if (worker.holder) {
-                worker.holder->renewHoldAndCloseIfIdle(hold); // noexcept
+                worker.holder->sweep(hold); // noexcept
             }
             continue;
         }
@@ -312,11 +306,6 @@ void OperationManager::setIdleSweepForTest(std::chrono::milliseconds sweep)
 void OperationManager::setHolderClockForTest(CardSessionHolder::Clock clock)
 {
     m_testHolderClock = std::move(clock);
-}
-
-void OperationManager::setHolderSmProbeForTest(CardSessionHolder::SmProbe probe)
-{
-    m_testHolderSmProbe = std::move(probe);
 }
 
 void OperationManager::invalidateReaderSession(ObjectId reader)
