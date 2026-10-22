@@ -35,6 +35,7 @@
 #include <map>
 #include <mutex>
 #include <optional>
+#include <set>
 #include <string>
 #include <thread>
 #include <vector>
@@ -87,6 +88,7 @@ enum class Call : std::uint8_t {
     PkPublicKey,
     PkLogin,
     PkLogout,
+    PkLoginState,
     PkSignRaw,
     PkDecrypt,
     PkDerive,
@@ -215,6 +217,10 @@ public:
     ///        that only counted the call would pass either way.
     [[nodiscard]] Wire::Hello lastHello() const;
 
+    /// @brief End the login on @p reader the way the agent does on its own
+    ///        (idle, lifetime): Pkcs11.LoginState answers false from now on.
+    void expireLogin(const std::string& reader);
+
     /// @brief Take the card out of the first reader that has one.
     void removeCard();
     /// @brief Put it back, with the certificates it had.
@@ -251,6 +257,7 @@ private:
     std::map<Call, Wire::SyncError> m_failures;
     std::map<Call, int> m_counts;
     std::vector<std::string> m_features;
+    std::set<std::string> m_loggedIn; ///< readers with a login, as Pkcs11.LoginState answers
     bool m_interleave = false;
     bool m_refuseHello = false;
     bool m_attachFd = false;

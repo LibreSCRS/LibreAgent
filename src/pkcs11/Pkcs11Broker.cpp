@@ -164,6 +164,15 @@ void Pkcs11Broker::logout(const std::string& reader, const Caller& caller)
     log::infof("pkcs11: Logout card={} caller={}", cardKey->value(), caller.label);
 }
 
+bool Pkcs11Broker::loginActive(const std::string& reader, const Caller& caller)
+{
+    const auto cardKey = m_deps.resolveCardKey(reader);
+    if (!cardKey)
+        return false;
+    // isActive, not touch: the question is not a use of the lease.
+    return m_deps.lease->isActive(Pkcs11::LeaseKey{.caller = caller.busName, .card = *cardKey}, nowOr());
+}
+
 void Pkcs11Broker::runCrypto(const char* opName, std::initializer_list<Mechanism> allowedMechanisms,
                              const CryptoSeam& seam, Mechanism mechanism, const MechanismParams& params,
                              const std::string& reader, const std::string& certId, std::span<const std::uint8_t> bytes,

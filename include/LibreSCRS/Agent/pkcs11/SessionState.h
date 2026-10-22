@@ -16,6 +16,7 @@
 #include <LibreSCRS/Agent/pkcs11/ObjectModel.h>
 #include <LibreSCRS/Agent/pkcs11/pkcs11.h>
 
+#include <chrono>
 #include <cstdint>
 #include <map>
 #include <optional>
@@ -58,7 +59,6 @@ struct Session
 {
     CK_SLOT_ID slot = 0;
     CK_FLAGS flags = 0;
-    bool loggedIn = false;
     FindCursor find;
     SignCursor sign;
     DecryptCursor decrypt;
@@ -97,6 +97,29 @@ public:
     /// @brief Slot ids that still have at least one open session.
     [[nodiscard]] bool slotHasSessions(CK_SLOT_ID slot) const;
 
+    // --- login ---------------------------------------------------------------
+    // PKCS#11 v2.40 section 5.6: a login belongs to the application on the
+    // token, so every session of a slot shares it, the ones opened later too.
+
+    /// @brief How often the module asks the agent whether a login still holds:
+    ///        NSS asks the module no more often than this (LOGIN_DELAY_TIME).
+    static constexpr std::chrono::seconds kLoginCheckInterval{1};
+
+    [[nodiscard]] bool isLoggedIn(CK_SLOT_ID slot) const;
+    /// @brief Every session of @p slot is a user session from now on. The agent
+    ///        has just granted the login, so it counts as checked at @p now.
+    void setLoggedIn(CK_SLOT_ID slot, std::chrono::steady_clock::time_point now);
+    /// @brief Every session of @p slot is public again, and the token's private
+    ///        session objects go with the login. Idempotent.
+    void endLogin(CK_SLOT_ID slot);
+    /// @brief Counts the logins of @p slot, so an answer about an earlier one
+    ///        is not taken for the current one.
+    [[nodiscard]] std::uint64_t loginGeneration(CK_SLOT_ID slot) const;
+    /// @brief @p slot is logged in and was last checked with the agent at least
+    ///        kLoginCheckInterval before @p now.
+    [[nodiscard]] bool loginCheckDue(CK_SLOT_ID slot, std::chrono::steady_clock::time_point now) const;
+    void markLoginChecked(CK_SLOT_ID slot, std::chrono::steady_clock::time_point now);
+
     // --- objects -----------------------------------------------------------
     /// @brief Encode an object handle from (slot, object index).
     [[nodiscard]] static CK_OBJECT_HANDLE encodeHandle(CK_SLOT_ID slot, std::size_t objIndex);
@@ -119,7 +142,7 @@ public:
     /// @brief Keep @p key; its handle is never reused while the module is loaded.
     [[nodiscard]] CK_OBJECT_HANDLE addDerivedKey(DerivedKey key);
     /// @brief The derived key @p h as @p session sees it: the same slot, and
-    ///        only while that session is logged in (it is a private object).
+    ///        only while that slot is logged in (it is a private object).
     [[nodiscard]] const DerivedKey* derivedKey(CK_SESSION_HANDLE session, CK_OBJECT_HANDLE h) const;
     bool destroyDerivedKey(CK_OBJECT_HANDLE h);
     void destroyDerivedKeysOfSlot(CK_SLOT_ID slot);
@@ -131,6 +154,13 @@ private:
     std::map<CK_SLOT_ID, std::size_t> m_slotIndex; ///< slot id -> index into m_model.slots
     std::map<CK_SESSION_HANDLE, Session> m_sessions;
     CK_SESSION_HANDLE m_nextSession = 1;
+    struct SlotLogin
+    {
+        bool loggedIn = false;
+        std::uint64_t generation = 0;
+        std::chrono::steady_clock::time_point checkedAt{};
+    };
+    std::map<CK_SLOT_ID, SlotLogin> m_logins;
     std::map<CK_OBJECT_HANDLE, DerivedKey> m_derived;
     CK_OBJECT_HANDLE m_nextDerived = 1;
 

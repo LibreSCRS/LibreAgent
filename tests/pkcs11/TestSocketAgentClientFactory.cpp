@@ -57,6 +57,10 @@ public:
     {
         return m_inner->logout(reader);
     }
+    std::optional<bool> loginActive(const std::string& reader) override
+    {
+        return m_inner->loginActive(reader);
+    }
     BytesResult signRaw(const std::string& reader, const std::string& certId, LibreSCRS::Agent::Mechanism mechanism,
                         std::span<const std::uint8_t> input) override
     {

@@ -23,6 +23,10 @@ namespace LibreSCRS::Pkcs11Agent {
 inline constexpr int kInteractiveTimeoutSecs = 600;
 /// @brief What it is given for public data nobody has to be asked about.
 inline constexpr int kPublicDataTimeoutSecs = 60;
+/// @brief What it is given to say whether a login still holds: a loader asks
+///        that before it signs, about once a second, and must not be held long
+///        by an agent that does not answer.
+inline constexpr int kLoginStateTimeoutSecs = 2;
 
 /// @brief The two deadlines a socket call can be given.
 ///
@@ -38,6 +42,7 @@ struct SocketTimeouts
 {
     int publicDataSecs = kPublicDataTimeoutSecs;
     int interactiveSecs = kInteractiveTimeoutSecs;
+    int loginStateSecs = kLoginStateTimeoutSecs;
 };
 
 /// @brief Asked about every newly connected socket before a byte is sent on it.
@@ -79,6 +84,7 @@ public:
                                             LibreSCRS::Agent::KeyType keyType) override;
     [[nodiscard]] LoginResult login(const std::string& reader) override;
     Status logout(const std::string& reader) override;
+    [[nodiscard]] std::optional<bool> loginActive(const std::string& reader) override;
     [[nodiscard]] BytesResult signRaw(const std::string& reader, const std::string& certId,
                                       LibreSCRS::Agent::Mechanism mechanism,
                                       std::span<const std::uint8_t> input) override;

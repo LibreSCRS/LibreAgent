@@ -820,6 +820,16 @@ std::optional<AckReply> decodeAckReply(const Map& m)
     return AckReply{};
 }
 
+std::optional<LoginStateReply> decodeLoginStateReply(const Map& m)
+{
+    FieldReader r(m);
+    const auto active = r.boolean("active");
+    if (!r.ok()) {
+        return std::nullopt;
+    }
+    return LoginStateReply{active};
+}
+
 std::optional<RawSignatureReply> decodeRawSignatureReply(const Map& m)
 {
     FieldReader r(m);
@@ -1385,6 +1395,13 @@ std::optional<DecodedReply> parseReply(std::span<const std::uint8_t> body, std::
     }
     if (has(*m, "ok")) {
         auto v = decodeAckReply(*m);
+        if (!v) {
+            return std::nullopt;
+        }
+        return DecodedReply{reqId, std::move(*v)};
+    }
+    if (has(*m, "active")) {
+        auto v = decodeLoginStateReply(*m);
         if (!v) {
             return std::nullopt;
         }

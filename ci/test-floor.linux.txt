@@ -20,7 +20,7 @@ CborRoundTripTest 14
 CddlVocabularyTest 17
 CertDerExportTest 1
 CertReadFlowTest 24
-ClientCodecTest 83
+ClientCodecTest 84
 ClientQtAgentCardTest 52
 ClientQtAgentDiscoveryTest 17
 ClientQtAgentOperationTest 19
@@ -82,7 +82,7 @@ OperationBaseTest 7
 OperationManagerTest 17
 OperationPhaseTest 2
 PinChangeFlowTest 31
-Pkcs11BrokerTest 39
+Pkcs11BrokerTest 43
 Pkcs11LeaseInvalidationTest 4
 Pkcs11SecurityTest 9
 PresenceModelTest 21

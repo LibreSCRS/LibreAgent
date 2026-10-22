@@ -42,9 +42,16 @@ namespace LibreSCRS::Agent {
 /// `Pkcs11.Decrypt`, and `Pkcs11.Derive`. A client sends `Pkcs11.Derive` only to
 /// an agent that serves this token: one without it drops the connection on
 /// the unknown request.
-inline constexpr std::array<std::string_view, 10> kAgentFeatures{
-    "credentials", "card-type",      "token-info",      "trust-status", "tsa-url",
-    "visual-sign", "layout-preview", "identity-stream", "batch-sign",   "ec-keys",
+///
+/// `"login-state"` (@since 5.0): `Pkcs11.LoginState` -- whether a caller's
+/// lease on a card still holds, asked without extending it. The socket
+/// PKCS#11 module sends it only to an agent that serves this token, because
+/// one without it drops the connection on the unknown request. The D-Bus
+/// module calls `LoginState` without checking: an older agent answers
+/// `UnknownMethod`, which the module reads as no answer.
+inline constexpr std::array<std::string_view, 11> kAgentFeatures{
+    "credentials",    "card-type",       "token-info", "trust-status", "tsa-url",     "visual-sign",
+    "layout-preview", "identity-stream", "batch-sign", "ec-keys",      "login-state",
 };
 
 // kPlannedFeatures — reserved tokens with NO serving surface yet, so they are

@@ -344,6 +344,63 @@ TEST(Pkcs11Broker, LogoutRevokesLease)
     }
 }
 
+// The answer a PKCS#11 module gives a loader that asks whether it is logged in.
+TEST(Pkcs11Broker, LoginStateFollowsTheLease)
+{
+    Harness h;
+    auto obj = h.make();
+    EXPECT_FALSE(obj.loginActive(kReader, appCaller())) << "before the login";
+    static_cast<void>(callLogin(obj, kReader, appCaller()));
+    EXPECT_TRUE(obj.loginActive(kReader, appCaller()));
+    Pkcs11Broker::Caller other{.busName = CallerToken{":1.99"}, .label = "other"};
+    EXPECT_FALSE(obj.loginActive(kReader, other)) << "another caller's lease is not this one's";
+    obj.logout(kReader, appCaller());
+    EXPECT_FALSE(obj.loginActive(kReader, appCaller())) << "after the logout";
+}
+
+// NSS asks every second. If asking counted as use, the lease would never idle out.
+TEST(Pkcs11Broker, ALoginStateQueryDoesNotExtendTheLease)
+{
+    Harness h;
+    auto obj = h.make();
+    static_cast<void>(callLogin(obj, kReader, appCaller())); // t=0
+    h.clockNow += minutes(9);
+    EXPECT_TRUE(obj.loginActive(kReader, appCaller())); // asked at t=9
+    h.clockNow += minutes(2);                           // t=11: 10 idle minutes since the login
+    EXPECT_FALSE(obj.loginActive(kReader, appCaller()));
+    try {
+        static_cast<void>(callSignRaw(obj, kReader, kCertId, kInput, appCaller()));
+        FAIL() << "the query at t=9 must not have kept the lease alive";
+    } catch (Pkcs11Broker::CryptoOutcome oc) {
+        EXPECT_EQ(oc, Pkcs11Broker::CryptoOutcome::UserNotLoggedIn);
+    }
+}
+
+// Asking does not stand in for consent: what the lease records about the PIN
+// is what it recorded before the question.
+TEST(Pkcs11Broker, ALoginStateQueryLeavesTheVerifiedPinAlone)
+{
+    Harness h;
+    auto obj = h.make();
+    static_cast<void>(callLogin(obj, kReader, appCaller()));
+    const Pkcs11::LeaseKey key{.caller = CallerToken{":1.42"}, .card = *h.cardKey};
+    EXPECT_FALSE(h.lease->isPinVerified(key));
+    EXPECT_TRUE(obj.loginActive(kReader, appCaller()));
+    EXPECT_FALSE(h.lease->isPinVerified(key)) << "a query is not a verified PIN";
+    h.lease->markPinVerified(key);
+    EXPECT_TRUE(obj.loginActive(kReader, appCaller()));
+    EXPECT_TRUE(h.lease->isPinVerified(key)) << "nor does it clear one";
+}
+
+TEST(Pkcs11Broker, LoginStateOfAnUnknownCardIsFalse)
+{
+    Harness h;
+    auto obj = h.make();
+    static_cast<void>(callLogin(obj, kReader, appCaller()));
+    h.cardKey.reset();
+    EXPECT_FALSE(obj.loginActive(kReader, appCaller()));
+}
+
 TEST(Pkcs11Broker, LogoutIsIdempotentWithNoCard)
 {
     Harness h;

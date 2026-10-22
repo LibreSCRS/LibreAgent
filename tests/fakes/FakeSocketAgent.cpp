@@ -64,7 +64,7 @@ int connectTo(const std::string& path)
     return fd;
 }
 
-FakeSocketAgent::FakeSocketAgent() : m_path(makeSocketPath("agent")), m_features{"credentials"} {}
+FakeSocketAgent::FakeSocketAgent() : m_path(makeSocketPath("agent")), m_features{"credentials", "login-state"} {}
 
 FakeSocketAgent::~FakeSocketAgent()
 {
@@ -271,6 +271,12 @@ void FakeSocketAgent::swapCard(std::string card)
             return;
         }
     }
+}
+
+void FakeSocketAgent::expireLogin(const std::string& reader)
+{
+    const std::lock_guard lock{m_mutex};
+    m_loggedIn.erase(reader);
 }
 
 int FakeSocketAgent::callCount(Call call) const
@@ -561,6 +567,10 @@ bool FakeSocketAgent::answer(int fd, const W::RequestEnvelope& env)
         applyScript(Call::PkLogin);
         if (const auto e = scriptedFailure(Call::PkLogin))
             return refuse(*e);
+        {
+            const std::lock_guard lock{m_mutex};
+            m_loggedIn.insert(std::get<W::PkLogin>(env.body).reader);
+        }
         return send(W::makeReply(env.req, W::AckReply{}));
     }
 
@@ -568,7 +578,23 @@ bool FakeSocketAgent::answer(int fd, const W::RequestEnvelope& env)
         applyScript(Call::PkLogout);
         if (const auto e = scriptedFailure(Call::PkLogout))
             return refuse(*e);
+        {
+            const std::lock_guard lock{m_mutex};
+            m_loggedIn.erase(std::get<W::PkLogout>(env.body).reader);
+        }
         return send(W::makeReply(env.req, W::AckReply{}));
+    }
+
+    if (const auto* ls = std::get_if<W::PkLoginState>(&env.body)) {
+        applyScript(Call::PkLoginState);
+        if (const auto e = scriptedFailure(Call::PkLoginState))
+            return refuse(*e);
+        bool active = false;
+        {
+            const std::lock_guard lock{m_mutex};
+            active = m_loggedIn.contains(ls->reader);
+        }
+        return send(W::makeReply(env.req, W::LoginStateReply{active}));
     }
 
     if (const auto* sr = std::get_if<W::PkSignRaw>(&env.body)) {

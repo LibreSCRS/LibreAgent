@@ -116,6 +116,7 @@ TEST(MessagesRoundTrip, EveryRequestType)
     expectStable({14, GetSignResult{42}});
     expectStable({15, PkLogin{"reader/0"}});
     expectStable({16, PkLogout{"reader/0"}});
+    expectStable({24, PkLoginState{"reader/0"}});
     expectStable({17, PkPublicKey{"reader/0", "certid"}});
     expectStable({18, PkSignRaw{"reader/0", "certid", "rsa-pkcs", {0xDE, 0xAD}}});
     expectStable({19, PkDecrypt{"reader/0", "certid", "rsa-pkcs", {0xBE, 0xEF}}});

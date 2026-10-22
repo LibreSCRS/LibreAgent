@@ -229,6 +229,7 @@ TYPED_TEST_P(AgentClientContract, WithNoAgentEveryCallIsDeviceRemoved)
               Status::DeviceRemoved);
     EXPECT_EQ(c.decrypt(reader, certId, payload).status, Status::DeviceRemoved);
     EXPECT_EQ(c.derive(reader, certId, payload).status, Status::DeviceRemoved);
+    EXPECT_EQ(c.loginActive(reader), std::nullopt) << "no agent, no answer -- not \"logged out\"";
     EXPECT_TRUE(c.snapshot().readers.empty());
 }
 
@@ -519,6 +520,37 @@ TYPED_TEST_P(AgentClientContract, ADeriveAnswersTheSecretOrItsRefusal)
     }
 }
 
+// What a loader is told about its login is what the agent holds: none before
+// C_Login, one after it, none after C_Logout. Both wires, the same three
+// answers -- a transport that answered "held" from its own memory would keep a
+// login the agent had already dropped.
+TYPED_TEST_P(AgentClientContract, ALoginHoldsUntilItEnds)
+{
+    auto harness = TypeParam::serving();
+    ASSERT_NE(harness, nullptr);
+    AgentClient& c = harness->client();
+    const std::string reader = TypeParam::reader();
+    EXPECT_EQ(c.loginActive(reader), std::optional<bool>{false}) << "before the login";
+    ASSERT_EQ(c.login(reader).status, Status::Ok);
+    EXPECT_EQ(c.loginActive(reader), std::optional<bool>{true}) << "after the login";
+    ASSERT_EQ(c.logout(reader), Status::Ok);
+    EXPECT_EQ(c.loginActive(reader), std::optional<bool>{false}) << "after the logout";
+}
+
+// An agent that does not offer the question leaves it unanswered, which the
+// module reads as "keep what you knew" -- never as "logged out", which would
+// ask for the PIN every second against an older agent.
+TYPED_TEST_P(AgentClientContract, AnAgentThatDoesNotOfferTheQuestionLeavesItUnanswered)
+{
+    auto harness = TypeParam::servingWithoutLoginState();
+    ASSERT_NE(harness, nullptr);
+    AgentClient& c = harness->client();
+    const std::string reader = TypeParam::reader();
+    ASSERT_EQ(c.login(reader).status, Status::Ok);
+    EXPECT_EQ(c.loginActive(reader), std::nullopt);
+    EXPECT_EQ(c.login(reader).status, Status::Ok) << "and the connection is still there";
+}
+
 REGISTER_TYPED_TEST_SUITE_P(AgentClientContract, EveryRefusalReachesItsOwnStatus,
                             TheRefusalsStayDistinguishableFromEachOther, ACancelledPromptIsNotAFailedOne,
                             WithNoAgentEveryCallIsDeviceRemoved, AServingAgentAnswersALease,
@@ -527,6 +559,7 @@ REGISTER_TYPED_TEST_SUITE_P(AgentClientContract, EveryRefusalReachesItsOwnStatus
                             AReaderCarriesItsName, TheCardsConsentRuleReachesTheEntry, ASignWithoutALeaseIsNotLoggedIn,
                             TheKeyFactsReachTheEntry, ADeriveOnlyKeyArrivesAsOneThatDoesNotSign, AnEcKeyServesItsPoint,
                             ASignTheAgentRefusesAsInvalidIsInvalidInput, ADecryptTheAgentRefusesAsInvalidIsInvalidInput,
-                            OnlyASigningMechanismIsSentAsASignature, ADeriveAnswersTheSecretOrItsRefusal);
+                            OnlyASigningMechanismIsSentAsASignature, ADeriveAnswersTheSecretOrItsRefusal,
+                            ALoginHoldsUntilItEnds, AnAgentThatDoesNotOfferTheQuestionLeavesItUnanswered);
 
 } // namespace LibreSCRS::Pkcs11Agent::Testing

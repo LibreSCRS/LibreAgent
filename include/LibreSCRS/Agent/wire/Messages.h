@@ -310,6 +310,12 @@ struct PkLogout
     std::string reader;
     bool operator==(const PkLogout&) const = default;
 };
+// Whether this caller's login on the card still holds. Asking does not extend it.
+struct PkLoginState
+{
+    std::string reader;
+    bool operator==(const PkLoginState&) const = default;
+};
 struct PkPublicKey
 {
     std::string reader;
@@ -388,10 +394,11 @@ struct GetAppearanceFont
     bool operator==(const GetAppearanceFont&) const = default;
 };
 
-using Request = std::variant<Hello, GetState, ReadIdentity, GetPhoto, ReadCertificates, ReadTokenInfo, Sign, SignBatch,
-                             GetCertDer, GetConfig, SetConfig, ResetConfig, CancelOp, GetSignResult, PkLogin, PkLogout,
-                             PkPublicKey, PkSignRaw, PkDecrypt, ListCredentials, ManagePin, ActivateSigningKey,
-                             LayoutVisual, GetAppearanceFont, ImportCscaMasterList, ForgetCscaAnchors, PkDerive>;
+using Request =
+    std::variant<Hello, GetState, ReadIdentity, GetPhoto, ReadCertificates, ReadTokenInfo, Sign, SignBatch, GetCertDer,
+                 GetConfig, SetConfig, ResetConfig, CancelOp, GetSignResult, PkLogin, PkLogout, PkPublicKey, PkSignRaw,
+                 PkDecrypt, ListCredentials, ManagePin, ActivateSigningKey, LayoutVisual, GetAppearanceFont,
+                 ImportCscaMasterList, ForgetCscaAnchors, PkDerive, PkLoginState>;
 
 struct RequestEnvelope
 {
@@ -459,6 +466,12 @@ struct ConfigReply
 struct AckReply
 {
     bool operator==(const AckReply&) const = default;
+};
+// Pkcs11.LoginState's reply.
+struct LoginStateReply
+{
+    bool active{false};
+    bool operator==(const LoginStateReply&) const = default;
 };
 struct RawSignatureReply
 {
@@ -626,6 +639,7 @@ using OpResult =
 [[nodiscard]] CborValue makeReply(std::uint64_t req, const PublicKeyReply&);
 [[nodiscard]] CborValue makeReply(std::uint64_t req, const ConfigReply&);
 [[nodiscard]] CborValue makeReply(std::uint64_t req, const AckReply&);
+[[nodiscard]] CborValue makeReply(std::uint64_t req, const LoginStateReply&);
 [[nodiscard]] CborValue makeReply(std::uint64_t req, const RawSignatureReply&);
 [[nodiscard]] CborValue makeReply(std::uint64_t req, const DerivedSecretReply&);
 [[nodiscard]] CborValue makeReply(std::uint64_t req, const LayoutReply&);
