@@ -6,6 +6,7 @@
 #include <LibreSCRS/Certificate/ParsedCertificate.h>
 #include <LibreSCRS/Plugin/CardPlugin.h>
 #include <cstdint>
+#include <expected>
 #include <memory>
 #include <span>
 #include <string>
@@ -153,14 +154,6 @@ private:
 // this is the same pure mapping it uses internally.
 [[nodiscard]] CertSnapshot certSnapshotFromDer(const LibreSCRS::Plugin::CertificateData& cd);
 
-// True when an LM SigningResult diagnostic indicates the signing engine could
-// not LOAD its PKCS#11 security module (a deployment fault) — used to route
-// such a failure to SignOutcome::Status::EngineUnavailable rather than the
-// generic SigningEngineError. Exposed for unit testing; a pragmatic substring
-// bridge on libresign's fixed dlopen text until LM exposes a typed key.
-// Allocation-free and noexcept.
-[[nodiscard]] bool signingDiagnosticIsModuleLoadFailure(const std::optional<std::string>& diagnosticDetail) noexcept;
-
 // The key family and size the agent reports for a certificate, from its
 // SubjectPublicKeyInfo: RSA only for rsaEncryption (an RSASSA-PSS key cannot do
 // PKCS#1 v1.5), EC only on P-256/P-384/P-521, Other for everything else.
@@ -185,14 +178,26 @@ struct SigningSelection
 // @p candidates in order, re-reading each candidate's certs off the live
 // @p session (anti-TOCTOU: the assertion is against the card present NOW), and
 // returns the FIRST candidate that owns a cert whose sha256Hex(derBytes) equals
-// @p certId. A candidate whose readCertificates throws is skipped (it cannot own
-// the cert). Returns nullopt when no candidate owns @p certId. Null candidate
-// entries are skipped. The re-read also (re)establishes the PACE channel for
-// travel-document cards so the live session is registered for in-process
-// adoption — hence the live session is required even though selection is "pure".
-[[nodiscard]] std::optional<SigningSelection> selectSigningCandidate(const CandidateList& candidates,
-                                                                     const std::string& certId,
-                                                                     LibreSCRS::SmartCard::CardSession& session);
+// @p certId: two candidates exposing the same certificate expose the same key.
+// A candidate that lists that certificate under two different key handles names
+// no key: KeyAmbiguous. That is the one shape judged here; a certificate with no
+// key handle at all is the plugin's own "cannot say which key" and is left to the
+// caller. A candidate whose readCertificates throws is skipped (it cannot own the
+// cert); null candidate entries are skipped; KeyNotFound when no candidate owns
+// @p certId. The re-read also (re)establishes the PACE channel for
+// travel-document cards on the session the engine then signs on — hence the live
+// session is required even though selection is "pure".
+//
+// Key selection is split with LibreMiddleware on purpose. This picks the
+// certificate, and refuses one certificate under two handles; the signing
+// service is then handed the chosen certificate's CKA_ID and refuses, on its
+// own, a CKA_ID that names more than one key within the candidate. Neither check
+// covers the other's case, and no third one belongs anywhere else. The raw
+// PKCS#11 path (preflight) never reaches the signing service and reports this
+// refusal as KeyNotFound: PKCS#11 has no "ambiguous key" answer to give.
+[[nodiscard]] std::expected<SigningSelection, SignOutcome::Status>
+selectSigningCandidate(const CandidateList& candidates, const std::string& certId,
+                       LibreSCRS::SmartCard::CardSession& session);
 
 // --- Card-independent visual-signature layout preview --------------------
 //

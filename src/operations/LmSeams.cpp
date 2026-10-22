@@ -816,23 +816,6 @@ TrustVerdict LmTrustVerifier::verify(std::span<const std::uint8_t> leafDer,
     return TrustVerdict{status, {securityToken(status)}};
 }
 
-bool signingDiagnosticIsModuleLoadFailure(const std::optional<std::string>& diagnosticDetail) noexcept
-{
-    if (!diagnosticDetail.has_value()) {
-        return false;
-    }
-    const std::string& d = *diagnosticDetail;
-    // libresign's native AdES path reports a bare-name dlopen failure of the LM
-    // PKCS#11 module, e.g. "Cannot load PKCS#11 module: librescrs-pkcs11.so:
-    // cannot open shared object file". Matching either marker also routes the
-    // wrong/foreign-module case (libresign's "…requires the LibreSCRS PKCS#11
-    // module") here — INTENTIONAL: both a missing and a wrong module are
-    // deployment faults the user fixes the same way (correct the installation),
-    // which is exactly what EngineUnavailable tells them. find() does not
-    // allocate, so this stays noexcept.
-    return d.find("PKCS#11 module") != std::string::npos || d.find("cannot open shared object") != std::string::npos;
-}
-
 ReadOutcome LmCardReader::read(LibreSCRS::SmartCard::CardSession& session, const CandidateList& candidates,
                                LibreSCRS::CancelToken token, GroupReadCallback onGroup)
 {
@@ -1004,14 +987,6 @@ SignOutcome::Status mapSigningResultStatus(const sign::SigningResult& r) noexcep
     case S::InvalidRequest:
         return SignOutcome::Status::SigningEngineError;
     case S::SigningEngineError:
-        // A signing engine that could not LOAD its security module is a
-        // DEPLOYMENT fault, not a generic engine error — surface it as
-        // EngineUnavailable so the client can tell the user to fix the
-        // installation. The predicate is an exposed, unit-
-        // tested bridge on libresign's fixed dlopen text.
-        if (signingDiagnosticIsModuleLoadFailure(r.diagnosticDetail)) {
-            return SignOutcome::Status::EngineUnavailable;
-        }
         // KeyAmbiguous rides on SigningEngineError distinguished only by its
         // dedicated LM ErrorKey (set by the CKA_ID duplicate-detection); bind to
         // the LM constant (not a string literal) so an LM key rename is a
@@ -1025,13 +1000,17 @@ SignOutcome::Status mapSigningResultStatus(const sign::SigningResult& r) noexcep
     return SignOutcome::Status::SigningEngineError;
 }
 
-std::optional<SigningSelection> selectSigningCandidate(const CandidateList& candidates, const std::string& certId,
-                                                       LibreSCRS::SmartCard::CardSession& session)
+std::expected<SigningSelection, SignOutcome::Status> selectSigningCandidate(const CandidateList& candidates,
+                                                                            const std::string& certId,
+                                                                            LibreSCRS::SmartCard::CardSession& session)
 {
     // Route to the candidate that OWNS certId: the first whose readCertificates
     // contains a cert hashing to certId is the signing plugin. Applet switches
     // between candidates ride their own SM-wrapped SELECT on the SAME session —
-    // never a new session.
+    // never a new session. Two candidates that expose the same certificate
+    // expose the same key, so the first in priority order signs; one candidate
+    // that lists it under two different key handles names no key, and none is
+    // guessed.
     for (const auto& cand : candidates) {
         if (!cand) {
             continue;
@@ -1045,13 +1024,23 @@ std::optional<SigningSelection> selectSigningCandidate(const CandidateList& cand
             log::warn("sign: a signing candidate threw on readCertificates; skipping it");
             continue;
         }
+        std::optional<LibreSCRS::Plugin::CertificateData> owned;
         for (auto& cd : certs) {
-            if (!cd.derBytes.empty() && sha256Hex(cd.derBytes) == certId) {
-                return SigningSelection{.plugin = cand, .cert = std::move(cd)};
+            if (cd.derBytes.empty() || sha256Hex(cd.derBytes) != certId) {
+                continue;
+            }
+            if (owned && owned->keyFID != cd.keyFID) {
+                return std::unexpected(SignOutcome::Status::KeyAmbiguous);
+            }
+            if (!owned) {
+                owned = std::move(cd);
             }
         }
+        if (owned) {
+            return SigningSelection{.plugin = cand, .cert = std::move(*owned)};
+        }
     }
-    return std::nullopt;
+    return std::unexpected(SignOutcome::Status::KeyNotFound);
 }
 
 sign::SigningRequest buildSigningRequest(const SignParams& params, sign::SignatureFormat format,
@@ -1129,8 +1118,7 @@ SignOutcome LmSigner::sign(const std::shared_ptr<LibreSCRS::SmartCard::CardSessi
     if (!engine || !*engine) {
         // Deployment fault (no engine wired) — a distinct code so the client
         // guides the user to the installation, not a generic engine error.
-        return signFailure(SignOutcome::Status::EngineUnavailable,
-                           "the signing service could not start its security module");
+        return signFailure(SignOutcome::Status::EngineUnavailable, "the signing engine could not be started");
     }
     const auto format = mapFormat(params.format);
     const auto level = mapLevel(params.level);
@@ -1141,8 +1129,8 @@ SignOutcome LmSigner::sign(const std::shared_ptr<LibreSCRS::SmartCard::CardSessi
     // Resolve certId -> the exact on-card cert by iterating the candidate list and
     // re-reading each candidate's certs off the live card, so the assertion is
     // against the card present NOW (anti-TOCTOU). The re-read also
-    // (re)establishes the PACE channel for travel-document cards so the live
-    // session is registered in SessionPresence for in-process adoption.
+    // (re)establishes the PACE channel for travel-document cards on the session
+    // the engine then signs on.
     // readCertificates takes no CancelToken (the card I/O — and any CAN prompt it
     // drives — is itself uncancellable); honour a cancel observed up to this point
     // before committing to the uncancellable readCertificates loop.
@@ -1151,7 +1139,9 @@ SignOutcome LmSigner::sign(const std::shared_ptr<LibreSCRS::SmartCard::CardSessi
     }
     auto selection = selectSigningCandidate(candidates, params.certId, *session);
     if (!selection) {
-        return signFailure(SignOutcome::Status::KeyNotFound, "certId did not resolve on the present card");
+        return signFailure(selection.error(), selection.error() == SignOutcome::Status::KeyAmbiguous
+                                                  ? "certId names two keys on the present card"
+                                                  : "certId did not resolve on the present card");
     }
     const auto& signingPlugin = selection->plugin;
     const auto& chosen = selection->cert;

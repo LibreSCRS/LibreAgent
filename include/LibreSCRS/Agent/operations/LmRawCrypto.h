@@ -67,7 +67,9 @@ struct RawCryptoPreflight
 // certId against the card in the reader now (selectSigningCandidate -- the read
 // the operation then uses, so the card is read once), reads the key family and
 // size off its certificate, and refuses:
-//   KeyNotFound  -- no such certificate, or it pairs with no key;
+//   KeyNotFound  -- no such certificate, it pairs with no key, or a candidate
+//                   lists it under two keys (selectSigningCandidate's
+//                   KeyAmbiguous: PKCS#11 has no "ambiguous key" answer);
 //   NotSupported -- a decryption the certificate's keyUsage forbids, or a
 //                   mechanism this agent does not run;
 //   InvalidInput -- a mechanism of the other family for the key (ECDSA on RSA,

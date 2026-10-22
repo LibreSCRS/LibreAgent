@@ -145,7 +145,8 @@ TEST(LmSeamsRouting, NoCandidateOwnsCertIdYieldsNullopt)
     auto session = detachedSession();
 
     auto sel = selectSigningCandidate(candidates, certIdAbsent, *session);
-    EXPECT_FALSE(sel.has_value()) << "unowned certId maps to KeyNotFound upstream";
+    ASSERT_FALSE(sel.has_value());
+    EXPECT_EQ(sel.error(), SignOutcome::Status::KeyNotFound) << "an unowned certId is a key not found";
 }
 
 TEST(LmSeamsRouting, NullCandidateEntryIsSkipped)
@@ -158,6 +159,41 @@ TEST(LmSeamsRouting, NullCandidateEntryIsSkipped)
     auto sel = selectSigningCandidate(candidates, certId, *session);
     ASSERT_TRUE(sel.has_value());
     EXPECT_EQ(sel->plugin->pluginId(), "plugin-owner");
+}
+
+// One candidate that lists the same certificate under two different keys does
+// not say which key signs: refused as ambiguous, never the first guessed.
+TEST(LmSeamsRouting, OneCandidateWithTheSameCertUnderTwoKeysIsAmbiguous)
+{
+    const std::vector<std::uint8_t> der{0x5A, 0x5B};
+    const std::string certId = sha256Hex(der);
+    auto first = certWithDer(der);
+    first.keyFID = 0x4410;
+    auto second = certWithDer(der);
+    second.keyFID = 0x4411;
+    CandidateList candidates{mkStub("plugin-dup", {first, second})};
+    auto session = detachedSession();
+
+    auto sel = selectSigningCandidate(candidates, certId, *session);
+    ASSERT_FALSE(sel.has_value());
+    EXPECT_EQ(sel.error(), SignOutcome::Status::KeyAmbiguous);
+}
+
+// Two candidates that expose the same certificate expose the same key: the
+// card holds one private key per public key. The first candidate, in priority
+// order, signs -- a card two plugins both claim is not refused.
+TEST(LmSeamsRouting, TwoCandidatesExposingTheSameCertSelectTheFirst)
+{
+    const std::vector<std::uint8_t> der{0x6A, 0x6B};
+    const std::string certId = sha256Hex(der);
+    auto cert = certWithDer(der);
+    cert.keyFID = 0x4410;
+    CandidateList candidates{mkStub("plugin-first", {cert}), mkStub("plugin-second", {cert})};
+    auto session = detachedSession();
+
+    auto sel = selectSigningCandidate(candidates, certId, *session);
+    ASSERT_TRUE(sel.has_value());
+    EXPECT_EQ(sel->plugin->pluginId(), "plugin-first");
 }
 
 // --- LmCertificateReader::read (first-non-empty routing) ------------------
@@ -233,29 +269,4 @@ TEST(LmSeamsResultMapping, OkMapsToOk)
 {
     const auto result = sign::SigningResult::okWithBytes({0x01, 0x02});
     EXPECT_EQ(mapSigningResultStatus(result), SignOutcome::Status::Ok);
-}
-
-// --- signingDiagnosticIsModuleLoadFailure (EngineUnavailable bridge) -
-
-TEST(LmSeamsDiagnostic, NulloptIsNotAModuleLoadFailure)
-{
-    EXPECT_FALSE(signingDiagnosticIsModuleLoadFailure(std::nullopt));
-}
-
-TEST(LmSeamsDiagnostic, DlopenBareNameFailureIsDetected)
-{
-    EXPECT_TRUE(signingDiagnosticIsModuleLoadFailure(
-        std::optional<std::string>{"Cannot load PKCS#11 module: librescrs-pkcs11.so: cannot open shared object file"}));
-}
-
-TEST(LmSeamsDiagnostic, EitherMarkerAloneMatches)
-{
-    EXPECT_TRUE(signingDiagnosticIsModuleLoadFailure(std::optional<std::string>{"... PKCS#11 module ..."}));
-    EXPECT_TRUE(signingDiagnosticIsModuleLoadFailure(std::optional<std::string>{"foo: cannot open shared object x"}));
-}
-
-TEST(LmSeamsDiagnostic, UnrelatedEngineErrorIsNotAModuleLoadFailure)
-{
-    EXPECT_FALSE(signingDiagnosticIsModuleLoadFailure(std::optional<std::string>{"TSA responded with HTTP 500"}));
-    EXPECT_FALSE(signingDiagnosticIsModuleLoadFailure(std::optional<std::string>{""}));
 }

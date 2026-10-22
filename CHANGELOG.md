@@ -128,8 +128,8 @@ Three targets ship, each independently usable:
 - **Stable error taxonomy** carried on each finished operation. Codes
   are wire-frozen and append-only so clients can branch on the numeric
   value across releases. This release adds two signing-related codes:
-  `EngineUnavailable` (the signing engine or security module could not
-  be loaded — a deployment problem) and `InvalidDocument` (the document
+  `EngineUnavailable` (the signing engine could not be started — a
+  deployment problem) and `InvalidDocument` (the document
   submitted for signing is invalid or unreadable — a client-input
   problem), each distinct from a generic engine failure so clients can
   give the user an accurate, actionable message.
@@ -240,6 +240,13 @@ Three targets ship, each independently usable:
   mechanisms; the hash-on-card mechanism applies to RSA keys only; a key of
   another type (`OTHER`) is not published by the PKCS#11 module, while
   document signing through the agent is unchanged.
+
+- **A certificate a card plugin lists under two different keys is refused as
+  `KeyAmbiguous`** instead of signed with the first key found. Two plugins
+  that expose the same certificate still sign with the first in priority
+  order: they expose the same key. A raw PKCS#11 signature or decryption
+  answers such a certificate with `KeyNotFound`, PKCS#11 having no answer for
+  an ambiguous key.
 
 - **Minimum CMake is now 3.28** (was 3.24), for
   `FetchContent_Declare(... EXCLUDE_FROM_ALL)` — which is what keeps the
