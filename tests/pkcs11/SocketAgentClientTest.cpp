@@ -10,8 +10,10 @@
 #include <gtest/gtest.h>
 
 #include <chrono>
+#include <optional>
 #include <stdexcept>
 #include <string>
+#include <thread>
 
 #include <fcntl.h>
 
@@ -216,6 +218,79 @@ TEST(SocketAgentClient, SurvivesAHumanPacedLoginButNotAStalledCertRead)
     P::SocketAgentClient other{fake.path(), kFastBudgets};
     ASSERT_TRUE(other.connected());
     EXPECT_EQ(other.certDer("r1", "certid-1").status, P::Status::DeviceRemoved);
+}
+
+// An unknown request tag makes an agent drop the connection, so a question an
+// agent's Hello does not offer is never sent at all.
+TEST(SocketAgentClient, ALoginStateIsNotAskedOfAnAgentThatDoesNotOfferIt)
+{
+    T::FakeSocketAgent fake;
+    fake.addReader("r1", /*hasCard=*/true, "c1");
+    fake.addCert("c1", "certid-1");
+    fake.setFeatures({"credentials"});
+    fake.start();
+
+    P::SocketAgentClient client{fake.path(), kFastBudgets};
+    ASSERT_EQ(client.login("r1").status, P::Status::Ok);
+    EXPECT_EQ(client.loginActive("r1"), std::nullopt);
+    EXPECT_EQ(fake.callCount(T::Call::PkLoginState), 0);
+}
+
+// NSS asks about its login from any thread, also while a PIN prompt holds the
+// one connection. The answer then is "no answer", at once -- never a wait for
+// the human.
+TEST(SocketAgentClient, ALoginStateNeverWaitsForABusyTransport)
+{
+    T::FakeSocketAgent fake;
+    fake.addReader("r1", /*hasCard=*/true, "c1");
+    fake.addCert("c1", "certid-1");
+    fake.delayCall(T::Call::PkLogin, std::chrono::seconds{2});
+    fake.start();
+
+    P::SocketAgentClient client{fake.path(), kFastBudgets};
+    ASSERT_TRUE(client.connected());
+    std::thread prompt([&client] { (void)client.login("r1"); });
+    std::this_thread::sleep_for(std::chrono::milliseconds{200});
+    const auto started = std::chrono::steady_clock::now();
+    EXPECT_EQ(client.loginActive("r1"), std::nullopt);
+    EXPECT_LT(std::chrono::steady_clock::now() - started, std::chrono::milliseconds{200});
+    prompt.join();
+    EXPECT_EQ(client.loginActive("r1"), std::optional<bool>{true}) << "asked again once the socket is free";
+}
+
+// An agent that takes the question but does not answer holds the loader for the
+// login-state budget only -- seconds, not the minute public data may take.
+TEST(SocketAgentClient, ALoginStateIsGivenUpAfterItsOwnBudget)
+{
+    EXPECT_EQ(P::SocketTimeouts{}.loginStateSecs, 2);
+
+    T::FakeSocketAgent fake;
+    fake.addReader("r1", /*hasCard=*/true, "c1");
+    fake.addCert("c1", "certid-1");
+    fake.delayCall(T::Call::PkLoginState, std::chrono::seconds{4});
+    fake.start();
+
+    P::SocketAgentClient client{fake.path(), P::SocketTimeouts{/*publicDataSecs=*/30, /*interactiveSecs=*/30,
+                                                               /*loginStateSecs=*/1}};
+    ASSERT_EQ(client.login("r1").status, P::Status::Ok);
+    const auto started = std::chrono::steady_clock::now();
+    EXPECT_EQ(client.loginActive("r1"), std::nullopt);
+    EXPECT_LT(std::chrono::steady_clock::now() - started, std::chrono::seconds{3});
+}
+
+// The agent drops a login on its own (idle, lifetime, the card left); the
+// answer follows the agent, not what this client last did.
+TEST(SocketAgentClient, ALoginTheAgentEndedReadsAsEnded)
+{
+    T::FakeSocketAgent fake;
+    fake.addReader("r1", /*hasCard=*/true, "c1");
+    fake.addCert("c1", "certid-1");
+    fake.start();
+
+    P::SocketAgentClient client{fake.path(), kFastBudgets};
+    ASSERT_EQ(client.login("r1").status, P::Status::Ok);
+    fake.expireLogin("r1");
+    EXPECT_EQ(client.loginActive("r1"), std::optional<bool>{false});
 }
 
 TEST(SocketAgentClient, RefusesAFrameThatCarriesADescriptorAndClosesIt)

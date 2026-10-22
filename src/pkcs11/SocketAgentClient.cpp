@@ -18,13 +18,16 @@
 #include <sys/un.h>
 #include <unistd.h>
 
+#include <algorithm>
 #include <cstring>
 #include <map>
 #include <mutex>
 #include <optional>
+#include <string>
 #include <string_view>
 #include <utility>
 #include <variant>
+#include <vector>
 
 namespace LibreSCRS::Pkcs11Agent {
 namespace W = LibreSCRS::Agent::Wire;
@@ -94,6 +97,9 @@ struct SocketAgentClient::Impl
     PeerCheck peerCheck;
     int fd = -1;
     bool handshakeOk = false;
+    // What the agent's Hello offered. An agent drops the connection on a request
+    // it does not know, so an optional request is sent only when offered here.
+    std::vector<std::string> features;
     std::uint64_t nextRequestId = 1;
     // Public-key results are immutable for the life of a card and the loader
     // asks for them per attribute read, so they are cached exactly as the bus
@@ -193,6 +199,7 @@ struct SocketAgentClient::Impl
             closeSocket();
             return false;
         }
+        features = std::get<W::HelloAck>(*reply).features;
         handshakeOk = true;
         return true;
     }
@@ -532,6 +539,23 @@ Status SocketAgentClient::logout(const std::string& reader)
     if (const auto* err = std::get_if<W::ErrInfo>(&*reply))
         return statusOf(*err);
     return std::holds_alternative<W::AckReply>(*reply) ? Status::Ok : Status::GeneralError;
+}
+
+std::optional<bool> SocketAgentClient::loginActive(const std::string& reader)
+{
+    // Never waits: the loader asks this from any thread, and a PIN prompt may
+    // own the one connection for minutes.
+    std::unique_lock<std::mutex> lock{m_impl->callMutex, std::try_to_lock};
+    if (!lock.owns_lock() || !m_impl->connect())
+        return std::nullopt;
+    if (std::ranges::find(m_impl->features, std::string_view{"login-state"}) == m_impl->features.end())
+        return std::nullopt;
+    const auto reply = m_impl->call(W::PkLoginState{reader}, m_impl->budgets.loginStateSecs);
+    if (!reply.has_value())
+        return std::nullopt;
+    if (const auto* state = std::get_if<W::LoginStateReply>(&*reply))
+        return state->active;
+    return std::nullopt;
 }
 
 BytesResult SocketAgentClient::signRaw(const std::string& reader, const std::string& certId,

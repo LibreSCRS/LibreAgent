@@ -121,6 +121,12 @@ struct SocketContractTraits
         return make({});
     }
 
+    // An agent from before Pkcs11.LoginState: its Hello does not offer it.
+    static std::unique_ptr<Harness> servingWithoutLoginState()
+    {
+        return make([](T::FakeSocketAgent& fake) { fake.setFeatures({"credentials"}); });
+    }
+
     static std::unique_ptr<Harness> servingCardWithoutCertificate()
     {
         return make({}, /*withCert=*/false);

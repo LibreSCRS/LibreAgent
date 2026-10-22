@@ -23,7 +23,7 @@ RealCardSmokeTest 3
 ScmRightsSpikeTest 4
 SecurityTest 6
 SnapshotParityTest 6
-SocketAgentClientContractTest 19
-SocketAgentClientTest 23
+SocketAgentClientContractTest 21
+SocketAgentClientTest 27
 WireHeadersTest 1
 pkcs11_tool_rpc_socket.sh 1

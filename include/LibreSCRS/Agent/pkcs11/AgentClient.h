@@ -20,6 +20,7 @@
 #include <LibreSCRS/Agent/pkcs11/ObjectModel.h>
 
 #include <cstdint>
+#include <optional>
 #include <span>
 #include <string>
 #include <vector>
@@ -120,6 +121,13 @@ public:
 
     /// @brief Drop the lease for (caller, card). Idempotent.
     virtual Status logout(const std::string& reader) = 0;
+
+    /// @brief Whether the lease for (caller, card in @p reader) still holds,
+    ///        asked without extending it.
+    /// @return Empty when the agent cannot be asked without waiting (another
+    ///         call owns the transport), does not offer the question, or did
+    ///         not answer: the caller keeps what it knew.
+    [[nodiscard]] virtual std::optional<bool> loginActive(const std::string& reader) = 0;
 
     /// @brief Raw signature with exactly @p mechanism: RsaPkcs1Sign (a complete
     ///        PKCS#1 v1.5 block), Sha256RsaPkcs1Sign (the raw message, hashed on
