@@ -981,6 +981,104 @@ TEST(ModuleAbi, ANewCardInTheReaderEndsTheLogin)
     EXPECT_EQ(sessionState(m.fn, session), CKS_RO_PUBLIC_SESSION);
 }
 
+// NSS asks C_GetSessionInfo before every use of a private key, and logs in only
+// when the session reads as public. A login the agent ended on its own (idle,
+// lifetime) must therefore read as public BEFORE the next signature, not only
+// after one has failed.
+TEST(ModuleAbi, AnEndedLoginReadsAsPublicBeforeAnySignature)
+{
+    SocketFixture agent;
+    LoadedModule m;
+    ASSERT_EQ(m.fn->C_Initialize(nullptr), CKR_OK);
+    CK_SESSION_HANDLE session = 0;
+    ASSERT_EQ(m.fn->C_OpenSession(firstPresentSlot(m.fn), CKF_SERIAL_SESSION, nullptr, nullptr, &session), CKR_OK);
+    ASSERT_EQ(m.fn->C_Login(session, CKU_USER, nullptr, 0), CKR_OK);
+
+    agent.fake->expireLogin(kReader0);
+    std::this_thread::sleep_for(std::chrono::milliseconds(1500));
+    EXPECT_EQ(sessionState(m.fn, session), CKS_RO_PUBLIC_SESSION);
+    EXPECT_EQ(agent.fake->callCount(Call::PkSignRaw), 0);
+    EXPECT_EQ(m.fn->C_Login(session, CKU_USER, nullptr, 0), CKR_OK) << "the application logs in afresh";
+}
+
+// The agent is asked at most once a second per token, NSS's own interval, so a
+// loader that asks more often does not turn every call into a round trip. A
+// login that was just granted counts as checked.
+TEST(ModuleAbi, TheLoginIsAskedAtMostOncePerSecond)
+{
+    SocketFixture agent;
+    LoadedModule m;
+    ASSERT_EQ(m.fn->C_Initialize(nullptr), CKR_OK);
+    CK_SESSION_HANDLE session = 0;
+    ASSERT_EQ(m.fn->C_OpenSession(firstPresentSlot(m.fn), CKF_SERIAL_SESSION, nullptr, nullptr, &session), CKR_OK);
+    ASSERT_EQ(m.fn->C_Login(session, CKU_USER, nullptr, 0), CKR_OK);
+
+    for (int i = 0; i < 5; ++i)
+        EXPECT_EQ(sessionState(m.fn, session), CKS_RO_USER_FUNCTIONS);
+    EXPECT_EQ(agent.fake->callCount(Call::PkLoginState), 0) << "the login was granted just now";
+    std::this_thread::sleep_for(std::chrono::milliseconds(1500));
+    for (int i = 0; i < 5; ++i)
+        EXPECT_EQ(sessionState(m.fn, session), CKS_RO_USER_FUNCTIONS);
+    EXPECT_EQ(agent.fake->callCount(Call::PkLoginState), 1);
+}
+
+// The agent cannot log in a token the application has not logged in, so a
+// public session is never a question.
+TEST(ModuleAbi, APublicSessionNeverAsks)
+{
+    SocketFixture agent;
+    LoadedModule m;
+    ASSERT_EQ(m.fn->C_Initialize(nullptr), CKR_OK);
+    CK_SESSION_HANDLE session = 0;
+    ASSERT_EQ(m.fn->C_OpenSession(firstPresentSlot(m.fn), CKF_SERIAL_SESSION, nullptr, nullptr, &session), CKR_OK);
+    std::this_thread::sleep_for(std::chrono::milliseconds(1500));
+    for (int i = 0; i < 3; ++i)
+        EXPECT_EQ(sessionState(m.fn, session), CKS_RO_PUBLIC_SESSION);
+    EXPECT_EQ(agent.fake->callCount(Call::PkLoginState), 0);
+}
+
+// A PIN prompt on one thread holds the agent's connection for as long as the
+// human takes. A loader asking about its login meanwhile, from another thread,
+// is answered at once from what the module last knew.
+TEST(ModuleAbi, SessionInfoDoesNotWaitForAPrompt)
+{
+    SocketFixture agent;
+    LoadedModule m;
+    ASSERT_EQ(m.fn->C_Initialize(nullptr), CKR_OK);
+    const CK_SLOT_ID slot = firstPresentSlot(m.fn);
+    CK_SESSION_HANDLE prompting = 0;
+    CK_SESSION_HANDLE asking = 0;
+    ASSERT_EQ(m.fn->C_OpenSession(slot, CKF_SERIAL_SESSION, nullptr, nullptr, &prompting), CKR_OK);
+    ASSERT_EQ(m.fn->C_OpenSession(slot, CKF_SERIAL_SESSION, nullptr, nullptr, &asking), CKR_OK);
+    ASSERT_EQ(m.fn->C_Login(prompting, CKU_USER, nullptr, 0), CKR_OK);
+    std::this_thread::sleep_for(std::chrono::milliseconds(1500)); // the next question is due
+
+    agent.fake->delayCall(Call::PkLogin, std::chrono::seconds(3));
+    std::thread prompt([&] { (void)m.fn->C_Login(prompting, CKU_CONTEXT_SPECIFIC, nullptr, 0); });
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    const auto started = std::chrono::steady_clock::now();
+    EXPECT_EQ(sessionState(m.fn, asking), CKS_RO_USER_FUNCTIONS);
+    EXPECT_LT(std::chrono::steady_clock::now() - started, std::chrono::milliseconds(500));
+    EXPECT_EQ(agent.fake->callCount(Call::PkLoginState), 0) << "the busy connection was not asked";
+    prompt.join();
+}
+
+// An agent from before the question is not sent it, and the module keeps what
+// it knew: the login reads as held until a signature says otherwise.
+TEST(ModuleAbi, TheAgentNotOfferingTheQuestionChangesNothing)
+{
+    SocketFixture agent(true, "None", [](FakeSocketAgent& f) { f.setFeatures({"credentials"}); });
+    LoadedModule m;
+    ASSERT_EQ(m.fn->C_Initialize(nullptr), CKR_OK);
+    CK_SESSION_HANDLE session = 0;
+    ASSERT_EQ(m.fn->C_OpenSession(firstPresentSlot(m.fn), CKF_SERIAL_SESSION, nullptr, nullptr, &session), CKR_OK);
+    ASSERT_EQ(m.fn->C_Login(session, CKU_USER, nullptr, 0), CKR_OK);
+    agent.fake->expireLogin(kReader0);
+    std::this_thread::sleep_for(std::chrono::milliseconds(1500));
+    EXPECT_EQ(sessionState(m.fn, session), CKS_RO_USER_FUNCTIONS);
+    EXPECT_EQ(agent.fake->callCount(Call::PkLoginState), 0);
+}
+
 // For a key the card marks, every call that reaches the card is a PIN prompt.
 // So asking how long the signature will be -- with no buffer, or with one too
 // small -- is answered from the key's modulus and never reaches the agent's

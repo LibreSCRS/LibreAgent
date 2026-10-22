@@ -596,12 +596,50 @@ CK_DECLARE_FUNCTION(CK_RV, C_CloseAllSessions)(CK_SLOT_ID slotID)
 CK_DECLARE_FUNCTION(CK_RV, C_GetSessionInfo)(CK_SESSION_HANDLE hSession, CK_SESSION_INFO_PTR pInfo)
 {
     PKCS11_TRY
+    // NSS asks this before every use of a private key and logs in only when the
+    // session reads as public, so a login the agent has ended (idle, lifetime,
+    // the card left) has to read as public HERE, before the signature that
+    // would otherwise fail. The agent is asked at most once a second per token,
+    // with g_mutex released, and never waits for a connection a PIN prompt holds.
+    std::string reader;
+    CK_SLOT_ID slot = 0;
+    std::uint64_t generation = 0;
+    std::optional<RpcInFlightGuard> guard; // destroyed after the lock below is released
+    {
+        std::lock_guard lk(g_mutex);
+        if (!g_lib)
+            return CKR_CRYPTOKI_NOT_INITIALIZED;
+        if (pInfo == NULL_PTR)
+            return CKR_ARGUMENTS_BAD;
+        Session* s = g_lib->state.session(hSession);
+        if (!s)
+            return CKR_SESSION_HANDLE_INVALID;
+        slot = s->slot;
+        const auto now = std::chrono::steady_clock::now();
+        const Slot* sl = g_lib->state.slotById(slot);
+        if (sl && g_lib->state.loginCheckDue(slot, now)) {
+            reader = sl->readerPath;
+            generation = g_lib->state.loginGeneration(slot);
+            // Marked before asking, so callers on other threads do not pile up
+            // questions while this one is out.
+            g_lib->state.markLoginChecked(slot, now);
+            // No session flag: a question about the login does not occupy the
+            // session. Only the global count, so C_Finalize waits for it.
+            guard.emplace(nullptr);
+        }
+    }
+
+    std::optional<bool> active;
+    if (!reader.empty())
+        active = g_lib->client->loginActive(reader);
+
     std::lock_guard lk(g_mutex);
     if (!g_lib)
         return CKR_CRYPTOKI_NOT_INITIALIZED;
-    if (pInfo == NULL_PTR)
-        return CKR_ARGUMENTS_BAD;
-    Session* s = g_lib->state.session(hSession);
+    // An answer about an earlier login does not end the one held now.
+    if (active == false && g_lib->state.isLoggedIn(slot) && g_lib->state.loginGeneration(slot) == generation)
+        g_lib->state.endLogin(slot);
+    const Session* s = g_lib->state.session(hSession);
     if (!s)
         return CKR_SESSION_HANDLE_INVALID;
     *pInfo = CK_SESSION_INFO{};

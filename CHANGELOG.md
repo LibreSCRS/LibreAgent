@@ -7,6 +7,10 @@ Notable user-visible changes per release. Format follows
 
 ### Added
 
+- **`Pkcs11.LoginState` and the `login-state` feature token:** whether a
+  caller's login on the card in a reader still holds, asked without extending
+  it (`AgentClient::loginActive` in the PKCS#11 facade).
+
 - **`CertificateInfo::alwaysAuthenticate` and the `cert-info` wire key
   `alwaysAuthenticate`:** whether the card asks for the PIN before every
   operation with a certificate's key.
@@ -294,6 +298,16 @@ Three targets ship, each independently usable:
   communication error rather than as a repowered card.
 
 ### Fixed
+
+- **Firefox stopped completing TLS client authentication once the agent's
+  login had idled out, until the PKCS#11 module was reloaded.** The module kept
+  the login per session: when a signature came back "not logged in", only the
+  signing session went public, while the session Firefox asks on still read as
+  logged in, so Firefox never asked for the PIN again. A login now covers every
+  session of the token (PKCS#11 v2.40 section 5.6), and `C_GetSessionInfo` asks
+  the agent, at most once a second and never waiting behind a PIN prompt,
+  whether the login still holds, so Firefox asks for the PIN before the
+  signature instead of failing it.
 
 - **Firefox showed the PKCS#11 tokens as uninitialized and would not log in.** The
   token info now reports the user PIN as initialized.
