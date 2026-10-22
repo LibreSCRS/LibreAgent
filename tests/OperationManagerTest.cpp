@@ -7,7 +7,11 @@
 
 #include <LibreSCRS/Agent/operations/CardSessionHolder.h>
 #include <LibreSCRS/Agent/operations/OperationManager.h>
+#include <LibreSCRS/Agent/presence/CapabilityResolver.h>
 
+#include "fakes/PinStubPlugin.h" // BasePinPlugin
+
+#include <LibreSCRS/Auth/ErrorKeys.h>
 #include <LibreSCRS/SmartCard/CardSession.h>
 #include <gtest/gtest.h>
 #include <atomic>
@@ -18,10 +22,13 @@
 #include <functional>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <span>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <thread>
+#include <vector>
 
 using namespace LibreSCRS::Agent;
 using namespace LibreSCRS::Agent::Operations;
@@ -649,14 +656,13 @@ struct FakeHolderClock
 
 namespace {
 
-// Counts the sessions the holder is holding RIGHT NOW, and the fewest it ever
-// held while both a logical session and a power hold were live.
+// Counts the sessions the factory opened and the ones that have since closed.
 //
 // The factory is injected, so a test can own what it hands out: each session
 // goes back wrapped in an aliasing shared_ptr whose control block runs a
-// release hook. The holder's own reset() is therefore the event that decrements
-// the count, which makes the count the number of PC/SC handles the reader
-// carries -- the quantity the sweep's order exists to protect.
+// release hook. The last owner letting go -- normally the holder's own reset()
+// -- is therefore the event that counts a close, the way a PC/SC handle is
+// released.
 class HandleCensus
 {
 public:
@@ -668,31 +674,21 @@ public:
                 auto owner = std::make_shared<Owned>(LibreSCRS::SmartCard::detail::makeDetachedCardSession(r), this);
                 {
                     const std::lock_guard lock(m_mutex);
-                    ++m_live;
                     ++m_opens;
                 }
                 return std::shared_ptr<LibreSCRS::SmartCard::CardSession>{owner, owner->session.get()};
             };
     }
 
-    // Start watching from this many live handles. Called once both the logical
-    // session and the hold are up, so the floor below is about the sweep and
-    // not about the way there.
-    void arm()
-    {
-        const std::lock_guard lock(m_mutex);
-        m_armed = true;
-        m_floor = m_live;
-    }
-    [[nodiscard]] int floorWhileArmed() const
-    {
-        const std::lock_guard lock(m_mutex);
-        return m_floor;
-    }
     [[nodiscard]] int opens() const
     {
         const std::lock_guard lock(m_mutex);
         return m_opens;
+    }
+    [[nodiscard]] int closes() const
+    {
+        const std::lock_guard lock(m_mutex);
+        return m_closes;
     }
 
 private:
@@ -711,17 +707,12 @@ private:
     void release()
     {
         const std::lock_guard lock(m_mutex);
-        --m_live;
-        if (m_armed && m_live < m_floor) {
-            m_floor = m_live;
-        }
+        ++m_closes;
     }
 
     mutable std::mutex m_mutex;
-    int m_live = 0;
     int m_opens = 0;
-    int m_floor = 0;
-    bool m_armed = false;
+    int m_closes = 0;
 };
 
 } // namespace
@@ -918,4 +909,148 @@ TEST(OperationManager, SweepDecidesOnOneInstant)
     EXPECT_EQ(readsAfterSweep.load(), 2U) << "one sweep, and it read the clock once";
     EXPECT_EQ(held.load(), 0) << "at 44'999 ms the session is still in use: not demoted";
     EXPECT_EQ(opensAfter.load(), 1) << "and not closed";
+}
+
+namespace {
+
+using Cap = LibreSCRS::Plugin::CardCapabilities;
+
+// A composite card: its ATR names the PKI plugin, and the live probe on the
+// held session finds the eMRTD applet beside it. resolvePlugin ignores the ATR
+// on purpose, so an ATR-only shortcut would find the PKI plugin on any card.
+class CompositeResolver final : public CapabilityResolver
+{
+public:
+    std::shared_ptr<const LibreSCRS::Plugin::CardPlugin>
+    resolvePlugin(std::span<const std::uint8_t> /*atr*/) const noexcept override
+    {
+        return pki;
+    }
+    std::vector<std::shared_ptr<const LibreSCRS::Plugin::CardPlugin>>
+    resolveCandidates(std::span<const std::uint8_t> /*atr*/, LibreSCRS::SmartCard::CardSession& /*session*/) override
+    {
+        candidateCalls.fetch_add(1);
+        return {pki, emrtd};
+    }
+
+    std::shared_ptr<const LibreSCRS::Plugin::CardPlugin> pki = std::make_shared<BasePinPlugin>("pki", Cap::PKI);
+    std::shared_ptr<const LibreSCRS::Plugin::CardPlugin> emrtd =
+        std::make_shared<BasePinPlugin>("emrtd", Cap::IdentityData | Cap::EmrtdCrypto);
+    std::atomic<int> candidateCalls{0};
+};
+
+constexpr std::uint32_t kCompositeCaps = static_cast<std::uint32_t>(Cap::PKI | Cap::IdentityData | Cap::EmrtdCrypto);
+
+using Resolution = std::expected<CapabilityResolver::CardResolution, LibreSCRS::SmartCard::OpenError>;
+
+// A resolution no holder produces, so a probe that never wrote its result
+// cannot pass for one that did.
+Resolution unwritten()
+{
+    return std::unexpected{LibreSCRS::SmartCard::OpenError{LibreSCRS::SmartCard::OpenError::Kind::NoCardPresent,
+                                                           LibreSCRS::Auth::ErrorKeys::genericComm(),
+                                                           std::string{"never written"}}};
+}
+
+} // namespace
+
+// A card no plugin serves keeps nothing open: the insertion probe finds no
+// candidate and the holder closes the session before the probe returns, so the
+// reader is not held for kIdleClose by a card the agent cannot use. The probe's
+// answer is a definitive one -- no capabilities, no pre-read auth -- not an
+// open failure, so a host has no reason to open the card again.
+TEST(OperationManager, UnservedCardSessionClosesRightAfterProbing)
+{
+    HandleCensus census;
+    OperationManager mgr; // bus-less: the holder resolves no candidate
+    mgr.setSessionFactoryForTest(census.factory());
+
+    auto probed = unwritten();
+    probeOnWorker(mgr, [&](CardSessionHolder& h) { probed = h.fullResolution(); });
+
+    EXPECT_EQ(census.opens(), 1) << "the probe opened the card once";
+    EXPECT_EQ(census.closes(), 1) << "and closed it before returning: no plugin serves this card";
+    ASSERT_TRUE(probed.has_value()) << "an unserved card is an answer, not a failure to open";
+    EXPECT_TRUE(probed->candidates.empty());
+    EXPECT_EQ(probed->capabilities, 0U);
+    EXPECT_EQ(probed->preReadAuth, LibreSCRS::Auth::PreReadAuthMethod::None);
+}
+
+// A card two plugins serve keeps BOTH: the capabilities come from every
+// candidate the live probe on the held session found, never from the ATR's
+// one plugin, and that session stays open for the operations that follow.
+TEST(OperationManager, CompositeCardKeepsTheUnionOfEveryProbedPlugin)
+{
+    HandleCensus census;
+    CompositeResolver resolver;
+    OperationManager mgr{&resolver};
+    mgr.setSessionFactoryForTest(census.factory());
+
+    auto probed = unwritten();
+    probeOnWorker(mgr, [&](CardSessionHolder& h) { probed = h.fullResolution(); });
+
+    EXPECT_GE(resolver.candidateCalls.load(), 1) << "the live probe ran on the held session";
+    ASSERT_TRUE(probed.has_value());
+    EXPECT_EQ(probed->candidates.size(), 2U);
+    EXPECT_EQ(probed->capabilities, kCompositeCaps) << "the union of the PKI and the eMRTD plugin, not the ATR's one";
+    EXPECT_EQ(census.opens(), 1);
+    EXPECT_EQ(census.closes(), 0) << "a card a plugin serves keeps its session after the probe";
+}
+
+// The insertion probe can be refused -- another process holds the card
+// exclusively. The probe then reports the open failure itself, which is what
+// tells a host to ask again, and the reader is not left broken: the first
+// client operation opens the card itself and the resolution it yields is the
+// full one.
+TEST(OperationManager, RefusedInsertionProbeReportsTheOpenErrorAndNextOperationReopens)
+{
+    std::atomic<int> opens{0};
+    CompositeResolver resolver;
+    OperationManager mgr{&resolver};
+    mgr.setSessionFactoryForTest(
+        [&opens](const std::string& r)
+            -> std::expected<std::shared_ptr<LibreSCRS::SmartCard::CardSession>, LibreSCRS::SmartCard::OpenError> {
+            if (opens.fetch_add(1) == 0) {
+                return std::unexpected{LibreSCRS::SmartCard::OpenError{
+                    LibreSCRS::SmartCard::OpenError::Kind::ReaderUnavailable, LibreSCRS::Auth::ErrorKeys::genericComm(),
+                    std::string{"SCARD_E_SHARING_VIOLATION"}}};
+            }
+            return LibreSCRS::SmartCard::detail::makeDetachedCardSession(r);
+        });
+
+    auto refused = unwritten();
+    probeOnWorker(mgr, [&](CardSessionHolder& h) { refused = h.fullResolution(); });
+    EXPECT_EQ(opens.load(), 1);
+    ASSERT_FALSE(refused.has_value()) << "a refused probe resolves nothing and says so";
+    EXPECT_EQ(refused.error().kind, LibreSCRS::SmartCard::OpenError::Kind::ReaderUnavailable)
+        << "the factory's own error, not a stand-in";
+    EXPECT_EQ(refused.error().diagnosticDetail, std::optional<std::string>{"SCARD_E_SHARING_VIOLATION"});
+
+    bool operationOpened = false;
+    auto republished = unwritten();
+    probeOnWorker(mgr, [&](CardSessionHolder& h) {
+        operationOpened = h.acquire().has_value();
+        republished = h.fullResolution();
+    });
+    EXPECT_TRUE(operationOpened) << "the first client operation opens the card";
+    EXPECT_EQ(opens.load(), 2) << "through the factory, once";
+    ASSERT_TRUE(republished.has_value());
+    EXPECT_EQ(republished->capabilities, kCompositeCaps) << "and the resolution it yields is the full one";
+}
+
+// A seam that throws has not said what the card is either, so the probe
+// reports it the way it reports a failed open: the host asks again.
+TEST(OperationManager, AThrowingInsertionProbeIsReportedAsAnOpenError)
+{
+    OperationManager mgr;
+    mgr.setSessionFactoryForTest(
+        [](const std::string&)
+            -> std::expected<std::shared_ptr<LibreSCRS::SmartCard::CardSession>, LibreSCRS::SmartCard::OpenError> {
+            throw std::runtime_error{"the factory threw"};
+        });
+
+    std::optional<Resolution> probed;
+    probeOnWorker(mgr, [&](CardSessionHolder& h) { probed = h.fullResolution(); });
+    ASSERT_TRUE(probed.has_value());
+    EXPECT_FALSE(probed->has_value()) << "a throwing seam is not an unserved card";
 }

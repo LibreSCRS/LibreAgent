@@ -248,6 +248,12 @@ Three targets ship, each independently usable:
   answers such a certificate with `KeyNotFound`, PKCS#11 having no answer for
   an ambiguous key.
 
+- **A card no plugin serves is released right after the insertion probe**,
+  instead of being held for the 45 s idle window, so another process can take
+  the reader at once. The probe now tells a card it could not open from a card
+  no plugin serves (`CardSessionHolder::fullResolution()` returns the
+  `OpenError` for the first), and a host asks again only for the first.
+
 - **Minimum CMake is now 3.28** (was 3.24), for
   `FetchContent_Declare(... EXCLUDE_FROM_ALL)` — which is what keeps the
   vendored QCBOR dependency's own install rules out of the installed
@@ -257,9 +263,9 @@ Three targets ship, each independently usable:
   the OMNIKEY 5422 couples weakly to the reader's contactless coupler, so the
   contactless slot reported it as an endless insert/remove flap (reader LED
   never at rest, a full card probe per flap). The agent now keeps that contact
-  slot's one session open while the card is present. After 45 s idle the
-  session is emptied of every secret — what the card plugins held for it, the
-  cached PACE secrets, the secure channel — and kept only to hold the card
+  slot's one session open while a card it serves is present. After 45 s idle
+  the session is emptied of every secret — what the card plugins held for it,
+  the cached PACE secrets, the secure channel — and kept only to hold the card
   powered; the next operation reuses it. No second connection is opened on a
   reader, so nothing lives longer in memory than it did before.
   Consequence: a PC/SC client that asks for EXCLUSIVE access to that contact

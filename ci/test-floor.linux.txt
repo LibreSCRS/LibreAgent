@@ -79,7 +79,7 @@ MessagesRoundTripTest 26
 MrzPayloadTest 18
 ObjectRegistryTest 12
 OperationBaseTest 7
-OperationManagerTest 15
+OperationManagerTest 19
 OperationPhaseTest 2
 PinChangeFlowTest 31
 Pkcs11BrokerTest 43
