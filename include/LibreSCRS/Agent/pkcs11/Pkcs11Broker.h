@@ -258,6 +258,12 @@ public:
     // Logout is synchronous: pure lease bookkeeping, no card I/O.
     void logout(const std::string& reader, const Caller& caller);
 
+    // Whether @p caller's lease on the card in @p reader still holds. Asking
+    // neither extends the lease nor touches what it records about the PIN: a
+    // PKCS#11 module asks this every second for its loader. Synchronous, no
+    // card I/O; false for a reader with no card.
+    [[nodiscard]] bool loginActive(const std::string& reader, const Caller& caller);
+
     // Lease invalidation hooks, called by the agent's card-removal /
     // client-disconnect observers. Thread-safe via LeaseManager's own mutex.
     void onCardRemoved(ObjectId cardKey);

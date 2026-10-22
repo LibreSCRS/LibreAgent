@@ -86,7 +86,7 @@ std::vector<std::string> cddlFeatureVocabulary(const std::string& cddl)
 // this compares membership, not position.
 TEST(FeatureTokensGuard, LiveArrayContainsEveryServedTokenIncludingEcKeys)
 {
-    ASSERT_EQ(LibreSCRS::Agent::kAgentFeatures.size(), 10U);
+    ASSERT_EQ(LibreSCRS::Agent::kAgentFeatures.size(), 11U);
     const std::vector<std::string_view> tokens(LibreSCRS::Agent::kAgentFeatures.begin(),
                                                LibreSCRS::Agent::kAgentFeatures.end());
     EXPECT_NE(std::find(tokens.begin(), tokens.end(), std::string_view{"credentials"}), tokens.end());
@@ -99,6 +99,7 @@ TEST(FeatureTokensGuard, LiveArrayContainsEveryServedTokenIncludingEcKeys)
     EXPECT_NE(std::find(tokens.begin(), tokens.end(), std::string_view{"identity-stream"}), tokens.end());
     EXPECT_NE(std::find(tokens.begin(), tokens.end(), std::string_view{"batch-sign"}), tokens.end());
     EXPECT_NE(std::find(tokens.begin(), tokens.end(), std::string_view{"ec-keys"}), tokens.end());
+    EXPECT_NE(std::find(tokens.begin(), tokens.end(), std::string_view{"login-state"}), tokens.end());
 }
 
 // Test-local sample block (NOT the real CDDL) shaped like the vocabulary

@@ -82,7 +82,7 @@ OperationBaseTest 7
 OperationManagerTest 17
 OperationPhaseTest 2
 PinChangeFlowTest 31
-Pkcs11BrokerTest 39
+Pkcs11BrokerTest 43
 Pkcs11LeaseInvalidationTest 4
 Pkcs11SecurityTest 9
 PresenceModelTest 21

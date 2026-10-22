@@ -402,7 +402,8 @@ reply-ok = ( hello-ack // op-started // state // cert-list // cert-der // public
 ; guard test (tests/wire/FeatureTokensGuardTest.cpp) keeps it and the array in
 ; lockstep, so an append to one without the other fails closed. The token
 ; ec-keys means EC keys end to end: cert-info key facts, the EC public-key arm,
-; the required mech on raw sign and decrypt, and Pkcs11.Derive.
+; the required mech on raw sign and decrypt, and Pkcs11.Derive. The token
+; login-state means Pkcs11.LoginState is served.
 ;   "credentials"
 ;   "card-type"
 ;   "token-info"
@@ -413,6 +414,7 @@ reply-ok = ( hello-ack // op-started // state // cert-list // cert-der // public
 ;   "identity-stream"
 ;   "batch-sign"
 ;   "ec-keys"
+;   "login-state"
 hello-ack     = ( kind: "HelloAck", agentVer: tstr, features: [* tstr] )   ; agentVer<->Manager1.Version; features<->Manager1.Features
 op-started    = ( op: uint )    ; async op id (ReadIdentity/GetPhoto/ReadCertificates/ReadTokenInfo/Sign/SignBatch/
                                 ;   ListCredentials/ManagePin/ActivateSigningKey)
