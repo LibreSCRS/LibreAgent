@@ -239,4 +239,7 @@ write_basic_package_version_file(
 install(FILES
     ${CMAKE_CURRENT_BINARY_DIR}/LibreAgentConfig.cmake
     ${CMAKE_CURRENT_BINARY_DIR}/LibreAgentConfigVersion.cmake
+    # Whatever components a consumer links, its own suites need the same
+    # discovery function this repository's do (see that file).
+    ${CMAKE_CURRENT_SOURCE_DIR}/cmake/LibreAgentGTest.cmake
     DESTINATION ${_cfgdir})

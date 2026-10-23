@@ -28,6 +28,8 @@
 @PACKAGE_INIT@
 
 include(CMakeFindDependencyMacro)
+# libreagent_gtest_discover_tests(), for every consumer whatever it asked for.
+include("${CMAKE_CURRENT_LIST_DIR}/LibreAgentGTest.cmake")
 
 # Probe every known component's export file rather than assuming all three
 # are present: a package installed from a configuration with, say, only
