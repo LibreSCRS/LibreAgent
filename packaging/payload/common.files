@@ -18,6 +18,7 @@
 
 lib/cmake/LibreAgent/LibreAgentConfig.cmake
 lib/cmake/LibreAgent/LibreAgentConfigVersion.cmake
+lib/cmake/LibreAgent/LibreAgentGTest.cmake
 lib/cmake/LibreAgent/Pkcs11ModuleExport.cmake
 
 # The platform-neutral agent headers, including the std-only wire headers the

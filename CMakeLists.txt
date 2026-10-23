@@ -409,6 +409,9 @@ endif() # LIBREAGENT_BUILD_PKCS11_SOCKET_CLIENT
 # top-level guard for the same reason the registrations below it are: a
 # consumer that pulls this repository in still builds them.
 include(GoogleTest)
+# libreagent_gtest_discover_tests(): the one way to give those cases an
+# environment. Consumers reach it through this include and the installed package.
+include(cmake/LibreAgentGTest.cmake)
 
 # One ctest entry per GoogleTest case rather than one per binary. With one
 # entry per binary, ctest counts binaries: `ctest -R` cannot select a case,

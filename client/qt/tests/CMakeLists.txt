@@ -385,7 +385,9 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
             GTest::gtest)
         libreagent_private_session_bus(${name})
         # A wedged test under dbus-run-session must fail in minutes, not consume the runner's whole wall.
-        gtest_discover_tests(${name} PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen;${LIBREAGENT_PRIVATE_BUS_ENV}" TIMEOUT 120)
+        libreagent_gtest_discover_tests(${name}
+            ENVIRONMENT "QT_QPA_PLATFORM=offscreen;${LIBREAGENT_PRIVATE_BUS_ENV}"
+            PROPERTIES TIMEOUT 120)
     endfunction()
 
     # Adapted from the lifted KDE suites of the same name (see fakes/FakeAgent.h's
@@ -438,7 +440,9 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
         LibreAgent::ClientQt
         GTest::gtest)
     libreagent_private_session_bus(ClientQtSharedAgentClientTest)
-    gtest_discover_tests(ClientQtSharedAgentClientTest PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen;${LIBREAGENT_PRIVATE_BUS_ENV}" TIMEOUT 120)
+    libreagent_gtest_discover_tests(ClientQtSharedAgentClientTest
+        ENVIRONMENT "QT_QPA_PLATFORM=offscreen;${LIBREAGENT_PRIVATE_BUS_ENV}"
+        PROPERTIES TIMEOUT 120)
 endif() # CMAKE_SYSTEM_NAME STREQUAL "Linux"
 
 # Socket integration tests: the REAL SocketTransport driven against an
@@ -478,12 +482,13 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux" OR CMAKE_SYSTEM_NAME STREQUAL "Darwin")
         # See the file comment above: a production AgentClient here builds a
         # DBusTransport, which needs a session bus to connect to.
         libreagent_private_session_bus(ClientQtSocketIntegrationTest)
-        gtest_discover_tests(ClientQtSocketIntegrationTest PROPERTIES
+        libreagent_gtest_discover_tests(ClientQtSocketIntegrationTest
             ENVIRONMENT "QT_QPA_PLATFORM=offscreen;${LIBREAGENT_PRIVATE_BUS_ENV}"
-            TIMEOUT 120)
+            PROPERTIES TIMEOUT 120)
     else()
-        gtest_discover_tests(ClientQtSocketIntegrationTest PROPERTIES
-            ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 120)
+        libreagent_gtest_discover_tests(ClientQtSocketIntegrationTest
+            ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
+            PROPERTIES TIMEOUT 120)
     endif()
 endif()
 
@@ -520,7 +525,9 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
         Qt6::DBus
         GTest::gtest)
     libreagent_private_session_bus(ClientQtTransportParityTest)
-    gtest_discover_tests(ClientQtTransportParityTest PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen;${LIBREAGENT_PRIVATE_BUS_ENV}" TIMEOUT 120)
+    libreagent_gtest_discover_tests(ClientQtTransportParityTest
+        ENVIRONMENT "QT_QPA_PLATFORM=offscreen;${LIBREAGENT_PRIVATE_BUS_ENV}"
+        PROPERTIES TIMEOUT 120)
 endif()
 
 # The header-self-sufficiency / no-Qt-DBus-KF6-LM-QCBOR-leak acceptance

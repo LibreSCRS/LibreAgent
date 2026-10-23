@@ -1,5 +1,6 @@
 usr/lib/*/cmake/LibreAgent/LibreAgentConfig.cmake
 usr/lib/*/cmake/LibreAgent/LibreAgentConfigVersion.cmake
+usr/lib/*/cmake/LibreAgent/LibreAgentGTest.cmake
 usr/lib/*/cmake/LibreAgent/Pkcs11ModuleExport.cmake
 usr/include/LibreSCRS/Agent/
 usr/share/librescrs/librescrs-agent.cddl

@@ -122,6 +122,7 @@ grep -q '^FETCHCONTENT_SOURCE_DIR_QCBOR:.*/thirdparty/QCBOR$' %{_vpath_builddir}
 %dir %{_libdir}/cmake/LibreAgent
 %{_libdir}/cmake/LibreAgent/LibreAgentConfig.cmake
 %{_libdir}/cmake/LibreAgent/LibreAgentConfigVersion.cmake
+%{_libdir}/cmake/LibreAgent/LibreAgentGTest.cmake
 %{_libdir}/cmake/LibreAgent/Pkcs11ModuleExport.cmake
 %{_includedir}/LibreSCRS/Agent/
 %dir %{_datadir}/librescrs
