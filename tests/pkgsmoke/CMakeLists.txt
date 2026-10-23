@@ -27,6 +27,11 @@ else()
     find_package(LibreAgent 5.0 REQUIRED CONFIG)
 endif()
 
+# Every consumer gets the discovery function, whichever components it asked for.
+if(NOT COMMAND libreagent_gtest_discover_tests)
+    message(FATAL_ERROR "the LibreAgent package did not define libreagent_gtest_discover_tests()")
+endif()
+
 if(PKGSMOKE_COMPONENTS STREQUAL "ClientQt")
     add_executable(pkgsmoke main_clientqt.cpp)
     target_link_libraries(pkgsmoke PRIVATE LibreAgent::ClientQt)
