@@ -5,7 +5,7 @@
   Private interface between the LibreSCRS agent (D-Bus client) and a prompter
   binary (e.g. librescrs-pinentry-kde). The prompter claims the well-known
   name on the session bus; the agent's PrompterClient calls RequestSecret.
-  The collected secret is returned as a sealed memfd (passed via SCM_RIGHTS,
+  The collected secret is returned as a sealed memfd (a Unix fd on the bus,
   bypassing the dbus-daemon's message buffer for the secret bytes).
 -->
 <node>
