@@ -28,7 +28,8 @@ std::optional<PeerCredentials> capturePeerCredentials(int connFd) noexcept
     PeerCredentials creds;
     creds.auditToken = token;
     creds.pid = audit_token_to_pid(token);
-    creds.pidVersion = audit_token_to_pidversion(token);
+    // The SDK declares it int; a pid version is never negative.
+    creds.pidVersion = static_cast<std::uint32_t>(audit_token_to_pidversion(token));
     return creds;
 }
 
