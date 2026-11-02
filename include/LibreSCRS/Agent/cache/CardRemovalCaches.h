@@ -15,8 +15,9 @@ namespace LibreSCRS::Agent {
 // under test rather than re-mirrored by hand: dropping one from here breaks both
 // production and the test together.
 //
-// The PKCS#11 login-lease revocation and reader-session invalidation stay in the
-// hook itself — they need the frontend / operation manager, not just the caches.
+// The reader half is releaseReaderOnCardRemoved() in
+// presence/CardResolutionPolicy.h; the PKCS#11 login-lease revocation stays in
+// the hook itself — it needs the frontend.
 inline void invalidateCardRemovalCaches(CredentialCache& credentialCache, CardReadCache& cardReadCache,
                                         CredentialSnapshotCache& snapshotCache, const std::string& cardPath)
 {

@@ -14,14 +14,24 @@
 // SignFlow FakeSigner tests (tsaUsed derivation) and the env-gated HW smoke.
 #include <LibreSCRS/Agent/config/ConfigStore.h>
 #include <LibreSCRS/Agent/operations/SigningEngineProvider.h>
-// The startup-fetch assertion below reads the trust store's own per-source
-// status, so this one TU needs the full LM Trust header the provider's public
-// shared_ptr return type only forward-declares.
+// The seeded-sources assertion below reads the configuration the trust store
+// was built from, so this one TU needs the full LM Trust header the provider's
+// public shared_ptr return type only forward-declares.
 #include <LibreSCRS/Trust/TrustStoreService.h>
 
 #include <gtest/gtest.h>
+
+#include <arpa/inet.h>
+#include <netinet/in.h>
+#include <poll.h>
+#include <sys/socket.h>
+#include <unistd.h>
+
+#include <atomic>
+#include <chrono>
 #include <filesystem>
 #include <string>
+#include <thread>
 #include <vector>
 
 using namespace LibreSCRS::Agent;
@@ -33,6 +43,76 @@ fs::path uniqueDir(const char* tag)
 {
     return fs::temp_directory_path() / (std::string{"ll-engineprovider-"} + tag);
 }
+
+// Counts the connections made to a loopback port. A trusted-list source is
+// https, so a fetch reaches this listener as a connection that never gets a
+// handshake: each one is accepted and closed at once, which ends that fetch
+// immediately instead of leaving it to run into its request timeout.
+class LoopbackListener
+{
+public:
+    LoopbackListener()
+    {
+        m_fd = ::socket(AF_INET, SOCK_STREAM, 0);
+        if (m_fd < 0) {
+            return;
+        }
+        sockaddr_in addr{};
+        addr.sin_family = AF_INET;
+        addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+        addr.sin_port = 0;
+        socklen_t len = sizeof(addr);
+        if (::bind(m_fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0 || ::listen(m_fd, 8) != 0 ||
+            ::getsockname(m_fd, reinterpret_cast<sockaddr*>(&addr), &len) != 0) {
+            return;
+        }
+        m_port = ntohs(addr.sin_port);
+        m_thread = std::jthread([this](const std::stop_token& stop) {
+            while (!stop.stop_requested()) {
+                pollfd pfd{.fd = m_fd, .events = POLLIN, .revents = 0};
+                if (::poll(&pfd, 1, 20) > 0) {
+                    if (const int client = ::accept(m_fd, nullptr, nullptr); client >= 0) {
+                        ::close(client);
+                        m_accepted.fetch_add(1);
+                    }
+                }
+            }
+        });
+    }
+
+    ~LoopbackListener()
+    {
+        if (m_thread.joinable()) {
+            m_thread.request_stop();
+            m_thread.join();
+        }
+        if (m_fd >= 0) {
+            ::close(m_fd);
+        }
+    }
+
+    LoopbackListener(const LoopbackListener&) = delete;
+    LoopbackListener& operator=(const LoopbackListener&) = delete;
+
+    [[nodiscard]] bool listening() const
+    {
+        return m_port != 0;
+    }
+    [[nodiscard]] std::string url() const
+    {
+        return "https://127.0.0.1:" + std::to_string(m_port) + "/tl.xml";
+    }
+    [[nodiscard]] int accepted() const
+    {
+        return m_accepted.load();
+    }
+
+private:
+    int m_fd = -1;
+    unsigned short m_port = 0;
+    std::atomic<int> m_accepted{0};
+    std::jthread m_thread;
+};
 } // namespace
 
 TEST(SigningEngineProvider, EnginePresentWithoutTsa)
@@ -145,15 +225,47 @@ TEST(SigningEngineProvider, SeededTrustedListsAreNotFetchedAtStartup)
     const auto trust = engine.trustSnapshot();
     ASSERT_NE(trust, nullptr);
 
-    // Ready (not Loading) is the aggregate state of a trust store with no eager
-    // source: nothing was scheduled, so nothing is outstanding.
-    EXPECT_EQ(trust->status(), LibreSCRS::Trust::TrustStoreService::AggregateStatus::Ready)
-        << "the seeded configuration scheduled a startup fetch";
-    const auto statuses = trust->sourceStatuses();
-    ASSERT_EQ(statuses.size(), seeded.size()) << "the seeded sources did not reach the trust store";
-    for (const auto& [url, status] : statuses) {
-        EXPECT_EQ(status, LibreSCRS::Trust::TrustStoreService::SourceStatus::Skipped)
-            << "seeded source " << url << " was fetched at startup";
+    // Every seeded source reaches the trust store, and none of them is eager.
+    // The seeded hosts are real ones, so this reads the flag rather than the
+    // network; that the flag is what decides the startup fetch is watched on
+    // the wire by OnlyAnEagerSourceIsContactedAtStartup below.
+    const auto& sources = trust->config().trustedListSources;
+    ASSERT_EQ(sources.size(), seeded.size()) << "the seeded sources did not reach the trust store";
+    for (const auto& source : sources) {
+        EXPECT_FALSE(source.eager) << "seeded source " << source.url << " is fetched at startup";
+    }
+    fs::remove_all(dir);
+}
+
+TEST(SigningEngineProvider, OnlyAnEagerSourceIsContactedAtStartup)
+{
+    // One lazy and one eager source, each on its own loopback listener. The
+    // eager source is the stopwatch: its connection proves the startup fetches
+    // ran, and a lazy source fetched at startup would be contacted in the same
+    // window, by a worker started alongside it.
+    LoopbackListener lazy;
+    LoopbackListener eager;
+    ASSERT_TRUE(lazy.listening() && eager.listening()) << "no loopback listener";
+
+    const auto dir = uniqueDir("startupfetch");
+    fs::remove_all(dir);
+    Config::ConfigStore cfg{dir / "agent.conf", dir / "cache"};
+    ASSERT_TRUE(cfg.setTslSources(std::vector<Config::TslSource>{
+                                      {.url = lazy.url(), .isLotl = false, .eager = false},
+                                      {.url = eager.url(), .isLotl = false, .eager = true},
+                                  })
+                    .ok);
+    {
+        SigningEngineProvider engine{cfg};
+        ASSERT_NE(engine.trustSnapshot(), nullptr);
+
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds{10};
+        while (eager.accepted() == 0 && std::chrono::steady_clock::now() < deadline) {
+            std::this_thread::sleep_for(std::chrono::milliseconds{10});
+        }
+        ASSERT_GT(eager.accepted(), 0) << "the eager source was never contacted: this test would assert nothing";
+        std::this_thread::sleep_for(std::chrono::milliseconds{200});
+        EXPECT_EQ(lazy.accepted(), 0) << "a lazy source was contacted at startup";
     }
     fs::remove_all(dir);
 }

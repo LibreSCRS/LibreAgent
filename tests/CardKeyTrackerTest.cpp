@@ -3,6 +3,8 @@
 #include <LibreSCRS/Agent/presence/CardKeyTracker.h>
 #include <LibreSCRS/Agent/Identity.h>
 #include <gtest/gtest.h>
+#include <optional>
+#include <string>
 #include <vector>
 
 using namespace LibreSCRS::Agent;
@@ -16,6 +18,18 @@ const ObjectId kCard1{11};
 const ObjectId kCard2{12};
 constexpr const char* kReader0 = "Acme CL 0";
 constexpr const char* kReader1 = "Acme CL 1";
+
+// The key @p t holds for @p reader, read the only way production reads it: by
+// removing the card and taking what the removal reports. Destructive, and it
+// replaces any callback the test installed, so it is a test's last look.
+std::optional<ObjectId> keyFor(CardKeyTracker& t, const std::string& reader)
+{
+    std::optional<ObjectId> seen;
+    t.setOnKeyRemoved([&](ObjectId k, const std::string&) { seen = k; });
+    t.onCardRemoved(reader);
+    t.setOnKeyRemoved({});
+    return seen;
+}
 } // namespace
 
 TEST(CardKeyTracker, OnCardInsertedRecordsKey)
@@ -23,7 +37,7 @@ TEST(CardKeyTracker, OnCardInsertedRecordsKey)
     CardKeyTracker t;
     t.onCardInserted(kReader0, kCard0);
 
-    const auto key = t.currentKey(kReader0);
+    const auto key = keyFor(t, kReader0);
     ASSERT_TRUE(key.has_value());
     EXPECT_EQ(*key, kCard0);
 }
@@ -31,7 +45,7 @@ TEST(CardKeyTracker, OnCardInsertedRecordsKey)
 TEST(CardKeyTracker, CurrentKeyOnUnknownReaderIsNullopt)
 {
     CardKeyTracker t;
-    EXPECT_FALSE(t.currentKey("never-inserted").has_value());
+    EXPECT_FALSE(keyFor(t, "never-inserted").has_value());
 }
 
 // Leak-reproducing regression: the key fired on CardRemoved MUST equal the
@@ -58,7 +72,7 @@ TEST(CardKeyTracker, OnCardRemovedFiresCallbackWithCardIdAndDropsMapping)
     EXPECT_EQ(removed[0], kCard0) << "the scrub key must equal the card ObjectId the cache was keyed by";
     ASSERT_EQ(removedReaders.size(), 1u);
     EXPECT_EQ(removedReaders[0], kReader0) << "the reader name must be forwarded so its session can be invalidated";
-    EXPECT_FALSE(t.currentKey(kReader0).has_value());
+    EXPECT_FALSE(keyFor(t, kReader0).has_value());
 }
 
 TEST(CardKeyTracker, OnReaderRemovedFiresCallbackWithCardIdAndDropsMapping)
@@ -79,7 +93,7 @@ TEST(CardKeyTracker, OnReaderRemovedFiresCallbackWithCardIdAndDropsMapping)
     EXPECT_EQ(removed[0], kCard0);
     ASSERT_EQ(removedReaders.size(), 1u);
     EXPECT_EQ(removedReaders[0], kReader0);
-    EXPECT_FALSE(t.currentKey(kReader0).has_value());
+    EXPECT_FALSE(keyFor(t, kReader0).has_value());
 }
 
 TEST(CardKeyTracker, RemovingUnknownReaderIsSilentNoOp)
@@ -111,7 +125,7 @@ TEST(CardKeyTracker, ReinsertIntoSameReaderOverwritesPreviousKey)
     ASSERT_EQ(removed.size(), 1u);
     EXPECT_EQ(removed[0], kCard0);
 
-    const auto current = t.currentKey(kReader0);
+    const auto current = keyFor(t, kReader0);
     ASSERT_TRUE(current.has_value());
     EXPECT_EQ(*current, kCard1);
     EXPECT_NE(*current, kCard0);
@@ -132,7 +146,7 @@ TEST(CardKeyTracker, IndependentReadersDoNotInterfere)
     EXPECT_EQ(removed[0], kCard0);
 
     // Reader 1 still has its mapping.
-    const auto stillThere = t.currentKey(kReader1);
+    const auto stillThere = keyFor(t, kReader1);
     ASSERT_TRUE(stillThere.has_value());
     EXPECT_EQ(*stillThere, kCard1);
 }
@@ -146,8 +160,8 @@ TEST(CardKeyTracker, SameAtrCardsOnDifferentReadersGetDistinctKeys)
     t.onCardInserted(kReader0, kCard0);
     t.onCardInserted(kReader1, kCard2);
 
-    const auto k0 = t.currentKey(kReader0);
-    const auto k1 = t.currentKey(kReader1);
+    const auto k0 = keyFor(t, kReader0);
+    const auto k1 = keyFor(t, kReader1);
     ASSERT_TRUE(k0.has_value());
     ASSERT_TRUE(k1.has_value());
     EXPECT_NE(*k0, *k1) << "distinct insertions must never share a cache key, even with an identical ATR";
@@ -159,5 +173,5 @@ TEST(CardKeyTracker, CallbackUnsetMeansRemovalIsSilent)
     // No setOnKeyRemoved call — std::function is empty.
     t.onCardInserted(kReader0, kCard0);
     t.onCardRemoved(kReader0); // must not crash on empty std::function
-    EXPECT_FALSE(t.currentKey(kReader0).has_value());
+    EXPECT_FALSE(keyFor(t, kReader0).has_value());
 }

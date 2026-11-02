@@ -74,6 +74,19 @@ public:
     ///        status), never synchronously here.
     void cancel();
 
+    /// @brief How long the agent may go without a sign of life before this
+    ///        operation is given up as stalled, in milliseconds.
+    ///
+    ///        On by default at `kLongOperationTimeoutMs`. The clock runs while
+    ///        the agent is working and restarts on every progress report; it
+    ///        stops while a person is at the agent's prompt
+    ///        (`OperationPhase::AwaitingConsent`, `Authenticating`), because
+    ///        someone reading a PIN off a letter is not a stall. When it runs
+    ///        out, the operation is cancelled at the agent and finishes here
+    ///        through the ordinary `finished()`, with `callError()` ==
+    ///        `CallError::Timeout`. Zero or less turns the bound off.
+    void setStallBudget(int milliseconds);
+
     /// @brief True once the terminal outcome was observed (or recovered).
     [[nodiscard]] bool isFinished() const;
     /// @brief Terminal status; valid after `finished()` (Error before). A
@@ -247,6 +260,8 @@ private:
     ///        the card is removed mid-flight — no terminal signal will ever
     ///        arrive, so without this sweep the consumer would hang forever.
     ///        Idempotent (a no-op once finished).
+    /// The stall bound ran out: cancel at the agent, finish here with Timeout.
+    void giveUpStalled();
     void terminate(OperationStatus terminalStatus, ErrorCode code, CallError call, const QString& msgKey,
                    const QString& msgFallback);
     /// @brief Apply an entry-refusal / local-call failure as the terminal
@@ -274,7 +289,7 @@ private:
                           const QString& msgKey, const QString& msgFallback);
     void recoverIfAlreadyFinished();
 
-    struct Private;
+    struct LIBRESCRS_AGENTCLIENT_NO_EXPORT Private;
     std::unique_ptr<Private> d;
 };
 

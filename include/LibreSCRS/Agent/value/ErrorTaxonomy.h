@@ -3,7 +3,6 @@
 #pragma once
 #include <LibreSCRS/Agent/OperationPhase.h> // OperationStatus (the finish status)
 #include <LibreSCRS/Agent/wire/ErrorCode.h> // ErrorCode: wire-frozen, <cstdint>-only, LM-free
-#include <LibreSCRS/Plugin/ReadResult.h>
 #include <LibreSCRS/SecureChannel/ChannelErrors.h>
 
 namespace LibreSCRS::Agent {
@@ -17,10 +16,8 @@ enum class CredentialOutcome;
 
 [[nodiscard]] ErrorCode errorCodeFor(LibreSCRS::SecureChannel::ChannelActivationError err) noexcept;
 
-[[nodiscard]] ErrorCode errorCodeFor(LibreSCRS::Plugin::ReadResult::Status status) noexcept;
-
 // The (finish status, wire ErrorCode) pair a credential-mutation outcome resolves
-// to on the operation-finished signal. Unlike the two mappers above, a credential
+// to on the operation-finished signal. Unlike the mapper above, a credential
 // outcome also fixes the finish STATUS: a user cancel finishes Cancelled with no
 // error code (cancellation is an OperationStatus, never an ErrorCode), while every
 // failure finishes Error and the numeric code carries the coarse class — the finer

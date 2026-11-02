@@ -40,20 +40,8 @@ struct PromptContext
 /// @since 5.0
 [[nodiscard]] constexpr std::uint32_t deadlineForWireKind(std::string_view kind) noexcept
 {
-    const auto ms = [](PromptKind k) { return static_cast<std::uint32_t>(deadlineFor(k).count()); };
-    if (kind == LibreSCRS::PrompterWire::kKindPin) {
-        return ms(PromptKind::Pin);
-    }
-    if (kind == LibreSCRS::PrompterWire::kKindCan) {
-        return ms(PromptKind::Can);
-    }
-    if (kind == LibreSCRS::PrompterWire::kKindMrz) {
-        return ms(PromptKind::Mrz);
-    }
-    if (kind == LibreSCRS::PrompterWire::kKindChangePin) {
-        return ms(PromptKind::ChangePin);
-    }
-    return 0;
+    const auto known = LibreSCRS::PrompterWire::kindFromToken(kind);
+    return known ? static_cast<std::uint32_t>(deadlineFor(*known).count()) : 0;
 }
 
 /// Stamp @p opts with a freshly minted id, @p ctx's reader identity, and the

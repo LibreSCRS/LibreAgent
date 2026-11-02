@@ -255,6 +255,10 @@ CborValue encodeReaderState(const ReaderState& r)
     if (r.card) {
         m.emplace("card", CborValue(*r.card));
     }
+    if (!r.model.empty()) {
+        m.emplace("model", CborValue(r.model));
+        m.emplace("interface", CborValue(std::string(readerInterfaceToken(r.iface))));
+    }
     return CborValue(std::move(m));
 }
 
@@ -1132,36 +1136,42 @@ CborValue makeReply(std::uint64_t req, const AppearanceFontReply& a)
     return reply;
 }
 
-CborValue makeReply(std::uint64_t req, const CscaAnchorStateReply& a)
+CborValue encodeCscaAnchorState(const CscaAnchorStateReply& a)
 {
-    CborValue reply = makeReplyBase(req);
-    Map arm;
-    arm.emplace("kind", CborValue("CscaAnchorState"));
-    arm.emplace("anchors", CborValue::uint(a.anchors));
-    arm.emplace("issuers", CborValue::uint(a.issuers));
-    arm.emplace("replayRefusalActive", CborValue(a.replayRefusalActive));
+    Map state;
+    state.emplace("anchors", CborValue::uint(a.anchors));
+    state.emplace("issuers", CborValue::uint(a.issuers));
+    state.emplace("replayRefusalActive", CborValue(a.replayRefusalActive));
     // The five optional members are EMITTED ONLY WHEN ENGAGED. `signedAt` is
     // the one that matters: an absent signing time must stay absent, because a
     // zero written here would be indistinguishable from a list genuinely
     // signed at the epoch.
     if (a.signer) {
-        arm.emplace("signer", CborValue(*a.signer));
+        state.emplace("signer", CborValue(*a.signer));
     }
     // has_value(), not the bare optional: this one holds a BOOL, so `if (opt)`
     // reads like a test of the value and is a test of engagement. A false
     // signerPinned -- a trust-on-first-import -- must still be EMITTED.
     if (a.signerPinned.has_value()) {
-        arm.emplace("signerPinned", CborValue(*a.signerPinned));
+        state.emplace("signerPinned", CborValue(*a.signerPinned));
     }
     if (a.acceptedAt) {
-        arm.emplace("acceptedAt", CborValue(*a.acceptedAt));
+        state.emplace("acceptedAt", CborValue(*a.acceptedAt));
     }
     if (a.signedAt) {
-        arm.emplace("signedAt", CborValue(*a.signedAt));
+        state.emplace("signedAt", CborValue(*a.signedAt));
     }
     if (a.origin) {
-        arm.emplace("origin", CborValue(*a.origin));
+        state.emplace("origin", CborValue(*a.origin));
     }
+    return CborValue(std::move(state));
+}
+
+CborValue makeReply(std::uint64_t req, const CscaAnchorStateReply& a)
+{
+    CborValue reply = makeReplyBase(req);
+    Map arm = *encodeCscaAnchorState(a).asMap();
+    arm.emplace("kind", CborValue("CscaAnchorState"));
     mergeInto(reply, std::move(arm));
     return reply;
 }

@@ -19,8 +19,9 @@
 //     warm lease; warm-lease silent ops are neither throttled nor budgeted, and
 //     the injected clock recovers a throttled caller deterministically.
 
+#include "AllowAllAuthorizer.h"
 #include <LibreSCRS/Agent/backend/Authorizer.h>
-#include <LibreSCRS/Agent/backend/Logging.h>
+#include <LibreSCRS/Logging.h>
 #include "Pkcs11BrokerTestSupport.h"
 #include <LibreSCRS/Agent/operations/RateLimiter.h>
 #include <LibreSCRS/Agent/pkcs11/Pkcs11Broker.h>

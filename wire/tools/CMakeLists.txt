@@ -9,6 +9,9 @@ target_compile_features(LibreAgentCddlVocabulary INTERFACE cxx_std_23)
 
 add_executable(wire-vocabulary-gen wire-vocabulary-gen.cpp)
 target_link_libraries(wire-vocabulary-gen PRIVATE LibreAgentCddlVocabulary)
+# The std-only socket-location header the manifest also carries; a header, not
+# a library -- the tool still links nothing.
+target_include_directories(wire-vocabulary-gen PRIVATE ${PROJECT_SOURCE_DIR}/include)
 
 # The ONE way to regenerate the committed manifest. CI compares against this
 # target's output; a developer runs the same target. Two ways to regenerate is

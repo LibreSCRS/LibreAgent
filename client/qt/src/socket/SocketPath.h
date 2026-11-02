@@ -3,43 +3,49 @@
 #pragma once
 //
 // INTERNAL — never installed. Resolution of the agent's AF_UNIX socket path
-// for the socket transport: the one place that knows the App-Group container
-// name and the resolution order, mirroring the Swift client's
-// AgentSocketPath.resolve() exactly so both native clients find the same
-// agent socket:
-//   1. LIBRESCRS_AGENT_SOCK, when set to a non-empty value (tests, local
-//      development against a non-container-installed agent).
-//   2. The platform default: on macOS the App-Group container's agent.sock
-//      (reached by its well-known absolute path — the same directory a
-//      sandboxed process resolves through the application-groups
-//      entitlement). On every other platform there is NO production default
-//      — this transport ships on Linux only as the testable implementation,
-//      and every test binds its fake agent to a temp path it exports via the
-//      environment override — so resolution yields an empty path, which the
-//      transport treats as "no agent socket on this system".
+// for the socket transport.
+//
+// On macOS the socket is the App-Group container's agent.sock
+// (Wire/SocketLocation.h names both), reached by its well-known absolute path
+// under the user's home as the password database records it. Nothing in the
+// environment moves it: `launchctl setenv` reaches every process the user's
+// launchd starts, so a variable that relocated the socket — or a redirected
+// $HOME — would let any process running as the user put its own listener in
+// front of every client. On every other platform there is no production
+// default: this transport ships there only as the testable implementation, and
+// resolution yields an empty path, which the transport treats as "no agent
+// socket on this system".
+//
+// Test binaries that compile this file themselves define
+// LIBREAGENT_CLIENT_SOCKET_TESTING, which adds one override read from
+// kAgentSocketEnvVar so a test can point the production constructor at its fake
+// agent. The shipped library is never built with it.
+
 #include <QString>
 #include <QStringView>
 
 namespace LibreSCRS::AgentClient {
 
-/// The environment override consulted first (same spelling as the Swift
-/// client's AgentSocketPath.environmentOverrideKey).
+#if defined(LIBREAGENT_CLIENT_SOCKET_TESTING)
+/// The test-build-only override (see the file comment).
 inline constexpr const char* kAgentSocketEnvVar = "LIBRESCRS_AGENT_SOCK";
+#endif
 
 /// @brief The macOS App Group shared by the host application, its
-///        CryptoTokenKit extension, and the agent, for a signing team.
-///
-/// Named after the team, because macOS 27 refuses an unprovisioned `group.`
-/// container to a sandboxed process; an empty team (CI, tests) keeps the
-/// `group.` spelling. The same rule as the agent's and the Swift client's.
+///        CryptoTokenKit extension, and the agent, for a signing team
+///        (`Wire::appGroupFor`, as a QString).
 [[nodiscard]] QString appGroupFor(QStringView team);
 
 /// @brief The App Group of the team this build was configured with
 ///        (the LIBRESCRS_TEAM_ID CMake cache variable).
 [[nodiscard]] QString agentAppGroupIdentifier();
 
-/// @brief Resolve the agent socket path in the documented order. Empty when
-///        no override is set and the platform has no production default.
+/// @brief The user's home directory as the password database records it, the
+///        environment's $HOME only when that lookup fails.
+[[nodiscard]] QString accountHomeDirectory();
+
+/// @brief The agent socket path; empty when the platform has no production
+///        default.
 [[nodiscard]] QString resolveAgentSocketPath();
 
 } // namespace LibreSCRS::AgentClient

@@ -10,8 +10,8 @@
 #include <LibreSCRS/Agent/operations/PromptSerializer.h>
 #include <LibreSCRS/Agent/operations/ReadCertificatesOperation.h>
 
-#include <LibreSCRS/SmartCard/CardMap.h>
 #include <LibreSCRS/SmartCard/CardSession.h>
+#include <LibreSCRS/SmartCard/testing/CardSessionTesting.h>
 #include <gtest/gtest.h>
 #include <cstdint>
 #include <expected>
@@ -72,11 +72,10 @@ inline std::unique_ptr<CardSessionHolder> makeUnusedHolder()
     auto factory = [](const std::string& r)
         -> std::expected<std::shared_ptr<LibreSCRS::SmartCard::CardSession>, LibreSCRS::SmartCard::OpenError> {
         ADD_FAILURE() << "holder must not open a session when the cert cache is hot";
-        return LibreSCRS::SmartCard::detail::makeDetachedCardSession(r);
+        return LibreSCRS::SmartCard::Testing::makeDetachedCardSession(r);
     };
     auto resolver = [](std::span<const std::uint8_t>, LibreSCRS::SmartCard::CardSession&) { return CandidateList{}; };
-    return std::make_unique<CardSessionHolder>("Unused", std::move(factory), std::move(resolver),
-                                               std::make_shared<LibreSCRS::SmartCard::CardMap>());
+    return std::make_unique<CardSessionHolder>("Unused", std::move(factory), std::move(resolver));
 }
 
 class UnusedCertReader final : public CertificateReader
@@ -135,11 +134,10 @@ inline std::unique_ptr<CardSessionHolder> makeWorkingHolder()
 {
     auto factory = [](const std::string& r)
         -> std::expected<std::shared_ptr<LibreSCRS::SmartCard::CardSession>, LibreSCRS::SmartCard::OpenError> {
-        return LibreSCRS::SmartCard::detail::makeDetachedCardSession(r);
+        return LibreSCRS::SmartCard::Testing::makeDetachedCardSession(r);
     };
     auto resolver = [](std::span<const std::uint8_t>, LibreSCRS::SmartCard::CardSession&) { return CandidateList{}; };
-    return std::make_unique<CardSessionHolder>("FakeReader", std::move(factory), std::move(resolver),
-                                               std::make_shared<LibreSCRS::SmartCard::CardMap>());
+    return std::make_unique<CardSessionHolder>("FakeReader", std::move(factory), std::move(resolver));
 }
 
 // A reader that returns a fixed successful outcome — drives the populate path.

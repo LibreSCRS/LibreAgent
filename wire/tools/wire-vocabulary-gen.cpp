@@ -9,6 +9,8 @@
 
 #include <CddlVocabulary.h>
 
+#include <LibreSCRS/Agent/wire/SocketLocation.h>
+
 #include <algorithm>
 #include <cstddef>
 #include <iostream>
@@ -152,6 +154,13 @@ int main(int argc, char** argv)
             std::cout << " ] }";
         }
     }
-    std::cout << "\n  }\n}\n";
+    // Where the macOS agent socket lives (wire/SocketLocation.h), for the ends
+    // that cannot include a C++ header: the App Group is
+    // `<team or noTeamPrefix><appGroupSuffix>`, the socket `socketName` in it.
+    namespace Wire = LibreSCRS::Agent::Wire;
+    std::cout << "\n  },\n  \"socket-location\": { \"noTeamPrefix\": \""
+              << jsonEscape(std::string(Wire::kNoTeamAppGroupPrefix)) << "\", \"appGroupSuffix\": \""
+              << jsonEscape(std::string(Wire::kAppGroupSuffix)) << "\", \"socketName\": \""
+              << jsonEscape(std::string(Wire::kAgentSocketName)) << "\" }\n}\n";
     return 0;
 }

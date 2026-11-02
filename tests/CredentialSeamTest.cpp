@@ -25,6 +25,7 @@
 #include <LibreSCRS/Plugin/ReadResult.h>
 #include <LibreSCRS/Secure/String.h>
 #include <LibreSCRS/SmartCard/CardSession.h>
+#include <LibreSCRS/SmartCard/testing/CardSessionTesting.h>
 
 #include "fakes/FakeCredentialManager.h"
 #include "fakes/FakePrompter.h"
@@ -72,7 +73,7 @@ LibreSCRS::Plugin::PinStatusEntry pinEntry(std::string label)
 // A detached CardSession: the stubs ignore it, so it is never touched.
 std::shared_ptr<LibreSCRS::SmartCard::CardSession> detachedSession()
 {
-    return LibreSCRS::SmartCard::detail::makeDetachedCardSession("FakeReader");
+    return LibreSCRS::SmartCard::Testing::makeDetachedCardSession("FakeReader");
 }
 
 // Stub whose readCard NVI reaches doReadCard directly (the base default
@@ -84,7 +85,7 @@ class StructuralReadStubPlugin final : public LibreSCRS::Plugin::CardPlugin
 public:
     explicit StructuralReadStubPlugin(LibreSCRS::Plugin::ReadResult result) : m_result(std::move(result))
     {
-        setIdentity("structural-read-stub", "stub", 0);
+        setIdentity("structural-read-stub", 0);
     }
     LibreSCRS::Plugin::CardCapabilities capabilities() const override
     {
@@ -140,6 +141,8 @@ TEST(CredentialSeamRouting, ListReachesGetPinListThroughTheLmBaseDefault)
     EXPECT_TRUE(listing.pluginId.empty()) << "no winner for an all-empty list";
 }
 
+// The listing's throw does not cross CardPlugin::getPINList: it arrives as an
+// empty list, which the router passes over like any other.
 TEST(CredentialSeamRouting, ListSkipsNullAndThrowingCandidates)
 {
     auto recThrow = std::make_shared<PinOpsRecorder>();
@@ -248,8 +251,8 @@ TEST(CredentialSeamRouting, ChangePinEmptyCandidateListYieldsUnsupported)
 
 TEST(CredentialSeamRouting, ChangePinThrowingCandidateYieldsPluginErrorAndStopsRouting)
 {
-    // A throw mid-mutation leaves the card state unknown: fail with
-    // PluginError and do NOT try the next candidate.
+    // A throw mid-mutation leaves the card state unknown. CardPlugin reports
+    // it as PluginError, and the router does NOT try the next candidate.
     auto recA = std::make_shared<PinOpsRecorder>();
     auto throwing = std::make_shared<PinStubPlugin>("throws", recA);
     throwing->throwOnMutation = true;

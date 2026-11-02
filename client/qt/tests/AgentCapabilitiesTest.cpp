@@ -142,7 +142,18 @@ TEST(AgentCapabilityTokens, PreReadAuthTokenDecode)
     EXPECT_EQ(preReadAuthFromToken(u"None"), PreReadAuth::None);
     EXPECT_EQ(preReadAuthFromToken(u"Mrz"), PreReadAuth::Mrz);
     EXPECT_EQ(preReadAuthFromToken(u"Can"), PreReadAuth::Can);
-    // Lenient parse: anything unrecognized (including a future method) is None.
-    EXPECT_EQ(preReadAuthFromToken(u"SomethingFuture"), PreReadAuth::None);
+    // An agent predating the property: nothing to unlock.
     EXPECT_EQ(preReadAuthFromToken(u""), PreReadAuth::None);
+    // A method this build does not name is unknown, never None.
+    EXPECT_EQ(preReadAuthFromToken(u"SomethingFuture"), std::nullopt);
+}
+
+TEST(AgentCapabilityTokens, AnUnknownMethodRequiresAnUnlock)
+{
+    EXPECT_FALSE(preReadUnlockRequired(u"None"));
+    EXPECT_FALSE(preReadUnlockRequired(u""));
+    EXPECT_TRUE(preReadUnlockRequired(u"Mrz"));
+    EXPECT_TRUE(preReadUnlockRequired(u"Can"));
+    EXPECT_TRUE(preReadUnlockRequired(u"SomethingFuture"));
+    EXPECT_TRUE(preReadUnlockRequired(u"Unknown3"));
 }

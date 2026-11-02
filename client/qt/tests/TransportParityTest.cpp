@@ -63,6 +63,15 @@
 //   feature tokens      FeatureTokensMatchAcrossTransports (Manager1.Features /
 //                         HelloAck.features from the same kAgentFeatures source;
 //                         an unrecognised extra token surfaces identically)
+//   reader label        ReaderLabelMatchesAcrossTransports,
+//                         AnUnlabelledReaderShowsItsNameAcrossTransports
+//                         (Reader1.Model/Interface vs reader-state.model/
+//                         interface: at discovery, on a relabel, an unknown
+//                         interface token, and no label at all)
+//   quiesce             QuiescedReasonMatchesAcrossTransports (Manager1.Quiesced
+//                         vs AgentQuiesced: a named reason, and one appended
+//                         after this build, reach AgentClient::quiesced
+//                         verbatim)
 //   agent version       AgentVersionMatchesAcrossTransports and
 //                         AgentVersionEmptyWhileUnavailableAcrossTransports
 //                         (the one datum whose two wires share no mechanism at
@@ -155,7 +164,10 @@
 //       wire and gets UnknownMethod (mapped to CallError::InvalidArguments,
 //       not CapabilityMissing) — extending the SAME lift there is a tracked
 //       follow-up, not something this corpus already proves converged.
-//     - AgentQuiesced availability semantics — a socket-wire-only event.
+//     - AgentQuiesced availability semantics — the socket counts a quiesced
+//       agent as unavailable until a re-probe; on D-Bus the agent stays on
+//       the bus. The reason itself is in the corpus
+//       (QuiescedReasonMatchesAcrossTransports).
 //     - Non-canonical-frame fail-closed policy, the wedged-GetState bounded
 //       probe, the write-after-peer-close EPIPE/SIGPIPE guard, the stale-
 //       ConnectionLost-after-reconnect race, and the awaited-reply+malformed-
@@ -223,11 +235,11 @@
 #include <LibreSCRS/AgentClient/IdentityRows.h>
 
 #include "ClientTestAccess.h"
-#include "CscaAnchorKeys.h"
+#include <LibreSCRS/AgentClient/CscaAnchorKeys.h>
 #include "fakes/ClientOnHarness.h"
 #include "fakes/FakeSocketAgent.h"
 #include "fakes/TestBus.h"
-#include "socket/MemfdSource.h"
+#include "fakes/MemfdSource.h"
 #include "socket/SocketTransport.h"
 
 #include <QByteArray>
@@ -329,6 +341,11 @@ struct ParityConfig
 {
     quint32 capabilities = 0;
     int operationDelayMs = 15;
+    // The reader's raw name and its label, scripted identically on both fakes
+    // (an empty model publishes the name).
+    QString readerName = QStringLiteral("Fake");
+    QString readerModel;
+    QString readerInterface = QStringLiteral("unknown");
     // Card-state's cardType/atr, scripted identically on both fakes.
     QString cardType;
     QString atrHex;
@@ -514,6 +531,16 @@ public:
     {
         m_harness.emitCardTypeChanged(cardType);
     }
+    /// Another reader arrived or left beside this one: its label changed.
+    void triggerReaderRelabelled(const QString& model, const QString& interfaceToken)
+    {
+        m_harness.emitReaderRelabelled(model, interfaceToken);
+    }
+    /// The agent quiesced card access (Manager1.Quiesced).
+    void triggerQuiesced(uint reason)
+    {
+        m_harness.emitQuiesced(reason);
+    }
 
 private:
     static FakeAgent::Config toConfig(const ParityConfig& cfg)
@@ -524,6 +551,9 @@ private:
         out.features = cfg.features;
         out.agentVersion = cfg.agentVersion;
         out.config = cfg.agentConfig;
+        out.readerName = cfg.readerName;
+        out.readerModel = cfg.readerModel;
+        out.readerInterface = cfg.readerInterface;
         out.cardType = cfg.cardType;
         out.atrHex = cfg.atrHex;
         out.failMethodEntry = cfg.failMethodEntry;
@@ -768,6 +798,17 @@ public:
     {
         runOnThread(m_context, [this, cardType]() { m_agent->emitCardTypeChanged(cardType); });
     }
+    /// Another reader arrived or left beside this one: its label changed.
+    void triggerReaderRelabelled(const QString& model, const QString& interfaceToken)
+    {
+        runOnThread(m_context,
+                    [this, model, interfaceToken]() { m_agent->emitReaderRelabelled(model, interfaceToken); });
+    }
+    /// The agent quiesced card access (AgentQuiesced).
+    void triggerQuiesced(uint reason)
+    {
+        runOnThread(m_context, [this, reason]() { m_agent->sendAgentQuiesced(reason); });
+    }
 
 private:
     static FakeSocketAgent::Config toConfig(const ParityConfig& cfg)
@@ -778,6 +819,9 @@ private:
         out.features = cfg.features;
         out.agentVersion = cfg.agentVersion;
         out.config = cfg.agentConfig;
+        out.readerName = cfg.readerName;
+        out.readerModel = cfg.readerModel;
+        out.readerInterface = cfg.readerInterface;
         out.cardType = cfg.cardType;
         out.atrHex = cfg.atrHex;
         out.failMethodEntry = cfg.failMethodEntry;
@@ -985,7 +1029,7 @@ ParityConfig threeGroupStreamingConfig()
 {
     ParityConfig cfg;
     cfg.capabilities = Cap::IdentityData;
-    cfg.features = {QStringLiteral("credentials"), QStringLiteral("identity-stream")};
+    cfg.features = {QStringLiteral("credentials")};
     cfg.identityGroupScript = {
         ParityIdentityGroup{
             QStringLiteral("personal"),
@@ -1079,16 +1123,15 @@ TYPED_TEST(TransportParity, IdentityGroupStreamingLateSubscriberMissesRacedGroup
     EXPECT_TRUE(resultGroupKeys.contains(QStringLiteral("document")));
 }
 
-TYPED_TEST(TransportParity, IdentityGroupStreamingAbsentFromFeatureAgentYieldsNoGroupSignals)
+TYPED_TEST(TransportParity, IdentityWithoutStreamedGroupsYieldsNoGroupSignals)
 {
-    // An agent predating (or simply not advertising) "identity-stream" never
-    // streams -- identityGroupScript stays empty (the default) exactly as
-    // every other pre-existing scenario leaves it. groupReady() must fire
-    // zero times and the result must still arrive intact.
+    // An agent that does not stream (an older one) leaves identityGroupScript
+    // empty (the default) exactly as every other scenario does. groupReady()
+    // must fire zero times and the result must still arrive intact.
     using Env = typename TypeParam::Env;
     ParityConfig cfg;
     cfg.capabilities = Cap::IdentityData;
-    cfg.features = {QStringLiteral("credentials")}; // no "identity-stream"
+    cfg.features = {QStringLiteral("credentials")};
     Env env(cfg);
 
     AgentCard* card = env.card();
@@ -2751,6 +2794,82 @@ TYPED_TEST(TransportParity, CardTypeAndAtrMatchAcrossTransports)
     ASSERT_TRUE(waitFor([&]() { return card->cardType() == QStringLiteral("SRB-Vehicle"); }))
         << "the post-read authoritative update must flip cardType identically on both transports";
     EXPECT_GE(cardTypeChangedCount, 1);
+}
+
+// ---- Reader label -- the agent's model and interface reach the client
+// identically on both wires, at discovery and on a relabel, and an interface
+// token past this build reads as Unknown on both ---------------------------
+TYPED_TEST(TransportParity, ReaderLabelMatchesAcrossTransports)
+{
+    using Env = typename TypeParam::Env;
+    ParityConfig cfg;
+    cfg.capabilities = Cap::IdentityData;
+    cfg.readerName = QStringLiteral(
+        "HID Global OMNIKEY 5422 Smartcard Reader [OMNIKEY 5422CL Smartcard Reader] (IM0O2C00NF10456904) 00 00");
+    cfg.readerModel = QStringLiteral("OMNIKEY 5422");
+    cfg.readerInterface = QStringLiteral("contactless");
+    Env env(cfg);
+
+    ASSERT_EQ(env.client()->readers().size(), 1);
+    AgentReader* reader = env.client()->readers().constFirst();
+    EXPECT_EQ(reader->name(), cfg.readerName) << "the raw name still arrives verbatim";
+    EXPECT_EQ(reader->model(), QStringLiteral("OMNIKEY 5422"));
+    EXPECT_EQ(reader->interface(), ReaderInterface::Contactless);
+
+    int changedCount = 0;
+    QObject::connect(reader, &AgentReader::changed, [&changedCount]() { ++changedCount; });
+    env.triggerReaderRelabelled(QStringLiteral("OMNIKEY 5422 (6904)"), QStringLiteral("contact"));
+    ASSERT_TRUE(waitFor([&]() { return reader->interface() == ReaderInterface::Contact; }))
+        << "a relabel must reach the reader identically on both transports";
+    EXPECT_EQ(reader->model(), QStringLiteral("OMNIKEY 5422 (6904)"));
+    EXPECT_GE(changedCount, 1);
+
+    env.triggerReaderRelabelled(QStringLiteral("OMNIKEY 5422 (6904)"), QStringLiteral("optical"));
+    ASSERT_TRUE(waitFor([&]() { return reader->interface() == ReaderInterface::Unknown; }))
+        << "an interface appended after this build reads as Unknown on both transports";
+}
+
+// ---- Quiesce -- the reason the agent quiesced reaches the client identically
+// on both wires, a reason past this build's vocabulary verbatim ------------
+TYPED_TEST(TransportParity, QuiescedReasonMatchesAcrossTransports)
+{
+    using Env = typename TypeParam::Env;
+    ParityConfig cfg;
+    cfg.capabilities = Cap::IdentityData;
+    Env env(cfg);
+    ASSERT_TRUE(env.client()->isAvailable());
+
+    QList<QuiesceReason> reasons;
+    QObject::connect(env.client(), &AgentClient::quiesced, env.client(),
+                     [&reasons](QuiesceReason reason) { reasons.append(reason); });
+
+    env.triggerQuiesced(static_cast<uint>(QuiesceReason::SessionInactive));
+    ASSERT_TRUE(waitFor([&]() { return reasons.size() == 1; }));
+    EXPECT_EQ(reasons.constFirst(), QuiesceReason::SessionInactive);
+
+    env.triggerQuiesced(42);
+    ASSERT_TRUE(waitFor([&]() { return reasons.size() == 2; }));
+    EXPECT_EQ(static_cast<unsigned>(reasons.constLast()), 42u)
+        << "a reason appended after this build arrives verbatim on both transports";
+}
+
+// An agent that sends no label (an older one): the model falls back to the
+// name, the interface is Unknown -- on both wires.
+TYPED_TEST(TransportParity, AnUnlabelledReaderShowsItsNameAcrossTransports)
+{
+    using Env = typename TypeParam::Env;
+    ParityConfig cfg;
+    cfg.capabilities = Cap::IdentityData;
+    cfg.readerName = QStringLiteral("Gemalto PC Twin Reader (69988A87) 02 00");
+    Env env(cfg);
+
+    ASSERT_EQ(env.client()->readers().size(), 1);
+    AgentReader* reader = env.client()->readers().constFirst();
+    env.triggerReaderRelabelled(QStringLiteral("Gemalto PC Twin"), QStringLiteral("contactless"));
+    ASSERT_TRUE(waitFor([&]() { return reader->model() == QStringLiteral("Gemalto PC Twin"); }));
+    env.triggerReaderRelabelled(QString(), QStringLiteral("unknown"));
+    ASSERT_TRUE(waitFor([&]() { return reader->model() == cfg.readerName; }));
+    EXPECT_EQ(reader->interface(), ReaderInterface::Unknown);
 }
 
 // ---- Card-independent visual-signature layout preview ------------------

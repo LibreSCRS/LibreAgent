@@ -2,7 +2,7 @@
 // SPDX-FileCopyrightText: 2026 hirashix0
 #include <LibreSCRS/Agent/presence/MonitorBridge.h>
 #include <LibreSCRS/Agent/presence/CardKeyTracker.h>
-#include <LibreSCRS/Agent/backend/Logging.h>
+#include <LibreSCRS/Logging.h>
 #include <LibreSCRS/Agent/presence/PresenceModel.h>
 #include <vector>
 namespace LibreSCRS::Agent {

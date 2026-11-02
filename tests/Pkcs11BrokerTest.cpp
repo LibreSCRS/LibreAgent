@@ -7,6 +7,7 @@
 // clock is injected, and the LeaseManager runs in-process. The thin transport
 // forwarding (ManagerObject -> these methods + caller resolution) is covered by
 // the backend's D-Bus introspection test.
+#include "AllowAllAuthorizer.h"
 #include <LibreSCRS/Agent/backend/Authorizer.h>
 #include "Pkcs11BrokerTestSupport.h"
 #include <LibreSCRS/Agent/AgentCore.h>
@@ -26,6 +27,7 @@
 #include <optional>
 #include <span>
 #include <string>
+#include <thread>
 #include <variant>
 #include <vector>
 
@@ -312,6 +314,65 @@ TEST(Pkcs11Broker, LoginRejectedWhenAuthorizerDenies)
     } catch (Pkcs11Broker::LoginOutcome oc) {
         EXPECT_EQ(oc, Pkcs11Broker::LoginOutcome::NotAuthorized);
     }
+}
+
+// An authority that makes a person decide (a polkit dialog) answers late. The
+// broker must not wait for it: the thread calling login() dispatches every
+// other request too. The synchronous answer here takes two seconds; the
+// asynchronous one is held until the test releases it.
+TEST(Pkcs11Broker, LoginDoesNotWaitForTheAuthority)
+{
+    struct SlowAuthority final : Authorizer
+    {
+        AuthorizationOutcome authorize(std::string_view, const CallerToken&) override
+        {
+            std::this_thread::sleep_for(std::chrono::seconds(2));
+            return AuthorizationOutcome::Granted;
+        }
+        void authorizeAsync(std::string_view, const CallerToken&, Completion done) override
+        {
+            pending = std::move(done);
+        }
+        Completion pending;
+    };
+    Harness h;
+    SlowAuthority slow;
+    Pkcs11Broker obj{Pkcs11Broker::Deps{
+        .lease = h.lease,
+        .authorizer = slow,
+        .certDer = certDerSeam([&](const std::string&, const std::string&) { return h.certDerResult; }),
+        .publicKey = publicKeySeam([&](const std::string&, const std::string&) { return h.publicKeyResult; }),
+        .login = loginSeam([&](const std::string&) {
+            ++h.loginCalls;
+            return h.loginOutcome;
+        }),
+        .signRaw = cryptoSeam([&](const std::string&, const std::string&, std::span<const std::uint8_t>,
+                                  const std::string&, const Pkcs11Broker::LeasePinState&) { return h.signResult; }),
+        .decrypt = cryptoSeam([&](const std::string&, const std::string&, std::span<const std::uint8_t>,
+                                  const std::string&, const Pkcs11Broker::LeasePinState&) { return h.decryptResult; }),
+        .resolveCardKey = [&](const std::string&) { return h.cardKey; },
+        .now = [&]() { return h.clockNow; },
+    }};
+
+    using LO = Pkcs11Broker::LoginOutcome;
+    std::optional<std::uint32_t> granted;
+    std::optional<LO> refused;
+    const auto started = std::chrono::steady_clock::now();
+    obj.login(kReader, appCaller(),
+              Reply<LO, std::uint32_t>{[&](const std::uint32_t& idle) { granted = idle; },
+                                       [&](LO outcome) { refused = outcome; }, LO::CardError});
+    EXPECT_LT(std::chrono::steady_clock::now() - started, std::chrono::milliseconds(500));
+    EXPECT_FALSE(granted.has_value());
+    EXPECT_FALSE(refused.has_value());
+    EXPECT_EQ(h.loginCalls, 0);
+
+    // Meanwhile another client is served.
+    EXPECT_EQ(callCertDer(obj, kReader, kCertId, appCaller()), kDer);
+
+    ASSERT_TRUE(slow.pending);
+    slow.pending(AuthorizationOutcome::Granted);
+    EXPECT_EQ(granted, std::optional<std::uint32_t>{600u});
+    EXPECT_EQ(h.loginCalls, 1);
 }
 
 TEST(Pkcs11Broker, LoginCancelledByUserSurfacesCancelled)
@@ -638,21 +699,19 @@ TEST(Pkcs11Broker, ForwardsRsaPkcs1MechanismToSeam)
     EXPECT_TRUE(decEmpty);
 }
 
-// Mechanism gate: the SignRaw path wires the RSA and pre-hashed ECDSA sign
-// primitives (RsaPkcs1Sign, EcdsaSign); Decrypt wires RsaPkcs1Decrypt. Any arm
+// Mechanism gate: the SignRaw path wires the sign primitives (RsaPkcs1Sign,
+// Sha256RsaPkcs1Sign, EcdsaSign); Decrypt wires RsaPkcs1Decrypt. Any arm
 // outside the wired set is rejected NotSupported BEFORE the seam runs, so a
-// non-wired mechanism can never be silently executed as the seam's default
-// primitive. The gate precedes the lease touch, so a live lease does not let a
-// non-wired arm through.
+// mechanism of another path can never be silently executed as the seam's
+// default primitive. The gate precedes the lease touch, so a live lease does
+// not let such an arm through.
 TEST(Pkcs11Broker, SignRawRejectsNonWiredMechanismNotSupported)
 {
     Harness h;
     auto obj = h.make();
     static_cast<void>(callLogin(obj, kReader, appCaller())); // a live lease would otherwise allow the op
-    EXPECT_EQ(signRawMechanismOutcome(obj, Mechanism::RsaPssSign, appCaller()),
-              Pkcs11Broker::CryptoOutcome::NotSupported);
-    // A public-key / encrypt arm must never ride the lease-gated private-key path.
-    EXPECT_EQ(signRawMechanismOutcome(obj, Mechanism::RsaPkcs1Encrypt, appCaller()),
+    // A decryption is not a signature, even with the same RSA key.
+    EXPECT_EQ(signRawMechanismOutcome(obj, Mechanism::RsaPkcs1Decrypt, appCaller()),
               Pkcs11Broker::CryptoOutcome::NotSupported);
     // ECDH derive is a private-key op but not a sign primitive — still rejected.
     EXPECT_EQ(signRawMechanismOutcome(obj, Mechanism::EcdhDerive, appCaller()),
@@ -725,9 +784,7 @@ TEST(Pkcs11Broker, DecryptRejectsNonWiredMechanismNotSupported)
     Harness h;
     auto obj = h.make();
     static_cast<void>(callLogin(obj, kReader, appCaller()));
-    EXPECT_EQ(decryptMechanismOutcome(obj, Mechanism::RsaOaepDecrypt, appCaller()),
-              Pkcs11Broker::CryptoOutcome::NotSupported);
-    EXPECT_EQ(decryptMechanismOutcome(obj, Mechanism::RsaOaepEncrypt, appCaller()),
+    EXPECT_EQ(decryptMechanismOutcome(obj, Mechanism::EcdhDerive, appCaller()),
               Pkcs11Broker::CryptoOutcome::NotSupported);
     // The wired SIGN arm is not a decrypt arm either — cross-arm requests fail closed.
     EXPECT_EQ(decryptMechanismOutcome(obj, Mechanism::RsaPkcs1Sign, appCaller()),

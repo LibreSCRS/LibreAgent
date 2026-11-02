@@ -2,7 +2,6 @@
 // SPDX-FileCopyrightText: 2026 hirashix0
 #include <LibreSCRS/Agent/value/ErrorTaxonomy.h>
 #include <LibreSCRS/Agent/operations/OperationBase.h> // Phase enum (wire-stable integers)
-#include <LibreSCRS/Plugin/ReadResult.h>
 #include <LibreSCRS/SecureChannel/ChannelErrors.h>
 #include <gtest/gtest.h>
 #include <type_traits>
@@ -11,7 +10,6 @@ using LibreSCRS::Agent::ErrorCode;
 using LibreSCRS::Agent::errorCodeFor;
 using LibreSCRS::Agent::Operations::OperationPhase;
 using LibreSCRS::SecureChannel::ChannelActivationError;
-using ReadStatus = LibreSCRS::Plugin::ReadResult::Status;
 
 TEST(ErrorTaxonomy, StableNumericValues)
 {
@@ -89,19 +87,8 @@ TEST(ErrorTaxonomy, MapsChannelActivationErrors)
     EXPECT_EQ(errorCodeFor(ChannelActivationError::PaceDowngradeDetected), ErrorCode::CommunicationError);
 }
 
-TEST(ErrorTaxonomy, MapsReadResultStatuses)
-{
-    EXPECT_EQ(errorCodeFor(ReadStatus::Ok), ErrorCode::None);
-    EXPECT_EQ(errorCodeFor(ReadStatus::CommunicationError), ErrorCode::CommunicationError);
-    EXPECT_EQ(errorCodeFor(ReadStatus::ParseError), ErrorCode::ParseError);
-    EXPECT_EQ(errorCodeFor(ReadStatus::UnsupportedCard), ErrorCode::UnsupportedCard);
-    EXPECT_EQ(errorCodeFor(ReadStatus::AuthenticationFailed), ErrorCode::AuthFailed);
-    EXPECT_EQ(errorCodeFor(ReadStatus::Cancelled), ErrorCode::None);
-}
-
 TEST(ErrorTaxonomy, MappersAreNoexcept)
 {
     static_assert(noexcept(errorCodeFor(ChannelActivationError::None)));
-    static_assert(noexcept(errorCodeFor(ReadStatus::Ok)));
     SUCCEED();
 }

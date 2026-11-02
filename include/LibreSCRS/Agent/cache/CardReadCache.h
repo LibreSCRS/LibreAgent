@@ -21,7 +21,7 @@ namespace LibreSCRS::Agent {
 //
 // Residency follows active use: the window is refreshed on every successful get,
 // and an idle entry is erased + zeroized once it elapses. Every field buffer is
-// OPENSSL_cleanse'd before a (half-)entry is dropped so no card PII lingers in
+// secureZero'd before a (half-)entry is dropped so no card PII lingers in
 // freed heap. Certificates are public but scrubbed uniformly. Never persisted.
 //
 // Thread-safe via an internal mutex. get()/getCertificates() are const but

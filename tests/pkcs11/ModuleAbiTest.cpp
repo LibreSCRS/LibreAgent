@@ -820,6 +820,20 @@ TEST(ModuleAbi, SecondLoginReturnsAlreadyLoggedIn)
     EXPECT_EQ(m.fn->C_Login(session, CKU_USER, nullptr, 0), CKR_USER_ALREADY_LOGGED_IN);
 }
 
+// A login the site's policy refuses sent no PIN anywhere: the login is
+// non-prompting, the refusal is the authority's. Reporting it as a wrong PIN
+// would send a user hunting for a typo that never happened.
+TEST(ModuleAbi, ALoginThePolicyRefusesIsNotAWrongPin)
+{
+    SocketFixture agent;
+    LoadedModule m;
+    ASSERT_EQ(m.fn->C_Initialize(nullptr), CKR_OK);
+    CK_SESSION_HANDLE session = 0;
+    ASSERT_EQ(m.fn->C_OpenSession(firstPresentSlot(m.fn), CKF_SERIAL_SESSION, nullptr, nullptr, &session), CKR_OK);
+    agent.fake->failCall(Call::PkLogin, LibreSCRS::Agent::Wire::SyncError::NotAuthorized);
+    EXPECT_EQ(m.fn->C_Login(session, CKU_USER, nullptr, 0), CKR_FUNCTION_FAILED);
+}
+
 // A loader (ssh-pkcs11, NSS, Firefox) re-authenticates a key whose
 // CKA_ALWAYS_AUTHENTICATE is TRUE with C_Login(CKU_CONTEXT_SPECIFIC) between
 // C_SignInit and C_Sign. That re-auth must SUCCEED (lease refresh) even while
@@ -1061,6 +1075,34 @@ TEST(ModuleAbi, SessionInfoDoesNotWaitForAPrompt)
     EXPECT_LT(std::chrono::steady_clock::now() - started, std::chrono::milliseconds(500));
     EXPECT_EQ(agent.fake->callCount(Call::PkLoginState), 0) << "the busy connection was not asked";
     prompt.join();
+}
+
+// Refreshing the slot model is a round trip to the agent, and the agent may be
+// slow to answer it (reading a card's certificates the first time). The module
+// lock must not be held across that wait, or every other C_* call of every
+// thread in the loading process waits with it.
+TEST(ModuleAbi, ASlowSnapshotDoesNotHoldTheModuleLock)
+{
+    SocketFixture agent;
+    LoadedModule m;
+    ASSERT_EQ(m.fn->C_Initialize(nullptr), CKR_OK);
+    const CK_SLOT_ID slot = firstPresentSlot(m.fn);
+
+    agent.fake->delayCall(Call::GetState, std::chrono::seconds(2));
+    std::thread slow([&] {
+        CK_ULONG count = 0;
+        (void)m.fn->C_GetSlotList(CK_FALSE, nullptr, &count);
+    });
+    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    // Another thread opens a session meanwhile: it takes the module lock and
+    // refreshes too, and the refresh finds the agent connection busy and serves
+    // what it last saw.
+    const auto started = std::chrono::steady_clock::now();
+    CK_SESSION_HANDLE session = 0;
+    EXPECT_EQ(m.fn->C_OpenSession(slot, CKF_SERIAL_SESSION, nullptr, nullptr, &session), CKR_OK);
+    EXPECT_LT(std::chrono::steady_clock::now() - started, std::chrono::milliseconds(500));
+    slow.join();
+    agent.fake->delayCall(Call::GetState, std::chrono::milliseconds(0));
 }
 
 // An agent from before the question is not sent it, and the module keeps what

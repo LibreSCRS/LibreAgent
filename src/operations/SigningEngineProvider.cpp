@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 // SPDX-FileCopyrightText: 2026 hirashix0
 #include <LibreSCRS/Agent/operations/SigningEngineProvider.h>
-#include <LibreSCRS/Agent/backend/Logging.h>
+#include <LibreSCRS/Logging.h>
 #include <LibreSCRS/Agent/config/ConfigStore.h>
 #include <LibreSCRS/Signing/SigningService.h>
 #include <LibreSCRS/Signing/TsaProvider.h>
@@ -79,7 +79,7 @@ void SigningEngineProvider::rebuild()
     }
     auto trust = std::move(*trustResult);
     // Build the TSA provider from the configured URLs. An empty list yields an
-    // empty provider (default-constructed std::function): B-B still signs, and a
+    // empty provider (one that names no URL): B-B still signs, and a
     // B-T+ request fails closed at LM sign time with a TSA-required error rather
     // than silently degrading. A non-empty list binds the first configured URL
     // (the single-URL realization; a multi-URL fail-over policy is a later

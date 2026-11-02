@@ -31,6 +31,10 @@ ErrorCode mapOpenError(LibreSCRS::SmartCard::OpenError::Kind kind) noexcept
         return ErrorCode::CardRemoved;
     case LibreSCRS::SmartCard::OpenError::Kind::ProtocolError:
         return ErrorCode::CommunicationError;
+    // Another holder has the card, or the platform has not granted the
+    // session yet: transient, so the user is told to try again.
+    case LibreSCRS::SmartCard::OpenError::Kind::SessionRefused:
+        return ErrorCode::CommunicationError;
     }
     return ErrorCode::CommunicationError;
 }

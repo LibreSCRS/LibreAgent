@@ -2,7 +2,7 @@
 // SPDX-FileCopyrightText: 2026 hirashix0
 #pragma once
 //
-// INTERNAL — never installed. The Config1 key vocabulary and the ONE canonical
+// The Config1 key vocabulary and the ONE canonical
 // client-side shape a `TslSources` / `CscaSources` row takes, shared by both
 // transports (and by the fakes that model each wire) so the two cannot drift.
 //

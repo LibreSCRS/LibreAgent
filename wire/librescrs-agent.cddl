@@ -4,7 +4,8 @@
 ; LibreSCRS macOS agent socket wire contract — CBOR (RFC 8949) / CDDL (RFC 8610).
 ;
 ; Wire contract for the macOS agent socket transport. The canonical SEMANTIC
-; source of truth is the D-Bus agent interface surface; this schema MIRRORS it
+; source of truth is the D-Bus agent interface surface, whose introspection XML
+; lives beside this file in wire/dbus/; this schema MIRRORS it
 ; for the socket transport and does NOT fork it — a shape that differs here is a
 ; bug in this file, not a dialect.
 ;
@@ -35,9 +36,9 @@ capability-bit = ( Pki: 0, IdentityData: 1, EmrtdCrypto: 2, PinManagement: 3 )  
 ; Tolerance (client decode): pre-read-auth is wire-frozen append-only; a value
 ; past Can=2 (a future unlock method this client build does not name yet)
 ; MUST NOT fail the frame -- decode it through raw, numeric, unmodified. What
-; an unrecognised value MEANS is a client-side concern, not the codec's: the
-; card-property mapping (e.g. the socket transport's preAuthToken()) treats
-; it the same as the default, None.
+; an unrecognised value MEANS is a client-side concern, not the codec's, and
+; the rule is: UNKNOWN = an unlock is required. The card wants something before
+; it can be read; treating it as None would read it without unlocking.
 pre-read-auth  = &( None: 0, Mrz: 1, Can: 2 )
 ; Tolerance (client decode): op-phase and op-status are both wire-frozen
 ; append-only; a value past this build's last named one is a FUTURE value,
@@ -76,11 +77,10 @@ req-body = ( hello // get-state // read-identity // get-photo //
 ; key existed. A client that only reads on demand would rather not accumulate
 ; presence frames it discards, and says so with false.
 ;
-; NOT YET HONOURED: this release's hosts decode the key and no host acts on it,
-; so a client that sends false still receives presence events. The key is
-; published now so the two directions land in either order -- a client may send
-; it against any 5.0 agent without being refused. Until a host reads it, treat
-; the reply as "events may arrive regardless".
+; The host honours it: a connection that said false receives no presence
+; events (it still receives every reply and every event of an operation it
+; started). proto must equal the agent's own wire protocol version; any other
+; value is answered with the UnsupportedProtocol sync-error and nothing more.
 hello             = ( t: "Hello", proto: uint, ? client: tstr, ? wantsEvents: bool )
 get-state         = ( t: "GetState" )
 read-identity     = ( t: "ReadIdentity", card: handle )
@@ -407,11 +407,9 @@ reply-ok = ( hello-ack // op-started // state // cert-list // cert-der // public
 ;   "credentials"
 ;   "card-type"
 ;   "token-info"
-;   "trust-status"
 ;   "tsa-url"
 ;   "visual-sign"
 ;   "layout-preview"
-;   "identity-stream"
 ;   "batch-sign"
 ;   "ec-keys"
 ;   "login-state"
@@ -502,7 +500,21 @@ csca-anchor-state = ( kind: "CscaAnchorState", anchors: uint, issuers: uint,
 forgotten-anchors = ( kind: "ForgottenAnchors", anchorsForgotten: uint,
                       hadPinnedSigner: bool )
 
-reader-state = { handle: handle, name: tstr, hasCard: bool, ? card: handle }
+; model/interface are the reader's label, the agent's one reading of the PC/SC
+; name: model is the short model ("OMNIKEY 5422", never empty, never any
+; interface wording), interface which physical interface the slot is. Both are
+; decided over the whole roster -- a dual-interface twin, a same-model
+; neighbour -- so they can change while the reader stays: a `property-changed`
+; event for "org.librescrs.Agent.Reader1" carries the new pair. A client shows
+; these and never parses `name`. Both keys are OPTIONAL: absent decodes to "no
+; label" (an older agent) -- a client then shows `name` -- never a failure.
+reader-state = { handle: handle, name: tstr, hasCard: bool, ? card: handle,
+                 ? model: tstr, ? interface: reader-interface }
+; Tolerance (client decode): reader-interface is append-only; a token this
+; client does not know decodes as "unknown", never as an error. "contact" is
+; only ever the contact slot of a dual-interface unit; a single-interface
+; contact reader is "unknown".
+reader-interface = "unknown" / "contact" / "contactless"
 ; cardType/atr are appended (feature-gated "card-type"): cardType is
 ; empty-until-known (absent from the map until the agent has a value — either
 ; the single-candidate pluginId resolved at the same deferred point as caps/
@@ -621,9 +633,11 @@ card-removed     = ( t: "CardRemoved",   handle: handle )
 ;     after insertion (see card-state's own comment above) --
 ;     props: { CardType: tstr }
 ;   iface "org.librescrs.Agent.Reader1": pushed on a reader's hasCard/card
-;     transition --
-;     props: { HasCard: bool, ? Card: tstr }  (Card present only when
-;     HasCard is true)
+;     transition, and when another reader's arrival or removal changes this
+;     reader's label --
+;     props: { ? HasCard: bool, ? Card: tstr, ? Model: tstr,
+;              ? Interface: reader-interface }  (Card present only when
+;     HasCard is true; Model and Interface travel together)
 property-changed = ( t: "PropertyChanged", handle: handle, iface: tstr, props: { * tstr => any } )
 config-changed   = ( t: "ConfigChanged", key: config-key )   ; Config1.Changed(key) — client re-reads via GetConfig
 ; Operation1 progress properties: Phase + Progress/IsIndeterminate/WatchdogTimeoutSeconds.
@@ -657,13 +671,10 @@ op-progress = ( t: "OpProgress", op: uint, phase: op-phase,
 ; unchanged by this event's existence — a group delivered here is a
 ; progressive hint, never a substitute for it. `fields` mirrors
 ; identity-result's own per-group map shape (the SAME id-field tuple), one
-; group's worth rather than the whole grouped dict. Gated behind the
-; "identity-stream" feature token (see hello-ack): an agent that does not
-; advertise it never writes this frame at all; a client is not required to
-; gate its OWN handling of it on the token (unlike every request-side gate
-; above) because receiving an event needs no request to have been sent
-; differently — the asymmetry is that this is push-only, not
-; request/response. An older client build that does not recognise
+; group's worth rather than the whole grouped dict. No feature token gates
+; it: an agent that does not stream never writes this frame, and receiving
+; an event needs no request to have been sent differently, so a client
+; handles it whenever it arrives. An older client build that does not recognise
 ; "OpIdentityGroup" at all skips it via the wire-wide unknown-`t`-tag
 ; tolerance, exactly like any other event it does not understand.
 op-identity-group = ( t: "OpIdentityGroup", op: uint, groupKey: tstr,
@@ -671,13 +682,14 @@ op-identity-group = ( t: "OpIdentityGroup", op: uint, groupKey: tstr,
 op-result-ready = ( t: "OpResultReady", op: uint, result: op-result )
 op-finished = ( t: "OpFinished", op: uint, status: op-status, code: error-code,
                 msgKey: tstr, msgFallback: tstr )
-; system-lifecycle: the agent quiesced card access (sleep / lock / user-switch).
+; system-lifecycle: the agent quiesced card access (sleep / lock / user-switch /
+; stop). The D-Bus twin is Manager1.Quiesced(u reason), same values; the core's
+; quiesce(reason) decides what is forgotten, the event only announces it.
 agent-quiesced = ( t: "AgentQuiesced", reason: quiesce-reason )
 ; Tolerance (client decode): quiesce-reason is wire-frozen append-only, like
-; pre-read-auth; an unrecognised reason decodes through raw. Nothing on the
-; client branches on the value today, so an unrecognised one is inertly a
-; "generic quiesce" -- the event still degrades agent availability the same
-; way regardless of which reason it names.
+; pre-read-auth; an unrecognised reason decodes through raw and reaches the
+; client's quiesced signal verbatim -- the event still degrades agent
+; availability the same way regardless of which reason it names.
 quiesce-reason = &( SystemSleep: 0, ScreenLocked: 1, SessionInactive: 2, Shutdown: 3 )
 
 ; ---- op result payloads (Sign also served by GetSignResult within the grace window) ----

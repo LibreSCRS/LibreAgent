@@ -26,9 +26,9 @@
 namespace LibreSCRS::Agent::Operations {
 
 // Translate an LM SigningResult's terminal status into the seam's hermetic
-// SignOutcome::Status. KeyAmbiguous is a SigningEngineError on the LM wire
-// distinguished only by its dedicated ErrorKey (the CKA_ID duplicate-
-// detection). PinVerificationFailed/CardBlocked are the two statuses that
+// SignOutcome::Status. KeyAmbiguous is never the engine's answer: the agent
+// chooses the key and hands it over. PinVerificationFailed/CardBlocked are the
+// two statuses that
 // cause a caller (BatchSignFlow) to halt a batch, downstream-mapped to
 // ErrorCode::CredentialWrong/CredentialBlocked.
 [[nodiscard]] SignOutcome::Status mapSigningResultStatus(const LibreSCRS::Signing::SigningResult& r) noexcept;

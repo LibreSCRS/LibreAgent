@@ -17,6 +17,7 @@
     "pk-sign-mech": { "kind": "token", "cddlOnly": true, "entries": [ "rsa-pkcs", "sha256-rsa-pkcs", "ecdsa" ] },
     "pre-read-auth": { "kind": "numeric", "entries": [ { "value": 0, "name": "None" }, { "value": 1, "name": "Mrz" }, { "value": 2, "name": "Can" } ] },
     "quiesce-reason": { "kind": "numeric", "entries": [ { "value": 0, "name": "SystemSleep" }, { "value": 1, "name": "ScreenLocked" }, { "value": 2, "name": "SessionInactive" }, { "value": 3, "name": "Shutdown" } ] },
+    "reader-interface": { "kind": "token", "entries": [ "unknown", "contact", "contactless" ] },
     "requested-format": { "kind": "token", "union-of": "sign-format", "entries": [ "pades", "cades", "xades", "jades", "asice", "auto" ] },
     "requested-level": { "kind": "token", "union-of": "sign-level", "entries": [ "b-b", "b-t", "b-lt", "b-lta", "auto" ] },
     "requested-packaging": { "kind": "token", "union-of": "packaging-mode", "entries": [ "enveloped", "detached", "auto" ] },
@@ -25,5 +26,6 @@
     "sign-level": { "kind": "token", "entries": [ "b-b", "b-t", "b-lt", "b-lta" ] },
     "sync-error": { "kind": "token", "entries": [ "UnknownCard", "KeyNotFound", "NotAuthorized", "UserNotLoggedIn", "UnknownConfigKey", "ReadOnlyConfig", "InvalidConfigValue", "UnsupportedProtocol", "AuthFailed", "CommunicationError", "NotSupported", "UnsupportedOnThisCard", "UnsupportedSignatureParameter", "InputTooLarge", "RateLimited", "UnknownCredential", "InvalidRequest", "NoResult", "MasterListReplayed", "Cancelled" ] },
     "unblock-style": { "kind": "token", "entries": [ "unknown", "resetOnly", "setsNewPin", "unblockAndChange" ] }
-  }
+  },
+  "socket-location": { "noTeamPrefix": "group", "appGroupSuffix": ".org.librescrs.LibreMac", "socketName": "agent.sock" }
 }

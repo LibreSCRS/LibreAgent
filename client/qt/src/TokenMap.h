@@ -20,11 +20,11 @@
 //   - PinVerb: wire/librescrs-agent.cddl's `cred-verb` group
 //     ("change" / "unblock" / "activate_pin").
 //
-// Round-trip (enum -> token -> enum) coverage for every pair, plus
-// unknown-token -> nullopt, lives in client/qt/tests/TokenMapTest.cpp.
+// Encoding only: the client sends these tokens and never parses one back, so
+// the inverse lives with the test (client/qt/tests/TokenMapDecode.h), which
+// holds every token distinct and exactly the agent's spelling.
 #include <LibreSCRS/AgentClient/SignOptions.h>
 
-#include <optional>
 #include <string_view>
 
 namespace LibreSCRS::AgentClient::detail {
@@ -33,10 +33,5 @@ namespace LibreSCRS::AgentClient::detail {
 [[nodiscard]] std::string_view toToken(SignatureLevel level) noexcept;
 [[nodiscard]] std::string_view toToken(Packaging packaging) noexcept;
 [[nodiscard]] std::string_view toToken(PinVerb verb) noexcept;
-
-[[nodiscard]] std::optional<SignatureFormat> signatureFormatFromToken(std::string_view token) noexcept;
-[[nodiscard]] std::optional<SignatureLevel> signatureLevelFromToken(std::string_view token) noexcept;
-[[nodiscard]] std::optional<Packaging> packagingFromToken(std::string_view token) noexcept;
-[[nodiscard]] std::optional<PinVerb> pinVerbFromToken(std::string_view token) noexcept;
 
 } // namespace LibreSCRS::AgentClient::detail

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 // SPDX-FileCopyrightText: 2026 hirashix0
 #pragma once
+#include <LibreSCRS/Agent/backend/PrompterWire.h>
 #include <LibreSCRS/Agent/value/ReaderLabels.h>
 #include <LibreSCRS/Auth/PaceSecretKind.h>
 #include <LibreSCRS/Secure/String.h>
@@ -97,6 +98,37 @@ enum class PromptStatus : std::uint8_t {
     // the addressed cancel. APPENDED, never inserted.
     HelperTooOld,
 };
+
+/// What a prompter's reply word means for the request that raised it.
+///
+/// @p mrzAlternativeOffered says whether THIS request was a CAN request that
+/// offered the MRZ form. `OkMrz` is success only then; a caller that never made
+/// the offer has no slot for an MRZ, so it fails closed like any word it did
+/// not expect. `Unauthorized` is the prompter refusing the agent, a
+/// misconfiguration, so it is an error too.
+///
+/// @since 5.0
+[[nodiscard]] constexpr PromptStatus promptStatusFor(PrompterWire::PromptReplyStatus reply,
+                                                     bool mrzAlternativeOffered) noexcept
+{
+    using PrompterWire::PromptReplyStatus;
+    switch (reply) {
+    case PromptReplyStatus::Ok:
+        return PromptStatus::Ok;
+    case PromptReplyStatus::Cancelled:
+        return PromptStatus::Cancelled;
+    case PromptReplyStatus::Timeout:
+        // The window's own clock; never folded into Cancelled, which is the
+        // holder's act.
+        return PromptStatus::Timeout;
+    case PromptReplyStatus::OkMrz:
+        return mrzAlternativeOffered ? PromptStatus::Ok : PromptStatus::Error;
+    case PromptReplyStatus::Error:
+    case PromptReplyStatus::Unauthorized:
+        break;
+    }
+    return PromptStatus::Error;
+}
 
 struct PromptResult
 {

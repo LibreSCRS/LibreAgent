@@ -28,6 +28,7 @@
 #include <LibreSCRS/Agent/pkcs11/ObjectModel.h>
 #include <LibreSCRS/Agent/pkcs11/SessionState.h>
 #include <LibreSCRS/Agent/pkcs11/pkcs11.h>
+#include <LibreSCRS/Agent/util/DerLength.h>
 #include <LibreSCRS/Agent/util/DisplayText.h> // utf8PrefixLength
 
 #include <chrono>
@@ -136,11 +137,41 @@ private:
     CK_SESSION_HANDLE m_handle = 0;
 };
 
+// Snapshot ordering: a refresh publishes only if no refresh that STARTED later
+// has already published, so two overlapping refreshes cannot leave the older
+// view in place. Both guarded by g_mutex.
+std::uint64_t g_snapshotsStarted = 0;
+std::uint64_t g_snapshotPublished = 0;
+
 // Pull a fresh snapshot from the agent into the session state. Called on every
 // slot/token query so live reader/card changes are reflected.
-void refreshModel()
+//
+// The snapshot is a round trip to the agent, which may take as long as the
+// agent takes to read a card, so it runs WITHOUT g_mutex: taken unlocked,
+// published locked. Holding the lock across it stalled every C_* call of every
+// thread in the loading process behind one slow answer. The in-flight guard
+// keeps C_Finalize from destroying the client meanwhile, exactly as for the
+// interactive calls. @p lk is held on entry and on return; false when the
+// library was finalized while the lock was released.
+[[nodiscard]] bool refreshModel(std::unique_lock<std::mutex>& lk)
 {
-    g_lib->state.setModel(ObjectModel::build(g_lib->client->snapshot()));
+    AgentClient* client = g_lib->client.get();
+    const std::uint64_t ticket = ++g_snapshotsStarted;
+    std::optional<AgentSnapshot> snapshot;
+    {
+        RpcInFlightGuard inFlight(nullptr); // under g_mutex; its dtor re-takes it, so it ends unlocked
+        lk.unlock();
+        snapshot = client->snapshot();
+    }
+    lk.lock();
+    if (!g_lib) {
+        return false;
+    }
+    if (ticket > g_snapshotPublished) {
+        g_snapshotPublished = ticket;
+        g_lib->state.setModel(ObjectModel::build(*snapshot));
+    }
+    return true;
 }
 
 // Map an AgentClient::Status to a CKR_* for a sign/decrypt/login outcome.
@@ -155,7 +186,11 @@ CK_RV ckrFromStatus(Status s, CK_RV invalidInputRv = CKR_GENERAL_ERROR)
         // Surfaced so NSS transparently re-C_Login when the agent lease expired.
         return CKR_USER_NOT_LOGGED_IN;
     case Status::NotAuthorized:
-        return CKR_PIN_INCORRECT;
+        // The authority refused the CALLER (a site policy on the login or the
+        // operation); no PIN was checked, so CKR_PIN_INCORRECT would claim one
+        // was. PKCS#11 has no "not authorized" for these functions; the
+        // generic failure is the honest answer.
+        return CKR_FUNCTION_FAILED;
     case Status::AuthFailed:
         return CKR_PIN_INCORRECT;
     case Status::Cancelled:
@@ -335,13 +370,14 @@ CK_DECLARE_FUNCTION(CK_RV, C_GetInfo)(CK_INFO_PTR pInfo)
 CK_DECLARE_FUNCTION(CK_RV, C_GetSlotList)(CK_BBOOL tokenPresent, CK_SLOT_ID_PTR pSlotList, CK_ULONG_PTR pulCount)
 {
     PKCS11_TRY
-    std::lock_guard lk(g_mutex);
+    std::unique_lock lk(g_mutex);
     if (!g_lib)
         return CKR_CRYPTOKI_NOT_INITIALIZED;
     if (pulCount == NULL_PTR)
         return CKR_ARGUMENTS_BAD;
 
-    refreshModel();
+    if (!refreshModel(lk))
+        return CKR_CRYPTOKI_NOT_INITIALIZED;
     const auto ids = g_lib->state.slotIds(tokenPresent == CK_TRUE);
 
     if (pSlotList == NULL_PTR) {
@@ -362,12 +398,13 @@ CK_DECLARE_FUNCTION(CK_RV, C_GetSlotList)(CK_BBOOL tokenPresent, CK_SLOT_ID_PTR 
 CK_DECLARE_FUNCTION(CK_RV, C_GetSlotInfo)(CK_SLOT_ID slotID, CK_SLOT_INFO_PTR pInfo)
 {
     PKCS11_TRY
-    std::lock_guard lk(g_mutex);
+    std::unique_lock lk(g_mutex);
     if (!g_lib)
         return CKR_CRYPTOKI_NOT_INITIALIZED;
     if (pInfo == NULL_PTR)
         return CKR_ARGUMENTS_BAD;
-    refreshModel();
+    if (!refreshModel(lk))
+        return CKR_CRYPTOKI_NOT_INITIALIZED;
     const Slot* slot = g_lib->state.slotById(slotID);
     if (!slot)
         return CKR_SLOT_ID_INVALID;
@@ -390,12 +427,13 @@ CK_DECLARE_FUNCTION(CK_RV, C_GetSlotInfo)(CK_SLOT_ID slotID, CK_SLOT_INFO_PTR pI
 CK_DECLARE_FUNCTION(CK_RV, C_GetTokenInfo)(CK_SLOT_ID slotID, CK_TOKEN_INFO_PTR pInfo)
 {
     PKCS11_TRY
-    std::lock_guard lk(g_mutex);
+    std::unique_lock lk(g_mutex);
     if (!g_lib)
         return CKR_CRYPTOKI_NOT_INITIALIZED;
     if (pInfo == NULL_PTR)
         return CKR_ARGUMENTS_BAD;
-    refreshModel();
+    if (!refreshModel(lk))
+        return CKR_CRYPTOKI_NOT_INITIALIZED;
     const Slot* slot = g_lib->state.slotById(slotID);
     if (!slot)
         return CKR_SLOT_ID_INVALID;
@@ -433,12 +471,13 @@ CK_DECLARE_FUNCTION(CK_RV, C_GetMechanismList)
 (CK_SLOT_ID slotID, CK_MECHANISM_TYPE_PTR pMechanismList, CK_ULONG_PTR pulCount)
 {
     PKCS11_TRY
-    std::lock_guard lk(g_mutex);
+    std::unique_lock lk(g_mutex);
     if (!g_lib)
         return CKR_CRYPTOKI_NOT_INITIALIZED;
     if (pulCount == NULL_PTR)
         return CKR_ARGUMENTS_BAD;
-    refreshModel();
+    if (!refreshModel(lk))
+        return CKR_CRYPTOKI_NOT_INITIALIZED;
     const Slot* slot = g_lib->state.slotById(slotID);
     if (!slot)
         return CKR_SLOT_ID_INVALID;
@@ -462,12 +501,13 @@ CK_DECLARE_FUNCTION(CK_RV, C_GetMechanismList)
 CK_DECLARE_FUNCTION(CK_RV, C_GetMechanismInfo)(CK_SLOT_ID slotID, CK_MECHANISM_TYPE type, CK_MECHANISM_INFO_PTR pInfo)
 {
     PKCS11_TRY
-    std::lock_guard lk(g_mutex);
+    std::unique_lock lk(g_mutex);
     if (!g_lib)
         return CKR_CRYPTOKI_NOT_INITIALIZED;
     if (pInfo == NULL_PTR)
         return CKR_ARGUMENTS_BAD;
-    refreshModel();
+    if (!refreshModel(lk))
+        return CKR_CRYPTOKI_NOT_INITIALIZED;
     const Slot* slot = g_lib->state.slotById(slotID);
     if (!slot)
         return CKR_SLOT_ID_INVALID;
@@ -542,14 +582,15 @@ CK_DECLARE_FUNCTION(CK_RV, C_OpenSession)
 {
     PKCS11_TRY(void) pApplication;
     (void)Notify;
-    std::lock_guard lk(g_mutex);
+    std::unique_lock lk(g_mutex);
     if (!g_lib)
         return CKR_CRYPTOKI_NOT_INITIALIZED;
     if (phSession == NULL_PTR)
         return CKR_ARGUMENTS_BAD;
     if (!(flags & CKF_SERIAL_SESSION))
         return CKR_SESSION_PARALLEL_NOT_SUPPORTED;
-    refreshModel();
+    if (!refreshModel(lk))
+        return CKR_CRYPTOKI_NOT_INITIALIZED;
     const Slot* slot = g_lib->state.slotById(slotID);
     if (!slot)
         return CKR_SLOT_ID_INVALID;
@@ -824,7 +865,8 @@ CK_DECLARE_FUNCTION(CK_RV, C_GetObjectSize)(CK_SESSION_HANDLE hSession, CK_OBJEC
 namespace {
 
 // The element at the front of @p in -- its whole encoding and its content --
-// and @p in moved past it. DER: low tag numbers, definite lengths only.
+// and @p in moved past it. DER: low tag numbers, definite lengths read by the
+// agent's one rule (readDerLength: at most four length octets).
 struct DerElement
 {
     std::span<const std::uint8_t> whole;
@@ -833,23 +875,14 @@ struct DerElement
 
 std::optional<DerElement> takeDerElement(std::span<const std::uint8_t>& in)
 {
-    if (in.size() < 2 || (in[0] & 0x1F) == 0x1F)
+    if (in.empty() || (in[0] & 0x1F) == 0x1F)
         return std::nullopt;
-    std::size_t header = 2;
-    std::size_t length = in[1];
-    if ((length & 0x80) != 0) {
-        const std::size_t octets = length & 0x7F;
-        if (octets == 0 || octets > sizeof(std::size_t) || in.size() < header + octets)
-            return std::nullopt;
-        length = 0;
-        for (std::size_t i = 0; i < octets; ++i)
-            length = (length << 8) | in[header + i];
-        header += octets;
-    }
-    if (in.size() - header < length)
+    const auto len = LibreSCRS::Agent::readDerLength(in, 1);
+    if (!len)
         return std::nullopt;
-    const DerElement out{in.first(header + length), in.subspan(header, length)};
-    in = in.subspan(header + length);
+    const std::size_t header = 1 + len->lengthOctets;
+    const DerElement out{in.first(header + len->length), in.subspan(header, len->length)};
+    in = in.subspan(header + len->length);
     return out;
 }
 
@@ -941,10 +974,8 @@ CK_RV serveAttribute(const Slot& slot, const Object& obj, CK_ATTRIBUTE& attr)
     // AgentClient caches the key per certId).
     auto fetchPubKeyOr = [&](PublicKeyResult& out) -> CK_RV {
         out = g_lib->client->publicKey(slot.readerPath, obj.certId, obj.keyType);
-        if (out.status == Status::KeyNotFound)
-            return CKR_KEY_HANDLE_INVALID;
-        if (out.status != Status::Ok)
-            return CKR_ATTRIBUTE_TYPE_INVALID;
+        if (!out)
+            return out.error() == Status::KeyNotFound ? CKR_KEY_HANDLE_INVALID : CKR_ATTRIBUTE_TYPE_INVALID;
         return CKR_OK;
     };
 
@@ -1011,9 +1042,10 @@ CK_RV serveAttribute(const Slot& slot, const Object& obj, CK_ATTRIBUTE& attr)
         PublicKeyResult pk;
         if (const CK_RV rv = fetchPubKeyOr(pk); rv != CKR_OK)
             return rv;
-        if (!isPointOfKey(obj.keyBits, pk.crv, pk.x, pk.y))
+        const auto* ec = std::get_if<LibreSCRS::Agent::Operations::EcPublicKey>(&*pk);
+        if (ec == nullptr || !isPointOfKey(obj.keyBits, ec->crv, ec->x, ec->y))
             return CKR_ATTRIBUTE_TYPE_INVALID;
-        const auto point = ecPointOctetString(pk.x, pk.y);
+        const auto point = ecPointOctetString(ec->x, ec->y);
         if (point.empty())
             return CKR_ATTRIBUTE_TYPE_INVALID;
         return give(point.data(), point.size());
@@ -1043,7 +1075,10 @@ CK_RV serveAttribute(const Slot& slot, const Object& obj, CK_ATTRIBUTE& attr)
         PublicKeyResult pk;
         if (const CK_RV rv = fetchPubKeyOr(pk); rv != CKR_OK)
             return rv;
-        return give(pk.modulus.data(), pk.modulus.size());
+        const auto* rsa = std::get_if<LibreSCRS::Agent::Operations::RsaPublicKey>(&*pk);
+        if (rsa == nullptr)
+            return CKR_ATTRIBUTE_TYPE_INVALID;
+        return give(rsa->modulus.data(), rsa->modulus.size());
     }
     case CKA_PUBLIC_EXPONENT: {
         if ((obj.cls != CKO_PUBLIC_KEY && obj.cls != CKO_PRIVATE_KEY) || obj.keyType != KeyType::Rsa)
@@ -1051,7 +1086,10 @@ CK_RV serveAttribute(const Slot& slot, const Object& obj, CK_ATTRIBUTE& attr)
         PublicKeyResult pk;
         if (const CK_RV rv = fetchPubKeyOr(pk); rv != CKR_OK)
             return rv;
-        return give(pk.exponent.data(), pk.exponent.size());
+        const auto* rsa = std::get_if<LibreSCRS::Agent::Operations::RsaPublicKey>(&*pk);
+        if (rsa == nullptr)
+            return CKR_ATTRIBUTE_TYPE_INVALID;
+        return give(rsa->exponent.data(), rsa->exponent.size());
     }
     case CKA_MODULUS_BITS: {
         // The public key's modulus size, from the model.

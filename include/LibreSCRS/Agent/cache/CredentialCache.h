@@ -114,9 +114,6 @@ public:
     [[nodiscard]] std::optional<Secret> getCan(const std::string& cardKey) const;
     [[nodiscard]] std::optional<Secret> getMrz(const std::string& cardKey) const;
 
-    [[nodiscard]] bool hasCan(const std::string& cardKey) const;
-    [[nodiscard]] bool hasMrz(const std::string& cardKey) const;
-
     // Drop everything stored for one card (e.g. on CardRemoved / ReaderRemoved):
     // a full entry erase, so it ALSO drops @ref refusalGenerationFor's counter
     // and the lastPromptYieldedNothing flag -- a re-presented card starts over

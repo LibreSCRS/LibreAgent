@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 // SPDX-FileCopyrightText: 2026 hirashix0
 #pragma once
+#include <LibreSCRS/Agent/wire/ReaderInterface.h>
 #include <LibreSCRS/AgentClient/Export.h>
 
 #include <QObject>
@@ -18,6 +19,10 @@ class AgentCard;
 class AgentClient;
 class TransportSeam;
 
+/// @brief Which physical interface a reader is -- the agent's own wire
+///        vocabulary, shared rather than re-declared here.
+using LibreSCRS::Agent::Wire::ReaderInterface;
+
 /// @brief Live proxy for one reader the agent exports. Tracks name / card
 ///        presence live; emits `changed` on any update.
 class LIBRESCRS_AGENTCLIENT_EXPORT AgentReader : public QObject
@@ -32,8 +37,20 @@ public:
     /// @brief Opaque reader id — a cross-wire token; compare and pass back
     ///        as-is (e.g. to `AgentClient::certificateDer()`), never parse.
     [[nodiscard]] QString id() const;
-    /// @brief The reader's friendly name.
+    /// @brief The reader's raw PC/SC name. Shown to nobody as is: model()
+    ///        and interface() are its label.
     [[nodiscard]] QString name() const;
+    /// @brief The reader's short model as the agent labels it ("OMNIKEY
+    ///        5422"), carrying no interface wording; name() when the agent
+    ///        sent no label. Two readers that would read alike carry a short
+    ///        serial suffix, so a label built from model() and interface()
+    ///        tells every reader apart. May change while the reader stays
+    ///        (another reader arrived or left): `changed` fires.
+    [[nodiscard]] QString model() const;
+    /// @brief Which physical interface the reader is, for the client to say
+    ///        in the holder's language; ReaderInterface::Unknown when the
+    ///        agent sent none or one this build does not know.
+    [[nodiscard]] ReaderInterface interface() const;
     /// @brief Whether the agent reports a card seated in this reader.
     [[nodiscard]] bool hasCard() const;
     /// @brief Opaque id of the seated card, or empty.
@@ -44,7 +61,7 @@ public:
     [[nodiscard]] AgentCard* card() const;
 
 Q_SIGNALS:
-    /// @brief A tracked reader property changed (name, card presence).
+    /// @brief A tracked reader property changed (name, label, card presence).
     void changed();
 
 private:
@@ -56,7 +73,7 @@ private:
     ///        round-trip when discovery already carried them).
     void primeFrom(const QVariantMap& reader1Props);
 
-    struct Private;
+    struct LIBRESCRS_AGENTCLIENT_NO_EXPORT Private;
     std::unique_ptr<Private> d;
 };
 

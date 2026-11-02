@@ -14,8 +14,8 @@
 // a typed `a(sbb)` / `a(sb)` property array on D-Bus, a CBOR value the grammar
 // types as bare `any` on the socket. Two default maps, one per fake, would let
 // the thing under test be scripted differently on each side of the comparison.
-#include "ConfigKeys.h"
-#include "CscaAnchorKeys.h"
+#include <LibreSCRS/AgentClient/ConfigKeys.h>
+#include <LibreSCRS/AgentClient/CscaAnchorKeys.h>
 
 #include <QString>
 #include <QStringList>

@@ -15,9 +15,11 @@
 #include <LibreSCRS/Agent/util/Sha256Hex.h>
 #include <LibreSCRS/Auth/AuthRequirement.h>
 #include <LibreSCRS/Auth/ErrorKeys.h>
+#include <LibreSCRS/Logging.h>
 #include <LibreSCRS/Plugin/CardPlugin.h>
 #include <LibreSCRS/Secure/String.h>
 #include <LibreSCRS/SmartCard/CardSession.h>
+#include <LibreSCRS/SmartCard/testing/CardSessionTesting.h>
 
 #include <openssl/evp.h>
 #include <openssl/rsa.h>
@@ -178,8 +180,6 @@ using LibreSCRS::Plugin::CertificateData;
 using LibreSCRS::Plugin::DecipherMechanism;
 using LibreSCRS::Plugin::DecipherResult;
 using LibreSCRS::Plugin::DecipherResultOutcome;
-using LibreSCRS::Plugin::PINResult;
-using LibreSCRS::Plugin::PINResultOutcome;
 using LibreSCRS::Plugin::SignMechanism;
 using LibreSCRS::Plugin::SignResult;
 using LibreSCRS::Plugin::SignResultOutcome;
@@ -187,10 +187,9 @@ using LibreSCRS::Plugin::SignResultOutcome;
 class RecordingStubPlugin final : public LibreSCRS::Plugin::CardPlugin
 {
 public:
-    RecordingStubPlugin(std::string id, CertificateData cert, PINResultOutcome verifyOutcome)
-        : m_cert(std::move(cert)), m_verifyOutcome(verifyOutcome)
+    RecordingStubPlugin(std::string id, CertificateData cert) : m_cert(std::move(cert))
     {
-        setIdentity(std::move(id), "recording-stub", 0);
+        setIdentity(std::move(id), 0);
     }
 
     CardCapabilities capabilities() const override
@@ -200,18 +199,6 @@ public:
     std::span<const LibreSCRS::Plugin::Atr> supportedAtrs() const noexcept override
     {
         return {};
-    }
-    std::vector<CertificateData> readCertificates(LibreSCRS::SmartCard::CardSession&) const override
-    {
-        ++m_readCalls;
-        return {m_cert};
-    }
-    PINResult verifyPIN(LibreSCRS::SmartCard::CardSession&, const LibreSCRS::Secure::String&) const override
-    {
-        ++m_verifyCalls;
-        PINResult r;
-        r.outcome = m_verifyOutcome;
-        return r;
     }
     void setCredentials(LibreSCRS::SmartCard::CardSession&, std::string_view key,
                         const LibreSCRS::Secure::String& value) override
@@ -232,7 +219,6 @@ public:
 
     // Mutable capture (the crypto NVIs are const).
     mutable int m_readCalls = 0;
-    mutable int m_verifyCalls = 0;
     mutable int m_signCalls = 0;
     mutable int m_decipherCalls = 0;
     mutable std::optional<SignMechanism> m_lastSignMechanism;
@@ -254,6 +240,11 @@ protected:
     LibreSCRS::Plugin::ReadResult doReadCard(LibreSCRS::SmartCard::CardSession&, GroupCallback) const override
     {
         return LibreSCRS::Plugin::ReadResult::communicationError(LibreSCRS::Auth::ErrorKeys::genericComm());
+    }
+    std::vector<CertificateData> doReadCertificates(LibreSCRS::SmartCard::CardSession&) const override
+    {
+        ++m_readCalls;
+        return {m_cert};
     }
     SignResult doSign(LibreSCRS::SmartCard::CardSession&, std::uint16_t, std::span<const std::uint8_t>,
                       SignMechanism mechanism) const override
@@ -291,7 +282,6 @@ protected:
 
 private:
     CertificateData m_cert;
-    PINResultOutcome m_verifyOutcome;
 };
 
 CertificateData ecCert(std::uint16_t keyFid)
@@ -326,9 +316,9 @@ TEST(LmRawCrypto, SignRawRoutesEcKeyToEcdsaMechanism)
 {
     auto cert = ecCert(0x47);
     const std::string certId = sha256Hex(cert.derBytes);
-    auto stub = std::make_shared<RecordingStubPlugin>("opensc", cert, PINResultOutcome::Ok);
+    auto stub = std::make_shared<RecordingStubPlugin>("opensc", cert);
     const CandidateList candidates{stub};
-    auto session = LibreSCRS::SmartCard::detail::makeDetachedCardSession("FakeReader");
+    auto session = LibreSCRS::SmartCard::Testing::makeDetachedCardSession("FakeReader");
     LibreSCRS::Secure::String pin{"654321"};
 
     // A 48-byte (SHA-384) digest drives the SHA-384 mechanism.
@@ -339,7 +329,6 @@ TEST(LmRawCrypto, SignRawRoutesEcKeyToEcdsaMechanism)
     EXPECT_EQ(result.status, RawCryptoStatus::Ok);
     ASSERT_TRUE(stub->m_lastSignMechanism.has_value());
     EXPECT_EQ(*stub->m_lastSignMechanism, SignMechanism::ECDSA_SHA384) << "EC key must route to pre-hashed ECDSA";
-    EXPECT_EQ(stub->m_verifyCalls, 0) << "the plugin presents the PIN inside the sign itself";
     EXPECT_EQ(stub->m_signCalls, 1);
 }
 
@@ -347,13 +336,13 @@ TEST(LmRawCrypto, SignRawEcPathFailsClosedOnWrongPin)
 {
     // The plugin presents the PIN in the sign's own card transaction and
     // reports the card's refusal; nothing is signed and the host hears
-    // AuthFailed, as it did from a rejected verifyPIN.
+    // AuthFailed, as it does for any PIN the card rejects.
     auto cert = ecCert(0x47);
     const std::string certId = sha256Hex(cert.derBytes);
-    auto stub = std::make_shared<RecordingStubPlugin>("opensc", cert, PINResultOutcome::InvalidPin);
+    auto stub = std::make_shared<RecordingStubPlugin>("opensc", cert);
     stub->m_signOutcome = SignResultOutcome::PinIncorrect;
     const CandidateList candidates{stub};
-    auto session = LibreSCRS::SmartCard::detail::makeDetachedCardSession("FakeReader");
+    auto session = LibreSCRS::SmartCard::Testing::makeDetachedCardSession("FakeReader");
     LibreSCRS::Secure::String pin{"000000"};
 
     const std::vector<std::uint8_t> digest(48, 0xAB);
@@ -361,7 +350,6 @@ TEST(LmRawCrypto, SignRawEcPathFailsClosedOnWrongPin)
                                 LibreSCRS::CancelToken{});
 
     EXPECT_EQ(result.status, RawCryptoStatus::AuthFailed);
-    EXPECT_EQ(stub->m_verifyCalls, 0) << "no separate VERIFY before the operation";
     EXPECT_TRUE(result.bytes.empty()) << "a refused PIN yields no signature";
 }
 
@@ -369,9 +357,9 @@ TEST(LmRawCrypto, SignRawEcMechanismFollowsDigestLength)
 {
     auto cert = ecCert(0x47);
     const std::string certId = sha256Hex(cert.derBytes);
-    auto stub = std::make_shared<RecordingStubPlugin>("opensc", cert, PINResultOutcome::Ok);
+    auto stub = std::make_shared<RecordingStubPlugin>("opensc", cert);
     const CandidateList candidates{stub};
-    auto session = LibreSCRS::SmartCard::detail::makeDetachedCardSession("FakeReader");
+    auto session = LibreSCRS::SmartCard::Testing::makeDetachedCardSession("FakeReader");
     LibreSCRS::Secure::String pin{"654321"};
 
     const std::vector<std::uint8_t> digest(32, 0xCD); // SHA-256 sized
@@ -389,9 +377,9 @@ TEST(LmRawCrypto, SignRawWithoutAPinAsksForConsentOnAKeyTheCardMarks)
 {
     auto cert = rsaCert(0x9C, /*alwaysAuthenticate=*/true);
     const std::string certId = sha256Hex(cert.derBytes);
-    auto stub = std::make_shared<RecordingStubPlugin>("opensc", cert, PINResultOutcome::Ok);
+    auto stub = std::make_shared<RecordingStubPlugin>("opensc", cert);
     const CandidateList candidates{stub};
-    auto session = LibreSCRS::SmartCard::detail::makeDetachedCardSession("FakeReader");
+    auto session = LibreSCRS::SmartCard::Testing::makeDetachedCardSession("FakeReader");
 
     const std::vector<std::uint8_t> input(51, 0x30);
     const auto result = signRaw(resolved(candidates, certId, *session), Mechanism::RsaPkcs1Sign, input, /*pin=*/nullptr,
@@ -400,23 +388,21 @@ TEST(LmRawCrypto, SignRawWithoutAPinAsksForConsentOnAKeyTheCardMarks)
     EXPECT_EQ(result.status, RawCryptoStatus::ConsentRequired);
     EXPECT_TRUE(result.alwaysAuthenticate);
     EXPECT_EQ(stub->m_signCalls, 0) << "the key must not be used without this operation's PIN";
-    EXPECT_EQ(stub->m_verifyCalls, 0);
 }
 
 TEST(LmRawCrypto, DecryptRawWithoutAPinAsksForConsentOnAKeyTheCardMarks)
 {
     auto cert = rsaCert(0x9D, /*alwaysAuthenticate=*/true);
     const std::string certId = sha256Hex(cert.derBytes);
-    auto stub = std::make_shared<RecordingStubPlugin>("opensc", cert, PINResultOutcome::Ok);
+    auto stub = std::make_shared<RecordingStubPlugin>("opensc", cert);
     const CandidateList candidates{stub};
-    auto session = LibreSCRS::SmartCard::detail::makeDetachedCardSession("FakeReader");
+    auto session = LibreSCRS::SmartCard::Testing::makeDetachedCardSession("FakeReader");
 
     const std::vector<std::uint8_t> ciphertext(256, 0x42);
     const auto result = decryptRaw(resolved(candidates, certId, *session), Mechanism::RsaPkcs1Decrypt, ciphertext,
                                    nullptr, *session, LibreSCRS::CancelToken{});
 
     EXPECT_EQ(result.status, RawCryptoStatus::ConsentRequired);
-    EXPECT_EQ(stub->m_verifyCalls, 0);
     EXPECT_EQ(stub->m_decipherCalls, 0) << "the key must not be used without this operation's PIN";
 }
 
@@ -424,9 +410,9 @@ TEST(LmRawCrypto, AnOrdinaryKeyWithoutAPinSignsUnderTheLease)
 {
     auto cert = rsaCert(0x9A, /*alwaysAuthenticate=*/false);
     const std::string certId = sha256Hex(cert.derBytes);
-    auto stub = std::make_shared<RecordingStubPlugin>("opensc", cert, PINResultOutcome::Ok);
+    auto stub = std::make_shared<RecordingStubPlugin>("opensc", cert);
     const CandidateList candidates{stub};
-    auto session = LibreSCRS::SmartCard::detail::makeDetachedCardSession("FakeReader");
+    auto session = LibreSCRS::SmartCard::Testing::makeDetachedCardSession("FakeReader");
 
     const std::vector<std::uint8_t> input(51, 0x30);
     const auto result = signRaw(resolved(candidates, certId, *session), Mechanism::RsaPkcs1Sign, input, nullptr,
@@ -442,9 +428,9 @@ TEST(LmRawCrypto, AMarkedKeyKeepsNoPinPastItsOperation)
 {
     auto cert = rsaCert(0x9C, /*alwaysAuthenticate=*/true);
     const std::string certId = sha256Hex(cert.derBytes);
-    auto stub = std::make_shared<RecordingStubPlugin>("pkcs15", cert, PINResultOutcome::Ok);
+    auto stub = std::make_shared<RecordingStubPlugin>("pkcs15", cert);
     const CandidateList candidates{stub};
-    auto session = LibreSCRS::SmartCard::detail::makeDetachedCardSession("FakeReader");
+    auto session = LibreSCRS::SmartCard::Testing::makeDetachedCardSession("FakeReader");
     LibreSCRS::Secure::String pin{"654321"};
 
     const std::vector<std::uint8_t> input(32, 0x11);
@@ -467,9 +453,9 @@ TEST(LmRawCrypto, AnOrdinaryKeyKeepsItsPinForTheLease)
     // through the plugin, never through a separate VERIFY.
     auto cert = rsaCert(0x9A, /*alwaysAuthenticate=*/false);
     const std::string certId = sha256Hex(cert.derBytes);
-    auto stub = std::make_shared<RecordingStubPlugin>("pkcs15", cert, PINResultOutcome::Ok);
+    auto stub = std::make_shared<RecordingStubPlugin>("pkcs15", cert);
     const CandidateList candidates{stub};
-    auto session = LibreSCRS::SmartCard::detail::makeDetachedCardSession("FakeReader");
+    auto session = LibreSCRS::SmartCard::Testing::makeDetachedCardSession("FakeReader");
     LibreSCRS::Secure::String pin{"654321"};
 
     const std::vector<std::uint8_t> input(32, 0x11);
@@ -477,7 +463,6 @@ TEST(LmRawCrypto, AnOrdinaryKeyKeepsItsPinForTheLease)
                                 LibreSCRS::CancelToken{});
     ASSERT_EQ(result.status, RawCryptoStatus::Ok);
     EXPECT_FALSE(result.alwaysAuthenticate);
-    EXPECT_EQ(stub->m_verifyCalls, 0);
     ASSERT_EQ(stub->m_credentialWrites.size(), 1u) << "an ordinary key's deposit serves the rest of the lease";
     EXPECT_EQ(stub->m_credentialWrites[0], (std::pair<std::string, bool>{"pin", false}));
 }
@@ -488,10 +473,10 @@ TEST(LmRawCrypto, ARefusedPinOnAnOrdinaryKeyIsErased)
     // stay behind for the plugin to present again.
     auto cert = ecCert(0x9A);
     const std::string certId = sha256Hex(cert.derBytes);
-    auto stub = std::make_shared<RecordingStubPlugin>("opensc", cert, PINResultOutcome::Ok);
+    auto stub = std::make_shared<RecordingStubPlugin>("opensc", cert);
     stub->m_signOutcome = SignResultOutcome::PinIncorrect;
     const CandidateList candidates{stub};
-    auto session = LibreSCRS::SmartCard::detail::makeDetachedCardSession("FakeReader");
+    auto session = LibreSCRS::SmartCard::Testing::makeDetachedCardSession("FakeReader");
     LibreSCRS::Secure::String pin{"000000"};
 
     const std::vector<std::uint8_t> digest(32, 0xCD);
@@ -508,10 +493,10 @@ TEST(LmRawCrypto, AFailedOperationOnAnOrdinaryKeyErasesItsPin)
     // Only a PIN that just worked is kept: a lease does not start on a failure.
     auto cert = rsaCert(0x9A, /*alwaysAuthenticate=*/false);
     const std::string certId = sha256Hex(cert.derBytes);
-    auto stub = std::make_shared<RecordingStubPlugin>("pkcs15", cert, PINResultOutcome::Ok);
+    auto stub = std::make_shared<RecordingStubPlugin>("pkcs15", cert);
     stub->m_signOutcome = SignResultOutcome::PluginError;
     const CandidateList candidates{stub};
-    auto session = LibreSCRS::SmartCard::detail::makeDetachedCardSession("FakeReader");
+    auto session = LibreSCRS::SmartCard::Testing::makeDetachedCardSession("FakeReader");
     LibreSCRS::Secure::String pin{"654321"};
 
     const std::vector<std::uint8_t> input(32, 0x11);
@@ -523,22 +508,67 @@ TEST(LmRawCrypto, AFailedOperationOnAnOrdinaryKeyErasesItsPin)
     EXPECT_TRUE(stub->m_credentialWrites[1].second);
 }
 
+// The plugin's throw does not cross CardPlugin::sign: it arrives as the
+// plugin-error outcome, which costs the kept PIN like any other failure.
 TEST(LmRawCrypto, AnOrdinaryKeysPinIsErasedWhenTheOperationThrows)
 {
     auto cert = rsaCert(0x9A, /*alwaysAuthenticate=*/false);
     const std::string certId = sha256Hex(cert.derBytes);
-    auto stub = std::make_shared<RecordingStubPlugin>("pkcs15", cert, PINResultOutcome::Ok);
+    auto stub = std::make_shared<RecordingStubPlugin>("pkcs15", cert);
     stub->m_throwOnSign = true;
     const CandidateList candidates{stub};
-    auto session = LibreSCRS::SmartCard::detail::makeDetachedCardSession("FakeReader");
+    auto session = LibreSCRS::SmartCard::Testing::makeDetachedCardSession("FakeReader");
     LibreSCRS::Secure::String pin{"654321"};
 
     const std::vector<std::uint8_t> input(32, 0x11);
-    EXPECT_THROW((void)signRaw(resolved(candidates, certId, *session), Mechanism::RsaPkcs1Sign, input, &pin, *session,
-                               LibreSCRS::CancelToken{}),
-                 std::runtime_error);
+    EXPECT_EQ(signRaw(resolved(candidates, certId, *session), Mechanism::RsaPkcs1Sign, input, &pin, *session,
+                      LibreSCRS::CancelToken{})
+                  .status,
+              RawCryptoStatus::CardError);
+    EXPECT_EQ(stub->m_signCalls, 1) << "the throw came from the plugin's own sign";
     ASSERT_EQ(stub->m_credentialWrites.size(), 2u);
-    EXPECT_TRUE(stub->m_credentialWrites[1].second) << "erased on the way out of the exception";
+    EXPECT_TRUE(stub->m_credentialWrites[1].second) << "erased after the contained throw";
+}
+
+// What can still throw out of the operation is this side's own work around
+// the plugin call; a log sink that throws stands in for it. The PIN kept for
+// the lease is erased before the exception leaves, as for a failed outcome.
+TEST(LmRawCrypto, AKeptPinIsErasedWhenTheWorkAroundThePluginCallThrows)
+{
+    struct ThrowingWarnSink
+    {
+        ThrowingWarnSink()
+        {
+            LibreSCRS::log::init([](LibreSCRS::log::Level level, std::string_view) {
+                if (level == LibreSCRS::log::Level::Warn) {
+                    throw std::runtime_error("log sink refused the line");
+                }
+            });
+        }
+        ~ThrowingWarnSink()
+        {
+            LibreSCRS::log::resetForTest();
+        }
+    };
+
+    auto cert = rsaCert(0x9A, /*alwaysAuthenticate=*/false);
+    const std::string certId = sha256Hex(cert.derBytes);
+    auto stub = std::make_shared<RecordingStubPlugin>("pkcs15", cert);
+    stub->m_signOutcome = SignResultOutcome::NotImplemented; // its answer is logged
+    const CandidateList candidates{stub};
+    auto session = LibreSCRS::SmartCard::Testing::makeDetachedCardSession("FakeReader");
+    const auto key = resolved(candidates, certId, *session);
+
+    const std::vector<std::uint8_t> input(32, 0x11);
+    {
+        const ThrowingWarnSink sink;
+        EXPECT_THROW(
+            (void)signRaw(key, Mechanism::RsaPkcs1Sign, input, /*pin=*/nullptr, *session, LibreSCRS::CancelToken{}),
+            std::runtime_error);
+    }
+    EXPECT_EQ(stub->m_signCalls, 1) << "the throw came after the plugin answered";
+    ASSERT_EQ(stub->m_credentialWrites.size(), 1u) << "the kept PIN was not erased";
+    EXPECT_EQ(stub->m_credentialWrites[0], (std::pair<std::string, bool>{"pin", true}));
 }
 
 TEST(LmRawCrypto, AKeptPinTheCardRefusesIsErased)
@@ -548,10 +578,10 @@ TEST(LmRawCrypto, AKeptPinTheCardRefusesIsErased)
     // again for the next caller: every attempt would cost a retry nobody typed.
     auto cert = ecCert(0x9A);
     const std::string certId = sha256Hex(cert.derBytes);
-    auto stub = std::make_shared<RecordingStubPlugin>("opensc", cert, PINResultOutcome::Ok);
+    auto stub = std::make_shared<RecordingStubPlugin>("opensc", cert);
     stub->m_signOutcome = SignResultOutcome::PinIncorrect;
     const CandidateList candidates{stub};
-    auto session = LibreSCRS::SmartCard::detail::makeDetachedCardSession("FakeReader");
+    auto session = LibreSCRS::SmartCard::Testing::makeDetachedCardSession("FakeReader");
 
     const std::vector<std::uint8_t> digest(32, 0xCD);
     EXPECT_EQ(signRaw(resolved(candidates, certId, *session), Mechanism::EcdsaSign, digest, /*pin=*/nullptr, *session,
@@ -566,10 +596,10 @@ TEST(LmRawCrypto, AKeptPinTheCardRefusesForADecryptionIsErased)
 {
     auto cert = rsaCert(0x9D, /*alwaysAuthenticate=*/false);
     const std::string certId = sha256Hex(cert.derBytes);
-    auto stub = std::make_shared<RecordingStubPlugin>("opensc", cert, PINResultOutcome::Ok);
+    auto stub = std::make_shared<RecordingStubPlugin>("opensc", cert);
     stub->m_decipherOutcome = DecipherResultOutcome::PinIncorrect;
     const CandidateList candidates{stub};
-    auto session = LibreSCRS::SmartCard::detail::makeDetachedCardSession("FakeReader");
+    auto session = LibreSCRS::SmartCard::Testing::makeDetachedCardSession("FakeReader");
 
     const std::vector<std::uint8_t> ciphertext(256, 0x42);
     EXPECT_EQ(decryptRaw(resolved(candidates, certId, *session), Mechanism::RsaPkcs1Decrypt, ciphertext, nullptr,
@@ -585,9 +615,9 @@ TEST(LmRawCrypto, TheConsentRuleIsReadFromTheCardOnEveryCall)
     // Nothing remembered: the card in the reader decides each time.
     auto cert = rsaCert(0x9C, /*alwaysAuthenticate=*/false);
     const std::string certId = sha256Hex(cert.derBytes);
-    auto stub = std::make_shared<RecordingStubPlugin>("opensc", cert, PINResultOutcome::Ok);
+    auto stub = std::make_shared<RecordingStubPlugin>("opensc", cert);
     const CandidateList candidates{stub};
-    auto session = LibreSCRS::SmartCard::detail::makeDetachedCardSession("FakeReader");
+    auto session = LibreSCRS::SmartCard::Testing::makeDetachedCardSession("FakeReader");
     const std::vector<std::uint8_t> input(51, 0x30);
 
     EXPECT_EQ(signRaw(resolved(candidates, certId, *session), Mechanism::RsaPkcs1Sign, input, nullptr, *session,
@@ -605,10 +635,10 @@ TEST(LmRawCrypto, ErasingThePinNeverThrowsOutOfTheOperation)
 {
     auto cert = rsaCert(0x9C, /*alwaysAuthenticate=*/true);
     const std::string certId = sha256Hex(cert.derBytes);
-    auto stub = std::make_shared<RecordingStubPlugin>("pkcs15", cert, PINResultOutcome::Ok);
+    auto stub = std::make_shared<RecordingStubPlugin>("pkcs15", cert);
     stub->m_throwOnErase = true;
     const CandidateList candidates{stub};
-    auto session = LibreSCRS::SmartCard::detail::makeDetachedCardSession("FakeReader");
+    auto session = LibreSCRS::SmartCard::Testing::makeDetachedCardSession("FakeReader");
     LibreSCRS::Secure::String pin{"654321"};
     const std::vector<std::uint8_t> input(32, 0x11);
 
@@ -620,14 +650,14 @@ TEST(LmRawCrypto, ErasingThePinNeverThrowsOutOfTheOperation)
 
 TEST(LmRawCrypto, AMarkedKeySignsWithThePinInOneCall)
 {
-    // VERIFY and the PSO in one card transaction: no separate verifyPIN, the
+    // VERIFY and the PSO in one card transaction: no separate PIN step, the
     // PIN handed over for this operation and erased after it.
     auto cert = ecCert(0x9C);
     cert.alwaysAuthenticate = true;
     const std::string certId = sha256Hex(cert.derBytes);
-    auto stub = std::make_shared<RecordingStubPlugin>("opensc", cert, PINResultOutcome::Ok);
+    auto stub = std::make_shared<RecordingStubPlugin>("opensc", cert);
     const CandidateList candidates{stub};
-    auto session = LibreSCRS::SmartCard::detail::makeDetachedCardSession("FakeReader");
+    auto session = LibreSCRS::SmartCard::Testing::makeDetachedCardSession("FakeReader");
     LibreSCRS::Secure::String pin{"654321"};
 
     const std::vector<std::uint8_t> digest(32, 0xCD);
@@ -635,7 +665,6 @@ TEST(LmRawCrypto, AMarkedKeySignsWithThePinInOneCall)
                                 LibreSCRS::CancelToken{});
 
     EXPECT_EQ(result.status, RawCryptoStatus::Ok);
-    EXPECT_EQ(stub->m_verifyCalls, 0) << "no separate VERIFY before the operation";
     EXPECT_EQ(stub->m_signCalls, 1);
     ASSERT_EQ(stub->m_credentialWrites.size(), 2u);
     EXPECT_EQ(stub->m_credentialWrites[0], (std::pair<std::string, bool>{"pin", false}));
@@ -646,9 +675,9 @@ TEST(LmRawCrypto, AMarkedKeyDecryptsWithThePinInOneCall)
 {
     auto cert = rsaCert(0x9D, /*alwaysAuthenticate=*/true);
     const std::string certId = sha256Hex(cert.derBytes);
-    auto stub = std::make_shared<RecordingStubPlugin>("opensc", cert, PINResultOutcome::Ok);
+    auto stub = std::make_shared<RecordingStubPlugin>("opensc", cert);
     const CandidateList candidates{stub};
-    auto session = LibreSCRS::SmartCard::detail::makeDetachedCardSession("FakeReader");
+    auto session = LibreSCRS::SmartCard::Testing::makeDetachedCardSession("FakeReader");
     LibreSCRS::Secure::String pin{"654321"};
 
     const std::vector<std::uint8_t> ciphertext(256, 0x42);
@@ -657,7 +686,6 @@ TEST(LmRawCrypto, AMarkedKeyDecryptsWithThePinInOneCall)
 
     EXPECT_EQ(result.status, RawCryptoStatus::Ok);
     EXPECT_TRUE(result.alwaysAuthenticate);
-    EXPECT_EQ(stub->m_verifyCalls, 0);
     EXPECT_EQ(stub->m_decipherCalls, 1);
     ASSERT_EQ(stub->m_credentialWrites.size(), 2u) << "handed over, then erased";
     EXPECT_FALSE(stub->m_credentialWrites[0].second);
@@ -667,15 +695,15 @@ TEST(LmRawCrypto, AMarkedKeyDecryptsWithThePinInOneCall)
 TEST(LmRawCrypto, AWrongPinOnAMarkedKeyIsAnAuthFailure)
 {
     // The plugin reports the PIN it verified itself; the host must hear the
-    // same answer a rejected verifyPIN gives (it revokes the lease), not a
+    // same answer as for any other rejected PIN (it revokes the lease), not a
     // card fault. The PIN is erased on this exit too.
     auto cert = ecCert(0x9C);
     cert.alwaysAuthenticate = true;
     const std::string certId = sha256Hex(cert.derBytes);
-    auto stub = std::make_shared<RecordingStubPlugin>("opensc", cert, PINResultOutcome::Ok);
+    auto stub = std::make_shared<RecordingStubPlugin>("opensc", cert);
     stub->m_signOutcome = SignResultOutcome::PinIncorrect;
     const CandidateList candidates{stub};
-    auto session = LibreSCRS::SmartCard::detail::makeDetachedCardSession("FakeReader");
+    auto session = LibreSCRS::SmartCard::Testing::makeDetachedCardSession("FakeReader");
     LibreSCRS::Secure::String pin{"000000"};
 
     const std::vector<std::uint8_t> digest(32, 0xCD);
@@ -692,10 +720,10 @@ TEST(LmRawCrypto, ABlockedPinOnAMarkedKeyIsAnAuthFailure)
     auto cert = ecCert(0x9C);
     cert.alwaysAuthenticate = true;
     const std::string certId = sha256Hex(cert.derBytes);
-    auto stub = std::make_shared<RecordingStubPlugin>("opensc", cert, PINResultOutcome::Ok);
+    auto stub = std::make_shared<RecordingStubPlugin>("opensc", cert);
     stub->m_signOutcome = SignResultOutcome::PinBlocked;
     const CandidateList candidates{stub};
-    auto session = LibreSCRS::SmartCard::detail::makeDetachedCardSession("FakeReader");
+    auto session = LibreSCRS::SmartCard::Testing::makeDetachedCardSession("FakeReader");
     LibreSCRS::Secure::String pin{"000000"};
 
     const std::vector<std::uint8_t> digest(32, 0xCD);
@@ -709,10 +737,10 @@ TEST(LmRawCrypto, AWrongPinOnAMarkedKeysDecryptionIsAnAuthFailure)
 {
     auto cert = rsaCert(0x9D, /*alwaysAuthenticate=*/true);
     const std::string certId = sha256Hex(cert.derBytes);
-    auto stub = std::make_shared<RecordingStubPlugin>("opensc", cert, PINResultOutcome::Ok);
+    auto stub = std::make_shared<RecordingStubPlugin>("opensc", cert);
     stub->m_decipherOutcome = DecipherResultOutcome::PinIncorrect;
     const CandidateList candidates{stub};
-    auto session = LibreSCRS::SmartCard::detail::makeDetachedCardSession("FakeReader");
+    auto session = LibreSCRS::SmartCard::Testing::makeDetachedCardSession("FakeReader");
     LibreSCRS::Secure::String pin{"000000"};
 
     const std::vector<std::uint8_t> ciphertext(256, 0x42);
@@ -729,10 +757,10 @@ TEST(LmRawCrypto, TheRsaPkcsMechanismPresentsThePinThroughThePluginToo)
     // in between.
     auto cert = rsaCert(0x9A, /*alwaysAuthenticate=*/false);
     const std::string certId = sha256Hex(cert.derBytes);
-    auto stub = std::make_shared<RecordingStubPlugin>("opensc", cert, PINResultOutcome::Ok);
+    auto stub = std::make_shared<RecordingStubPlugin>("opensc", cert);
     stub->m_signsHashOnCard = false;
     const CandidateList candidates{stub};
-    auto session = LibreSCRS::SmartCard::detail::makeDetachedCardSession("FakeReader");
+    auto session = LibreSCRS::SmartCard::Testing::makeDetachedCardSession("FakeReader");
     LibreSCRS::Secure::String pin{"654321"};
 
     const std::vector<std::uint8_t> digestInfo(51, 0x30);
@@ -742,7 +770,6 @@ TEST(LmRawCrypto, TheRsaPkcsMechanismPresentsThePinThroughThePluginToo)
     EXPECT_EQ(result.status, RawCryptoStatus::Ok);
     ASSERT_TRUE(stub->m_lastSignMechanism.has_value());
     EXPECT_EQ(*stub->m_lastSignMechanism, SignMechanism::RSA_PKCS);
-    EXPECT_EQ(stub->m_verifyCalls, 0) << "no separate VERIFY before the sign";
     EXPECT_EQ(stub->m_signCalls, 1);
     ASSERT_EQ(stub->m_credentialWrites.size(), 1u) << "deposited once, kept for the lease";
     EXPECT_FALSE(stub->m_credentialWrites[0].second);
@@ -756,9 +783,9 @@ TEST(LmRawCrypto, AnEmptyPinIsNeverHandedToThePlugin)
     // operation is erased on the way out like on any other failure.
     auto cert = rsaCert(0x9C, /*alwaysAuthenticate=*/true);
     const std::string certId = sha256Hex(cert.derBytes);
-    auto stub = std::make_shared<RecordingStubPlugin>("opensc", cert, PINResultOutcome::Ok);
+    auto stub = std::make_shared<RecordingStubPlugin>("opensc", cert);
     const CandidateList candidates{stub};
-    auto session = LibreSCRS::SmartCard::detail::makeDetachedCardSession("FakeReader");
+    auto session = LibreSCRS::SmartCard::Testing::makeDetachedCardSession("FakeReader");
     const LibreSCRS::Secure::String empty;
 
     const std::vector<std::uint8_t> input(32, 0x11);
@@ -787,9 +814,9 @@ TEST(LmRawCrypto, AMarkedKeyThatMayNotDecryptAsksForNoConsent)
     cd.keyFID = 0x9C;
     cd.alwaysAuthenticate = true;
     const std::string certId = sha256Hex(cd.derBytes);
-    auto stub = std::make_shared<RecordingStubPlugin>("opensc", cd, PINResultOutcome::Ok);
+    auto stub = std::make_shared<RecordingStubPlugin>("opensc", cd);
     const CandidateList candidates{stub};
-    auto session = LibreSCRS::SmartCard::detail::makeDetachedCardSession("FakeReader");
+    auto session = LibreSCRS::SmartCard::Testing::makeDetachedCardSession("FakeReader");
 
     const std::vector<std::uint8_t> ciphertext(256, 0x42);
     EXPECT_EQ(preflight(candidates, certId, Mechanism::RsaPkcs1Decrypt, ciphertext, *session).status,
@@ -818,10 +845,10 @@ TEST(LmRawCrypto, PreflightRefusesAMechanismOfTheWrongFamily)
     CertificateData ec;
     ec.derBytes = T::selfSignedCert(T::ecKey("P-384").get(), "LK", "critical,digitalSignature,keyEncipherment");
     ec.keyFID = std::uint16_t{0x47};
-    auto ecStub = std::make_shared<RecordingStubPlugin>("pkcs15", ec, PINResultOutcome::Ok);
+    auto ecStub = std::make_shared<RecordingStubPlugin>("pkcs15", ec);
     auto rsa = rsaCert(0x9A, /*alwaysAuthenticate=*/false);
-    auto rsaStub = std::make_shared<RecordingStubPlugin>("opensc", rsa, PINResultOutcome::Ok);
-    auto session = LibreSCRS::SmartCard::detail::makeDetachedCardSession("FakeReader");
+    auto rsaStub = std::make_shared<RecordingStubPlugin>("opensc", rsa);
+    auto session = LibreSCRS::SmartCard::Testing::makeDetachedCardSession("FakeReader");
 
     const std::vector<std::uint8_t> digestInfo(51, 0x30);
     EXPECT_EQ(preflight({ecStub}, sha256Hex(ec.derBytes), Mechanism::RsaPkcs1Sign, digestInfo, *session).status,
@@ -849,10 +876,10 @@ TEST(LmRawCrypto, PreflightRefusesAnInputOfTheWrongLength)
     ec.derBytes = T::selfSignedCert(T::ecKey("P-384").get(), "LK", "critical,digitalSignature");
     ec.keyFID = std::uint16_t{0x47};
     auto rsa = rsaCert(0x9A, /*alwaysAuthenticate=*/false); // 2048 bits: k = 256
-    auto session = LibreSCRS::SmartCard::detail::makeDetachedCardSession("FakeReader");
-    const CandidateList ecCand{std::make_shared<RecordingStubPlugin>("pkcs15", ec, PINResultOutcome::Ok)};
-    const CandidateList rsaCand{std::make_shared<RecordingStubPlugin>("opensc", rsa, PINResultOutcome::Ok)};
-    auto hashing = std::make_shared<RecordingStubPlugin>("pkcs15", rsa, PINResultOutcome::Ok);
+    auto session = LibreSCRS::SmartCard::Testing::makeDetachedCardSession("FakeReader");
+    const CandidateList ecCand{std::make_shared<RecordingStubPlugin>("pkcs15", ec)};
+    const CandidateList rsaCand{std::make_shared<RecordingStubPlugin>("opensc", rsa)};
+    auto hashing = std::make_shared<RecordingStubPlugin>("pkcs15", rsa);
     hashing->m_preReadAuth = LibreSCRS::Auth::PreReadAuthMethod::Can;
     const CandidateList paceCand{hashing};
     const auto ecId = sha256Hex(ec.derBytes);
@@ -878,8 +905,8 @@ TEST(LmRawCrypto, PreflightResolvesTheKeyTheOperationThenUses)
 {
     auto cert = rsaCert(0x9A, /*alwaysAuthenticate=*/false);
     const std::string certId = sha256Hex(cert.derBytes);
-    auto stub = std::make_shared<RecordingStubPlugin>("opensc", cert, PINResultOutcome::Ok);
-    auto session = LibreSCRS::SmartCard::detail::makeDetachedCardSession("FakeReader");
+    auto stub = std::make_shared<RecordingStubPlugin>("opensc", cert);
+    auto session = LibreSCRS::SmartCard::Testing::makeDetachedCardSession("FakeReader");
     LibreSCRS::Secure::String pin{"654321"};
     const std::vector<std::uint8_t> digestInfo(51, 0x30);
 
@@ -899,11 +926,11 @@ TEST(LmRawCrypto, SignRawCallsExactlyTheRequestedPluginMechanism)
 {
     auto cert = rsaCert(0x9A, /*alwaysAuthenticate=*/false);
     const std::string certId = sha256Hex(cert.derBytes);
-    auto session = LibreSCRS::SmartCard::detail::makeDetachedCardSession("FakeReader");
+    auto session = LibreSCRS::SmartCard::Testing::makeDetachedCardSession("FakeReader");
     LibreSCRS::Secure::String pin{"654321"};
     const std::vector<std::uint8_t> input(51, 0x30);
 
-    auto hashOnCard = std::make_shared<RecordingStubPlugin>("pkcs15", cert, PINResultOutcome::Ok);
+    auto hashOnCard = std::make_shared<RecordingStubPlugin>("pkcs15", cert);
     EXPECT_EQ(signRaw(resolved({hashOnCard}, certId, *session), Mechanism::Sha256RsaPkcs1Sign, input, &pin, *session,
                       LibreSCRS::CancelToken{})
                   .status,
@@ -911,7 +938,7 @@ TEST(LmRawCrypto, SignRawCallsExactlyTheRequestedPluginMechanism)
     EXPECT_EQ(hashOnCard->m_lastSignMechanism, SignMechanism::RSA_SHA256);
     EXPECT_EQ(hashOnCard->m_signCalls, 1);
 
-    auto digestInfoCard = std::make_shared<RecordingStubPlugin>("opensc", cert, PINResultOutcome::Ok);
+    auto digestInfoCard = std::make_shared<RecordingStubPlugin>("opensc", cert);
     digestInfoCard->m_signsHashOnCard = false;
     EXPECT_EQ(signRaw(resolved({digestInfoCard}, certId, *session), Mechanism::Sha256RsaPkcs1Sign, input, &pin,
                       *session, LibreSCRS::CancelToken{})
@@ -931,15 +958,15 @@ TEST(LmRawCrypto, PreflightGivesAnRsaKeyOnlyTheMechanismItsCardTakes)
 {
     namespace T = LibreSCRS::Agent::Test;
     auto rsa = rsaCert(0x9A, /*alwaysAuthenticate=*/false);
-    auto pace = std::make_shared<RecordingStubPlugin>("pkcs15", rsa, PINResultOutcome::Ok);
+    auto pace = std::make_shared<RecordingStubPlugin>("pkcs15", rsa);
     pace->m_preReadAuth = LibreSCRS::Auth::PreReadAuthMethod::Can;
-    auto plain = std::make_shared<RecordingStubPlugin>("opensc", rsa, PINResultOutcome::Ok);
+    auto plain = std::make_shared<RecordingStubPlugin>("opensc", rsa);
     CertificateData ec;
     ec.derBytes = T::selfSignedCert(T::ecKey("P-384").get(), "LK", "critical,digitalSignature");
     ec.keyFID = std::uint16_t{0x47};
-    auto paceEc = std::make_shared<RecordingStubPlugin>("pkcs15", ec, PINResultOutcome::Ok);
+    auto paceEc = std::make_shared<RecordingStubPlugin>("pkcs15", ec);
     paceEc->m_preReadAuth = LibreSCRS::Auth::PreReadAuthMethod::Can;
-    auto session = LibreSCRS::SmartCard::detail::makeDetachedCardSession("FakeReader");
+    auto session = LibreSCRS::SmartCard::Testing::makeDetachedCardSession("FakeReader");
     const auto rsaId = sha256Hex(rsa.derBytes);
     const std::vector<std::uint8_t> digestInfo(51, 0x30);
 
@@ -981,8 +1008,8 @@ TEST(LmRawCrypto, DeriveRunsEcdhRawOnTheResolvedKey)
     namespace T = LibreSCRS::Agent::Test;
     T::PkeyPtr key{nullptr, &EVP_PKEY_free};
     auto cd = lkDeriveCert(/*canDerive=*/true, key);
-    auto stub = std::make_shared<RecordingStubPlugin>("opensc", cd, PINResultOutcome::Ok);
-    auto session = LibreSCRS::SmartCard::detail::makeDetachedCardSession("FakeReader");
+    auto stub = std::make_shared<RecordingStubPlugin>("opensc", cd);
+    auto session = LibreSCRS::SmartCard::Testing::makeDetachedCardSession("FakeReader");
     LibreSCRS::Secure::String pin{"654321"};
     const auto peer = T::encodedPublicPoint(T::ecKey("P-384").get());
 
@@ -1004,11 +1031,11 @@ TEST(LmRawCrypto, ADeriveAnswerOfAnotherLengthIsACardError)
     namespace T = LibreSCRS::Agent::Test;
     T::PkeyPtr key{nullptr, &EVP_PKEY_free};
     auto cd = lkDeriveCert(/*canDerive=*/true, key);
-    auto session = LibreSCRS::SmartCard::detail::makeDetachedCardSession("FakeReader");
+    auto session = LibreSCRS::SmartCard::Testing::makeDetachedCardSession("FakeReader");
     LibreSCRS::Secure::String pin{"654321"};
     const auto peer = T::encodedPublicPoint(T::ecKey("P-384").get());
     for (const std::size_t length : {std::size_t{47}, std::size_t{49}, std::size_t{0}}) {
-        auto stub = std::make_shared<RecordingStubPlugin>("opensc", cd, PINResultOutcome::Ok);
+        auto stub = std::make_shared<RecordingStubPlugin>("opensc", cd);
         stub->m_ecdhSecretLength = length;
         const auto r = deriveRaw(resolved({stub}, sha256Hex(cd.derBytes), *session), Mechanism::EcdhDerive, peer, &pin,
                                  *session, LibreSCRS::CancelToken{});
@@ -1023,8 +1050,8 @@ TEST(LmRawCrypto, ADeriveWithoutAPinOnAMarkedKeyAsksForConsent)
     T::PkeyPtr key{nullptr, &EVP_PKEY_free};
     auto cd = lkDeriveCert(/*canDerive=*/true, key);
     cd.alwaysAuthenticate = true;
-    auto stub = std::make_shared<RecordingStubPlugin>("opensc", cd, PINResultOutcome::Ok);
-    auto session = LibreSCRS::SmartCard::detail::makeDetachedCardSession("FakeReader");
+    auto stub = std::make_shared<RecordingStubPlugin>("opensc", cd);
+    auto session = LibreSCRS::SmartCard::Testing::makeDetachedCardSession("FakeReader");
     const auto peer = T::encodedPublicPoint(T::ecKey("P-384").get());
     const auto r = deriveRaw(resolved({stub}, sha256Hex(cd.derBytes), *session), Mechanism::EcdhDerive, peer, nullptr,
                              *session, LibreSCRS::CancelToken{});
@@ -1041,8 +1068,8 @@ TEST(LmRawCrypto, PreflightRefusesAPointTheKeysCurveDoesNotHold)
     namespace T = LibreSCRS::Agent::Test;
     T::PkeyPtr key{nullptr, &EVP_PKEY_free};
     auto cd = lkDeriveCert(/*canDerive=*/true, key);
-    auto stub = std::make_shared<RecordingStubPlugin>("opensc", cd, PINResultOutcome::Ok);
-    auto session = LibreSCRS::SmartCard::detail::makeDetachedCardSession("FakeReader");
+    auto stub = std::make_shared<RecordingStubPlugin>("opensc", cd);
+    auto session = LibreSCRS::SmartCard::Testing::makeDetachedCardSession("FakeReader");
     const auto id = sha256Hex(cd.derBytes);
     const auto good = T::encodedPublicPoint(T::ecKey("P-384").get());
     EXPECT_EQ(preflight({stub}, id, Mechanism::EcdhDerive, good, *session).status, RawCryptoStatus::Ok);
@@ -1066,14 +1093,14 @@ TEST(LmRawCrypto, PreflightRefusesDeriveOnAKeyThePluginCannotDriveWith)
     namespace T = LibreSCRS::Agent::Test;
     T::PkeyPtr key{nullptr, &EVP_PKEY_free};
     auto cd = lkDeriveCert(/*canDerive=*/false, key);
-    auto session = LibreSCRS::SmartCard::detail::makeDetachedCardSession("FakeReader");
+    auto session = LibreSCRS::SmartCard::Testing::makeDetachedCardSession("FakeReader");
     const auto peer = T::encodedPublicPoint(T::ecKey("P-384").get());
-    auto stub = std::make_shared<RecordingStubPlugin>("pkcs15", cd, PINResultOutcome::Ok);
+    auto stub = std::make_shared<RecordingStubPlugin>("pkcs15", cd);
     EXPECT_EQ(preflight({stub}, sha256Hex(cd.derBytes), Mechanism::EcdhDerive, peer, *session).status,
               RawCryptoStatus::InvalidInput);
     auto rsa = rsaCert(0x9A, false);
     rsa.canDerive = true;
-    auto rsaStub = std::make_shared<RecordingStubPlugin>("opensc", rsa, PINResultOutcome::Ok);
+    auto rsaStub = std::make_shared<RecordingStubPlugin>("opensc", rsa);
     EXPECT_EQ(preflight({rsaStub}, sha256Hex(rsa.derBytes), Mechanism::EcdhDerive, peer, *session).status,
               RawCryptoStatus::InvalidInput);
 }
@@ -1086,8 +1113,8 @@ TEST(LmRawCrypto, ADeriveWithAnEmptyPinNeverReachesThePlugin)
     namespace T = LibreSCRS::Agent::Test;
     T::PkeyPtr key{nullptr, &EVP_PKEY_free};
     auto cd = lkDeriveCert(/*canDerive=*/true, key);
-    auto stub = std::make_shared<RecordingStubPlugin>("opensc", cd, PINResultOutcome::Ok);
-    auto session = LibreSCRS::SmartCard::detail::makeDetachedCardSession("FakeReader");
+    auto stub = std::make_shared<RecordingStubPlugin>("opensc", cd);
+    auto session = LibreSCRS::SmartCard::Testing::makeDetachedCardSession("FakeReader");
     const LibreSCRS::Secure::String empty;
     const auto peer = T::encodedPublicPoint(T::ecKey("P-384").get());
     EXPECT_EQ(deriveRaw(resolved({stub}, sha256Hex(cd.derBytes), *session), Mechanism::EcdhDerive, peer, &empty,
@@ -1107,8 +1134,8 @@ TEST(LmRawCrypto, AMarkedKeysPinIsErasedAfterADerive)
     T::PkeyPtr key{nullptr, &EVP_PKEY_free};
     auto cd = lkDeriveCert(/*canDerive=*/true, key);
     cd.alwaysAuthenticate = true;
-    auto stub = std::make_shared<RecordingStubPlugin>("opensc", cd, PINResultOutcome::Ok);
-    auto session = LibreSCRS::SmartCard::detail::makeDetachedCardSession("FakeReader");
+    auto stub = std::make_shared<RecordingStubPlugin>("opensc", cd);
+    auto session = LibreSCRS::SmartCard::Testing::makeDetachedCardSession("FakeReader");
     LibreSCRS::Secure::String pin{"654321"};
     const auto peer = T::encodedPublicPoint(T::ecKey("P-384").get());
     const auto r = deriveRaw(resolved({stub}, sha256Hex(cd.derBytes), *session), Mechanism::EcdhDerive, peer, &pin,
@@ -1128,9 +1155,9 @@ TEST(LmRawCrypto, ARefusedPinOnADeriveIsErased)
     namespace T = LibreSCRS::Agent::Test;
     T::PkeyPtr key{nullptr, &EVP_PKEY_free};
     auto cd = lkDeriveCert(/*canDerive=*/true, key);
-    auto stub = std::make_shared<RecordingStubPlugin>("opensc", cd, PINResultOutcome::Ok);
+    auto stub = std::make_shared<RecordingStubPlugin>("opensc", cd);
     stub->m_decipherOutcome = DecipherResultOutcome::PinIncorrect;
-    auto session = LibreSCRS::SmartCard::detail::makeDetachedCardSession("FakeReader");
+    auto session = LibreSCRS::SmartCard::Testing::makeDetachedCardSession("FakeReader");
     LibreSCRS::Secure::String pin{"000000"};
     const auto peer = T::encodedPublicPoint(T::ecKey("P-384").get());
     EXPECT_EQ(deriveRaw(resolved({stub}, sha256Hex(cd.derBytes), *session), Mechanism::EcdhDerive, peer, &pin, *session,

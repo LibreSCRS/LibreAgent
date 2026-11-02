@@ -5,7 +5,6 @@
 #include <LibreSCRS/Agent/presence/CapabilityResolver.h>
 #include <LibreSCRS/Agent/operations/CardPluginRouting.h>
 #include <LibreSCRS/Auth/AuthRequirement.h>
-#include <LibreSCRS/SmartCard/CardMap.h>
 #include <LibreSCRS/SmartCard/CardSession.h>
 #include <cstdint>
 #include <expected>
@@ -40,13 +39,11 @@ using SessionFactory =
 using CandidateResolver =
     std::function<CandidateList(std::span<const std::uint8_t> atr, LibreSCRS::SmartCard::CardSession& session)>;
 
-/// @brief Result of a successful acquire(): session handle, plugin candidates,
-///        and the shared card-state map passed at construction.
+/// @brief Result of a successful acquire(): session handle and plugin candidates.
 struct AcquiredCard
 {
     std::shared_ptr<LibreSCRS::SmartCard::CardSession> session;
     CandidateList candidates;
-    std::shared_ptr<LibreSCRS::SmartCard::CardMap> cardMap;
 };
 
 /// @brief Per-reader holder for an LM CardSession.
@@ -76,13 +73,11 @@ public:
     static constexpr auto kIdleClose = std::chrono::seconds{45};
 
     /// @param clock Optional clock seam; when empty, defaults to
-    ///        steady_clock::now. The trailing default keeps existing four-arg
-    ///        construction compiling unchanged.
-    CardSessionHolder(std::string readerName, SessionFactory factory, CandidateResolver resolver,
-                      std::shared_ptr<LibreSCRS::SmartCard::CardMap> sharedMap, Clock clock = {});
+    ///        steady_clock::now.
+    CardSessionHolder(std::string readerName, SessionFactory factory, CandidateResolver resolver, Clock clock = {});
 
-    /// @brief Return the reader's session together with the resolved candidates
-    ///        and the shared CardMap: the held one; else the power hold,
+    /// @brief Return the reader's session together with the resolved
+    ///        candidates: the held one; else the power hold,
     ///        promoted back without a new connection; else a session opened
     ///        through the factory. Candidates are resolved once per session
     ///        handed out (again after a promote, with the same resolver, so a
@@ -173,7 +168,6 @@ private:
     std::string m_readerName;
     SessionFactory m_factory;
     CandidateResolver m_resolver;
-    std::shared_ptr<LibreSCRS::SmartCard::CardMap> m_sharedMap;
     std::shared_ptr<LibreSCRS::SmartCard::CardSession> m_session; // held open
     CandidateList m_candidates;
     std::optional<LibreSCRS::Auth::PreReadAuthMethod> m_preReadAuth; // memoized per held session

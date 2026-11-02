@@ -3,12 +3,14 @@
 #pragma once
 #include <LibreSCRS/Agent/wire/Cbor.h>
 
-#include <LibreSCRS/Agent/KeyType.h>             // KeyType
-#include <LibreSCRS/Agent/OperationPhase.h>      // OperationPhase, OperationStatus
-#include <LibreSCRS/Agent/wire/CredentialWire.h> // CredentialOpResult, CredentialRecord
-#include <LibreSCRS/Agent/wire/ErrorCode.h>      // ErrorCode
-#include <LibreSCRS/Agent/wire/PreReadAuth.h>    // PreReadAuth
-#include <LibreSCRS/Agent/wire/SyncError.h>      // SyncError, syncErrorName, decodeSyncError
+#include <LibreSCRS/Agent/KeyType.h>              // KeyType
+#include <LibreSCRS/Agent/OperationPhase.h>       // OperationPhase, OperationStatus
+#include <LibreSCRS/Agent/wire/CredentialWire.h>  // CredentialOpResult, CredentialRecord
+#include <LibreSCRS/Agent/wire/ErrorCode.h>       // ErrorCode
+#include <LibreSCRS/Agent/wire/PreReadAuth.h>     // PreReadAuth
+#include <LibreSCRS/Agent/wire/QuiesceReason.h>   // QuiesceReason
+#include <LibreSCRS/Agent/wire/ReaderInterface.h> // ReaderInterface
+#include <LibreSCRS/Agent/wire/SyncError.h>       // SyncError, syncErrorName, decodeSyncError
 
 #include <cstdint>
 #include <expected>
@@ -22,12 +24,13 @@
 // Typed message model over the reconciled CDDL (wire/librescrs-agent.cddl).
 // The agent is a SERVER: it PARSES inbound requests (untrusted -> strict) and
 // BUILDS outbound replies + events (trusted, from core results). The value enums
-// are the upstream core enums so the WireContractGuard anchoring holds; the two
-// socket-only vocabularies (SyncError names, QuiesceReason) are declared here.
+// are the upstream core enums so the WireContractGuard anchoring holds; the one
+// socket-only vocabulary (SyncError names) has a std-only header of its own.
 
 namespace LibreSCRS::Agent::Wire {
 
 using LibreSCRS::Agent::ErrorCode;
+using LibreSCRS::Agent::QuiesceReason;
 using LibreSCRS::Agent::Operations::OperationPhase;
 using LibreSCRS::Agent::Operations::OperationStatus;
 
@@ -43,9 +46,6 @@ enum class WireError : std::uint8_t {
     BadEnum,        // an enum-valued field is out of range
     BadConfigKey,   // a config key outside the settable / known set
 };
-
-// Socket-only lifecycle vocabulary (no core enum — AgentQuiesced is host-specific).
-enum class QuiesceReason : std::uint8_t { SystemSleep = 0, ScreenLocked = 1, SessionInactive = 2, Shutdown = 3 };
 
 // SyncError (the named synchronous-method error vocabulary) plus BOTH halves of
 // its name conversion live in their own std-only header, wire/SyncError.h,
@@ -97,6 +97,12 @@ struct ReaderState
     std::string name;
     bool hasCard{false};
     std::optional<std::string> card;
+    // The reader's label (`reader-state.model` / `.interface`). Optional on the
+    // wire and sent as a pair: an empty model means "no label" (an older
+    // agent) and then neither key is encoded; an interface token this build
+    // does not know decodes as Unknown.
+    std::string model;
+    ReaderInterface iface{ReaderInterface::Unknown};
     bool operator==(const ReaderState&) const = default;
 };
 
@@ -646,6 +652,12 @@ using OpResult =
 [[nodiscard]] CborValue makeReply(std::uint64_t req, const AppearanceFontReply&);
 [[nodiscard]] CborValue makeReply(std::uint64_t req, const CscaAnchorStateReply&);
 [[nodiscard]] CborValue makeReply(std::uint64_t req, const ForgetCscaAnchorsReply&);
+
+// The anchor state on its own, as a map of exactly the fields makeReply()
+// puts in a CscaAnchorState reply (the same names, the same absent optionals),
+// without the reply around it: for a place that carries the state as a value,
+// such as GetConfig's CscaAnchorState entry.
+[[nodiscard]] CborValue encodeCscaAnchorState(const CscaAnchorStateReply&);
 [[nodiscard]] CborValue makeSignRecoveryReply(std::uint64_t req, const SignResult&); // sign-recovery arm
 [[nodiscard]] CborValue makeErrorReply(std::uint64_t req, const ErrInfo&);
 

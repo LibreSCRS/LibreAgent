@@ -7,14 +7,14 @@
 namespace LibreSCRS::Agent {
 
 // The exact set of caches the full lifecycle scrub (system sleep /
-// fast-user-switch away) clears wholesale. This is the SINGLE source of truth
-// shared by main.cpp's fullScrub lambda and its regression test, so *which*
-// caches die with the session is genuinely under test rather than re-mirrored
-// by hand: dropping one from here breaks both production and the test together.
+// fast-user-switch away) clears wholesale. A host reaches it through
+// AgentCore::quiesce(), never directly, so *which* caches die with the session
+// is under test through the same function the agent runs: dropping one from
+// here breaks the quiesce tests.
 //
-// The reader-session invalidation and PKCS#11 lease revocation stay in the
-// lambda itself — they iterate the object registry and need the operation
-// manager / broker, not just the caches.
+// The reader-session invalidation and PKCS#11 lease revocation live in
+// AgentCore::quiesce() itself — they iterate the object registry and need the
+// operation manager / broker, not just the caches.
 inline void clearFullScrubCaches(CredentialCache& credentialCache, CredentialSnapshotCache& snapshotCache)
 {
     // The CAN/MRZ secret cache.

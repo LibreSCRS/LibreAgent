@@ -17,9 +17,13 @@
 
 #include <LibreSCRS/Agent/KeyType.h>
 #include <LibreSCRS/Agent/crypto/Mechanism.h>
+#include <LibreSCRS/Agent/operations/PromptPolicy.h> // std-only: the agent's own prompt budget
+#include <LibreSCRS/Agent/operations/RsaPublicKey.h> // std-only: the key value types
 #include <LibreSCRS/Agent/pkcs11/ObjectModel.h>
 
+#include <chrono>
 #include <cstdint>
+#include <expected>
 #include <optional>
 #include <span>
 #include <string>
@@ -32,10 +36,27 @@ namespace LibreSCRS::Pkcs11Agent {
 /// Each transport owns the table that maps its refusals onto these; the names
 /// on the wire are that transport's business and appear nowhere in this header.
 /// What is fixed here is the other half: which CKR_* the C_* layer answers with.
+/// @brief How long a module waits on the agent, in seconds -- the same on
+///        every transport.
+///
+/// A human-paced call is a chain of PIN prompts plus the on-card operation
+/// behind them, so the wait covers the agent's own budget for that chain
+/// (kMaxSequentialPromptBudget) with room for the card; asserted below so a
+/// longer chain in the agent cannot outrun the module that waits for it.
+inline constexpr int kInteractiveTimeoutSecs = 600;
+/// @brief What the agent is given for public data nobody has to be asked about.
+inline constexpr int kPublicDataTimeoutSecs = 60;
+/// @brief What it is given to say whether a login still holds: a loader asks
+///        that before it signs, about once a second, and must not be held long
+///        by an agent that does not answer.
+inline constexpr int kLoginStateTimeoutSecs = 2;
+static_assert(std::chrono::seconds{kInteractiveTimeoutSecs} >= LibreSCRS::Agent::Operations::kMaxSequentialPromptBudget,
+              "the module must wait at least as long as the agent's longest prompt chain");
+
 enum class Status : std::uint8_t {
     Ok,
     UserNotLoggedIn, ///< -> CKR_USER_NOT_LOGGED_IN
-    NotAuthorized,   ///< -> CKR_PIN_INCORRECT / CKR_FUNCTION_FAILED
+    NotAuthorized,   ///< the authority refused the caller -> CKR_FUNCTION_FAILED
     AuthFailed,      ///< the card rejected the PIN      -> CKR_PIN_INCORRECT
     Cancelled,       ///< the user cancelled the prompt  -> CKR_FUNCTION_CANCELED
     KeyNotFound,     ///< -> CKR_KEY_HANDLE_INVALID
@@ -64,19 +85,13 @@ struct BytesResult
     std::vector<std::uint8_t> bytes;
 };
 
-/// @brief A certificate's public key: RSA modulus + exponent (unpadded
-///        big-endian, the CKA_* convention), or an EC point on a NIST curve.
-///        The module serves CKA_MODULUS / CKA_PUBLIC_EXPONENT or CKA_EC_POINT
-///        from these without any crypto of its own.
-struct PublicKeyResult
-{
-    Status status = Status::GeneralError;
-    std::vector<std::uint8_t> modulus;  ///< RSA
-    std::vector<std::uint8_t> exponent; ///< RSA
-    std::string crv;                    ///< EC: "P-256", "P-384" or "P-521"
-    std::vector<std::uint8_t> x;        ///< EC, ceil(bits/8) bytes
-    std::vector<std::uint8_t> y;        ///< EC, ceil(bits/8) bytes
-};
+/// @brief A certificate's public key, or why there is none: an RSA modulus +
+///        exponent (unpadded big-endian, the CKA_* convention) or an EC point
+///        on a NIST curve -- the same value the agent's broker serves -- from
+///        which the module answers CKA_MODULUS / CKA_PUBLIC_EXPONENT or
+///        CKA_EC_POINT without any crypto of its own. Never an error of
+///        Status::Ok.
+using PublicKeyResult = std::expected<LibreSCRS::Agent::Operations::CertPublicKey, Status>;
 
 /// @brief What the module needs from the agent, independent of how it asks.
 ///

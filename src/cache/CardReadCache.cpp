@@ -2,11 +2,12 @@
 // SPDX-FileCopyrightText: 2026 hirashix0
 #include <LibreSCRS/Agent/cache/CardReadCache.h>
 
-#include <openssl/crypto.h> // OPENSSL_cleanse (zeroize PII on drop)
+#include <LibreSCRS/Agent/SecureZero.h>
 
 #include <cstdint>
 #include <string>
 #include <utility>
+#include <span>
 #include <vector>
 
 namespace LibreSCRS::Agent {
@@ -16,7 +17,7 @@ namespace {
 void cleanse(std::string& s) noexcept
 {
     if (!s.empty()) {
-        OPENSSL_cleanse(s.data(), s.size());
+        secureZero(std::span<std::uint8_t>(reinterpret_cast<std::uint8_t*>(s.data()), s.size()));
     }
     s.clear();
 }
@@ -24,7 +25,7 @@ void cleanse(std::string& s) noexcept
 void cleanse(std::vector<std::uint8_t>& v) noexcept
 {
     if (!v.empty()) {
-        OPENSSL_cleanse(v.data(), v.size());
+        secureZero(v);
     }
     v.clear();
 }

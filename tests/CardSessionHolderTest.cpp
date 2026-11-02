@@ -1,17 +1,23 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 // SPDX-FileCopyrightText: 2026 hirashix0
 #include <LibreSCRS/Agent/operations/CardSessionHolder.h>
+#include <LibreSCRS/Agent/operations/FlowPrelude.h>
 #include <LibreSCRS/Auth/AuthRequirement.h>
 #include <LibreSCRS/Auth/ErrorKeys.h>
 #include <LibreSCRS/Plugin/CardPlugin.h>
 #include <LibreSCRS/SmartCard/CardSession.h>
+#include <LibreSCRS/SmartCard/testing/CardSessionTesting.h>
 #include <gtest/gtest.h>
+
+#include <stdexcept>
 #include <algorithm>
 #include <chrono>
 #include <memory>
+#include <utility>
 
 using namespace LibreSCRS::Agent::Operations;
 using Cap = LibreSCRS::Plugin::CardCapabilities;
+using LibreSCRS::Agent::ErrorCode;
 using LibreSCRS::Auth::PreReadAuthMethod;
 
 TEST(CardSessionHolder, OpensOnceAndReuses)
@@ -20,11 +26,10 @@ TEST(CardSessionHolder, OpensOnceAndReuses)
     auto factory = [&opens](const std::string& r)
         -> std::expected<std::shared_ptr<LibreSCRS::SmartCard::CardSession>, LibreSCRS::SmartCard::OpenError> {
         ++opens;
-        return LibreSCRS::SmartCard::detail::makeDetachedCardSession(r);
+        return LibreSCRS::SmartCard::Testing::makeDetachedCardSession(r);
     };
     auto resolver = [](std::span<const std::uint8_t>, LibreSCRS::SmartCard::CardSession&) { return CandidateList{}; };
-    auto map = std::make_shared<LibreSCRS::SmartCard::CardMap>();
-    CardSessionHolder h{"R", factory, resolver, map};
+    CardSessionHolder h{"R", factory, resolver};
 
     auto a = h.acquire();
     ASSERT_TRUE(a.has_value());
@@ -44,13 +49,13 @@ TEST(CardSessionHolder, ResolvesCandidatesOnce)
     int resolves = 0;
     auto factory = [](const std::string& r)
         -> std::expected<std::shared_ptr<LibreSCRS::SmartCard::CardSession>, LibreSCRS::SmartCard::OpenError> {
-        return LibreSCRS::SmartCard::detail::makeDetachedCardSession(r);
+        return LibreSCRS::SmartCard::Testing::makeDetachedCardSession(r);
     };
     auto resolver = [&resolves](std::span<const std::uint8_t>, LibreSCRS::SmartCard::CardSession&) {
         ++resolves;
         return CandidateList{};
     };
-    CardSessionHolder h{"R", factory, resolver, std::make_shared<LibreSCRS::SmartCard::CardMap>()};
+    CardSessionHolder h{"R", factory, resolver};
     (void)h.acquire();
     (void)h.acquire();
     EXPECT_EQ(resolves, 1) << "candidates resolved once per held session";
@@ -66,7 +71,7 @@ SessionFactory makeCountingFactory(int& opens)
     return [&opens](const std::string& r)
                -> std::expected<std::shared_ptr<LibreSCRS::SmartCard::CardSession>, LibreSCRS::SmartCard::OpenError> {
         ++opens;
-        return LibreSCRS::SmartCard::detail::makeDetachedCardSession(r);
+        return LibreSCRS::SmartCard::Testing::makeDetachedCardSession(r);
     };
 }
 
@@ -84,7 +89,7 @@ public:
     PreReadStubPlugin(std::string id, Cap caps, PreReadAuthMethod method, int* preReadCalls)
         : m_caps(caps), m_method(method), m_preReadCalls(preReadCalls)
     {
-        setIdentity(std::move(id), "preread-stub", 0);
+        setIdentity(std::move(id), 0);
     }
     Cap capabilities() const override
     {
@@ -136,8 +141,7 @@ TEST(CardSessionHolder, ResolvesPreReadAuthOnceAndClearsOnInvalidate)
     int preReadCalls = 0;
     CandidateList candidates{
         std::make_shared<PreReadStubPlugin>("pace", Cap::IdentityData, PreReadAuthMethod::Can, &preReadCalls)};
-    CardSessionHolder h{"R", makeCountingFactory(opens), makeCandidateResolver(candidates),
-                        std::make_shared<LibreSCRS::SmartCard::CardMap>()};
+    CardSessionHolder h{"R", makeCountingFactory(opens), makeCandidateResolver(candidates)};
 
     EXPECT_EQ(h.fullResolution().value().preReadAuth, PreReadAuthMethod::Can);
     EXPECT_EQ(h.fullResolution().value().preReadAuth, PreReadAuthMethod::Can);
@@ -154,8 +158,7 @@ TEST(CardSessionHolder, FullResolutionFromHeldSession)
     int preReadCalls = 0;
     CandidateList candidates{std::make_shared<PreReadStubPlugin>("pace", Cap::IdentityData | Cap::PKI,
                                                                  PreReadAuthMethod::Can, &preReadCalls)};
-    CardSessionHolder h{"R", makeCountingFactory(opens), makeCandidateResolver(candidates),
-                        std::make_shared<LibreSCRS::SmartCard::CardMap>()};
+    CardSessionHolder h{"R", makeCountingFactory(opens), makeCandidateResolver(candidates)};
 
     auto r = h.fullResolution();
     ASSERT_TRUE(r.has_value());
@@ -169,8 +172,7 @@ TEST(CardSessionHolder, IdleCloseClosesAndReopens)
 {
     int opens = 0;
     auto now = std::chrono::steady_clock::time_point{};
-    CardSessionHolder h{"R", makeCountingFactory(opens), makeCannedResolver(),
-                        std::make_shared<LibreSCRS::SmartCard::CardMap>(), [&now] { return now; }};
+    CardSessionHolder h{"R", makeCountingFactory(opens), makeCannedResolver(), [&now] { return now; }};
 
     auto a = h.acquire();
     ASSERT_TRUE(a.has_value());
@@ -189,8 +191,7 @@ TEST(CardSessionHolder, NotYetIdleIsNoOp)
 {
     int opens = 0;
     auto now = std::chrono::steady_clock::time_point{};
-    CardSessionHolder h{"R", makeCountingFactory(opens), makeCannedResolver(),
-                        std::make_shared<LibreSCRS::SmartCard::CardMap>(), [&now] { return now; }};
+    CardSessionHolder h{"R", makeCountingFactory(opens), makeCannedResolver(), [&now] { return now; }};
 
     auto a = h.acquire();
     ASSERT_TRUE(a.has_value());
@@ -209,8 +210,7 @@ TEST(CardSessionHolder, ActivityResetsIdle)
 {
     int opens = 0;
     auto now = std::chrono::steady_clock::time_point{};
-    CardSessionHolder h{"R", makeCountingFactory(opens), makeCannedResolver(),
-                        std::make_shared<LibreSCRS::SmartCard::CardMap>(), [&now] { return now; }};
+    CardSessionHolder h{"R", makeCountingFactory(opens), makeCannedResolver(), [&now] { return now; }};
 
     auto a = h.acquire();
     ASSERT_TRUE(a.has_value());
@@ -248,12 +248,35 @@ CandidateResolver makeCountingResolver(int& resolves)
 }
 } // namespace
 
+// A resolver that throws must not leave a session behind: the next acquire
+// would otherwise reuse it with no candidates and never resolve again.
+TEST(CardSessionHolder, AResolverThatThrowsLeavesNoSessionBehind)
+{
+    int opens = 0;
+    int resolves = 0;
+    auto plugin = std::make_shared<PreReadStubPlugin>("pkcs15", Cap::PKI, PreReadAuthMethod::None, nullptr);
+    CandidateResolver resolver = [&resolves, plugin](std::span<const std::uint8_t>,
+                                                     LibreSCRS::SmartCard::CardSession&) -> CandidateList {
+        if (++resolves == 1) {
+            throw std::runtime_error("plugin probe failed");
+        }
+        return CandidateList{plugin};
+    };
+    CardSessionHolder h{"R", makeCountingFactory(opens), resolver};
+
+    EXPECT_THROW(static_cast<void>(h.acquire()), std::runtime_error);
+    auto a = h.acquire();
+    ASSERT_TRUE(a.has_value());
+    EXPECT_EQ(resolves, 2) << "the second acquire resolves again";
+    ASSERT_EQ(a->candidates.size(), 1U);
+    EXPECT_EQ(a->candidates[0], plugin);
+}
+
 TEST(CardSessionHolder, HoldOpensThroughFactoryWithoutResolving)
 {
     int opens = 0;
     int resolves = 0;
-    CardSessionHolder h{"R", makeCountingFactory(opens), makeCountingResolver(resolves),
-                        std::make_shared<LibreSCRS::SmartCard::CardMap>()};
+    CardSessionHolder h{"R", makeCountingFactory(opens), makeCountingResolver(resolves)};
 
     EXPECT_FALSE(h.hasHoldForTest());
     h.acquireHold();
@@ -272,8 +295,7 @@ TEST(CardSessionHolder, IdleSweepWithHoldDemotesInsteadOfClosing)
 {
     int opens = 0;
     auto now = std::chrono::steady_clock::time_point{};
-    CardSessionHolder h{"R", makeCountingFactory(opens), makeCannedResolver(),
-                        std::make_shared<LibreSCRS::SmartCard::CardMap>(), [&now] { return now; }};
+    CardSessionHolder h{"R", makeCountingFactory(opens), makeCannedResolver(), [&now] { return now; }};
 
     auto a = h.acquire();
     ASSERT_TRUE(a.has_value());
@@ -296,8 +318,7 @@ TEST(CardSessionHolder, IdleSweepWithHoldDemotesInsteadOfClosing)
 TEST(CardSessionHolder, ReleaseHoldDropsOnlyTheHold)
 {
     int opens = 0;
-    CardSessionHolder h{"R", makeCountingFactory(opens), makeCannedResolver(),
-                        std::make_shared<LibreSCRS::SmartCard::CardMap>()};
+    CardSessionHolder h{"R", makeCountingFactory(opens), makeCannedResolver()};
 
     h.acquireHold();
     ASSERT_TRUE(h.hasHoldForTest());
@@ -322,7 +343,7 @@ TEST(CardSessionHolder, HoldOpenFailureLeavesNoHold)
         return std::unexpected{LibreSCRS::SmartCard::OpenError{LibreSCRS::SmartCard::OpenError::Kind::ReaderUnavailable,
                                                                LibreSCRS::LocalizedText{}, std::nullopt}};
     };
-    CardSessionHolder h{"R", failing, makeCannedResolver(), std::make_shared<LibreSCRS::SmartCard::CardMap>()};
+    CardSessionHolder h{"R", failing, makeCannedResolver()};
 
     EXPECT_NO_THROW(h.acquireHold());
     EXPECT_FALSE(h.hasHoldForTest());
@@ -336,8 +357,7 @@ TEST(CardSessionHolder, InvalidateDropsBothSlots)
 {
     int opens = 0;
     auto now = std::chrono::steady_clock::time_point{};
-    CardSessionHolder h{"R", makeCountingFactory(opens), makeCannedResolver(),
-                        std::make_shared<LibreSCRS::SmartCard::CardMap>(), [&now] { return now; }};
+    CardSessionHolder h{"R", makeCountingFactory(opens), makeCannedResolver(), [&now] { return now; }};
 
     ASSERT_TRUE(h.acquire().has_value());
     now += CardSessionHolder::kIdleClose;
@@ -354,8 +374,7 @@ TEST(CardSessionHolder, HoldIsNeverOpenedWhileASessionExists)
 {
     int opens = 0;
     auto now = std::chrono::steady_clock::time_point{};
-    CardSessionHolder h{"R", makeCountingFactory(opens), makeCannedResolver(),
-                        std::make_shared<LibreSCRS::SmartCard::CardMap>(), [&now] { return now; }};
+    CardSessionHolder h{"R", makeCountingFactory(opens), makeCannedResolver(), [&now] { return now; }};
 
     ASSERT_TRUE(h.acquire().has_value());
     for (int i = 0; i < 3; ++i) {
@@ -382,7 +401,7 @@ SessionFactory makeLiveCountingFactory(const std::shared_ptr<LiveCount>& count)
 {
     return [count](const std::string& r)
                -> std::expected<std::shared_ptr<LibreSCRS::SmartCard::CardSession>, LibreSCRS::SmartCard::OpenError> {
-        auto real = LibreSCRS::SmartCard::detail::makeDetachedCardSession(r);
+        auto real = LibreSCRS::SmartCard::Testing::makeDetachedCardSession(r);
         ++count->opens;
         count->maxLive = std::max(count->maxLive, ++count->live);
         auto* raw = real.get();
@@ -400,8 +419,7 @@ TEST(CardSessionHolder, LiveSessionsNeverExceedOneOnAReader)
 {
     auto count = std::make_shared<LiveCount>();
     auto now = std::chrono::steady_clock::time_point{};
-    CardSessionHolder h{"R", makeLiveCountingFactory(count), makeCannedResolver(),
-                        std::make_shared<LibreSCRS::SmartCard::CardMap>(), [&now] { return now; }};
+    CardSessionHolder h{"R", makeLiveCountingFactory(count), makeCannedResolver(), [&now] { return now; }};
 
     {
         auto a = h.acquire();
@@ -445,8 +463,7 @@ TEST(CardSessionHolder, DemoteErasesWhatThePluginsHeldAndKeepsTheHandle)
         ++resolves;
         return CandidateList{pki, emrtd};
     };
-    CardSessionHolder h{"R", makeCountingFactory(opens), resolver, std::make_shared<LibreSCRS::SmartCard::CardMap>(),
-                        [&now] { return now; }};
+    CardSessionHolder h{"R", makeCountingFactory(opens), resolver, [&now] { return now; }};
 
     auto a = h.acquire();
     ASSERT_TRUE(a.has_value());
@@ -471,6 +488,66 @@ TEST(CardSessionHolder, DemoteErasesWhatThePluginsHeldAndKeepsTheHandle)
     EXPECT_EQ(b->candidates[1], emrtd);
 }
 
+// A session that ran secure messaging is never parked: clearing the host's
+// keys leaves the chip mid-session, and a held connection would keep it
+// powered there. The idle sweep closes it even though a hold is wanted; the
+// next operation opens a fresh connection.
+TEST(CardSessionHolder, AnIdleSessionWithLiveSecureMessagingIsClosedNotHeld)
+{
+    auto count = std::make_shared<LiveCount>();
+    auto now = std::chrono::steady_clock::time_point{};
+    auto plugin = std::make_shared<PreReadStubPlugin>("emrtd", Cap::EmrtdCrypto, PreReadAuthMethod::Can, nullptr);
+    CardSessionHolder h{"R", makeLiveCountingFactory(count), makeCandidateResolver(CandidateList{plugin}),
+                        [&now] { return now; }};
+
+    {
+        auto a = h.acquire();
+        ASSERT_TRUE(a.has_value());
+        LibreSCRS::SmartCard::Testing::installStandInChannel(
+            *a->session, LibreSCRS::SmartCard::Testing::StandInChannel::LiveSecureMessaging);
+        ASSERT_TRUE(a->session->hasLiveSecureChannel());
+    }
+
+    now += CardSessionHolder::kIdleClose;
+    h.sweep(/*holdWanted=*/true);
+    EXPECT_FALSE(h.hasHoldForTest()) << "a secure-messaging session is not parked in the hold";
+    EXPECT_EQ(count->live, 0) << "its connection is closed";
+    EXPECT_EQ(plugin->m_clearCalls, 1) << "and what the plugins held for it is erased";
+
+    auto b = h.acquire();
+    ASSERT_TRUE(b.has_value());
+    EXPECT_EQ(count->opens, 2) << "the next operation opens a fresh connection";
+    EXPECT_FALSE(b->session->hasLiveSecureChannel());
+}
+
+// The other channel states are no reason to drop the connection: a plain
+// channel, or one whose secure messaging already failed, is parked like a
+// session with no channel at all.
+TEST(CardSessionHolder, AnIdleSessionWithoutLiveSecureMessagingIsDemoted)
+{
+    using LibreSCRS::SmartCard::Testing::StandInChannel;
+    for (const auto channel : {StandInChannel::Plain, StandInChannel::FailedSecureMessaging}) {
+        SCOPED_TRACE(static_cast<int>(channel));
+        auto count = std::make_shared<LiveCount>();
+        auto now = std::chrono::steady_clock::time_point{};
+        CardSessionHolder h{"R", makeLiveCountingFactory(count), makeCannedResolver(), [&now] { return now; }};
+
+        auto a = h.acquire();
+        ASSERT_TRUE(a.has_value());
+        LibreSCRS::SmartCard::Testing::installStandInChannel(*a->session, channel);
+        ASSERT_FALSE(a->session->hasLiveSecureChannel());
+
+        now += CardSessionHolder::kIdleClose;
+        h.sweep(/*holdWanted=*/true);
+        EXPECT_TRUE(h.hasHoldForTest()) << "the idle session became the hold";
+
+        auto b = h.acquire();
+        ASSERT_TRUE(b.has_value());
+        EXPECT_EQ(b->session.get(), a->session.get()) << "the held connection is reused";
+        EXPECT_EQ(count->opens, 1);
+    }
+}
+
 TEST(CardSessionHolder, ClosingTheSessionErasesWhatThePluginsHeldForIt)
 {
     // A plugin may keep a PIN deposited for the session's lease; closing the
@@ -479,7 +556,7 @@ TEST(CardSessionHolder, ClosingTheSessionErasesWhatThePluginsHeldForIt)
     auto now = std::chrono::steady_clock::time_point{};
     auto plugin = std::make_shared<PreReadStubPlugin>("pkcs15", Cap::PKI, PreReadAuthMethod::None, nullptr);
     CardSessionHolder h{"R", makeCountingFactory(opens), makeCandidateResolver(CandidateList{plugin}),
-                        std::make_shared<LibreSCRS::SmartCard::CardMap>(), [&now] { return now; }};
+                        [&now] { return now; }};
 
     ASSERT_TRUE(h.acquire().has_value());
     h.invalidate();
@@ -489,4 +566,31 @@ TEST(CardSessionHolder, ClosingTheSessionErasesWhatThePluginsHeldForIt)
     now += CardSessionHolder::kIdleClose;
     h.sweep(/*holdWanted=*/false);
     EXPECT_EQ(plugin->m_clearCalls, 2) << "and so does the idle close";
+}
+
+// What the user is told when the session cannot be opened: a card that is not
+// in the reader (never inserted, or pulled out between the presence event and
+// the operation) is a removed card, not a communication fault. Every other
+// open failure is one -- including a session the reader or the platform
+// refused for now, which the user can retry.
+TEST(FlowPreludeOpen, AnEmptyReaderIsARemovedCardAndEveryOtherFailureIsCommunication)
+{
+    using Kind = LibreSCRS::SmartCard::OpenError::Kind;
+    const std::pair<Kind, ErrorCode> table[] = {
+        {Kind::NoCardPresent, ErrorCode::CardRemoved},
+        {Kind::ReaderUnavailable, ErrorCode::CommunicationError},
+        {Kind::ProtocolError, ErrorCode::CommunicationError},
+        {Kind::SessionRefused, ErrorCode::CommunicationError},
+    };
+    for (const auto& [kind, expected] : table) {
+        SessionFactory failing = [kind](const std::string&)
+            -> std::expected<std::shared_ptr<LibreSCRS::SmartCard::CardSession>, LibreSCRS::SmartCard::OpenError> {
+            return std::unexpected{LibreSCRS::SmartCard::OpenError{kind, LibreSCRS::LocalizedText{}, std::nullopt}};
+        };
+        CardSessionHolder h{"R", failing, makeCannedResolver()};
+
+        const auto out = FlowPrelude::openSession(h, LibreSCRS::CancelToken{});
+        EXPECT_EQ(out.status, FlowPrelude::OpenStatus::OpenFailed) << static_cast<int>(kind);
+        EXPECT_EQ(out.code, expected) << static_cast<int>(kind);
+    }
 }

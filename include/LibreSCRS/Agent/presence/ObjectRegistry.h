@@ -23,12 +23,24 @@ public:
     // (HasCard/Card on card insert/remove). The typed delta carries only the
     // presence change so the observer can emit a minimal PropertiesChanged.
     using ChangedFn = std::function<void(ObjectId reader, const PropertyDelta&)>;
+    // Fired when an already-registered reader's label (model / interface)
+    // changes because another reader arrived or left: the label is decided
+    // over the whole roster (a dual-interface twin, a same-model neighbour),
+    // so it is not fixed at the reader's arrival. Carries the reader's state
+    // with its new label.
+    using RelabelledFn = std::function<void(const ReaderState&)>;
 
-    void setObservers(AddReaderFn addReader, AddCardFn addCard, RemovedFn removed, ChangedFn changed = {});
+    void setObservers(AddReaderFn addReader, AddCardFn addCard, RemovedFn removed, ChangedFn changed = {},
+                      RelabelledFn relabelled = {});
 
-    void addReader(const ReaderState& reader); // dedup by id; notifies AddReaderFn
-    void addCard(const CardState& card);       // dedup by id; notifies AddCardFn
-    void remove(ObjectId id);                  // searches readers then cards; notifies RemovedFn
+    // Dedup by id. Labels the reader over the roster it joins (whatever label
+    // the caller passed is replaced), notifies AddReaderFn with that label,
+    // then RelabelledFn for every OTHER reader whose label its arrival changed.
+    void addReader(const ReaderState& reader);
+    void addCard(const CardState& card); // dedup by id; notifies AddCardFn
+    // Searches readers then cards; notifies RemovedFn. A reader's removal then
+    // notifies RelabelledFn for every remaining reader whose label it changed.
+    void remove(ObjectId id);
     // Mutate the named reader's HasCard/Card in place and notify the changed
     // observer. No-op (no notification) when the id is invalid/unknown or the
     // delta matches the reader's current presence.
@@ -39,11 +51,16 @@ public:
     [[nodiscard]] bool contains(ObjectId id) const;
 
 private:
+    // Label every reader over the current roster; the ids whose label changed.
+    [[nodiscard]] std::vector<ObjectId> relabel();
+    void announceRelabels(const std::vector<ObjectId>& readers, ObjectId except);
+
     std::vector<ReaderState> m_readers;
     std::vector<CardState> m_cards;
     AddReaderFn m_addReader;
     AddCardFn m_addCard;
     RemovedFn m_removed;
     ChangedFn m_changed;
+    RelabelledFn m_relabelled;
 };
 } // namespace LibreSCRS::Agent

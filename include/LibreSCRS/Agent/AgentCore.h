@@ -21,6 +21,7 @@
 #include <LibreSCRS/Agent/presence/CardKeyTracker.h>
 #include <LibreSCRS/Agent/presence/ObjectRegistry.h>
 #include <LibreSCRS/Agent/presence/PresenceModel.h>
+#include <LibreSCRS/Agent/wire/QuiesceReason.h>
 #include <LibreSCRS/CancelToken.h>
 #include <cstdint>
 #include <filesystem>
@@ -194,6 +195,39 @@ public:
     {
         static_cast<void>(m_shutdownCancel.requestCancel());
     }
+
+    // --- system lifecycle ---------------------------------------------------
+    // The one policy for what the agent forgets when the holder's session goes
+    // away, whatever platform reported it. The host maps its own system events
+    // to a reason (systemd-logind PrepareForSleep / session Lock / Active on
+    // Linux; the workspace sleep, session-resign and screen-lock notifications
+    // on macOS), calls this, then announces the same reason to its clients
+    // (Manager1.Quiesced / AgentQuiesced).
+    //
+    //   SystemSleep, SessionInactive, Shutdown -> the full scrub: the CAN/MRZ
+    //     secret cache and the credential snapshots are cleared, every
+    //     reader's shared session (and with it any PACE secure channel) is
+    //     invalidated, and every PKCS#11 lease is revoked. A reader loses power
+    //     on sleep, so its session is invalid after wake anyway; a switched-away
+    //     holder must not leave secrets for the next one.
+    //   ScreenLocked -> revokeLeases() only: the session stays, the next
+    //     PKCS#11 operation asks for the PIN again.
+    //
+    // A value past Shutdown (appended later) takes the full scrub: forgetting
+    // too much costs a prompt, forgetting too little leaks a secret.
+    //
+    // Reads the object registry, so the host calls it wherever it serialises
+    // registry access (the monitor mutates the registry on its own thread); the
+    // caches, the lease manager and the scheduler have their own locks. The
+    // power-hold FLAG is left where it is: the worker drops the hold handle on
+    // the invalidate and renews it on its next idle sweep if the card is still
+    // seated after wake; a card gone by then clears the flag through the
+    // card-removed hook.
+    void quiesce(QuiesceReason reason);
+
+    // Revoke every PKCS#11 lease on every card the registry holds, so the next
+    // PKCS#11 operation re-authenticates. Same serialisation rule as quiesce().
+    void revokeLeases();
 
 private:
     // Assemble the broker's dependency bundle from this aggregate's own members

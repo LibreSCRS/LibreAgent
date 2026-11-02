@@ -27,8 +27,8 @@
 #include <LibreSCRS/Plugin/PinStatusEntry.h>
 #include <LibreSCRS/Plugin/PluginTypes.h>
 #include <LibreSCRS/Secure/String.h>
-#include <LibreSCRS/SmartCard/CardMap.h>
 #include <LibreSCRS/SmartCard/CardSession.h>
+#include <LibreSCRS/SmartCard/testing/CardSessionTesting.h>
 #include <gtest/gtest.h>
 #include <cstdint>
 #include <expected>
@@ -147,11 +147,10 @@ inline std::unique_ptr<CardSessionHolder> makeHolder(std::optional<LibreSCRS::Sm
         if (failWith) {
             return std::unexpected{*failWith};
         }
-        return LibreSCRS::SmartCard::detail::makeDetachedCardSession(r);
+        return LibreSCRS::SmartCard::Testing::makeDetachedCardSession(r);
     };
     auto resolver = [](std::span<const std::uint8_t>, LibreSCRS::SmartCard::CardSession&) { return CandidateList{}; };
-    return std::make_unique<CardSessionHolder>("FakeReader", std::move(factory), std::move(resolver),
-                                               std::make_shared<LibreSCRS::SmartCard::CardMap>());
+    return std::make_unique<CardSessionHolder>("FakeReader", std::move(factory), std::move(resolver));
 }
 
 // A single-record snapshot: a changeable UserPIN addressed by "user:0x01"; the

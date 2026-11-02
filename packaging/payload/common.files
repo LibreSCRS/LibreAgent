@@ -19,6 +19,7 @@
 lib/cmake/LibreAgent/LibreAgentConfig.cmake
 lib/cmake/LibreAgent/LibreAgentConfigVersion.cmake
 lib/cmake/LibreAgent/LibreAgentGTest.cmake
+lib/cmake/LibreAgent/PrivateSessionBusTest.cpp
 lib/cmake/LibreAgent/Pkcs11ModuleExport.cmake
 
 # The platform-neutral agent headers, including the std-only wire headers the
@@ -28,5 +29,6 @@ include/LibreSCRS/Agent/*/*.h
 include/LibreSCRS/Agent/*/*/*.h
 
 share/librescrs/librescrs-agent.cddl
+share/librescrs/dbus/*.xml
 share/librescrs/pkcs11/exports.map
 share/librescrs/pkcs11/exports.symbols

@@ -55,6 +55,7 @@
 #include <LibreSCRS/Agent/KeyType.h>
 #include <LibreSCRS/Agent/crypto/Mechanism.h>
 #include <LibreSCRS/Agent/wire/Messages.h>
+#include <LibreSCRS/Agent/wire/ReaderInterface.h>
 
 #include <gtest/gtest.h>
 
@@ -965,6 +966,24 @@ TEST(WireContractGuard, CddlKeyTypeMatchesTheAgentTokens)
     }
 }
 
+// reader-state's interface tokens are the wire enum's, in the enum's order,
+// and every token reads back as the value it was written from.
+TEST(WireContractGuard, CddlReaderInterfaceMatchesTheWireTokens)
+{
+    const std::string cddl = slurp(LIBRESCRS_AGENT_WIRE_CDDL);
+    ASSERT_FALSE(cddl.empty()) << "wire CDDL source path not wired";
+    using LibreSCRS::Agent::Wire::ReaderInterface;
+    const std::array all{ReaderInterface::Unknown, ReaderInterface::Contact, ReaderInterface::Contactless};
+    const auto tokens = cddlQuotedTokens(cddlRuleRhs(cddl, "reader-interface"));
+    ASSERT_EQ(tokens.size(), all.size()) << "the CDDL `reader-interface` group changed size";
+    for (std::size_t i = 0; i < all.size(); ++i) {
+        EXPECT_EQ(static_cast<std::size_t>(all[i]), i) << "ReaderInterface is not contiguous from 0";
+        EXPECT_EQ(tokens[i], LibreSCRS::Agent::Wire::readerInterfaceToken(all[i])) << "reader-interface token " << i;
+        EXPECT_EQ(LibreSCRS::Agent::Wire::readerInterfaceFromToken(tokens[i]), all[i]) << tokens[i];
+    }
+    EXPECT_FALSE(LibreSCRS::Agent::Wire::readerInterfaceFromToken("Contact").has_value()) << "tokens are exact";
+}
+
 // The two mechanism groups are exactly the tables the frontends map from.
 TEST(WireContractGuard, CddlMechanismTokensMatchTheAgentTables)
 {
@@ -1128,7 +1147,7 @@ TEST(WireContractGuard, ClosedVocabulariesAreTheExpectedSet)
         "cred-verb",      "error-code",    "op-phase",         "op-status",       "packaging-mode",
         "pre-read-auth",  "sign-format",   "sign-level",       "quiesce-reason",  "settable-config-key",
         "sync-error",     "unblock-style", "requested-format", "requested-level", "requested-packaging",
-        "config-key",     "key-type",      "pk-sign-mech",     "pk-decrypt-mech",
+        "config-key",     "key-type",      "pk-sign-mech",     "pk-decrypt-mech", "reader-interface",
     };
 
     std::set<std::string> found;

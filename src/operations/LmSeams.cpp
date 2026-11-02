@@ -5,14 +5,14 @@
 #include <LibreSCRS/Agent/util/Sha256Hex.h>   // sha256Hex (certId)
 #include <LibreSCRS/Agent/util/DisplayText.h> // isDisplayableUtf8 (text-field display safety)
 #include <LibreSCRS/Agent/util/HexEncode.h>   // toHex (serial / extension presentation)
-#include <LibreSCRS/Agent/backend/Logging.h>
+#include <LibreSCRS/Logging.h>
 #include "LmSigningRequestBuilder.h" // buildSigningRequest (extracted, unit-testable)
 #include "LmSignResultMapping.h"     // mapSigningResultStatus (extracted, unit-testable)
 #include <LibreSCRS/Agent/operations/SignGate.h>
 #include <LibreSCRS/Agent/operations/SignatureParams.h> // timestampWasApplied (honest tsaUsed)
 #include <LibreSCRS/Agent/operations/RsaPublicKey.h>
 #include <LibreSCRS/Agent/operations/SigningEngineProvider.h>
-#include <LibreSCRS/Auth/ErrorKeys.h> // keyAmbiguous() — bind KeyAmbiguous to the LM key constant
+#include <LibreSCRS/Auth/ErrorKeys.h> // paceUnsupported() / paceDowngradeDetected()
 #include <LibreSCRS/Certificate/ParsedCertificate.h>
 #include <LibreSCRS/Plugin/CardPluginService.h>
 #include <LibreSCRS/Plugin/ReadResult.h>
@@ -54,8 +54,6 @@ ReadOutcome::Status mapStatus(LibreSCRS::Plugin::ReadResult::Status s) noexcept
         return ReadOutcome::Status::Ok;
     case S::CommunicationError:
         return ReadOutcome::Status::CommunicationError;
-    case S::ParseError:
-        return ReadOutcome::Status::ParseError;
     case S::UnsupportedCard:
         return ReadOutcome::Status::UnsupportedCard;
     case S::AuthenticationFailed:
@@ -961,9 +959,8 @@ SignOutcome signFailure(SignOutcome::Status status, std::string msg)
 } // namespace
 
 // Translate the SigningResult terminal status into the seam's hermetic
-// SignOutcome status. KeyAmbiguous is a SigningEngineError on the LM wire
-// distinguished only by its dedicated ErrorKey (set by the CKA_ID
-// duplicate-detection); branch on that key here. Extracted out of the
+// SignOutcome status. KeyAmbiguous is never the engine's answer: the key is
+// chosen here (selectSigningCandidate) and handed to it. Extracted out of the
 // anonymous namespace above (declared in LmSignResultMapping.h) so it is
 // unit-testable against a hand-built SigningResult, independent of
 // LmSigner::sign's live-engine call — see that header's own comment.
@@ -974,7 +971,6 @@ SignOutcome::Status mapSigningResultStatus(const sign::SigningResult& r) noexcep
     case S::Ok:
         return SignOutcome::Status::Ok;
     case S::UserCancelled:
-    case S::Cancelled:
         return SignOutcome::Status::Cancelled;
     case S::PinVerificationFailed:
         return SignOutcome::Status::AuthFailed;
@@ -987,13 +983,7 @@ SignOutcome::Status mapSigningResultStatus(const sign::SigningResult& r) noexcep
     case S::InvalidRequest:
         return SignOutcome::Status::SigningEngineError;
     case S::SigningEngineError:
-        // KeyAmbiguous rides on SigningEngineError distinguished only by its
-        // dedicated LM ErrorKey (set by the CKA_ID duplicate-detection); bind to
-        // the LM constant (not a string literal) so an LM key rename is a
-        // compile-time break, not a silent miss.
-        return (r.userMessage.key == LibreSCRS::Auth::ErrorKeys::keyAmbiguous().key)
-                   ? SignOutcome::Status::KeyAmbiguous
-                   : SignOutcome::Status::SigningEngineError;
+        return SignOutcome::Status::SigningEngineError;
     case S::InvalidDocument:
         return SignOutcome::Status::InvalidDocument;
     }
@@ -1005,39 +995,34 @@ std::expected<SigningSelection, SignOutcome::Status> selectSigningCandidate(cons
                                                                             LibreSCRS::SmartCard::CardSession& session)
 {
     // Route to the candidate that OWNS certId: the first whose readCertificates
-    // contains a cert hashing to certId is the signing plugin. Applet switches
-    // between candidates ride their own SM-wrapped SELECT on the SAME session —
-    // never a new session. Two candidates that expose the same certificate
-    // expose the same key, so the first in priority order signs; one candidate
-    // that lists it under two different key handles names no key, and none is
-    // guessed.
+    // contains a cert hashing to certId, paired with a key, is the signing
+    // plugin. Applet switches between candidates ride their own SM-wrapped
+    // SELECT on the SAME session — never a new session. Two candidates that
+    // expose the same certificate expose the same key, so the first in priority
+    // order signs; one candidate that lists it under two different key handles
+    // names no key, and none is guessed. A listing with no key handle (an
+    // issuer's certificate) is no key at all. A plugin whose read throws reaches
+    // here as an empty listing (CardPlugin contains the throw), so it owns
+    // nothing and routing moves on.
     for (const auto& cand : candidates) {
         if (!cand) {
             continue;
         }
-        std::vector<LibreSCRS::Plugin::CertificateData> certs;
-        try {
-            certs = cand->readCertificates(session);
-        } catch (...) {
-            // A candidate that fails to read cannot own the cert; skip it and
-            // keep routing to the next.
-            log::warn("sign: a signing candidate threw on readCertificates; skipping it");
-            continue;
-        }
+        const std::vector<LibreSCRS::Plugin::CertificateData> certs = cand->readCertificates(session);
         std::optional<LibreSCRS::Plugin::CertificateData> owned;
-        for (auto& cd : certs) {
-            if (cd.derBytes.empty() || sha256Hex(cd.derBytes) != certId) {
+        for (const auto& cd : certs) {
+            if (!cd.keyFID || cd.derBytes.empty() || sha256Hex(cd.derBytes) != certId) {
                 continue;
             }
             if (owned && owned->keyFID != cd.keyFID) {
                 return std::unexpected(SignOutcome::Status::KeyAmbiguous);
             }
             if (!owned) {
-                owned = std::move(cd);
+                owned = cd;
             }
         }
         if (owned) {
-            return SigningSelection{.plugin = cand, .cert = std::move(*owned)};
+            return SigningSelection{.plugin = cand, .cert = std::move(*owned), .cardCerts = std::move(certs)};
         }
     }
     return std::unexpected(SignOutcome::Status::KeyNotFound);
@@ -1061,9 +1046,9 @@ sign::SigningRequest buildSigningRequest(const SignParams& params, sign::Signatu
     // opened, resolved or written through it (this is the buffer-sign path;
     // the bytes come from params.inputDocument). Forwarded verbatim: LM owns
     // the name policy (it strips any path components, honouring only the final
-    // one, and treats a degenerate result -- "", "." or ".." -- as unset,
-    // falling back to its inputFile derivation), so a second sanitisation
-    // layer here would only be able to disagree with it. Empty is fine.
+    // one, and treats a degenerate result -- "", "." or ".." -- as unset), so a
+    // second sanitisation layer here would only be able to disagree with it.
+    // Empty is fine.
     if (!params.displayName.empty()) {
         b.documentName(params.displayName);
     }
@@ -1130,7 +1115,8 @@ SignOutcome LmSigner::sign(const std::shared_ptr<LibreSCRS::SmartCard::CardSessi
     // re-reading each candidate's certs off the live card, so the assertion is
     // against the card present NOW (anti-TOCTOU). The re-read also
     // (re)establishes the PACE channel for travel-document cards on the session
-    // the engine then signs on.
+    // the engine then signs on. It is the signature's only read: the engine is
+    // handed the chosen key and the certificates read with it.
     // readCertificates takes no CancelToken (the card I/O — and any CAN prompt it
     // drives — is itself uncancellable); honour a cancel observed up to this point
     // before committing to the uncancellable readCertificates loop.
@@ -1201,8 +1187,9 @@ SignOutcome LmSigner::sign(const std::shared_ptr<LibreSCRS::SmartCard::CardSessi
     // connected TSA round-trip here is bounded by libcurl's own CURLOPT_TIMEOUT,
     // NOT by the watchdog's cooperative cancel. Threading a CancelToken into the
     // LM TSA call so the watchdog can interrupt it is a later item.
-    const sign::SigningResult result = engine->sign(request, std::span<const std::uint8_t>{params.inputDocument},
-                                                    std::move(credentials), signingPlugin, session);
+    const sign::SigningResult result = engine->sign(
+        request, std::span<const std::uint8_t>{params.inputDocument}, std::move(credentials), signingPlugin, session,
+        chosen, std::span<const LibreSCRS::Plugin::CertificateData>{selection->cardCerts});
 
     SignOutcome out;
     out.status = mapSigningResultStatus(result);
@@ -1320,7 +1307,8 @@ CertReadOutcome LmCertificateReader::read(LibreSCRS::SmartCard::CardSession& ses
     // active PKI applet. An empty list is Ok-with-no-certs (matching the prior
     // single-plugin behaviour), so it is returned only when every candidate is
     // empty. Candidate plugins switch applets via their own SM-wrapped SELECT on
-    // the SAME session — never open a new one.
+    // the SAME session — never open a new one. A plugin whose read throws
+    // reaches here as an empty list (CardPlugin contains the throw).
     CertReadOutcome last{CertReadOutcome::Status::Ok, {}, {}, {}};
     for (const auto& cand : candidates) {
         if (!cand) {
@@ -1329,14 +1317,7 @@ CertReadOutcome LmCertificateReader::read(LibreSCRS::SmartCard::CardSession& ses
         if (token.isCancelled()) {
             return CertReadOutcome{CertReadOutcome::Status::Cancelled, {}, {}, {}};
         }
-        std::vector<LibreSCRS::Plugin::CertificateData> raw;
-        try {
-            raw = cand->readCertificates(session);
-        } catch (...) {
-            log::warn("cert-read: a candidate threw on readCertificates; skipping it");
-            last = CertReadOutcome{CertReadOutcome::Status::CommunicationError, {}, "readCertificates failed", {}};
-            continue;
-        }
+        const std::vector<LibreSCRS::Plugin::CertificateData> raw = cand->readCertificates(session);
         CertReadOutcome out;
         out.status = CertReadOutcome::Status::Ok;
         out.certs.reserve(raw.size());
@@ -1368,26 +1349,19 @@ namespace {
 // no card interaction happened) falls through to the next candidate; any other
 // outcome is the card's answer and returns immediately — a mutation is NEVER
 // retried on another candidate, so a failed attempt cannot burn a second retry
-// counter. A throwing candidate maps to PluginError and also stops routing:
+// counter. A plugin that throws reaches here as PluginError (CardPlugin
+// contains the throw), which is not Unsupported, so it also stops routing:
 // after a throw mid-mutation the card state is unknown, so retrying elsewhere
 // would be unsafe. All-Unsupported (or an empty list) answers Unsupported —
 // the valid outcome for a card that advertises no credential management.
 template <typename Op>
-LibreSCRS::Plugin::PINResult routePinMutation(const CandidateList& candidates, const char* opName, Op&& op)
+LibreSCRS::Plugin::PINResult routePinMutation(const CandidateList& candidates, Op&& op)
 {
     for (const auto& cand : candidates) {
         if (!cand) {
             continue;
         }
-        LibreSCRS::Plugin::PINResult result;
-        try {
-            result = op(*cand);
-        } catch (...) {
-            log::warnf("credential: a candidate threw on {}; failing the operation", opName);
-            result = {};
-            result.outcome = LibreSCRS::Plugin::PINResultOutcome::PluginError;
-            return result;
-        }
+        LibreSCRS::Plugin::PINResult result = op(*cand);
         if (result.outcome != LibreSCRS::Plugin::PINResultOutcome::Unsupported) {
             return result;
         }
@@ -1405,19 +1379,14 @@ CredentialListing LmCredentialManager::list(LibreSCRS::SmartCard::CardSession& s
     // non-empty PIN list is the active applet — its identity is returned with
     // the entries so the flow can bind the snapshot to the listing plugin.
     // Candidate plugins switch applets via their own SM-wrapped SELECT on the
-    // SAME session — never open a new one. A throwing candidate is skipped
-    // (read-only operation).
+    // SAME session — never open a new one. A plugin whose listing throws
+    // reaches here as an empty list (CardPlugin contains the throw) and is
+    // passed over like any other empty one.
     for (const auto& cand : candidates) {
         if (!cand) {
             continue;
         }
-        std::vector<LibreSCRS::Plugin::PinStatusEntry> entries;
-        try {
-            entries = cand->getPINList(session);
-        } catch (...) {
-            log::warn("credential: a candidate threw on getPINList; skipping it");
-            continue;
-        }
+        std::vector<LibreSCRS::Plugin::PinStatusEntry> entries = cand->getPINList(session);
         if (!entries.empty()) {
             return {std::move(entries), cand->pluginId()};
         }
@@ -1430,7 +1399,7 @@ LibreSCRS::Plugin::PINResult LmCredentialManager::changePIN(LibreSCRS::SmartCard
                                                             const LibreSCRS::Secure::String& oldPin,
                                                             const LibreSCRS::Secure::String& newPin)
 {
-    return routePinMutation(candidates, "changePIN", [&](const LibreSCRS::Plugin::CardPlugin& plugin) {
+    return routePinMutation(candidates, [&](const LibreSCRS::Plugin::CardPlugin& plugin) {
         return plugin.changePIN(session, pinLabel, oldPin, newPin);
     });
 }
@@ -1441,7 +1410,7 @@ LibreSCRS::Plugin::PINResult LmCredentialManager::activateTransportPin(LibreSCRS
                                                                        const LibreSCRS::Secure::String& transportValue,
                                                                        const LibreSCRS::Secure::String& newPin)
 {
-    return routePinMutation(candidates, "activateTransportPin", [&](const LibreSCRS::Plugin::CardPlugin& plugin) {
+    return routePinMutation(candidates, [&](const LibreSCRS::Plugin::CardPlugin& plugin) {
         return plugin.activateTransportPin(session, pinLabel, transportValue, newPin);
     });
 }
@@ -1450,7 +1419,7 @@ LibreSCRS::Plugin::PINResult LmCredentialManager::activateSigningKey(LibreSCRS::
                                                                      const CandidateList& candidates,
                                                                      const LibreSCRS::Secure::String& signPin)
 {
-    return routePinMutation(candidates, "activateSigningKey", [&](const LibreSCRS::Plugin::CardPlugin& plugin) {
+    return routePinMutation(candidates, [&](const LibreSCRS::Plugin::CardPlugin& plugin) {
         return plugin.activateSigningKey(session, signPin);
     });
 }

@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 // SPDX-FileCopyrightText: 2026 hirashix0
 #pragma once
+#include <LibreSCRS/Agent/util/HexEncode.h>
+
+#include <array>
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
@@ -32,11 +35,11 @@ public:
         const auto hi = static_cast<std::uint64_t>(rd());
         const auto lo = static_cast<std::uint64_t>(rd());
         const std::uint64_t nonce = (hi << 32) ^ lo;
-        static constexpr char kHex[] = "0123456789abcdef";
-        m_runNonce.resize(16);
-        for (int i = 15; i >= 0; --i) {
-            m_runNonce[static_cast<std::size_t>(i)] = kHex[(nonce >> ((15 - i) * 4)) & 0xF];
+        std::array<std::uint8_t, sizeof(nonce)> bytes{};
+        for (std::size_t i = 0; i < bytes.size(); ++i) {
+            bytes[i] = static_cast<std::uint8_t>(nonce >> ((bytes.size() - 1 - i) * 8));
         }
+        m_runNonce = toHex(bytes, '\0', /*upper=*/false);
     }
 
     /// Tests inject a fixed nonce so ids are predictable.

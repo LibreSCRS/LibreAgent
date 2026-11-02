@@ -297,12 +297,13 @@ TEST(InvalidateForMutationOutcome, SecretCacheIsNeverTouched)
     SeededCaches c;
     CredentialCache secretCache;
     secretCache.putCan(c.cardKey, CredentialCache::Secret{"123456"});
-    ASSERT_TRUE(secretCache.hasCan(c.cardKey));
+    ASSERT_TRUE(secretCache.getCan(c.cardKey).has_value());
 
     // The strongest card-reaching outcome.
     invalidateForMutationOutcome(CredentialOutcome::Ok, c.cardKey, c.snapshotCache, c.readCache);
 
     EXPECT_FALSE(c.snapshotPresent()) << "the snapshot IS dropped";
     EXPECT_FALSE(c.readPresent()) << "the read cache IS dropped";
-    EXPECT_TRUE(secretCache.hasCan(c.cardKey)) << "the CAN/MRZ secret cache must be untouched by a mutation";
+    EXPECT_TRUE(secretCache.getCan(c.cardKey).has_value())
+        << "the CAN/MRZ secret cache must be untouched by a mutation";
 }

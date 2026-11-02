@@ -95,8 +95,8 @@ public:
     // the first six values and RateLimited (a PIN prompt the per-caller budget
     // refused); UnknownCard / UserNotLoggedIn are broker-synthesized GATE
     // outcomes (no card / no live lease) that a CryptoResult from the seam never
-    // sets. The backend (dbus/Pkcs11OutcomeNames) maps each to its wire error
-    // name.
+    // sets. toSyncError() (value/SyncErrorTaxonomy.h) names the wire error each
+    // one goes out as, for both hosts.
     enum class CryptoOutcome : std::uint8_t {
         Ok,
         Cancelled,
@@ -109,7 +109,7 @@ public:
         UserNotLoggedIn,
         /// The caller exceeded the per-caller budget for PIN prompts
         /// (anti-phishing throttle, RateLimiter policy). Produced by the seam,
-        /// not the broker: the flow asks before every prompt. The backend maps
+        /// not the broker: the flow asks before every prompt. toSyncError() maps
         /// it to the same wire error as the Card1.Sign throttle
         /// (Error.RateLimited). Append-only: added after UserNotLoggedIn,
         /// never reordered.
@@ -117,7 +117,7 @@ public:
         /// The request does not fit the key -- a mechanism of the other family,
         /// an input of the wrong length, a peer point off the key's curve --
         /// refused by the agent before any PIN prompt. Produced by the seam;
-        /// the lease is untouched. The backend maps it to InvalidRequest.
+        /// the lease is untouched. toSyncError() maps it to InvalidRequest.
         /// Append-only: added after RateLimited.
         InvalidInput,
     };
@@ -131,7 +131,7 @@ public:
     // PIN is collected on the first crypto op). The lease is granted on success.
     // The seam produces the first four values; UnknownCard / NotAuthorized are
     // broker-synthesized GATE outcomes (no card / client not authorized) — the
-    // login seam never returns them. The backend maps each to its wire name.
+    // login seam never returns them. toSyncError() names the wire error.
     enum class LoginOutcome : std::uint8_t {
         Ok,
         Cancelled,
@@ -180,8 +180,8 @@ public:
 
     // Sign / Decrypt seams: run the raw crypto op on @p reader for @p certId over
     // @p bytes. @p mechanism + @p params carry the requested primitive (the core
-    // wires only RsaPkcs1Sign/RsaPkcs1Decrypt + MechParamsEmpty; future EC/ECDH/RSA-OAEP
-    // arms are additive with no signature change). @p pinState carries the
+    // runs exactly the mechanism it is handed; a new arm is additive with no
+    // signature change). @p pinState carries the
     // lease-scoped verified flag (PIN never crosses this boundary). @p requester is
     // the caller's display label, threaded so the PIN-as-consent prompt names the
     // app asking. @p done carries the CryptoResult.
@@ -233,10 +233,9 @@ public:
     // synchronously (fulfilling @p reply with an error on a failed gate) then
     // hands the card I/O to the worker, which fulfils @p reply on completion.
 
-    // Public data: no Authorizer gate, no lease, no PIN — audited at info. The
-    // future RSA public-key encrypt (Mechanism::RsaPkcs1Encrypt) joins THIS
-    // no-consent path via a dedicated EncryptSeam, NOT the lease-gated runCrypto
-    // body (consent is by private-key use).
+    // Public data: no Authorizer gate, no lease, no PIN — audited at info. A
+    // public-key operation belongs on THIS no-consent path with a seam of its
+    // own, NOT in the lease-gated runCrypto body (consent is by private-key use).
     void certDer(const std::string& reader, const std::string& certId, const Caller& caller,
                  Reply<CryptoOutcome, std::vector<std::uint8_t>> reply);
     void publicKey(const std::string& reader, const std::string& certId, const Caller& caller,
@@ -270,14 +269,21 @@ public:
     void onClientDisconnected(const CallerToken& client);
 
 private:
+    // The part of login() after the client was authorized. Static: it may run
+    // in an authorization completion that outlives the broker, so everything it
+    // touches comes in by argument.
+    static void continueLogin(const ResolveCardKeySeam& resolveCardKey, const LoginSeam& loginSeam,
+                              const std::shared_ptr<Pkcs11::LeaseManager>& lease, const NowSeam& now,
+                              const std::string& reader, const Caller& caller,
+                              const Reply<LoginOutcome, std::uint32_t>& reply);
+
     // Shared SignRaw/Decrypt/Derive body: FIRST reject any @p mechanism NOT in the set
     // this path wires (fail-closed NotSupported). The signRaw seam runs exactly
     // the mechanism it is handed — RsaPkcs1Sign, Sha256RsaPkcs1Sign or
     // EcdsaSign, all on MechParamsEmpty; the decrypt seam runs RsaPkcs1Decrypt;
     // the derive seam runs EcdhDerive (CKD_NULL, checked by derive()).
-    // Every other arm (RSA-PSS / OAEP / the
-    // public-key encrypt arms) stays rejected here: forwarding one would run it
-    // as the seam's default primitive. Then lease-gate (touch) synchronously and
+    // Any other arm stays rejected here: forwarding one would run it as the
+    // seam's default primitive. Then lease-gate (touch) synchronously and
     // run the seam on the worker; the continuation forwards the seam
     // CryptoOutcome to @p reply (bytes on Ok), revokes the lease on auth-fail,
     // audits, and fulfils @p reply. @p opName is the audit/log label

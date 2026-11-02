@@ -2,7 +2,7 @@
 // SPDX-FileCopyrightText: 2026 hirashix0
 #pragma once
 
-#include "dbus/Marshal.h" // reuse the client's own wire-shape mirrors + AgentInterfaceProps
+#include "dbus/WireShapes.h" // the client's own wire-shape mirrors + AgentInterfaceProps
 
 #include "FakeCertFields.h" // the scripted cert `fields` dict, in one shape both fakes accept
 #include "FakeConfig.h"     // the Config1 property set both fakes serve, in one shape
@@ -244,7 +244,9 @@ private:
     FakeAgent* m_agent;
 };
 
-/// @brief Reader1 adaptor (Name / HasCard / Card properties).
+/// @brief Reader1 adaptor (Name / HasCard / Card / Model / Interface).
+///        The label defaults to the name and "unknown" -- what the agent
+///        publishes for a reader its classifier cannot shorten.
 class ReaderAdaptor : public QDBusAbstractAdaptor
 {
     Q_OBJECT
@@ -252,18 +254,27 @@ class ReaderAdaptor : public QDBusAbstractAdaptor
     Q_PROPERTY(QString Name READ name)
     Q_PROPERTY(bool HasCard READ hasCard)
     Q_PROPERTY(QDBusObjectPath Card READ card)
+    Q_PROPERTY(QString Model READ model)
+    Q_PROPERTY(QString Interface READ interfaceToken)
 public:
     ReaderAdaptor(QObject* parent, QString name, bool hasCard, QDBusObjectPath card);
     [[nodiscard]] QString name() const;
     [[nodiscard]] bool hasCard() const;
     [[nodiscard]] QDBusObjectPath card() const;
+    [[nodiscard]] QString model() const;
+    [[nodiscard]] QString interfaceToken() const;
     void setHasCard(bool v);
     void setCard(QDBusObjectPath v);
+    void setLabel(QString model, QString interfaceToken);
+    /// Every Reader1 property, as GetManagedObjects / InterfacesAdded carry it.
+    [[nodiscard]] QVariantMap properties() const;
 
 private:
     QString m_name;
     bool m_hasCard;
     QDBusObjectPath m_card;
+    QString m_model;
+    QString m_interface = QStringLiteral("unknown");
 };
 
 /// @brief The QObject registered at a root/card/reader path. Inherits
@@ -605,6 +616,11 @@ public:
         /// Reader1.Name of the second reader (reader/1) the arrival helpers
         /// (`emitReaderArrivesEmpty`, `registerSecondReaderSilently`) register.
         QString reader2Name = QStringLiteral("Fake2");
+        /// Reader1.Model / Reader1.Interface of the initial reader. An empty
+        /// model publishes the name, as the agent does for a name it cannot
+        /// shorten.
+        QString readerModel;
+        QString readerInterface = QStringLiteral("unknown");
         uint capabilities = 0;
         bool hasCard = true;
         QString preReadAuth = QStringLiteral("None");
@@ -928,6 +944,16 @@ public:
     ///        reader adaptor, so callers must set it first.
     void emitReaderHasCardChanged(bool hasCard);
 
+    /// @brief Relabel the initial reader (another reader arrived or left
+    ///        beside it) and emit the Reader1 PropertiesChanged carrying the
+    ///        new Model and Interface together, as the agent does.
+    void emitReaderRelabelled(const QString& model, const QString& interfaceToken);
+
+    /// @brief Emit Manager1.Quiesced(@p reason) on the root object, as the
+    ///        agent does after its core quiesced. A raw uint, so a test can
+    ///        send a reason past this build's vocabulary (or past its width).
+    void emitQuiesced(uint reason);
+
     /// @brief Change the card's Capabilities and emit a Properties.PropertiesChanged
     ///        carrying the FULL new value in the `changed` map (mirrors the
     ///        agent, which never relies on `invalidated`). Lets a test assert the
@@ -1080,6 +1106,6 @@ private:
 } // namespace LibreSCRS::AgentClient::Fakes
 
 // FakeInterfaceProps == LibreSCRS::AgentClient::AgentInterfaceProps, already
-// declared a metatype by Marshal.h/ensureDBusMetatypes(); only the
+// declared a metatype by WireShapes.h/ensureDBusMetatypes(); only the
 // managed-objects map is new here.
 Q_DECLARE_METATYPE(LibreSCRS::AgentClient::Fakes::FakeManagedObjects)

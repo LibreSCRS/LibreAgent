@@ -3,7 +3,6 @@
 #pragma once
 #include <LibreSCRS/Agent/KeyType.h>
 #include <LibreSCRS/Agent/operations/Seams.h>
-#include <LibreSCRS/Certificate/ParsedCertificate.h>
 #include <LibreSCRS/Plugin/CardPlugin.h>
 #include <cstdint>
 #include <expected>
@@ -16,6 +15,13 @@
 namespace LibreSCRS::Plugin {
 class CardPluginService;
 }
+
+// Declared, not included: the core links the middleware's certificate library
+// PRIVATELY, and a public header that pulled its definitions in would hand that
+// dependency to every host that includes this one.
+namespace LibreSCRS::Certificate {
+class ParsedCertificate;
+} // namespace LibreSCRS::Certificate
 
 namespace LibreSCRS::Agent::Operations {
 
@@ -46,12 +52,13 @@ public:
 // passed session — never opens a new one. list() returns the first candidate's
 // non-empty getPINList (the active applet) together with that candidate's
 // pluginId, so the flow can bind the produced snapshot to the listing plugin;
-// a throwing candidate is skipped (read-only). The mutating entry points route
+// a plugin whose listing throws lists nothing (CardPlugin contains the throw)
+// and is passed over (read-only). The mutating entry points route
 // a REAL Unsupported (the LM base default — the plugin did not implement the
 // flow, so no card interaction happened) to the next candidate; ANY other
 // outcome is final: a mutation is never retried across candidates, so a failed
-// attempt cannot burn a second retry counter, and a throw maps to PluginError
-// and stops routing (card state unknown). All-Unsupported (or no candidates)
+// attempt cannot burn a second retry counter, and a plugin's throw, which
+// CardPlugin reports as PluginError, stops routing (card state unknown). All-Unsupported (or no candidates)
 // answers Unsupported — the valid outcome for a card that advertises no
 // credential management. Mutation flows put the snapshot's listing plugin
 // FIRST in the candidate order (prioritizeCandidate), so the plugin that
@@ -172,29 +179,31 @@ struct SigningSelection
 {
     std::shared_ptr<const LibreSCRS::Plugin::CardPlugin> plugin;
     LibreSCRS::Plugin::CertificateData cert;
+    // Every certificate the owning plugin reported in the same read: the
+    // signature's chain is built from these, so the card is not read again.
+    std::vector<LibreSCRS::Plugin::CertificateData> cardCerts;
 };
 
 // Pure routing decision used by LmSigner::sign, exposed for unit testing. Walks
 // @p candidates in order, re-reading each candidate's certs off the live
 // @p session (anti-TOCTOU: the assertion is against the card present NOW), and
 // returns the FIRST candidate that owns a cert whose sha256Hex(derBytes) equals
-// @p certId: two candidates exposing the same certificate expose the same key.
-// A candidate that lists that certificate under two different key handles names
-// no key: KeyAmbiguous. That is the one shape judged here; a certificate with no
-// key handle at all is the plugin's own "cannot say which key" and is left to the
-// caller. A candidate whose readCertificates throws is skipped (it cannot own the
-// cert); null candidate entries are skipped; KeyNotFound when no candidate owns
-// @p certId. The re-read also (re)establishes the PACE channel for
-// travel-document cards on the session the engine then signs on — hence the live
-// session is required even though selection is "pure".
+// @p certId and that it pairs with a key: two candidates exposing the same
+// certificate expose the same key. A candidate that lists that certificate under
+// two different key handles names no key: KeyAmbiguous. A listing without a key
+// handle (an issuer's certificate) is not a key and is passed over. A candidate
+// whose readCertificates throws lists nothing (CardPlugin contains the throw),
+// so it cannot own the cert; null
+// candidate entries are skipped; KeyNotFound when no candidate owns @p certId.
+// The re-read also (re)establishes the PACE channel for travel-document cards on
+// the session the engine then signs on — hence the live session is required even
+// though selection is "pure".
 //
-// Key selection is split with LibreMiddleware on purpose. This picks the
-// certificate, and refuses one certificate under two handles; the signing
-// service is then handed the chosen certificate's CKA_ID and refuses, on its
-// own, a CKA_ID that names more than one key within the candidate. Neither check
-// covers the other's case, and no third one belongs anywhere else. The raw
-// PKCS#11 path (preflight) never reaches the signing service and reports this
-// refusal as KeyNotFound: PKCS#11 has no "ambiguous key" answer to give.
+// This is the one place a signing key is chosen. The signing service is handed
+// the chosen certificate with its key handle and the certificates read with it
+// (SigningSelection::cardCerts), and neither reads the card again nor chooses
+// again. The raw PKCS#11 path (preflight) reports a KeyAmbiguous refusal as
+// KeyNotFound: PKCS#11 has no "ambiguous key" answer to give.
 [[nodiscard]] std::expected<SigningSelection, SignOutcome::Status>
 selectSigningCandidate(const CandidateList& candidates, const std::string& certId,
                        LibreSCRS::SmartCard::CardSession& session);

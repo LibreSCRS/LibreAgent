@@ -46,7 +46,7 @@ if(LIBREAGENT_BUILD_CORE AND (PROJECT_IS_TOP_LEVEL OR LIBREAGENT_BUILD_TEST_SUPP
         install(TARGETS SyntheticMasterList
             EXPORT LibreAgentTestSupportTargets
             ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR})
-        install(FILES SyntheticMasterList.h
+        install(FILES SyntheticMasterList.h AllowAllAuthorizer.h
             DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/LibreSCRS/AgentTestSupport)
         install(EXPORT LibreAgentTestSupportTargets
             FILE LibreAgentTestSupportTargets.cmake
@@ -119,24 +119,30 @@ agent_core_test(FakeBackendsTest)
 
 # Owning aggregate: construction wiring, live-member accessors, teardown order.
 agent_core_test(AgentCoreWiringTest)
+# Its system-lifecycle policy: what a sleep, a user switch or a lock forgets.
+agent_core_test(AgentCoreQuiesceTest)
 
 # --- platform-neutral unit tests ------------------------------------------
 agent_core_test(AgentShutdownUnderLoadTest)
 agent_core_test(AttemptContextTest)
 agent_core_test(AuthorizerTest)
+agent_core_test(TempDirTest)
 agent_core_test(CacheScrubOnRemovalTest)
 agent_core_test(CallerLabelTest)
 agent_core_test(CardKeyTrackerTest)
 agent_core_test(CardPluginRoutingTest)
 agent_core_test(CardReadCacheTest)
 agent_core_test(CardReadSnapshotTest)
+agent_core_test(CardResolutionPolicyTest)
 agent_core_test(CardSessionHolderTest)
 agent_core_test(CertDerExportTest)
 agent_core_test(CertReadFlowTest)
 agent_core_test(ConfigStoreTest)
 agent_core_test(CredentialCacheRequestTest)
 agent_core_test(CredentialCacheTest)
+agent_core_test(DerLengthTest)
 agent_core_test(ErrorTaxonomyTest)
+agent_core_test(SyncErrorTaxonomyTest)
 agent_core_test(FieldKeyParityTest)
 agent_core_test(IdentityReadFlowTest)
 agent_core_test(IdentityTest)
@@ -144,14 +150,19 @@ agent_core_test(LeaseManagerTest)
 agent_core_test(LmCertReaderKatTest)
 agent_core_test(LmRawCryptoTest)
 agent_core_test(LmSeamsCompileTest)
+# Compile-only: LmSeams.h keeps the privately linked certificate library's
+# definitions out of every host that includes it (static_assert inside).
+add_library(LmSeamsHeaderBoundary OBJECT LmSeamsHeaderBoundary.cpp)
+target_link_libraries(LmSeamsHeaderBoundary PRIVATE LibreAgent::Core)
 agent_core_test(LmSeamsRoutingTest)
 agent_core_test(LmSigningRequestBuilderTest)
 agent_core_test(LmTrustVerifierTest)
-agent_core_test(LoggingTest)
 agent_core_test(MrzPayloadTest)
 agent_core_test(ObjectRegistryTest)
 agent_core_test(OperationBaseTest)
 agent_core_test(OperationManagerTest)
+# One place every host assembles and queues a card operation through.
+agent_core_test(OperationLauncherTest)
 agent_core_test(OperationPhaseTest)
 agent_core_test(PresenceModelTest)
 agent_core_test(PresenceTypesTest)
@@ -159,6 +170,7 @@ agent_core_test(PromptBudgetChainTest)
 agent_core_test(PromptFieldWiringTest)
 agent_core_test(PromptIdMinterTest)
 agent_core_test(PromptPolicyTest)
+agent_core_test(PrompterVocabularyTest)
 agent_core_test(PromptSerializerTest)
 agent_core_test(PromptStampTest)
 agent_core_test(PrompterConformanceTest)
@@ -191,32 +203,11 @@ foreach(_kat IN ITEMS LmCertReaderKatTest LmRawCryptoTest LmTrustVerifierTest Rs
     target_link_libraries(${_kat} PRIVATE OpenSSL::Crypto)
 endforeach()
 
-# These tests construct a stable per-session key via the LM-internal detached
-# card-session factory (LibreSCRS::SmartCard::detail::makeDetachedCardSession),
-# whose prototype in <LibreSCRS/SmartCard/CardSession.h> is guarded behind
-# LIBRESCRS_INTERNAL_BUILD — the same opt-in LibreMiddleware's own tests use.
-foreach(_internal IN ITEMS
-        OperationManagerTest
-        PromptBudgetChainTest
-        LmRawCryptoTest
-        CardSessionHolderTest
-        FakeBackendsTest
-        FieldKeyParityTest
-        IdentityReadFlowTest
-        LmSeamsRoutingTest
-        CertReadFlowTest
-        TokenInfoReadFlowTest
-        RawCryptoFlowTest
-        BatchSignFlowTest
-        SignFlowPhaseTest
-        SignFlowTest
-        PrompterKeepAliveDrainTest)
-    target_compile_definitions(${_internal} PRIVATE LIBRESCRS_INTERNAL_BUILD)
+# OperationManager exposes test-only accessors behind LIBRESCRS_AGENT_TESTING;
+# only these neutral-core test builds define it.
+foreach(_testing IN ITEMS OperationManagerTest OperationLauncherTest)
+    target_compile_definitions(${_testing} PRIVATE LIBRESCRS_AGENT_TESTING)
 endforeach()
-
-# OperationManager exposes a test-only accessor behind LIBRESCRS_AGENT_TESTING;
-# only this neutral-core test build defines it.
-target_compile_definitions(OperationManagerTest PRIVATE LIBRESCRS_AGENT_TESTING)
 
 # Source-grep guard: reads the shipped AgentCore.cpp + Pkcs11Broker.cpp to lock the
 # raw-crypto worker closure's shared serializer + prompter + credential co-ownership
@@ -241,33 +232,26 @@ target_compile_definitions(IdentityReadFlowTest PRIVATE
     LIBREAGENT_LMSEAMS_CPP="${CMAKE_CURRENT_SOURCE_DIR}/../src/operations/LmSeams.cpp")
 
 # Credential lifecycle wire types: record/outcome mapping tables, id rule,
-# narrowing + placeholders guards.
+# narrowing guard.
 agent_core_test(CredentialRecordTest)
 
-# Credential seam routing + multi-secret prompter seam; needs the LM-internal
-# detached card-session factory (same opt-in as the seam routing tests above).
+# Credential seam routing + multi-secret prompter seam.
 agent_core_test(CredentialSeamTest)
-target_compile_definitions(CredentialSeamTest PRIVATE LIBRESCRS_INTERNAL_BUILD)
 
 # Credential list flow: open + install-provider prelude, map/disambiguate into a
-# CredentialSnapshot, empty/CardRemoved classification. Uses the LM-internal
-# detached card-session factory (markDead drives the transport-loss case).
+# CredentialSnapshot, empty/CardRemoved classification (markDead drives the
+# transport-loss case).
 agent_core_test(CredentialListFlowTest)
-target_compile_definitions(CredentialListFlowTest PRIVATE LIBRESCRS_INTERNAL_BUILD)
 
-# Signing-key activation flow (increment #1: Unsupported passthrough). Needs the
-# LM-internal detached card-session factory for its held-session harness. The
-# flow TU is in the top-level Core source list, so the test links it from
+# Signing-key activation flow (increment #1: Unsupported passthrough). The flow
+# TU is in the top-level Core source list, so the test links it from
 # LibreAgent::Core.
 agent_core_test(KeyActivationFlowTest)
-target_compile_definitions(KeyActivationFlowTest PRIVATE LIBRESCRS_INTERNAL_BUILD)
 
 # PIN-management flow (increment #1: change drives the seam; unblock/activate_pin
-# short-circuit to Unsupported) + entry validation. Needs the LM-internal
-# detached card-session factory for its held-session harness. The flow TU is in
-# the top-level Core source list, so the test links it from LibreAgent::Core.
+# short-circuit to Unsupported) + entry validation. The flow TU is in the
+# top-level Core source list, so the test links it from LibreAgent::Core.
 agent_core_test(PinChangeFlowTest)
-target_compile_definitions(PinChangeFlowTest PRIVATE LIBRESCRS_INTERNAL_BUILD)
 
 # Credential outcome -> (finish status, wire ErrorCode) mapping: the verbatim
 # contract table plus a compile-guarded exhaustive oracle over CredentialOutcome.
@@ -275,8 +259,8 @@ agent_core_test(CredentialErrorMappingTest)
 
 # Per-card credential-snapshot cache (monotonic version, scrub-on-drop, idle
 # window) + the post-mutation invalidation rule (reached-card drops snapshot +
-# read cache; secret cache untouched). Pure value/cache types — no LM-internal
-# card session, so no LIBRESCRS_INTERNAL_BUILD.
+# read cache; secret cache untouched). Pure value/cache types — no card
+# session.
 agent_core_test(CredentialSnapshotCacheTest)
 
 # Country-signing anchor import: trust-on-first-import, pin, rotation, and the
@@ -306,19 +290,40 @@ agent_core_test(CredentialOperationContractTest)
 agent_core_test(SignFlowOrchestrationTest)
 agent_core_test(CardTypeArbitrationTest)
 
-# All but the arbitration test build a held card session through the LM-internal
-# detached factory, whose prototype is guarded behind LIBRESCRS_INTERNAL_BUILD.
-# Without the define they COMPILE and do not RUN what they claim to, which no
-# test count can see.
-foreach(_op_internal IN ITEMS
-        ReadIdentityOperationTest
+# These suites hold a card session with no reader or card behind it, from
+# LibreMiddleware's declared test support (LibreSCRS::SmartCardTesting): a
+# stable per-session key for routing, caching and holding, with no card I/O.
+foreach(_detached IN ITEMS
+        AgentCoreQuiesceTest
+        BatchSignFlowTest
+        CardResolutionPolicyTest
+        CardSessionHolderTest
+        CertReadFlowTest
+        CredentialListFlowTest
+        CredentialOperationContractTest
+        CredentialSeamTest
+        FakeBackendsTest
+        FieldKeyParityTest
         GetPhotoOperationTest
+        IdentityReadFlowTest
+        KeyActivationFlowTest
+        LmRawCryptoTest
+        LmSeamsRoutingTest
+        OperationLauncherTest
+        OperationManagerTest
+        PinChangeFlowTest
+        PromptBudgetChainTest
+        PrompterKeepAliveDrainTest
+        RawCryptoFlowTest
         ReadCertificatesOperationTest
+        ReadIdentityOperationTest
         ReadTokenInfoOperationTest
         SignBatchOperationTest
-        CredentialOperationContractTest
-        SignFlowOrchestrationTest)
-    target_compile_definitions(${_op_internal} PRIVATE LIBRESCRS_INTERNAL_BUILD)
+        SignFlowOrchestrationTest
+        SignFlowPhaseTest
+        SignFlowTest
+        TokenInfoReadFlowTest)
+    target_link_libraries(${_detached} PRIVATE LibreSCRS::SmartCardTesting)
 endforeach()
 
 # LM-parity oracle for Manager1.LayoutVisualSignature/GetAppearanceFont —

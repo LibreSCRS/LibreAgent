@@ -10,31 +10,25 @@
 
 namespace LibreSCRS::Agent {
 
-// The crypto mechanism a private/public-key op requests. Append-only: a new
-// primitive is a new enumerator plus, where it needs one, a parameter arm --
-// never a seam-signature widening. Wired today: RsaPkcs1Sign,
-// Sha256RsaPkcs1Sign, EcdsaSign, RsaPkcs1Decrypt (all with MechParamsEmpty)
-// and EcdhDerive (MechParamsEcdh, kdf == kEcdhKdfNull only). The agent runs
-// exactly the mechanism a request names and checks it against the key before
-// any PIN prompt.
+// The crypto mechanism a private-key op requests: a new primitive is a new
+// enumerator plus, where it needs one, a parameter arm -- never a
+// seam-signature widening. RsaPkcs1Sign, Sha256RsaPkcs1Sign, EcdsaSign and
+// RsaPkcs1Decrypt take MechParamsEmpty; EcdhDerive takes MechParamsEcdh
+// (kdf == kEcdhKdfNull only). The agent runs exactly the mechanism a request
+// names and checks it against the key before any PIN prompt.
 enum class Mechanism : std::uint8_t {
-    // Private-key, lease-gated (PIN-as-consent).
-    RsaPkcs1Sign,    // CKM_RSA_PKCS: the caller's complete block   [wired, Empty]
-    RsaPssSign,      // CKM_RSA_PKCS_PSS -> future RsaPss params     [additive]
-    EcdsaSign,       // CKM_ECDSA: the digest, 32/48/64 bytes        [wired, Empty]
-    RsaPkcs1Decrypt, // CKM_RSA_PKCS decrypt                         [wired, Empty]
-    RsaOaepDecrypt,  // CKM_RSA_PKCS_OAEP   -> RsaOaep params        [additive]
-    EcdhDerive,      // CKM_ECDH1_DERIVE    -> Ecdh params           [wired, CKD_NULL]
-    // Public-key, NO-consent (no lease/PIN; the CertDer/PublicKey policy path).
-    RsaPkcs1Encrypt, // CKM_RSA_PKCS encrypt                         [additive, Empty]
-    RsaOaepEncrypt,  // CKM_RSA_PKCS_OAEP   -> RsaOaep params        [additive]
-    // Private-key, lease-gated: the RAW message, which the card hashes with
-    // SHA-256 before it signs (CKM_SHA256_RSA_PKCS).                [wired, Empty]
+    // All lease-gated (PIN-as-consent).
+    RsaPkcs1Sign,    // CKM_RSA_PKCS: the caller's complete block
+    EcdsaSign,       // CKM_ECDSA: the digest, 32/48/64 bytes
+    RsaPkcs1Decrypt, // CKM_RSA_PKCS decrypt
+    EcdhDerive,      // CKM_ECDH1_DERIVE, CKD_NULL
+    // The RAW message, which the card hashes with SHA-256 before it signs
+    // (CKM_SHA256_RSA_PKCS).
     Sha256RsaPkcs1Sign,
 };
 
 struct MechParamsEmpty
-{}; // RSA-PKCS sign/decrypt/encrypt, SHA256-RSA-PKCS sign, ECDSA
+{}; // RSA-PKCS sign/decrypt, SHA256-RSA-PKCS sign, ECDSA
 
 /// @brief CKD_NULL: the raw shared secret Z, no key-derivation function. The
 ///        only MechParamsEcdh::kdf the agent runs.
@@ -47,17 +41,9 @@ struct MechParamsEcdh
     std::vector<std::uint8_t> sharedData;      // KDF shared data; must be empty with CKD_NULL
 };
 
-struct MechParamsRsaOaep
-{                                    // CKM_RSA_PKCS_OAEP
-    std::uint32_t hashAlg{0};        // CKM_* hash
-    std::uint32_t mgf{0};            // CKG_* MGF
-    std::vector<std::uint8_t> label; // optional OAEP label
-};
-
 // Closed-but-extensible: adding an arm is a reviewed API-version event, never a
-// signature change. A future MechParamsRsaPss{hashAlg, mgf, saltLen} arm joins
-// here when RsaPssSign is wired.
-using MechanismParams = std::variant<MechParamsEmpty, MechParamsEcdh, MechParamsRsaOaep>;
+// signature change.
+using MechanismParams = std::variant<MechParamsEmpty, MechParamsEcdh>;
 
 /// @brief A mechanism's spelling on the wires (socket `mech`, D-Bus `s mech`).
 struct MechanismToken

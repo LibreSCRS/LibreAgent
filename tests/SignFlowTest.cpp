@@ -32,8 +32,8 @@
 #include <LibreSCRS/Plugin/CardPlugin.h>
 #include <LibreSCRS/Secure/String.h>
 #include <LibreSCRS/SmartCard/AppletAid.h>
-#include <LibreSCRS/SmartCard/CardMap.h>
 #include <LibreSCRS/SmartCard/CardSession.h>
+#include <LibreSCRS/SmartCard/testing/CardSessionTesting.h>
 #include <gtest/gtest.h>
 #include <cstddef>
 #include <cstdint>
@@ -55,7 +55,7 @@ class StubPlugin final : public LibreSCRS::Plugin::CardPlugin
 public:
     StubPlugin(std::string id, LibreSCRS::Plugin::CardCapabilities caps) : m_caps(caps)
     {
-        setIdentity(std::move(id), "stub", 0);
+        setIdentity(std::move(id), 0);
     }
     LibreSCRS::Plugin::CardCapabilities capabilities() const override
     {
@@ -86,12 +86,11 @@ std::unique_ptr<CardSessionHolder> makeHolder(CandidateList candidates)
 {
     auto factory = [](const std::string& r)
         -> std::expected<std::shared_ptr<LibreSCRS::SmartCard::CardSession>, LibreSCRS::SmartCard::OpenError> {
-        return LibreSCRS::SmartCard::detail::makeDetachedCardSession(r);
+        return LibreSCRS::SmartCard::Testing::makeDetachedCardSession(r);
     };
     auto resolver = [candidates = std::move(candidates)](std::span<const std::uint8_t>,
                                                          LibreSCRS::SmartCard::CardSession&) { return candidates; };
-    return std::make_unique<CardSessionHolder>("FakeReader", std::move(factory), std::move(resolver),
-                                               std::make_shared<LibreSCRS::SmartCard::CardMap>());
+    return std::make_unique<CardSessionHolder>("FakeReader", std::move(factory), std::move(resolver));
 }
 
 class FakePrompter final : public PrompterClientBase
@@ -137,9 +136,9 @@ public:
 
 LibreSCRS::Auth::AuthRequirement canReq(bool rejected)
 {
-    return LibreSCRS::Auth::AuthRequirement::forPaceSecret(
-        LibreSCRS::SmartCard::AppletAid{}, LibreSCRS::Auth::PaceSecretKind::Can, std::nullopt,
-        rejected ? LibreSCRS::Auth::ErrorKeys::preReadAuthFailed() : LibreSCRS::LocalizedText{});
+    return LibreSCRS::Auth::AuthRequirement::forPaceSecret(LibreSCRS::Auth::PaceSecretKind::Can,
+                                                           rejected ? LibreSCRS::Auth::ErrorKeys::preReadAuthFailed()
+                                                                    : LibreSCRS::LocalizedText{});
 }
 
 // Models the terminal signing op. Before asking for the PIN it drives one CAN
@@ -163,8 +162,7 @@ public:
             canResults.push_back(credentials(canReq(rejected)));
         }
 
-        const auto req =
-            LibreSCRS::Auth::AuthRequirement::forSigning(LibreSCRS::LocalizedText{"", "PIN", {}}, std::nullopt);
+        const auto req = LibreSCRS::Auth::AuthRequirement::forSigning();
         const auto result = credentials(req);
         if (result.status == LibreSCRS::Auth::CredentialResult::Status::UserCancelled) {
             SignOutcome out;
@@ -304,7 +302,7 @@ TEST(SignFlow, EmptyReasonReinvocationsAreNotRejectionsAndReplayTheCache)
             << "request " << i << " is served from cache";
     }
     EXPECT_EQ(h.prompter.canCalls, 0) << "not one of them raised a dialog";
-    EXPECT_TRUE(h.cache.hasCan("card-A")) << "and none of them evicted a value the card never rejected";
+    EXPECT_TRUE(h.cache.getCan("card-A").has_value()) << "and none of them evicted a value the card never rejected";
 }
 
 TEST(SignFlow, ARejectionSignalAfterAnUnansweredWindowIsNotARejection)
@@ -328,7 +326,7 @@ TEST(SignFlow, ARejectionSignalAfterAnUnansweredWindowIsNotARejection)
 
     (void)h.make().run();
 
-    EXPECT_TRUE(h.cache.hasCan("card-A"))
+    EXPECT_TRUE(h.cache.getCan("card-A").has_value())
         << "nothing was presented, so nothing was rejected -- the cached secret must survive";
     EXPECT_EQ(h.prompter.canCalls, 0) << "and the surviving secret is served from cache, with no dialog";
     ASSERT_EQ(h.signer.canResults.size(), 1u);

@@ -1,5 +1,9 @@
-# The bundled OpenSSL that the middleware links carries x86_64 objects only,
-# and this repository links the middleware.
+# Link-time optimisation off, explicitly, as in every LibreSCRS recipe.
+# Fedora's default %%optflags carry -flto=auto -ffat-lto-objects; this package
+# ships static archives (the agent core and the wire codec) that other packages
+# link, and LTO objects in an archive tie those packages to the compiler that
+# wrote them.
+# Debian does not enable LTO by default, so that recipe has no counterpart line.
 %global _lto_cflags %{nil}
 
 Name:           libreagent
@@ -11,6 +15,8 @@ License:        LGPL-2.1-or-later AND BSD-3-Clause
 URL:            https://github.com/LibreSCRS/LibreAgent
 Source0:        %{name}-%{version}.tar.gz
 
+# The bundled OpenSSL that the middleware links carries x86_64 objects only,
+# and this repository links the middleware.
 ExclusiveArch:  x86_64
 
 BuildRequires:  cmake >= 3.28
@@ -23,11 +29,6 @@ BuildRequires:  git
 BuildRequires:  qt6-qtbase-devel
 BuildRequires:  openssl-devel
 BuildRequires:  librescrs-middleware-devel >= 5.0
-# Configure-time, not check-time. The neutral test tree is added whenever this
-# project is the top-level one, so find_package(GTest REQUIRED) and
-# find_program(dbus-run-session REQUIRED) both run even with testing disabled.
-BuildRequires:  gtest-devel
-BuildRequires:  dbus-daemon
 
 %description
 LibreAgent is the platform-neutral core of the LibreSCRS smart-card agent: the
@@ -78,9 +79,6 @@ session-bus interface.
 Summary:        Development files for the LibreSCRS agent Qt client library
 Requires:       librescrs-agent-client-qt%{?_isa} = %{version}-%{release}
 Requires:       librescrs-agent-common-devel = %{version}-%{release}
-# The ClientQtTestSupport component shipped here links LibreAgent::Wire, which
-# the core development package carries.
-Requires:       librescrs-agent-core-devel = %{version}-%{release}
 Requires:       qt6-qtbase-devel
 
 %description -n librescrs-agent-client-qt-devel
@@ -95,10 +93,10 @@ test -f thirdparty/QCBOR/CMakeLists.txt || \
   { echo "thirdparty/QCBOR is missing; the source tarball has to carry it"; exit 1; }
 %cmake -GNinja \
     -DBUILD_TESTING=OFF \
-    -DINSTALL_GTEST=OFF \
     -DLIBREAGENT_BUILD_CORE=ON \
     -DLIBREAGENT_BUILD_WIRE=ON \
     -DLIBREAGENT_BUILD_CLIENT_QT=ON \
+    -DLIBREAGENT_BUILD_CLIENT_QT_TEST_SUPPORT=OFF \
     -DLIBREAGENT_BUILD_PKCS11_FACADE=ON \
     -DLIBREAGENT_BUILD_PKCS11_SOCKET_CLIENT=ON \
     -DLIBREAGENT_INSTALL_WIRE_ARCHIVE=ON \
@@ -123,10 +121,12 @@ grep -q '^FETCHCONTENT_SOURCE_DIR_QCBOR:.*/thirdparty/QCBOR$' %{_vpath_builddir}
 %{_libdir}/cmake/LibreAgent/LibreAgentConfig.cmake
 %{_libdir}/cmake/LibreAgent/LibreAgentConfigVersion.cmake
 %{_libdir}/cmake/LibreAgent/LibreAgentGTest.cmake
+%{_libdir}/cmake/LibreAgent/PrivateSessionBusTest.cpp
 %{_libdir}/cmake/LibreAgent/Pkcs11ModuleExport.cmake
 %{_includedir}/LibreSCRS/Agent/
 %dir %{_datadir}/librescrs
 %{_datadir}/librescrs/librescrs-agent.cddl
+%{_datadir}/librescrs/dbus/
 %{_datadir}/librescrs/pkcs11/
 
 %files -n librescrs-agent-core-devel
@@ -148,11 +148,8 @@ grep -q '^FETCHCONTENT_SOURCE_DIR_QCBOR:.*/thirdparty/QCBOR$' %{_vpath_builddir}
 
 %files -n librescrs-agent-client-qt-devel
 %{_libdir}/liblibrescrs-agentclient-qt.so
-%{_libdir}/liblibrescrs-agentclient-qt-testsupport.a
 %{_libdir}/cmake/LibreAgent/LibreAgentClientQtTargets*.cmake
-%{_libdir}/cmake/LibreAgent/LibreAgentClientQtTestSupportTargets*.cmake
 %{_includedir}/LibreSCRS/AgentClient/
-%{_includedir}/LibreSCRS/AgentClientTestSupport/
 
 %changelog
 * Fri Sep 04 2026 LibreSCRS <librescrs@proton.me> - 5.0.0-1

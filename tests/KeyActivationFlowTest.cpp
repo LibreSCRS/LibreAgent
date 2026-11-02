@@ -25,8 +25,8 @@
 #include <LibreSCRS/LocalizedText.h>
 #include <LibreSCRS/Plugin/PluginTypes.h>
 #include <LibreSCRS/Secure/String.h>
-#include <LibreSCRS/SmartCard/CardMap.h>
 #include <LibreSCRS/SmartCard/CardSession.h>
+#include <LibreSCRS/SmartCard/testing/CardSessionTesting.h>
 #include <gtest/gtest.h>
 #include <cstdint>
 #include <expected>
@@ -50,12 +50,11 @@ std::unique_ptr<CardSessionHolder> makeHolder(std::optional<LibreSCRS::SmartCard
         if (failWith) {
             return std::unexpected{*failWith};
         }
-        return LibreSCRS::SmartCard::detail::makeDetachedCardSession(r);
+        return LibreSCRS::SmartCard::Testing::makeDetachedCardSession(r);
     };
     auto resolver = [candidates = std::move(candidates)](std::span<const std::uint8_t>,
                                                          LibreSCRS::SmartCard::CardSession&) { return candidates; };
-    return std::make_unique<CardSessionHolder>("FakeReader", std::move(factory), std::move(resolver),
-                                               std::make_shared<LibreSCRS::SmartCard::CardMap>());
+    return std::make_unique<CardSessionHolder>("FakeReader", std::move(factory), std::move(resolver));
 }
 
 CardReadSnapshot makeReadSnapshotFixture()

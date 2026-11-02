@@ -59,7 +59,7 @@ static_assert(static_cast<int>(CredentialOutcome::CardRemoved) == 9);
 // Messages.h ever stops including it.
 static_assert(sizeof(SyncError) == 1);
 
-static_assert(LibreSCRS::Agent::kAgentFeatures.size() == 11);
+static_assert(LibreSCRS::Agent::kAgentFeatures.size() == 9);
 
 // The key-type and mechanism vocabularies are std-only and constexpr, so the
 // facade -- which links no crypto and no core -- can read them. Pinned here,
@@ -97,5 +97,5 @@ static_assert(LibreSCRS::Agent::mechanismToken(LibreSCRS::Agent::Mechanism::RsaP
 static_assert(LibreSCRS::Agent::mechanismToken(LibreSCRS::Agent::Mechanism::Sha256RsaPkcs1Sign) == "sha256-rsa-pkcs");
 static_assert(LibreSCRS::Agent::mechanismToken(LibreSCRS::Agent::Mechanism::EcdsaSign) == "ecdsa");
 static_assert(LibreSCRS::Agent::mechanismToken(LibreSCRS::Agent::Mechanism::RsaPkcs1Decrypt) == "rsa-pkcs");
-static_assert(LibreSCRS::Agent::mechanismToken(LibreSCRS::Agent::Mechanism::RsaPssSign).empty());
+static_assert(LibreSCRS::Agent::mechanismToken(LibreSCRS::Agent::Mechanism::EcdhDerive).empty());
 static_assert(LibreSCRS::Agent::kEcdhKdfNull == 1u); // CKD_NULL

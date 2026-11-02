@@ -50,7 +50,7 @@
 #include <LibreSCRS/CancelToken.h>
 #include <LibreSCRS/Plugin/CardData.h>
 #include <LibreSCRS/Plugin/CardPlugin.h>
-#include <LibreSCRS/SmartCard/CardMap.h>
+#include <LibreSCRS/SmartCard/testing/CardSessionTesting.h>
 
 #include <gtest/gtest.h>
 #include <expected>
@@ -80,7 +80,7 @@ public:
                          std::vector<LibreSCRS::Plugin::CardFieldGroup> groups)
         : m_cardType(std::move(cardType)), m_groups(std::move(groups))
     {
-        setIdentity(std::move(pluginId), "Scripted Family Plugin", /*priority=*/1);
+        setIdentity(std::move(pluginId), /*priority=*/1);
     }
 
     LibreSCRS::Plugin::CardCapabilities capabilities() const override
@@ -176,13 +176,12 @@ struct Harness
     {
         auto factory = [](const std::string& r)
             -> std::expected<std::shared_ptr<LibreSCRS::SmartCard::CardSession>, LibreSCRS::SmartCard::OpenError> {
-            return LibreSCRS::SmartCard::detail::makeDetachedCardSession(r);
+            return LibreSCRS::SmartCard::Testing::makeDetachedCardSession(r);
         };
         auto resolver = [this](std::span<const std::uint8_t>, LibreSCRS::SmartCard::CardSession&) {
             return candidates;
         };
-        holder = std::make_unique<CardSessionHolder>("ScriptedReader", std::move(factory), std::move(resolver),
-                                                     std::make_shared<LibreSCRS::SmartCard::CardMap>());
+        holder = std::make_unique<CardSessionHolder>("ScriptedReader", std::move(factory), std::move(resolver));
         return IdentityReadFlow{IdentityReadFlowDeps{
             .holder = *holder,
             .reader = reader,

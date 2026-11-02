@@ -98,10 +98,33 @@ if(LIBREAGENT_BUILD_PKCS11_SOCKET_CLIENT AND NOT LIBREAGENT_BUILD_PKCS11_FACADE)
     message(FATAL_ERROR "LIBREAGENT_BUILD_PKCS11_SOCKET_CLIENT requires LIBREAGENT_BUILD_PKCS11_FACADE (the backend implements that library's AgentClient interface)")
 endif()
 
-# Strict warnings by default; treat as errors only in CI builds. Declared once,
-# unconditionally, so a LIBREAGENT_BUILD_WIRE-only (Core-less) configuration
-# still gets the option — every component target below opts into it.
-option(LIBRESCRS_AGENT_WERROR "Treat compiler warnings as errors" OFF)
+# Strict warnings by default; treat as errors only in CI builds. The option
+# carries the name every LibreSCRS repository uses, so one -DLIBRESCRS_WERROR=ON
+# means the same thing in each of them. Declared once, unconditionally, so a
+# LIBREAGENT_BUILD_WIRE-only (Core-less) configuration still gets it.
+option(LIBRESCRS_WERROR "Treat compiler warnings as errors" OFF)
+
+# The one warning set every first-party library here compiles with, plus
+# -Werror under LIBRESCRS_WERROR. Test executables are left out on purpose: the
+# gate protects shipped code, and a compiler upgrade should not fail a build
+# through a diagnostic in a test. NO_CONVERSION leaves out -Wconversion and
+# -Wsign-conversion, for the one library (the Cryptoki core) that has never
+# been built with them.
+function(libreagent_strict_warnings target)
+    cmake_parse_arguments(PARSE_ARGV 1 arg "NO_CONVERSION" "" "")
+    set(conversion -Wconversion -Wsign-conversion)
+    if(arg_NO_CONVERSION)
+        set(conversion)
+    endif()
+    target_compile_options(${target} PRIVATE
+        -Wall -Wextra -Wpedantic
+        -Wshadow -Wnon-virtual-dtor -Wold-style-cast -Wcast-align
+        -Woverloaded-virtual ${conversion} -Wnull-dereference
+        -Wdouble-promotion -Wformat=2)
+    if(LIBRESCRS_WERROR)
+        target_compile_options(${target} PRIVATE -Werror)
+    endif()
+endfunction()
 
 if(LIBREAGENT_BUILD_CORE)
     find_package(LibreMiddleware 5.0 REQUIRED CONFIG)
@@ -114,6 +137,7 @@ if(LIBREAGENT_BUILD_CORE)
         # value/
         src/value/ErrorTaxonomy.cpp
         src/value/ReaderLabels.cpp
+        src/value/SyncErrorTaxonomy.cpp
         # util/
         src/util/Sha256Hex.cpp
         # cache/
@@ -126,6 +150,7 @@ if(LIBREAGENT_BUILD_CORE)
         src/presence/PluginCapabilityResolver.cpp
         src/presence/MonitorBridge.cpp
         src/presence/CardKeyTracker.cpp
+        src/presence/CardResolutionPolicy.cpp
         # config/
         src/config/ConfigStore.cpp
         # pkcs11/
@@ -162,10 +187,9 @@ if(LIBREAGENT_BUILD_CORE)
         src/operations/ListCredentialsOperation.cpp
         src/operations/ManagePinOperation.cpp
         src/operations/ActivateSigningKeyOperation.cpp
+        src/operations/OperationLauncher.cpp
         # trust/
         src/trust/CscaAnchorImport.cpp
-        # backend/ log facade
-        src/backend/Logging.cpp
         # owning aggregate for the neutral core
         src/AgentCore.cpp)
     add_library(LibreAgent::Core ALIAS LibreAgentCore)
@@ -193,21 +217,15 @@ if(LIBREAGENT_BUILD_CORE)
         PRIVATE
             # PRIVATE: only the Lm* seam .cpp files + SigningEngineProvider.cpp
             # consume LM X.509/Certificate + Signing/Trust types; no public header
-            # includes them, which keeps consumers of this lib free of those symbols
-            # (the seam-boundary invariant).
+            # includes them -- LmSeams.h only declares ParsedCertificate, held
+            # by tests/LmSeamsHeaderBoundary.cpp -- which keeps consumers of this
+            # lib free of those definitions (the seam-boundary invariant).
             LibreSCRS::Certificate
             LibreSCRS::Signing
             LibreSCRS::Trust
             OpenSSL::Crypto)
 
-    target_compile_options(LibreAgentCore PRIVATE
-        -Wall -Wextra -Wpedantic
-        -Wshadow -Wnon-virtual-dtor -Wold-style-cast -Wcast-align
-        -Woverloaded-virtual -Wconversion -Wsign-conversion -Wnull-dereference
-        -Wdouble-promotion -Wformat=2)
-    if(LIBRESCRS_AGENT_WERROR)
-        target_compile_options(LibreAgentCore PRIVATE -Werror)
-    endif()
+    libreagent_strict_warnings(LibreAgentCore)
     # GCC 16's -Warray-bounds raises a false positive on the inlined
     # shared_ptr<std::atomic<bool>> control-block teardown in the credential-flow
     # TUs. It is emitted during optimization, so a source-level diagnostic pragma
@@ -244,6 +262,13 @@ if(LIBREAGENT_BUILD_CORE)
     target_compile_features(LibreAgentWireParityChecks PRIVATE cxx_std_23)
 endif() # LIBREAGENT_BUILD_CORE
 
+# The agent's D-Bus introspection XML (wire/dbus/), the contract of record
+# for the bus. Visible to a consumer that builds this project as a subproject
+# (FetchContent); an installed package sets the same variable in
+# LibreAgentConfig.cmake.
+set(LIBREAGENT_DBUS_XML_DIR "${CMAKE_CURRENT_SOURCE_DIR}/wire/dbus" CACHE INTERNAL
+    "Directory holding the agent's D-Bus introspection XML")
+
 if(LIBREAGENT_BUILD_WIRE)
     # Shared canonical-CBOR wire codec plus the socket framing + typed message
     # model — the CborValue seam over the vendored QCBOR C library, the
@@ -251,9 +276,23 @@ if(LIBREAGENT_BUILD_WIRE)
     # reassembler, and the CDDL-backed request/reply/event message model. No
     # LibreMiddleware, no OpenSSL: every wire-capable consumer (the LibreDarwin
     # agent daemon today, a future Qt client) shares this single library
-    # instead of forking it. PrompterProtocol, PeerIdentity/BSM, and the
-    # Darwin-only AnonFd stay host-specific (LibreDarwin), not here.
+    # instead of forking it. PrompterProtocol and the Darwin-only AnonFd stay
+    # host-specific (LibreDarwin), not here. The macOS peer check (who serves or
+    # connects to the socket, by code signature) IS here: every client of the
+    # socket wire needs the same one, and a second copy is a second policy.
     include(cmake/FetchQCBOR.cmake) # provides the qcbor::qcbor imported target
+
+    # The Apple team the macOS ends of the socket wire are built for: the App
+    # Group container holding the agent's socket is named after it, and the
+    # peer check's designated requirement names it (empty: "group.", no
+    # requirement, a build for CI and tests). A compiled constant, never read
+    # from the environment. One cache variable for every target that needs it,
+    # so a build that pulls in several sets the team once.
+    set(LIBRESCRS_TEAM_ID "" CACHE STRING
+        "Apple Team ID the App Group holding the agent socket is named after (empty: group.)")
+    if(NOT LIBRESCRS_TEAM_ID STREQUAL "" AND NOT LIBRESCRS_TEAM_ID MATCHES "^[A-Z0-9]+$")
+        message(FATAL_ERROR "LIBRESCRS_TEAM_ID must be upper-case letters and digits, got '${LIBRESCRS_TEAM_ID}'")
+    endif()
 
     add_library(LibreAgentWire STATIC
         src/wire/Cbor.cpp
@@ -273,6 +312,19 @@ if(LIBREAGENT_BUILD_WIRE)
         # with no separate libqcbor.a to also find and link.
         $<TARGET_OBJECTS:qcbor>)
     add_library(LibreAgent::Wire ALIAS LibreAgentWire)
+    if(APPLE)
+        find_library(LIBREAGENT_SECURITY_FRAMEWORK Security REQUIRED)
+        find_library(LIBREAGENT_COREFOUNDATION_FRAMEWORK CoreFoundation REQUIRED)
+        find_library(LIBREAGENT_BSM_LIB bsm REQUIRED) # audit_token_to_pid / _pidversion
+        target_sources(LibreAgentWire PRIVATE
+            src/wire/darwin/PeerIdentity.cpp
+            src/wire/darwin/PeerCodeSigning.cpp)
+        target_compile_definitions(LibreAgentWire PRIVATE LIBRESCRS_TEAM_ID="${LIBRESCRS_TEAM_ID}")
+        target_link_libraries(LibreAgentWire PUBLIC
+            ${LIBREAGENT_BSM_LIB}
+            ${LIBREAGENT_SECURITY_FRAMEWORK}
+            ${LIBREAGENT_COREFOUNDATION_FRAMEWORK})
+    endif()
     target_include_directories(LibreAgentWire PUBLIC
         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
         $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>)
@@ -306,14 +358,7 @@ if(LIBREAGENT_BUILD_WIRE)
     # time, so INSTALL_INTERFACE carries no qcbor reference at all.
     target_link_libraries(LibreAgentWire PRIVATE $<BUILD_INTERFACE:qcbor::qcbor>)
 
-    target_compile_options(LibreAgentWire PRIVATE
-        -Wall -Wextra -Wpedantic
-        -Wshadow -Wnon-virtual-dtor -Wold-style-cast -Wcast-align
-        -Woverloaded-virtual -Wconversion -Wsign-conversion -Wnull-dereference
-        -Wdouble-promotion -Wformat=2)
-    if(LIBRESCRS_AGENT_WERROR)
-        target_compile_options(LibreAgentWire PRIVATE -Werror)
-    endif()
+    libreagent_strict_warnings(LibreAgentWire)
 
     # Compiling this library with the flag is already handled once for the whole
     # project (the add_compile_options near the top). What this adds is the
@@ -361,14 +406,7 @@ if(LIBREAGENT_BUILD_PKCS11_FACADE)
         POSITION_INDEPENDENT_CODE ON
         CXX_VISIBILITY_PRESET hidden
         VISIBILITY_INLINES_HIDDEN ON)
-    target_compile_options(LibreAgentPkcs11Facade PRIVATE
-        -Wall -Wextra -Wpedantic
-        -Wshadow -Wnon-virtual-dtor -Wold-style-cast -Wcast-align
-        -Woverloaded-virtual -Wnull-dereference
-        -Wdouble-promotion -Wformat=2)
-    if(LIBRESCRS_AGENT_WERROR)
-        target_compile_options(LibreAgentPkcs11Facade PRIVATE -Werror)
-    endif()
+    libreagent_strict_warnings(LibreAgentPkcs11Facade NO_CONVERSION)
     if(CMAKE_CXX_COMPILER_ID STREQUAL "AppleClang")
         target_compile_options(LibreAgentPkcs11Facade PUBLIC -fexperimental-library)
         target_link_options(LibreAgentPkcs11Facade PUBLIC -fexperimental-library)
@@ -390,19 +428,40 @@ if(LIBREAGENT_BUILD_PKCS11_SOCKET_CLIENT)
         POSITION_INDEPENDENT_CODE ON
         CXX_VISIBILITY_PRESET hidden
         VISIBILITY_INLINES_HIDDEN ON)
-    target_compile_options(LibreAgentPkcs11SocketClient PRIVATE
-        -Wall -Wextra -Wpedantic
-        -Wshadow -Wnon-virtual-dtor -Wold-style-cast -Wcast-align
-        -Woverloaded-virtual -Wconversion -Wsign-conversion -Wnull-dereference
-        -Wdouble-promotion -Wformat=2)
-    if(LIBRESCRS_AGENT_WERROR)
-        target_compile_options(LibreAgentPkcs11SocketClient PRIVATE -Werror)
-    endif()
+    libreagent_strict_warnings(LibreAgentPkcs11SocketClient)
     if(CMAKE_CXX_COMPILER_ID STREQUAL "AppleClang")
         target_compile_options(LibreAgentPkcs11SocketClient PUBLIC -fexperimental-library)
         target_link_options(LibreAgentPkcs11SocketClient PUBLIC -fexperimental-library)
     endif()
 endif() # LIBREAGENT_BUILD_PKCS11_SOCKET_CLIENT
+
+# --- CTest ------------------------------------------------------------------
+# ctest registrations belong to this repository's own build and nobody else's,
+# so enable_testing() stays under the top-level guard even though the test
+# directories are reachable from a consumer. Before any add_subdirectory():
+# include(CTest) is what declares BUILD_TESTING, and every test directory --
+# client/qt's included -- reads it from here, so it has one definition.
+#
+# Bound every test. ctest's built-in default is 1500 seconds and nothing in this
+# tree overrode it, so a single wedged test could hold a hosted runner for
+# twenty-five minutes without ever being named; a handful of them consume the
+# whole job. That is not hypothetical — one CI job in this project sat for two
+# hours and forty-nine minutes on one deadlocked test, and only cancelling it
+# released a log that said which.
+#
+# include(CTest) rather than a bare enable_testing(): DART_TESTING_TIMEOUT is
+# read by the CTest MODULE, which is what writes DartConfiguration.tcl, and a
+# bare enable_testing() never writes that file. Measured on a twelve-second
+# test with a three-second declared timeout, the bare call reports the suite
+# passing after twelve seconds and the module form times the test out after
+# three — so declaring the value next to a bare call would have had no effect
+# at all, silently. include(CTest) calls enable_testing() itself. Set BEFORE the
+# include, which would otherwise cache 1500.
+if(PROJECT_IS_TOP_LEVEL)
+    set(DART_TESTING_TIMEOUT 300 CACHE STRING
+        "Default per-test ctest timeout, in seconds")
+    include(CTest)
+endif()
 
 # --- one ctest entry per GoogleTest case ---------------------------------
 # Before client/qt is added, because the suites there use it, and outside the
@@ -438,36 +497,9 @@ if(POLICY CMP0158)
     cmake_policy(SET CMP0158 OLD)
 endif()
 
-# An address no bus can be listening on. ctest hands it to every bus-backed
-# test in both variables below; dbus-run-session overwrites
-# DBUS_SESSION_BUS_ADDRESS with the bus it starts, so the two are equal
-# exactly when the wrapper did not run -- which is what
-# tests/support/PrivateSessionBusTest.cpp asserts against.
-set(LIBREAGENT_PRIVATE_BUS_SENTINEL "unix:path=/nonexistent/librescrs-no-private-bus")
-set(LIBREAGENT_PRIVATE_BUS_ENV
-    "LIBRESCRS_OUTER_BUS=${LIBREAGENT_PRIVATE_BUS_SENTINEL};DBUS_SESSION_BUS_ADDRESS=${LIBREAGENT_PRIVATE_BUS_SENTINEL}")
-# Not under tests/ or client/qt/tests/, and that is deliberate: the fd-harvest
-# check fails a CMake file outside the test roots that NAMES a path under one,
-# and this definition has to be visible before client/qt is added, which is
-# before either test root is. The file is only ever compiled into test binaries,
-# by the function below.
-set(LIBREAGENT_PRIVATE_BUS_SOURCE
-    "${CMAKE_CURRENT_SOURCE_DIR}/testsupport/PrivateSessionBusTest.cpp")
-
-# Wraps <tgt> in its own session bus and compiles in the case that says so.
-# The suite name carries the target's name because every bus-backed binary
-# gets this case, and ctest entries are named after the case alone.
-function(libreagent_private_session_bus tgt)
-    # Resolved at call time, not at the top of this file: dbus-run-session is
-    # required only by the suites that need a bus, and demanding it of every
-    # configuration would fail a build that registers none of them.
-    find_program(DBUS_RUN_SESSION dbus-run-session REQUIRED)
-    set_target_properties(${tgt} PROPERTIES
-        CROSSCOMPILING_EMULATOR "${DBUS_RUN_SESSION};--")
-    target_sources(${tgt} PRIVATE "${LIBREAGENT_PRIVATE_BUS_SOURCE}")
-    target_compile_definitions(${tgt} PRIVATE
-        LIBRESCRS_PRIVATE_BUS_SUITE=${tgt}PrivateSessionBus)
-endfunction()
+# libreagent_private_session_bus() and LIBREAGENT_PRIVATE_BUS_ENV come from
+# cmake/LibreAgentGTest.cmake (included above), so a host's bus-backed suites
+# use the same wrapper and the same proof that it ran.
 
 if(LIBREAGENT_BUILD_CLIENT_QT)
     # Qt enters this whole repo's build HERE and ONLY here: this is the one
@@ -511,29 +543,6 @@ if(PROJECT_IS_TOP_LEVEL)
     # the guard tests and the manifest generator. INTERFACE-only and link-free,
     # so it costs nothing outside of a Core/Wire build.
     add_subdirectory(wire/tools)
-
-    # ctest registrations belong to this repository's own build and nobody
-    # else's, so enable_testing() stays under the top-level guard even though
-    # the directory below is now reachable from a consumer.
-    # Bound every test. ctest's built-in default is 1500 seconds and nothing in this
-    # tree overrode it, so a single wedged test could hold a hosted runner for
-    # twenty-five minutes without ever being named; a handful of them consume the
-    # whole job. That is not hypothetical — one CI job in this project sat for two
-    # hours and forty-nine minutes on one deadlocked test, and only cancelling it
-    # released a log that said which.
-    #
-    # include(CTest) rather than a bare enable_testing(): DART_TESTING_TIMEOUT is
-    # read by the CTest MODULE, which is what writes DartConfiguration.tcl, and a
-    # bare enable_testing() never writes that file. Measured on a twelve-second
-    # test with a three-second declared timeout, the bare call reports the suite
-    # passing after twelve seconds and the module form times the test out after
-    # three — so declaring the value next to a bare call would have had no effect
-    # at all, silently. include(CTest) calls enable_testing() itself, so the
-    # placement of the call below is unchanged. Set BEFORE the include, which would
-    # otherwise cache 1500.
-    set(DART_TESTING_TIMEOUT 300 CACHE STRING
-        "Default per-test ctest timeout, in seconds")
-    include(CTest)
 
 endif()
 

@@ -5,8 +5,8 @@
 #include <LibreSCRS/Agent/operations/GetPhotoOperation.h>
 #include <LibreSCRS/Agent/operations/PromptSerializer.h>
 
-#include <LibreSCRS/SmartCard/CardMap.h>
 #include <LibreSCRS/SmartCard/CardSession.h>
+#include <LibreSCRS/SmartCard/testing/CardSessionTesting.h>
 #include <gtest/gtest.h>
 #include <expected>
 #include <map>
@@ -79,11 +79,10 @@ inline std::unique_ptr<CardSessionHolder> makeUnusedHolder()
     auto factory = [](const std::string& r)
         -> std::expected<std::shared_ptr<LibreSCRS::SmartCard::CardSession>, LibreSCRS::SmartCard::OpenError> {
         ADD_FAILURE() << "holder must not open a session when cache is hot";
-        return LibreSCRS::SmartCard::detail::makeDetachedCardSession(r);
+        return LibreSCRS::SmartCard::Testing::makeDetachedCardSession(r);
     };
     auto resolver = [](std::span<const std::uint8_t>, LibreSCRS::SmartCard::CardSession&) { return CandidateList{}; };
-    return std::make_unique<CardSessionHolder>("Unused", std::move(factory), std::move(resolver),
-                                               std::make_shared<LibreSCRS::SmartCard::CardMap>());
+    return std::make_unique<CardSessionHolder>("Unused", std::move(factory), std::move(resolver));
 }
 // This suite never renegotiates a CAN prompt into an MRZ read (its reader
 // prompts for nothing), so the ready-made no-op deposit seam keeps the
@@ -131,11 +130,10 @@ inline std::unique_ptr<CardSessionHolder> makeHolder()
 {
     auto factory = [](const std::string& r)
         -> std::expected<std::shared_ptr<LibreSCRS::SmartCard::CardSession>, LibreSCRS::SmartCard::OpenError> {
-        return LibreSCRS::SmartCard::detail::makeDetachedCardSession(r);
+        return LibreSCRS::SmartCard::Testing::makeDetachedCardSession(r);
     };
     auto resolver = [](std::span<const std::uint8_t>, LibreSCRS::SmartCard::CardSession&) { return CandidateList{}; };
-    return std::make_unique<CardSessionHolder>("FakeReader", std::move(factory), std::move(resolver),
-                                               std::make_shared<LibreSCRS::SmartCard::CardMap>());
+    return std::make_unique<CardSessionHolder>("FakeReader", std::move(factory), std::move(resolver));
 }
 
 // A reader that actually walks the card on a cache miss -- the twin of

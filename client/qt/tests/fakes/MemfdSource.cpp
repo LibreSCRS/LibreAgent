@@ -3,6 +3,8 @@
 
 #include "MemfdSource.h"
 
+#include <LibreSCRS/Agent/util/TempDir.h>
+
 #include <sys/stat.h>
 #include <unistd.h>
 
@@ -83,14 +85,7 @@ FdHandle makeMemfdDocument(const QByteArray& bytes)
     // supports pread/SCM_RIGHTS, unlike shm_open's mmap-only object. Cross-repo
     // documentation only: LibreDarwin keeps no canonical-types registry, so no
     // gate ties this comment to that file staying true.
-    const char* tmpDir = std::getenv("TMPDIR");
-    std::string tmpl = (tmpDir != nullptr && *tmpDir != '\0') ? std::string(tmpDir) : std::string("/tmp/");
-    if (tmpl.back() != '/') {
-        tmpl.push_back('/');
-    }
-    tmpl += "laqt-test-document-XXXXXX";
-    std::vector<char> path(tmpl.begin(), tmpl.end());
-    path.push_back('\0');
+    std::vector<char> path = LibreSCRS::Agent::tempFileTemplate("laqt-test-document-");
 
     const int fd = ::mkstemp(path.data());
     if (fd < 0) {

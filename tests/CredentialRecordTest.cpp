@@ -3,7 +3,7 @@
 //
 // Wire-record mapping table for the credential lifecycle types: one test per
 // mapping rule (enum token tables, id synthesis + collision disambiguation,
-// checked length narrowing, guidance key/fallback split + placeholders guard,
+// checked length narrowing, guidance key/fallback split,
 // outcome superset) plus defaults for the snapshot/result/entry-error types.
 #include <LibreSCRS/Agent/value/CredentialRecord.h>
 #include <LibreSCRS/LocalizedText.h>
@@ -176,26 +176,6 @@ TEST(CredentialRecordMap, NoCollisionLeavesEveryIdBare)
     EXPECT_EQ(records[1].id, "sign:0x92");
 }
 
-// --- initialized/blocked deliberately not represented -----------------------
-
-TEST(CredentialRecordMap, InitializedAndBlockedCrossOnlyViaState)
-{
-    auto a = entryWith(PinKind::UserPin, 0x01);
-    a.initialized = true;
-    a.blocked = false;
-    auto b = a;
-    b.initialized = false;
-    b.blocked = true;
-    // The mapper reads neither flag: lifecycle crosses only through `state`
-    // (safe — LM keeps the invariant state==Blocked <=> blocked).
-    EXPECT_EQ(toCredentialRecord(a), toCredentialRecord(b));
-
-    auto c = a;
-    c.blocked = true;
-    c.state = PinState::Blocked;
-    EXPECT_EQ(toCredentialRecord(c).state, "blocked");
-}
-
 // --- checked min/max length narrowing ---------------------------------------
 
 TEST(CredentialRecordMap, LengthBoundsNarrowCheckedFromSizeT)
@@ -228,7 +208,7 @@ TEST(CredentialRecordMap, LengthBeyondIntRangeFailsLoudly)
     EXPECT_THROW(static_cast<void>(toCredentialRecord(f)), std::overflow_error);
 }
 
-// --- guidance split + placeholders guard ------------------------------------
+// --- guidance split --------------------------------------------------------
 
 TEST(CredentialRecordMap, GuidanceSplitsIntoKeyAndFallbackVerbatim)
 {
@@ -251,26 +231,6 @@ TEST(CredentialRecordMap, AbsentGuidanceStaysDisengaged)
     EXPECT_FALSE(r.blockedGuidanceFallback.has_value());
     EXPECT_FALSE(r.keyActivationGuidanceKey.has_value());
     EXPECT_FALSE(r.keyActivationGuidanceFallback.has_value());
-}
-
-TEST(CredentialRecordMap, PlaceholderBearingGuidanceIsRejectedLoudly)
-{
-    const LocalizedText withPlaceholder{
-        .key = "core.pin.blockedRetryLater",
-        .defaultText = "Try again in {minutes} minutes.",
-        .placeholders = {{.name = "minutes", .value = std::int64_t{5}}},
-    };
-
-    // Both unrepresentable-plugin-data conditions (placeholder guidance and an
-    // out-of-range length) throw the SAME runtime-exception family, so a single
-    // catch(const std::runtime_error&) in the list flow catches either.
-    auto viaBlocked = entryWith(PinKind::UserPin, 0x01);
-    viaBlocked.blockedGuidance = withPlaceholder;
-    EXPECT_THROW(static_cast<void>(toCredentialRecord(viaBlocked)), std::runtime_error);
-
-    auto viaKeyActivation = entryWith(PinKind::SignPin, 0x92);
-    viaKeyActivation.keyActivationGuidance = withPlaceholder;
-    EXPECT_THROW(static_cast<void>(toCredentialRecord(viaKeyActivation)), std::runtime_error);
 }
 
 // --- full scalar field carry-over -------------------------------------------

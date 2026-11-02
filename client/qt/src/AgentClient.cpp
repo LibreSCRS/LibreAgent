@@ -5,17 +5,21 @@
 
 #include <LibreSCRS/AgentClient/AgentOperation.h>
 
+#if defined(LIBREAGENT_CLIENT_TESTING)
 #include "ClientTestAccess.h"
+#endif
 #include "TransportSeam.h"
 
 #if defined(Q_OS_LINUX)
 #include "dbus/DBusTransport.h"
 #elif defined(Q_OS_MACOS)
+#include "socket/MacAgentHost.h"
 #include "socket/SocketTransport.h"
 #endif
 
 #include <QHash>
 #include <QLoggingCategory>
+#include <QScopeGuard>
 #include <QSet>
 
 #include <algorithm>
@@ -32,6 +36,14 @@ Q_LOGGING_CATEGORY(lcAgentClient, "librescrs.agentclient.client")
 /// registry.
 std::unique_ptr<TransportSeam> createDefaultTransport()
 {
+#if defined(LIBREAGENT_CLIENT_TESTING)
+    // The testing archive's one seam: a transport ClientTestAccess::create()
+    // handed over for the client it is constructing (nullptr included, for a
+    // transport-less client). The shipped library is built without it.
+    if (std::optional<std::unique_ptr<TransportSeam>> injected = takeInjectedTransport()) {
+        return std::move(*injected);
+    }
+#endif
 #if defined(Q_OS_LINUX)
     return std::make_unique<DBusTransport>();
 #elif defined(Q_OS_MACOS)
@@ -52,6 +64,68 @@ struct AgentClient::Private final : public RegistryListener
     QHash<QString, AgentCard*> cards;
 
     Private(AgentClient* owner, std::unique_ptr<TransportSeam> t) : q(owner), transport(std::move(t)) {}
+
+    /// The one gate every agent-addressed call goes through: an agent that is
+    /// installed but stopped is started here, and nowhere else. True when the
+    /// agent is reachable afterwards.
+    bool ensureAgent()
+    {
+        if (available) {
+            return true;
+        }
+        if (!transport) {
+            return false;
+        }
+        if (startOnce() == AgentStartResult::Running) {
+            q->onServiceRegistered();
+        }
+        return available;
+    }
+    AgentStartResult lastStart = AgentStartResult::NotInstalled;
+    AgentState state = AgentState::Missing;
+    /// A start is in flight: its wait runs a local event loop, and a second
+    /// click or a timer can call back in from there.
+    bool starting = false;
+    /// A gesture asked for from the event loop is queued or running; until it
+    /// ends, asking again asks for nothing more.
+    bool startLaterPending = false;
+    bool refreshLaterPending = false;
+
+    /// The transport's start, one at a time. A call made while one is in
+    /// flight sends nothing and learns nothing: it answers `Requested`, since
+    /// the start it would have asked for is already asked for, and the one in
+    /// flight reports what came of it.
+    AgentStartResult startOnce()
+    {
+        if (starting) {
+            return AgentStartResult::Requested;
+        }
+        starting = true;
+        // Cleared however the start ends: a start that threw is not in flight.
+        const auto done = qScopeGuard([this] { starting = false; });
+        const AgentStartResult result = transport->startAgent();
+        learnFrom(result);
+        return result;
+    }
+
+    /// What a start attempt taught about the agent.
+    void learnFrom(AgentStartResult result)
+    {
+        lastStart = result;
+        switch (result) {
+        case AgentStartResult::Running:
+            state = AgentState::Ready;
+            break;
+        case AgentStartResult::Requested:
+        case AgentStartResult::Failed:
+            state = AgentState::Stopped;
+            break;
+        case AgentStartResult::NotInstalled:
+        case AgentStartResult::NotInApplications:
+            state = AgentState::Missing;
+            break;
+        }
+    }
 
     // ---- RegistryListener ----------------------------------------------------
     void onServiceRegistered() override
@@ -92,12 +166,14 @@ struct AgentClient::Private final : public RegistryListener
         // configSnapshot() sees the new value.
         Q_EMIT q->configChanged(key);
     }
+    void onQuiesced(QuiesceReason reason) override
+    {
+        Q_EMIT q->quiesced(reason);
+    }
 };
 
-AgentClient::AgentClient(QObject* parent) : AgentClient(createDefaultTransport(), parent) {}
-
-AgentClient::AgentClient(std::unique_ptr<TransportSeam> transport, QObject* parent)
-    : QObject(parent), d(std::make_unique<Private>(this, std::move(transport)))
+AgentClient::AgentClient(QObject* parent)
+    : QObject(parent), d(std::make_unique<Private>(this, createDefaultTransport()))
 {
     if (!d->transport) {
         return;
@@ -107,8 +183,13 @@ AgentClient::AgentClient(std::unique_ptr<TransportSeam> transport, QObject* pare
     // wedged bus/agent can only stall construction for the handshake budget.
     if (d->transport->probeAvailability()) {
         d->available = true;
+        d->state = AgentState::Ready;
         repopulate();
+        return;
     }
+    // Learned once here and kept current from then on, so the getters a view
+    // calls while it repaints never reach the bus (agentState()).
+    d->state = d->transport->agentInstalled() ? AgentState::Stopped : AgentState::Missing;
 }
 
 AgentClient::~AgentClient()
@@ -133,7 +214,25 @@ bool AgentClient::isAvailable() const
 
 bool AgentClient::agentInstalled() const
 {
-    return d->transport && d->transport->agentInstalled();
+    return d->state != AgentState::Missing;
+}
+
+AgentState AgentClient::agentState() const
+{
+    return d->state;
+}
+
+QString AgentClient::installHelpUrl(const QLocale& locale)
+{
+    const bool serbian = locale.language() == QLocale::Serbian;
+#if defined(Q_OS_MACOS)
+    // On macOS the agent comes with the LibreMac host app.
+    return serbian ? QStringLiteral("https://librescrs.github.io/sr/user-guide/install-libremac/")
+                   : QStringLiteral("https://librescrs.github.io/user-guide/install-libremac/");
+#else
+    return serbian ? QStringLiteral("https://librescrs.github.io/sr/user-guide/install-agent/")
+                   : QStringLiteral("https://librescrs.github.io/user-guide/install-agent/");
+#endif
 }
 
 QStringList AgentClient::features() const
@@ -157,15 +256,15 @@ QString AgentClient::agentVersion() const
 
 QVariantMap AgentClient::configSnapshot() const
 {
-    // Same transport-less degradation as features()/agentVersion(): empty,
-    // which is exactly what an unreachable agent reads.
-    return d->transport ? d->transport->configSnapshot() : QVariantMap();
+    // An unreachable agent reads empty, exactly like features()/agentVersion();
+    // a stopped one is started first, like every other agent-addressed call.
+    return d->ensureAgent() ? d->transport->configSnapshot() : QVariantMap();
 }
 
 std::optional<SyncError> AgentClient::setConfigValue(const QString& key, const QVariant& value)
 {
-    if (!d->transport) {
-        // A write cannot be "refused" by an agent that was never dialed, and
+    if (!d->ensureAgent()) {
+        // A write cannot be "refused" by an agent that was never reached, and
         // the caller's whole reason for a named error is to tell the two
         // apart: this is the never-arrived class, the retryable one.
         return SyncError::CommunicationError;
@@ -175,7 +274,7 @@ std::optional<SyncError> AgentClient::setConfigValue(const QString& key, const Q
 
 std::optional<SyncError> AgentClient::resetConfigValue(const QString& key)
 {
-    if (!d->transport) {
+    if (!d->ensureAgent()) {
         return SyncError::CommunicationError;
     }
     return d->transport->resetConfig(key);
@@ -183,7 +282,7 @@ std::optional<SyncError> AgentClient::resetConfigValue(const QString& key)
 
 std::expected<CscaAnchorState, SyncError> AgentClient::importCscaMasterList(int masterListFd)
 {
-    if (!d->transport) {
+    if (!d->ensureAgent()) {
         return std::unexpected(SyncError::CommunicationError);
     }
     // No local validation of the descriptor here, deliberately. Whether it is
@@ -201,7 +300,7 @@ std::optional<LayoutResult> AgentClient::layoutVisualSignature(const QString& te
     // no AgentOperation here to fail entry on, so the refusal shape is
     // simply "no result", exactly like hasFeature() itself degrades an
     // absent agent to an empty features() list rather than an error.
-    if (!d->transport || !hasFeature(QStringLiteral("layout-preview"))) {
+    if (!d->ensureAgent() || !hasFeature(QStringLiteral("layout-preview"))) {
         return std::nullopt;
     }
     return d->transport->layoutVisualSignature(text, box);
@@ -209,7 +308,7 @@ std::optional<LayoutResult> AgentClient::layoutVisualSignature(const QString& te
 
 FdHandle AgentClient::appearanceFont() const
 {
-    if (!d->transport || !hasFeature(QStringLiteral("layout-preview"))) {
+    if (!d->ensureAgent() || !hasFeature(QStringLiteral("layout-preview"))) {
         return {};
     }
     return d->transport->appearanceFont();
@@ -221,20 +320,28 @@ void AgentClient::refreshDiscovery()
         Q_EMIT readersChanged();
         return;
     }
-    // Re-probe with the SAME bounded probe the ctor uses rather than trusting
-    // the cached flag: a liveness notification can be missed, so a manual
-    // refresh must reconcile availability from the transport itself before
-    // deciding what to do.
-    if (d->transport->probeAvailability()) {
-        const bool wasAvailable = d->available;
-        d->available = true;
+    // Re-probe rather than trusting the cached flag: a liveness notification
+    // can be missed, so a manual refresh must reconcile availability from the
+    // transport itself before deciding what to do. This is a gesture, so the
+    // probe is the starting one: an installed agent that is not running is
+    // brought up here, which is what a "try again" control is for.
+    const AgentStartResult started = d->startOnce();
+    if (started == AgentStartResult::Requested && d->starting) {
+        // Called back from inside a start in flight, which ends with its own
+        // availability change or roster refresh.
+        return;
+    }
+    if (started == AgentStartResult::Running) {
+        if (!d->available) {
+            // Just became reachable: the same path a registration takes, so a
+            // settings snapshot taken while it was down is read again too.
+            onServiceRegistered();
+            return;
+        }
         // Re-run discovery: picks up any card the agent has since exported
         // whose add notification we never received (the deferred-publish
         // window, or a genuinely dropped signal).
         repopulate(); // emits readersChanged()
-        if (!wasAvailable) {
-            Q_EMIT availabilityChanged(true);
-        }
         return;
     }
 
@@ -274,10 +381,67 @@ AgentCard* AgentClient::card(const QString& cardId) const
     return d->cards.value(cardId, nullptr);
 }
 
+AgentStartResult AgentClient::requestAgentStart()
+{
+    if (d->ensureAgent()) {
+        return AgentStartResult::Running;
+    }
+    if (d->starting) {
+        // Re-entered while a start is in flight: that start is the answer.
+        return AgentStartResult::Requested;
+    }
+#if defined(Q_OS_MACOS)
+    // The macOS agent is a launchd job its host app registers, so "start" is
+    // launching that app and kicking the job; it answers later, not here.
+    if (d->transport) {
+        d->learnFrom(startMacAgentHost());
+        return d->lastStart;
+    }
+#endif
+    return d->transport ? d->lastStart : AgentStartResult::NotInstalled;
+}
+
+void AgentClient::requestAgentStartLater()
+{
+    if (d->startLaterPending) {
+        return;
+    }
+    d->startLaterPending = true;
+    // Queued on this client, so the caller's frame -- the clicked handler of a
+    // control the agent's arrival may destroy -- is gone before the start
+    // waits; dropped with the client if it goes first.
+    QMetaObject::invokeMethod(
+        this,
+        [this] {
+            AgentStartResult result = AgentStartResult::Failed;
+            {
+                const auto done = qScopeGuard([this] { d->startLaterPending = false; });
+                result = requestAgentStart();
+            }
+            Q_EMIT agentStartFinished(result);
+        },
+        Qt::QueuedConnection);
+}
+
+void AgentClient::refreshDiscoveryLater()
+{
+    if (d->refreshLaterPending) {
+        return;
+    }
+    d->refreshLaterPending = true;
+    QMetaObject::invokeMethod(
+        this,
+        [this] {
+            const auto done = qScopeGuard([this] { d->refreshLaterPending = false; });
+            refreshDiscovery();
+        },
+        Qt::QueuedConnection);
+}
+
 AgentOperation* AgentClient::certificateDer(const QString& readerId, const QString& certId)
 {
     auto* operation = new AgentOperation(AgentOperation::Kind::CertificateDer, this);
-    if (!d->transport || !d->available) {
+    if (!d->ensureAgent()) {
         SeamError error;
         error.callError = CallError::AgentUnavailable;
         error.message = QStringLiteral("The card agent is not reachable.");
@@ -295,12 +459,16 @@ AgentOperation* AgentClient::certificateDer(const QString& readerId, const QStri
 
 void AgentClient::onServiceRegistered()
 {
+    d->state = AgentState::Ready;
     if (d->available) {
         return;
     }
     d->available = true;
     repopulate();
     Q_EMIT availabilityChanged(true);
+    // A consumer holding a settings snapshot took it while the agent was not
+    // reachable, so it is empty: tell it to read again.
+    Q_EMIT configChanged(QString());
 }
 
 void AgentClient::onServiceUnregistered()
@@ -309,6 +477,8 @@ void AgentClient::onServiceUnregistered()
         return;
     }
     d->available = false;
+    // It ran, so it is installed; whether it still is, the next refresh says.
+    d->state = AgentState::Stopped;
 
     // Agent-death terminalization: the agent is gone, so no terminal signal
     // will ever arrive for any in-flight operation. Before tearing down the
@@ -450,13 +620,6 @@ void AgentClient::removeCard(const QString& cardId)
 void AgentClient::removeReader(const QString& readerId)
 {
     delete d->readers.take(readerId);
-}
-
-// ---- ClientTestAccess -------------------------------------------------------
-
-AgentClient* ClientTestAccess::create(std::unique_ptr<TransportSeam> transport, QObject* parent)
-{
-    return new AgentClient(std::move(transport), parent);
 }
 
 } // namespace LibreSCRS::AgentClient

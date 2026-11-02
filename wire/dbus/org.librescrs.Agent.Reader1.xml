@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE node PUBLIC "-//freedesktop//DTD D-BUS Object Introspection 1.0//EN"
+ "http://www.freedesktop.org/standards/dbus/1.0/introspect.dtd">
+<!--
+  Reader exposed on /org/librescrs/Agent/reader/<n>. Name is the raw PC/SC
+  reader name.
+
+  Model and Interface are the reader's label, the agent's one reading of that
+  name; a client shows them and never parses Name. Model is the short model
+  ("OMNIKEY 5422"): never empty, never any interface wording, with the last
+  four characters of the serial appended when two readers would otherwise
+  read alike. Interface is a closed, append-only vocabulary:
+    "unknown"     — a single-interface contact reader, or not determinable.
+    "contact"     — the contact slot of a dual-interface unit.
+    "contactless" — a contactless interface (a slot of a dual-interface unit,
+                    or a contactless-only reader).
+  A client reads a value it does not know as "unknown". Both are decided over
+  the whole roster (a dual-interface twin, a same-model neighbour), so they
+  change while the reader stays when another reader arrives or leaves:
+  PropertiesChanged carries Model and Interface together.
+-->
+<node>
+  <interface name="org.librescrs.Agent.Reader1">
+    <property name="Name" type="s" access="read"/>
+    <property name="HasCard" type="b" access="read"/>
+    <property name="Card" type="o" access="read"/>
+    <property name="Model" type="s" access="read"/>
+    <property name="Interface" type="s" access="read"/>
+  </interface>
+</node>

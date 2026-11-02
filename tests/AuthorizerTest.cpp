@@ -1,12 +1,13 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 // SPDX-FileCopyrightText: 2026 hirashix0
 //
-// Hermetic conformance coverage for the Authorizer backend interface and its
-// two in-core implementations (AllowAllAuthorizer,
-// DefaultAuthorizer). A recording FakeAuthorizer proves the interface is
+// Hermetic conformance coverage for the Authorizer backend interface, its
+// in-core DefaultAuthorizer, and the AllowAllAuthorizer test double the test
+// support component ships. A recording FakeAuthorizer proves the interface is
 // drivable with the frozen CallerToken key — no bus-name string leaks into the
 // core surface. No live authorization backend is involved.
 
+#include "AllowAllAuthorizer.h"
 #include <LibreSCRS/Agent/backend/Authorizer.h>
 #include <LibreSCRS/Agent/Identity.h>
 
@@ -65,7 +66,7 @@ TEST(Authorizer, FakeRecordsActionAndCallerAndReturnsVerdict)
     EXPECT_EQ(deny.calls()[0].caller, CallerToken{":1.7"});
 }
 
-// The explicit "no policy gate" mode permits every action for any caller.
+// The test double permits every action for any caller.
 TEST(Authorizer, AllowAllPermitsEveryAction)
 {
     AllowAllAuthorizer auth;

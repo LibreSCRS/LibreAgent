@@ -3,7 +3,7 @@
 #include <LibreSCRS/Agent/operations/LmRawCrypto.h>
 
 #include <LibreSCRS/Agent/SecureZero.h>
-#include <LibreSCRS/Agent/backend/Logging.h>
+#include <LibreSCRS/Logging.h>
 #include <LibreSCRS/Agent/operations/LmSeams.h>       // selectSigningCandidate, SigningSelection
 #include <LibreSCRS/Agent/operations/RawCryptoFlow.h> // RawCryptoFlowDeps
 #include <LibreSCRS/Agent/operations/RsaPublicKey.h>  // ecPeerPointOnCertCurve
@@ -11,12 +11,14 @@
 #include <LibreSCRS/Auth/AuthRequirement.h> // PreReadAuthMethod
 #include <LibreSCRS/Certificate/ParsedCertificate.h>
 #include <LibreSCRS/Plugin/CardPlugin.h>
+#include <LibreSCRS/Plugin/PinDeposit.h> // ScopedPinDeposit
 #include <LibreSCRS/Plugin/PluginTypes.h>
 #include <LibreSCRS/Secure/Buffer.h>
 #include <LibreSCRS/Secure/String.h>
 
 #include <cstdint>
 #include <optional>
+#include <utility>
 
 namespace LibreSCRS::Agent::Operations {
 
@@ -29,8 +31,7 @@ RawCryptoResult err(RawCryptoStatus s)
 
 // LM raw-sign outcome -> hermetic status. PinIncorrect / PinBlocked come from
 // the plugin presenting the PIN handed over for this operation (VERIFY and the
-// key operation in one card transaction): the same answer a rejected verifyPIN
-// gave, AuthFailed, on which the host revokes the lease and the next operation
+// key operation in one card transaction): AuthFailed, on which the host revokes the lease and the next operation
 // asks again. Any other failure (PluginError) stays CardError. NotImplemented
 // (the family that does not override doSign) maps to NotSupported so the host
 // returns CKR_FUNCTION_NOT_SUPPORTED.
@@ -91,40 +92,47 @@ void erasePinFrom(LibreSCRS::Plugin::CardPlugin& plugin, LibreSCRS::SmartCard::C
     }
 }
 
-// Erases the resolved plugin's deposited PIN on every way out of one
-// operation unless keepForTheLease() says it may stay. Armed whether or not
-// this operation deposited a PIN: an ordinary key's PIN kept from an earlier
-// operation is what the plugin presents when none is given, and a card that
-// refuses it must not see it again.
-class PinDepositEraser
+// One raw operation under the PIN rule of a raw operation. A @p pin given for
+// it is deposited for the operation's one card transaction (ScopedPinDeposit,
+// erased unless kept for the lease); without one, the plugin presents the PIN
+// an earlier operation left for the lease. Either way that PIN stays only after
+// an ordinary key's success: any other outcome erases it, so a card that
+// refused it never sees it again. A plugin's own throw already arrives as a
+// failed outcome (CardPlugin contains it); what can still throw out of
+// @p operation is this side's work around the call -- the result copy, a log
+// line -- and that erases the PIN too before it propagates. An empty @p pin
+// would itself erase the deposit and let the card run the operation on
+// whatever the held session is already verified for: refused as a failed PIN,
+// before the key is used.
+template <typename Operation>
+RawCryptoResult underTheOperationsPin(LibreSCRS::Plugin::CardPlugin& plugin, LibreSCRS::SmartCard::CardSession& session,
+                                      const LibreSCRS::Secure::String* pin, bool perOperation, Operation&& operation)
 {
-public:
-    PinDepositEraser(LibreSCRS::Plugin::CardPlugin& plugin, LibreSCRS::SmartCard::CardSession& session) noexcept
-        : m_plugin(&plugin), m_session(session)
-    {}
-    ~PinDepositEraser()
-    {
-        if (m_plugin != nullptr) {
-            erasePinFrom(*m_plugin, m_session);
-        }
+    if (pin != nullptr && pin->empty()) {
+        erasePinFrom(plugin, session);
+        return err(RawCryptoStatus::AuthFailed);
     }
-    // Called once the outcome is known: the PIN an ordinary key just signed
-    // or deciphered with stays deposited for the rest of the lease (the
-    // session's teardown erases it). Any other outcome, and every exception,
-    // erases it here.
-    void keepForTheLease(bool keep) noexcept
-    {
-        if (keep) {
-            m_plugin = nullptr;
-        }
+    std::optional<LibreSCRS::Plugin::ScopedPinDeposit> deposit;
+    if (pin != nullptr) {
+        deposit.emplace(plugin, session, *pin); // erases itself if the deposit throws half-way
     }
-    PinDepositEraser(const PinDepositEraser&) = delete;
-    PinDepositEraser& operator=(const PinDepositEraser&) = delete;
-
-private:
-    LibreSCRS::Plugin::CardPlugin* m_plugin;
-    LibreSCRS::SmartCard::CardSession& m_session;
-};
+    try {
+        RawCryptoResult out = std::forward<Operation>(operation)();
+        if (!perOperation && out.status == RawCryptoStatus::Ok) {
+            if (deposit) {
+                deposit->keepForLease();
+            }
+        } else if (!deposit) {
+            erasePinFrom(plugin, session);
+        }
+        return out;
+    } catch (...) {
+        if (!deposit) {
+            erasePinFrom(plugin, session);
+        }
+        throw;
+    }
+}
 
 // The resolved plugin, for its per-session PIN deposit. setCredentials is
 // non-const, but the candidate routing holds plugins as
@@ -298,30 +306,19 @@ RawCryptoResult signRaw(const SigningSelection& key, Mechanism mechanism, std::s
         return RawCryptoResult{.status = RawCryptoStatus::ConsentRequired, .bytes = {}, .alwaysAuthenticate = true};
     }
     // A PIN goes to the plugin, which verifies it and uses the key in one card
-    // transaction. Erased again on every way out for a marked key; kept for
-    // the lease only after an ordinary key's success. The eraser is armed
-    // before the deposit, so a deposit that throws half-way is erased as well.
-    auto& plugin = depositPlugin(key);
-    PinDepositEraser eraser{plugin, session};
-    if (pin != nullptr && pin->empty()) {
-        // An empty value would erase the deposit, and the card would run the
-        // operation on whatever the held session is already verified for.
-        return err(RawCryptoStatus::AuthFailed);
-    }
-    if (pin != nullptr) {
-        plugin.setCredentials(session, "pin", *pin);
-    }
-    auto sr = key.plugin->sign(session, *key.cert.keyFID, input, *pluginMechanism, token);
-    RawCryptoResult out;
-    out.status = mapSignOutcome(sr.outcome);
-    out.alwaysAuthenticate = perOperation;
-    eraser.keepForTheLease(!perOperation && out.status == RawCryptoStatus::Ok);
-    if (out.status == RawCryptoStatus::Ok) {
-        out.bytes = sr.signature;
-    } else if (out.status == RawCryptoStatus::NotSupported) {
-        log::warn("rawcrypto: the resolving plugin does not implement the requested sign mechanism");
-    }
-    return out;
+    // transaction; how long it stays there is underTheOperationsPin's rule.
+    return underTheOperationsPin(depositPlugin(key), session, pin, perOperation, [&] {
+        auto sr = key.plugin->sign(session, *key.cert.keyFID, input, *pluginMechanism, token);
+        RawCryptoResult out;
+        out.status = mapSignOutcome(sr.outcome);
+        out.alwaysAuthenticate = perOperation;
+        if (out.status == RawCryptoStatus::Ok) {
+            out.bytes = sr.signature;
+        } else if (out.status == RawCryptoStatus::NotSupported) {
+            log::warn("rawcrypto: the resolving plugin does not implement the requested sign mechanism");
+        }
+        return out;
+    });
 }
 
 namespace {
@@ -342,32 +339,24 @@ RawCryptoResult decipherWithKey(const SigningSelection& key, LibreSCRS::Plugin::
         return RawCryptoResult{.status = RawCryptoStatus::ConsentRequired, .bytes = {}, .alwaysAuthenticate = true};
     }
     // The PIN for this operation goes to the plugin and lives as in signRaw:
-    // VERIFY and the decipher in one card transaction, erased on every way out
-    // for a marked key, kept for the lease only after an ordinary key's success.
-    auto& plugin = depositPlugin(key);
-    PinDepositEraser eraser{plugin, session};
-    if (pin != nullptr && pin->empty()) {
-        return err(RawCryptoStatus::AuthFailed); // as in signRaw
-    }
-    if (pin != nullptr) {
-        plugin.setCredentials(session, "pin", *pin);
-    }
-    auto dr = key.plugin->decipher(session, *key.cert.keyFID, input, pluginMechanism, token);
-    RawCryptoResult out;
-    out.status = mapDecipherOutcome(dr.outcome);
-    out.alwaysAuthenticate = perOperation;
-    eraser.keepForTheLease(!perOperation && out.status == RawCryptoStatus::Ok);
-    if (out.status == RawCryptoStatus::Ok) {
-        // SENSITIVE: copied out through a cleansing Secure::Buffer, so no
-        // intermediate copy lingers; the returned vector is the host's to
-        // wipe once it has handed the bytes on (Pkcs11Broker does).
-        const LibreSCRS::Secure::Buffer recovered{std::span<const std::uint8_t>{dr.plaintext}};
-        out.bytes.assign(recovered.data(), recovered.data() + recovered.size());
-    } else if (out.status == RawCryptoStatus::NotSupported) {
-        log::warn(notSupportedWarning);
-    }
-    LibreSCRS::Agent::secureZero(dr.plaintext);
-    return out;
+    // VERIFY and the decipher in one card transaction.
+    return underTheOperationsPin(depositPlugin(key), session, pin, perOperation, [&] {
+        auto dr = key.plugin->decipher(session, *key.cert.keyFID, input, pluginMechanism, token);
+        RawCryptoResult out;
+        out.status = mapDecipherOutcome(dr.outcome);
+        out.alwaysAuthenticate = perOperation;
+        if (out.status == RawCryptoStatus::Ok) {
+            // SENSITIVE: copied out through a cleansing Secure::Buffer, so no
+            // intermediate copy lingers; the returned vector is the host's to
+            // wipe once it has handed the bytes on (Pkcs11Broker does).
+            const LibreSCRS::Secure::Buffer recovered{std::span<const std::uint8_t>{dr.plaintext}};
+            out.bytes.assign(recovered.data(), recovered.data() + recovered.size());
+        } else if (out.status == RawCryptoStatus::NotSupported) {
+            log::warn(notSupportedWarning);
+        }
+        LibreSCRS::Agent::secureZero(dr.plaintext);
+        return out;
+    });
 }
 
 } // namespace

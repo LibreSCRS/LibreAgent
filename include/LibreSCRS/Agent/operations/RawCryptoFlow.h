@@ -37,7 +37,7 @@ class CardSessionHolder;
 //   * non-null  -> the op hands it to the resolving plugin
 //                  (setCredentials "pin"), which presents it to the card and
 //                  uses the key in ONE card transaction — never a separate
-//                  verifyPIN, across which a key the card wants the PIN for on
+//                  VERIFY, across which a key the card wants the PIN for on
 //                  every operation loses its verified state. A refused PIN
 //                  surfaces RawCryptoStatus::AuthFailed. This is the FIRST op
 //                  of a lease (or after a prior auth fail / recovery), and

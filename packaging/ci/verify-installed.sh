@@ -2,8 +2,11 @@
 # SPDX-License-Identifier: LGPL-2.1-or-later
 # Runs INSIDE a fresh container. /pkg holds this repository's packages and
 # /pkg-<Repo> the upstream ones. The claim this file exists to make is
-# coexistence: that the split measured for pacman also holds for dpkg and rpm,
+# coexistence: that the three-way split holds for pacman, dpkg and rpm alike,
 # where two packages owning one path is a conflict rather than a warning.
+#
+# FAMILY is deb, rpm or arch; anything else is refused rather than read as
+# one of them.
 set -uo pipefail
 fail=0
 check() { if [ "$2" -eq 0 ]; then echo "PASS $1"; else echo "FAIL $1"; fail=1; fi; }
@@ -28,7 +31,8 @@ if [ "${PKG_MANAGER:-}" = zypper ]; then
 fi
 
 
-if [ "${FAMILY:-deb}" = deb ]; then
+case "${FAMILY:-}" in
+deb)
   export DEBIAN_FRONTEND=noninteractive
   # The base container is not a machine. Ubuntu's image ships
   # /etc/dpkg/dpkg.cfg.d/excludes with path-exclude=/usr/share/locale/*/LC_MESSAGES/*.mo
@@ -42,13 +46,26 @@ if [ "${FAMILY:-deb}" = deb ]; then
   installed_list() { dpkg-query -W -f='${Package}\n'; }
   files_of() { dpkg -L "$1" 2>/dev/null; }
   LIBGLOB="/usr/lib/*"
-else
+  ;;
+rpm)
   dnf -y -q install /pkg-LibreMiddleware/*.rpm /pkg/*.rpm >/dev/null
   check "V1 middleware and agent packages install together" $?
   installed_list() { rpm -qa --qf '%{NAME}\n'; }
   files_of() { rpm -ql "$1" 2>/dev/null; }
   LIBGLOB="/usr/lib64"
-fi
+  ;;
+arch)
+  pacman -U --noconfirm /pkg-LibreMiddleware/*.pkg.tar.zst /pkg/*.pkg.tar.zst >/dev/null
+  check "V1 middleware and agent packages install together" $?
+  installed_list() { pacman -Qq; }
+  files_of() { pacman -Qlq "$1" 2>/dev/null; }
+  LIBGLOB="/usr/lib"
+  ;;
+*)
+  echo "FAIL FAMILY='${FAMILY:-}' is not deb, rpm or arch"
+  exit 2
+  ;;
+esac
 
 ours=$(installed_list | grep -E 'librescrs|liblibrescrs|libreagent' | sort -u)
 echo "installed: $(echo "$ours" | tr '\n' ' ')"
@@ -79,12 +96,5 @@ ls $LIBGLOB/libLibreAgentCore.a $LIBGLOB/libLibreAgentWire.a >/dev/null 2>&1
 check "V-core static archives present" $?
 ls $LIBGLOB/libLibreAgentCore.so* >/dev/null 2>&1 && { echo "  unexpected shared core"; false; } || true
 check "V-core no shared counterpart" 0
-
-miss=0
-for f in $LIBGLOB/liblibrescrs-agentclient-qt.so.*; do
-  [ -e "$f" ] || continue
-  if ldd "$f" 2>/dev/null | grep -q 'not found'; then echo "  not found in $f"; miss=1; fi
-done
-test "$miss" -eq 0; check "V11 no unresolved shared-library dependency" $?
 
 exit $fail

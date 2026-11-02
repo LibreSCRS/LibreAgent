@@ -28,7 +28,7 @@ class StubPlugin final : public LibreSCRS::Plugin::CardPlugin
 public:
     StubPlugin(std::string id, Cap caps) : m_caps(caps)
     {
-        setIdentity(std::move(id), "stub", 0);
+        setIdentity(std::move(id), 0);
     }
     Cap capabilities() const override
     {

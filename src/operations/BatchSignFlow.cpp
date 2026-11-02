@@ -5,6 +5,7 @@
 #include <LibreSCRS/Agent/cache/CredentialCache.h>
 #include <LibreSCRS/Agent/operations/CardPluginRouting.h> // signingCandidates
 #include <LibreSCRS/Agent/operations/FlowPrelude.h>
+#include <LibreSCRS/Agent/operations/OperationArtifact.h>
 #include <LibreSCRS/Agent/OperationPhase.h> // OperationPhase enum
 #include <LibreSCRS/Agent/operations/SerializingPrompter.h>
 #include <LibreSCRS/Agent/operations/SignatureParams.h> // isQualifiedSignLevel
@@ -261,7 +262,7 @@ BatchSignFlow::Result BatchSignFlow::run()
                 phaseSink.setPhase(static_cast<std::uint32_t>(OperationPhase::AwaitingConsent));
                 PromptOptions opts;
                 opts.requester = requester;
-                opts.artifact = "signature-batch";
+                opts.artifact = Artifact::kSignatureBatch;
                 opts.description = summary;
                 opts.artifacts = artifactNames;
                 if (const auto fields = req.fields(); !fields.empty()) {
@@ -306,7 +307,7 @@ BatchSignFlow::Result BatchSignFlow::run()
             phaseSink.setPhase(static_cast<std::uint32_t>(OperationPhase::AwaitingConsent));
             PromptOptions chanOpts;
             chanOpts.requester = requester;
-            chanOpts.artifact = "signature-batch";
+            chanOpts.artifact = Artifact::kSignatureBatch;
             // The card's rejection signal: see SignFlow's identical guard, and
             // FlowPrelude::isCardRejectionSignal for the full rationale (evict +
             // record on that signal only, never on invocation counting, and

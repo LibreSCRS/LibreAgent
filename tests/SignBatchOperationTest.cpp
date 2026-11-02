@@ -31,8 +31,8 @@
 #include <LibreSCRS/LocalizedText.h>
 #include <LibreSCRS/Plugin/CardPlugin.h>
 #include <LibreSCRS/Secure/String.h>
-#include <LibreSCRS/SmartCard/CardMap.h>
 #include <LibreSCRS/SmartCard/CardSession.h>
+#include <LibreSCRS/SmartCard/testing/CardSessionTesting.h>
 #include <gtest/gtest.h>
 #include <cstdint>
 #include <expected>
@@ -54,11 +54,10 @@ std::unique_ptr<CardSessionHolder> makeHolder()
 {
     auto factory = [](const std::string& r)
         -> std::expected<std::shared_ptr<LibreSCRS::SmartCard::CardSession>, LibreSCRS::SmartCard::OpenError> {
-        return LibreSCRS::SmartCard::detail::makeDetachedCardSession(r);
+        return LibreSCRS::SmartCard::Testing::makeDetachedCardSession(r);
     };
     auto resolver = [](std::span<const std::uint8_t>, LibreSCRS::SmartCard::CardSession&) { return CandidateList{}; };
-    return std::make_unique<CardSessionHolder>("FakeReader", std::move(factory), std::move(resolver),
-                                               std::make_shared<LibreSCRS::SmartCard::CardMap>());
+    return std::make_unique<CardSessionHolder>("FakeReader", std::move(factory), std::move(resolver));
 }
 
 // Records every requestPin() call's options -- the "consent options
@@ -120,8 +119,7 @@ public:
                      LibreSCRS::CancelToken) override
     {
         ++calls;
-        const auto req =
-            LibreSCRS::Auth::AuthRequirement::forSigning(LibreSCRS::LocalizedText{"", "PIN", {}}, std::nullopt);
+        const auto req = LibreSCRS::Auth::AuthRequirement::forSigning();
         const auto result = credentials(req);
         if (result.status != LibreSCRS::Auth::CredentialResult::Status::Ok) {
             SignOutcome out;

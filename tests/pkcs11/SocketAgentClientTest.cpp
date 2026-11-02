@@ -591,18 +591,19 @@ TEST(SocketAgentClient, AnEcPointOffItsCurvesWidthIsNotServed)
 
     for (const char* certId : {"no-point", "short", "uneven", "p192"}) {
         const auto first = client.publicKey("r1", certId, KeyType::Ec);
-        EXPECT_EQ(first.status, P::Status::DeviceRemoved) << certId;
-        EXPECT_TRUE(first.x.empty() && first.y.empty() && first.crv.empty()) << certId;
+        EXPECT_EQ(first, std::unexpected(P::Status::DeviceRemoved)) << certId;
         const int asked = fake.callCount(T::Call::PkPublicKey);
-        EXPECT_EQ(client.publicKey("r1", certId, KeyType::Ec).status, P::Status::DeviceRemoved) << certId;
+        EXPECT_EQ(client.publicKey("r1", certId, KeyType::Ec), std::unexpected(P::Status::DeviceRemoved)) << certId;
         EXPECT_EQ(fake.callCount(T::Call::PkPublicKey), asked + 1) << certId << ": a malformed answer was cached";
     }
     // The control: a well-formed point on the widest curve is served.
     const auto ok = client.publicKey("r1", "p521", KeyType::Ec);
-    EXPECT_EQ(ok.status, P::Status::Ok);
-    EXPECT_EQ(ok.crv, "P-521");
-    EXPECT_EQ(ok.x.size(), 66u);
-    EXPECT_EQ(ok.y.size(), 66u);
+    ASSERT_TRUE(ok.has_value());
+    const auto* ec = std::get_if<LibreSCRS::Agent::Operations::EcPublicKey>(&*ok);
+    ASSERT_NE(ec, nullptr);
+    EXPECT_EQ(ec->crv, "P-521");
+    EXPECT_EQ(ec->x.size(), 66u);
+    EXPECT_EQ(ec->y.size(), 66u);
 }
 
 // A cached key answers only for its own family: once the RSA key is cached, a
@@ -617,12 +618,12 @@ TEST(SocketAgentClient, ACachedKeyAnswersOnlyForItsFamily)
     fake.addCert("c1", "rsa");
     fake.start();
     P::SocketAgentClient client{fake.path(), kFastBudgets};
-    ASSERT_EQ(client.publicKey("r1", "rsa", KeyType::Rsa).status, P::Status::Ok);
-    const auto ec = client.publicKey("r1", "rsa", KeyType::Ec);
-    EXPECT_EQ(ec.status, P::Status::NotSupported);
-    EXPECT_TRUE(ec.modulus.empty());
-    EXPECT_EQ(client.publicKey("r1", "rsa", KeyType::Other).status, P::Status::NotSupported);
-    EXPECT_EQ(client.publicKey("r1", "rsa", KeyType::Rsa).status, P::Status::Ok) << "the cached key is still served";
+    ASSERT_TRUE(client.publicKey("r1", "rsa", KeyType::Rsa).has_value());
+    EXPECT_EQ(client.publicKey("r1", "rsa", KeyType::Ec), std::unexpected(P::Status::NotSupported));
+    EXPECT_EQ(client.publicKey("r1", "rsa", KeyType::Other), std::unexpected(P::Status::NotSupported));
+    const auto again = client.publicKey("r1", "rsa", KeyType::Rsa);
+    ASSERT_TRUE(again.has_value()) << "the cached key is still served";
+    EXPECT_TRUE(std::holds_alternative<LibreSCRS::Agent::Operations::RsaPublicKey>(*again));
 }
 
 // Derive admits an entry only for an EC key, as the entry's own canDerive

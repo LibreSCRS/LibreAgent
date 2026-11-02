@@ -45,7 +45,7 @@ public:
         std::string id, LibreSCRS::Plugin::CardCapabilities caps = LibreSCRS::Plugin::CardCapabilities::PinManagement)
         : m_caps(caps)
     {
-        setIdentity(std::move(id), "stub", 0);
+        setIdentity(std::move(id), 0);
     }
     LibreSCRS::Plugin::CardCapabilities capabilities() const override
     {
@@ -80,7 +80,14 @@ public:
     bool throwOnPinList{false};
     bool throwOnMutation{false};
 
-    std::vector<LibreSCRS::Plugin::PinStatusEntry> getPINList(LibreSCRS::SmartCard::CardSession&) const override
+    void setCredentials(LibreSCRS::SmartCard::CardSession&, std::string_view key,
+                        const LibreSCRS::Secure::String& value) override
+    {
+        m_rec->credentialWrites.emplace_back(std::string{key}, value.empty());
+    }
+
+protected:
+    std::vector<LibreSCRS::Plugin::PinStatusEntry> doGetPINList(LibreSCRS::SmartCard::CardSession&) const override
     {
         ++m_rec->pinListCalls;
         if (throwOnPinList) {
@@ -88,9 +95,9 @@ public:
         }
         return pinList;
     }
-    LibreSCRS::Plugin::PINResult changePIN(LibreSCRS::SmartCard::CardSession&, std::string_view pinLabel,
-                                           const LibreSCRS::Secure::String& oldPin,
-                                           const LibreSCRS::Secure::String& newPin) const override
+    LibreSCRS::Plugin::PINResult doChangePIN(LibreSCRS::SmartCard::CardSession&, std::string_view pinLabel,
+                                             const LibreSCRS::Secure::String& oldPin,
+                                             const LibreSCRS::Secure::String& newPin) const override
     {
         ++m_rec->changeCalls;
         if (throwOnMutation) {
@@ -101,9 +108,9 @@ public:
         m_rec->lastNewPin = newPin;
         return mutationResult;
     }
-    LibreSCRS::Plugin::PINResult activateTransportPin(LibreSCRS::SmartCard::CardSession&, std::string_view pinLabel,
-                                                      const LibreSCRS::Secure::String& transportValue,
-                                                      const LibreSCRS::Secure::String& newPin) const override
+    LibreSCRS::Plugin::PINResult doActivateTransportPin(LibreSCRS::SmartCard::CardSession&, std::string_view pinLabel,
+                                                        const LibreSCRS::Secure::String& transportValue,
+                                                        const LibreSCRS::Secure::String& newPin) const override
     {
         ++m_rec->transportCalls;
         if (throwOnMutation) {
@@ -114,8 +121,8 @@ public:
         m_rec->lastNewPin = newPin;
         return mutationResult;
     }
-    LibreSCRS::Plugin::PINResult activateSigningKey(LibreSCRS::SmartCard::CardSession&,
-                                                    const LibreSCRS::Secure::String& signPin) const override
+    LibreSCRS::Plugin::PINResult doActivateSigningKey(LibreSCRS::SmartCard::CardSession&,
+                                                      const LibreSCRS::Secure::String& signPin) const override
     {
         ++m_rec->signKeyCalls;
         if (throwOnMutation) {
@@ -123,12 +130,6 @@ public:
         }
         m_rec->lastSignPin = signPin;
         return mutationResult;
-    }
-
-    void setCredentials(LibreSCRS::SmartCard::CardSession&, std::string_view key,
-                        const LibreSCRS::Secure::String& value) override
-    {
-        m_rec->credentialWrites.emplace_back(std::string{key}, value.empty());
     }
 
 private:

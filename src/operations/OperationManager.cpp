@@ -3,7 +3,6 @@
 #include <LibreSCRS/Agent/operations/OperationManager.h>
 #include <LibreSCRS/Agent/presence/CapabilityResolver.h>
 #include <LibreSCRS/Agent/operations/CardPluginRouting.h>
-#include <LibreSCRS/SmartCard/CardMap.h>
 #include <LibreSCRS/SmartCard/CardSession.h>
 #include <chrono>
 #include <condition_variable>
@@ -133,7 +132,7 @@ std::shared_ptr<OperationManager::ReaderWorker> OperationManager::workerFor(Obje
                 }
                 return resolver->resolveCandidates(atr, s);
             },
-            std::make_shared<LibreSCRS::SmartCard::CardMap>(), m_testHolderClock);
+            m_testHolderClock);
         worker->idleSweep = m_idleSweep;
         auto* raw = worker.get();
         raw->worker = std::jthread([this, raw](std::stop_token st) { workerLoop(*raw, std::move(st)); });

@@ -161,10 +161,9 @@ CredentialListFlow::Result CredentialListFlow::run()
         }
     } catch (const std::runtime_error&) {
         // A field carried plugin data the wire record cannot represent: an
-        // out-of-range length bound (narrowLengthToInt -> std::overflow_error) or
-        // placeholder-bearing guidance (splitGuidance -> std::runtime_error), now
-        // the same runtime-exception family caught by this one handler. Fail the
-        // whole ListCredentials cleanly rather than letting the throw escape.
+        // out-of-range length bound (narrowLengthToInt -> std::overflow_error).
+        // Fail the whole ListCredentials cleanly rather than letting the throw
+        // escape.
         return makeError(ErrorCode::ParseError, "op.read_failed", "Malformed credential metadata");
     }
     // Suffix colliding synthesized ids so every record id is unique within the

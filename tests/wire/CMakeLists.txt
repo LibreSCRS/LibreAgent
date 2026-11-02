@@ -170,3 +170,28 @@ if(LIBREAGENT_BUILD_CORE AND LIBREAGENT_BUILD_WIRE)
         LIBRESCRS_AGENT_WIRE_CDDL="${CMAKE_SOURCE_DIR}/wire/librescrs-agent.cddl")
     gtest_discover_tests(WireContractGuardTest)
 endif()
+
+# 9. The macOS peer check every end of the socket wire uses: who serves (or
+#    connects to) agent.sock, by code signature. Apple-only -- SecTask,
+#    SecCode and LOCAL_PEERTOKEN exist nowhere else. The test binary itself is
+#    signed by no team, so the positive half of the designated requirement
+#    waits for a Developer ID build; everything else runs here.
+if(APPLE)
+    add_executable(WirePeerCodeSigningTest PeerCodeSigningTest.cpp PeerIdentityTest.cpp)
+    target_link_libraries(WirePeerCodeSigningTest PRIVATE LibreAgent::Wire GTest::gtest GTest::gtest_main)
+    target_compile_definitions(WirePeerCodeSigningTest PRIVATE LIBRESCRS_TEAM_ID="${LIBRESCRS_TEAM_ID}")
+    gtest_discover_tests(WirePeerCodeSigningTest)
+endif()
+
+# 10. Where the macOS agent socket lives (std-only, every platform).
+add_executable(WireSocketLocationTest SocketLocationTest.cpp)
+target_include_directories(WireSocketLocationTest PRIVATE ${CMAKE_SOURCE_DIR}/include)
+target_link_libraries(WireSocketLocationTest PRIVATE GTest::gtest GTest::gtest_main)
+gtest_discover_tests(WireSocketLocationTest)
+
+# 11. The fd guard every host reads a client-supplied document or master list
+#     through (std + POSIX only, every platform).
+add_executable(WireBoundedFdReadTest BoundedFdReadTest.cpp)
+target_include_directories(WireBoundedFdReadTest PRIVATE ${CMAKE_SOURCE_DIR}/include)
+target_link_libraries(WireBoundedFdReadTest PRIVATE GTest::gtest GTest::gtest_main)
+gtest_discover_tests(WireBoundedFdReadTest)

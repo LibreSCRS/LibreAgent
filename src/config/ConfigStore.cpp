@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 // SPDX-FileCopyrightText: 2026 hirashix0
 #include <LibreSCRS/Agent/config/ConfigStore.h>
-#include <LibreSCRS/Agent/backend/Logging.h>
+#include <LibreSCRS/Logging.h>
 // The level vocabulary lives with the wire's other signing-parameter
 // validators; this store used to keep a private copy of it.
 #include <LibreSCRS/Agent/operations/SignatureParams.h>
@@ -53,7 +53,7 @@ struct KeySpec
     // -- which is DbusMutable, the MOST permissive of the four -- so a key
     // filed without a classification would silently become writable by any
     // client under the default-allow action. The diagnostic that would say so,
-    // -Wmissing-field-initializers, is not an error here: LIBRESCRS_AGENT_WERROR
+    // -Wmissing-field-initializers, is not an error here: LIBRESCRS_WERROR
     // defaults OFF. A constructor makes the omission fail to compile instead,
     // which is the only form of this gate that does not depend on build flags.
     constexpr KeySpec(const char* k, Mutability m) noexcept : key(k), how(m) {}

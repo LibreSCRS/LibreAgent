@@ -11,7 +11,6 @@
 #include <optional>
 #include <stdexcept>
 #include <string>
-#include <string_view>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -52,10 +51,6 @@ enum class CredentialOutcome {
 // CredentialOutcome. This definition (together with the introspection-XML
 // doc comments) is the authoritative wire doc the future CDDL / KDE /
 // Swift mirrors derive from.
-//
-// LM's `initialized`/`blocked` flags are deliberately NOT represented:
-// lifecycle crosses only via `state`, which is safe because LM keeps the
-// invariant state==Blocked <=> blocked==true.
 struct CredentialRecord
 {
     std::string id; // agent-synthesized "<kind>:<reference>", stable per card session (see disambiguateCredentialIds)
@@ -90,8 +85,8 @@ struct CredentialSnapshot
 };
 
 // Closed entry-validation error vocabulary: entry gating produces these and
-// the D-Bus layer maps each member onto a named error. Extend only together
-// with that mapping. AmbiguousCredential rejects a mutation whose addressed
+// toSyncError() (value/SyncErrorTaxonomy.h) names the wire error each one goes
+// out as. Extend only together with that mapping. AmbiguousCredential rejects a mutation whose addressed
 // record's LABEL is not unique within the snapshot: ids were disambiguated
 // for kind:reference collisions, but the seam addresses the card by label,
 // so the plugin would have to guess which of two same-label PINs the user
@@ -201,20 +196,12 @@ namespace detail {
 }
 
 // Split optional guidance into wire key + fallback by copying
-// .key/.defaultText directly. The wire record has no placeholder
-// representation; guidance carrying placeholders would render with holes,
-// so it is rejected loudly rather than silently truncated. Throws the SAME
-// runtime-exception family as narrowLengthToInt (both are unrepresentable-
-// plugin-data conditions) so a single catch(const std::runtime_error&) in the
-// list flow catches either.
+// .key/.defaultText directly.
 [[nodiscard]] inline std::pair<std::optional<std::string>, std::optional<std::string>>
-splitGuidance(const std::optional<LocalizedText>& guidance, std::string_view fieldName)
+splitGuidance(const std::optional<LocalizedText>& guidance)
 {
     if (!guidance)
         return {std::nullopt, std::nullopt};
-    if (!guidance->placeholders.empty())
-        throw std::runtime_error(std::format(
-            "credential guidance '{}' carries placeholders; the wire record cannot represent them", fieldName));
     return {guidance->key, guidance->defaultText};
 }
 
@@ -254,10 +241,7 @@ splitGuidance(const std::optional<LocalizedText>& guidance, std::string_view fie
 // Build a record from LM's extended PinStatusEntry. Single-argument pure
 // mapping; synthesizes the BARE id "<kind>:<reference>" with the reference
 // in zero-padded lowercase hex (e.g. "sign:0x92").
-// @throws a std::runtime_error subclass on unrepresentable plugin data:
-//         std::overflow_error on a length bound beyond int range, and a
-//         std::runtime_error on placeholder-bearing guidance (see detail).
-//         Both share the runtime_error family, so one catch handles either.
+// @throws std::overflow_error on a length bound beyond int range.
 [[nodiscard]] inline CredentialRecord toCredentialRecord(const LibreSCRS::Plugin::PinStatusEntry& e)
 {
     CredentialRecord record;
@@ -280,10 +264,10 @@ splitGuidance(const std::optional<LocalizedText>& guidance, std::string_view fie
     record.keyActivatable = e.keyActivatable;
     record.recovery = detail::recoveryToken(e.recovery);
     record.probeSafe = e.probeSafe;
-    auto [blockedKey, blockedFallback] = detail::splitGuidance(e.blockedGuidance, "blockedGuidance");
+    auto [blockedKey, blockedFallback] = detail::splitGuidance(e.blockedGuidance);
     record.blockedGuidanceKey = std::move(blockedKey);
     record.blockedGuidanceFallback = std::move(blockedFallback);
-    auto [activationKey, activationFallback] = detail::splitGuidance(e.keyActivationGuidance, "keyActivationGuidance");
+    auto [activationKey, activationFallback] = detail::splitGuidance(e.keyActivationGuidance);
     record.keyActivationGuidanceKey = std::move(activationKey);
     record.keyActivationGuidanceFallback = std::move(activationFallback);
     return record;

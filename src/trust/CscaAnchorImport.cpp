@@ -1,8 +1,10 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 // SPDX-FileCopyrightText: 2026 hirashix0
+#include <LibreSCRS/Agent/util/DerLength.h>
+#include <LibreSCRS/Agent/util/HexEncode.h>
 #include <LibreSCRS/Agent/trust/CscaAnchorImport.h>
 
-#include <LibreSCRS/Agent/backend/Logging.h>
+#include <LibreSCRS/Logging.h>
 #include <LibreSCRS/Agent/config/ConfigStore.h>
 
 #include <LibreSCRS/Certificate/ParsedCertificate.h>
@@ -132,34 +134,21 @@ bool isSignedObject(const std::vector<std::uint8_t>& value)
         return false; // not a constructed SEQUENCE, so not a ContentInfo
     }
 
-    const std::uint8_t lengthByte = value[1];
     std::size_t header = 0;
-    if (lengthByte == 0x80) {
+    if (value[1] == 0x80) {
+        // BER indefinite: no length up front, the end-of-contents octets close
+        // the object. Recognised here, not by readDerLength, because only this
+        // outer wrapper of a published list is allowed it.
         if (value[value.size() - 1] != 0x00 || value[value.size() - 2] != 0x00) {
             return false; // indefinite and never closed
         }
         header = 2;
-    } else if (lengthByte < 0x80) {
-        if (2 + static_cast<std::size_t>(lengthByte) != value.size()) {
-            return false;
-        }
-        header = 2;
     } else {
-        const std::size_t octets = static_cast<std::size_t>(lengthByte & 0x7F);
-        // Eight would still fit a size_t on this platform; four bounds the
-        // object at 4 GiB, which is far above kMaxMasterListBytes and keeps the
-        // accumulation below from being able to overflow.
-        if (octets < 1 || octets > 4 || value.size() < 2 + octets) {
+        const auto length = readDerLength(value, 1);
+        if (!length || 1 + length->lengthOctets + length->length != value.size()) {
             return false;
         }
-        std::size_t length = 0;
-        for (std::size_t i = 0; i < octets; ++i) {
-            length = (length << 8) | static_cast<std::size_t>(value[2 + i]);
-        }
-        if (2 + octets + length != value.size()) {
-            return false;
-        }
-        header = 2 + octets;
+        header = 1 + length->lengthOctets;
     }
 
     if (value.size() < header + kOidSize) {
@@ -421,14 +410,7 @@ std::vector<std::string> commaFields(const std::string& value)
 
 std::string toHex(const SignerFingerprint& fingerprint)
 {
-    static constexpr char kDigits[] = "0123456789abcdef";
-    std::string out;
-    out.reserve(fingerprint.size() * 2);
-    for (std::uint8_t b : fingerprint) {
-        out.push_back(kDigits[b >> 4]);
-        out.push_back(kDigits[b & 0x0F]);
-    }
-    return out;
+    return Agent::toHex(fingerprint, '\0', /*upper=*/false);
 }
 
 AnchorCache::AnchorCache(fs::path dir) : m_dir(std::move(dir)) {}

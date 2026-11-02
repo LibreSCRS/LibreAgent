@@ -15,6 +15,10 @@
 #include "ClientTestAccess.h"
 #include "TransportSeam.h"
 
+#include <QEventLoop>
+#include <QThread>
+#include <QTimer>
+#include <QElapsedTimer>
 #include <QCoreApplication>
 #include <QHash>
 #include <QVariant>
@@ -29,6 +33,7 @@
 #include <expected>
 #include <memory>
 #include <optional>
+#include <stdexcept>
 #include <type_traits>
 #include <utility>
 #include <vector>
@@ -113,9 +118,35 @@ public:
     {
         return available;
     }
+    int installedProbes = 0;
     [[nodiscard]] bool agentInstalled() override
     {
+        ++installedProbes;
         return installed;
+    }
+    /// Knob: an installed-but-stopped agent that startAgent() brings up.
+    bool startable = false;
+    int startCalls = 0;
+    /// Runs inside startAgent(), once: where the real transport's wait pumps
+    /// a local event loop that anything queued meanwhile runs from.
+    std::function<void()> whileStarting;
+    [[nodiscard]] AgentStartResult startAgent() override
+    {
+        ++startCalls;
+        if (auto during = std::exchange(whileStarting, {})) {
+            during();
+        }
+        if (available) {
+            return AgentStartResult::Running;
+        }
+        if (!installed) {
+            return AgentStartResult::NotInstalled;
+        }
+        if (!startable) {
+            return AgentStartResult::Failed;
+        }
+        available = true;
+        return AgentStartResult::Running;
     }
     [[nodiscard]] std::optional<RegistrySnapshot> fetchRegistry() override
     {
@@ -336,6 +367,185 @@ TEST(SeamRegistry, UnavailableAgentYieldsInertClient)
     EXPECT_FALSE(client->isAvailable());
     EXPECT_FALSE(client->agentInstalled());
     EXPECT_TRUE(client->readers().isEmpty());
+}
+
+// The agent's state is read from views that repaint on every roster signal.
+// Asking the bus each time ran a nested event loop inside those handlers; the
+// state is learned once and kept current instead.
+TEST(SeamAgentState, ReadingTheStateNeverReachesTheTransport)
+{
+    auto owned = std::make_unique<FakeTransportSeam>();
+    owned->available = false;
+    FakeTransportSeam* fake = owned.get();
+    std::unique_ptr<AgentClient> client{ClientTestAccess::create(std::move(owned))};
+    const int probesAtConstruction = fake->installedProbes;
+    for (int i = 0; i < 5; ++i) {
+        EXPECT_TRUE(client->agentInstalled());
+        EXPECT_EQ(client->agentState(), AgentState::Stopped);
+    }
+    EXPECT_EQ(fake->installedProbes, probesAtConstruction);
+    EXPECT_EQ(fake->startCalls, 0);
+}
+
+TEST(SeamAgentState, FollowsTheAgentAppearingAndVanishing)
+{
+    auto owned = std::make_unique<FakeTransportSeam>();
+    owned->available = false;
+    owned->installed = false;
+    FakeTransportSeam* fake = owned.get();
+    std::unique_ptr<AgentClient> client{ClientTestAccess::create(std::move(owned))};
+    EXPECT_EQ(client->agentState(), AgentState::Missing);
+
+    // Installed since: still Missing until someone asks again.
+    fake->installed = true;
+    EXPECT_EQ(client->agentState(), AgentState::Missing);
+    fake->available = true;
+    client->refreshDiscovery();
+    EXPECT_EQ(client->agentState(), AgentState::Ready);
+
+    fake->available = false;
+    fake->registry->onServiceUnregistered();
+    EXPECT_EQ(client->agentState(), AgentState::Stopped);
+    EXPECT_TRUE(client->agentInstalled());
+
+    fake->installed = false;
+    client->refreshDiscovery();
+    EXPECT_EQ(client->agentState(), AgentState::Missing);
+}
+
+// "Try again" is the only path a settings view takes after the agent was down,
+// and its snapshot from then is empty. No registration notification is
+// guaranteed to follow the start, so the refresh itself must say "read again".
+TEST(SeamAgentState, ARefreshThatStartsTheAgentAsksForANewSnapshot)
+{
+    auto owned = std::make_unique<FakeTransportSeam>();
+    owned->available = false;
+    owned->startable = true;
+    std::unique_ptr<AgentClient> client{ClientTestAccess::create(std::move(owned))};
+    ASSERT_FALSE(client->isAvailable());
+    int availability = 0;
+    QStringList configKeys;
+    QObject::connect(client.get(), &AgentClient::availabilityChanged, [&](bool) { ++availability; });
+    QObject::connect(client.get(), &AgentClient::configChanged, [&](const QString& key) { configKeys.append(key); });
+
+    client->refreshDiscovery();
+
+    ASSERT_TRUE(client->isAvailable());
+    EXPECT_EQ(availability, 1);
+    ASSERT_EQ(configKeys.size(), 1);
+    EXPECT_TRUE(configKeys.constFirst().isEmpty());
+
+    // Already reachable: a second refresh re-reads the roster, nothing else.
+    client->refreshDiscovery();
+    EXPECT_EQ(availability, 1);
+    EXPECT_EQ(configKeys.size(), 1);
+}
+
+/// Pumps a local loop the way the transport's start does, running @p call from
+/// a timer that fires inside it -- a second click arriving mid-start.
+void callFromTheStartsLoop(FakeTransportSeam* fake, std::function<void()> call)
+{
+    fake->whileStarting = [call = std::move(call)] {
+        QEventLoop loop;
+        QTimer::singleShot(0, &loop, [&] {
+            call();
+            loop.quit();
+        });
+        loop.exec();
+    };
+}
+
+// The start waits in a local event loop, so the UI stays live and a second
+// "Start service" click arrives inside the first. It must not ask the bus
+// again: the start it wants is already asked for.
+TEST(SeamAgentState, AStartRequestedDuringAStartAsksForNothingMore)
+{
+    auto owned = std::make_unique<FakeTransportSeam>();
+    owned->available = false;
+    owned->startable = true;
+    FakeTransportSeam* fake = owned.get();
+    std::unique_ptr<AgentClient> client{ClientTestAccess::create(std::move(owned))};
+    int availability = 0;
+    QObject::connect(client.get(), &AgentClient::availabilityChanged, [&](bool) { ++availability; });
+
+    std::optional<AgentStartResult> nested;
+    callFromTheStartsLoop(fake, [&] { nested = client->requestAgentStart(); });
+
+    EXPECT_EQ(client->requestAgentStart(), AgentStartResult::Running);
+    EXPECT_EQ(fake->startCalls, 1);
+    ASSERT_TRUE(nested.has_value());
+    EXPECT_EQ(*nested, AgentStartResult::Requested);
+    EXPECT_EQ(client->agentState(), AgentState::Ready);
+    EXPECT_EQ(availability, 1);
+}
+
+// A start that ends in an exception is over all the same: the next one must
+// reach the transport rather than be taken for the start still in flight.
+TEST(SeamAgentState, AStartThatThrowsDoesNotBlockTheNextOne)
+{
+    auto owned = std::make_unique<FakeTransportSeam>();
+    owned->available = false;
+    owned->startable = true;
+    FakeTransportSeam* fake = owned.get();
+    std::unique_ptr<AgentClient> client{ClientTestAccess::create(std::move(owned))};
+    fake->whileStarting = [] { throw std::runtime_error("start aborted"); };
+
+    EXPECT_THROW((void)client->requestAgentStart(), std::runtime_error);
+    EXPECT_EQ(fake->startCalls, 1);
+
+    EXPECT_EQ(client->requestAgentStart(), AgentStartResult::Running);
+    EXPECT_EQ(fake->startCalls, 2);
+    EXPECT_EQ(client->agentState(), AgentState::Ready);
+}
+
+// Every other way in starts the agent too -- a refresh, a configuration read
+// -- and none of them may start a second one from inside the first.
+TEST(SeamAgentState, NoCallMadeDuringAStartStartsAgain)
+{
+    struct Row
+    {
+        const char* name;
+        std::function<void(AgentClient&)> call;
+    };
+    const Row rows[] = {
+        {"refreshDiscovery", [](AgentClient& c) { c.refreshDiscovery(); }},
+        {"configSnapshot", [](AgentClient& c) { EXPECT_TRUE(c.configSnapshot().isEmpty()); }},
+        {"setConfigValue",
+         [](AgentClient& c) {
+             EXPECT_EQ(c.setConfigValue(QStringLiteral("DefaultLevel"), QStringLiteral("b-t")),
+                       SyncError::CommunicationError);
+         }},
+    };
+    for (const Row& row : rows) {
+        auto owned = std::make_unique<FakeTransportSeam>();
+        owned->available = false;
+        owned->startable = true;
+        FakeTransportSeam* fake = owned.get();
+        std::unique_ptr<AgentClient> client{ClientTestAccess::create(std::move(owned))};
+        bool ran = false;
+        callFromTheStartsLoop(fake, [&] {
+            row.call(*client);
+            ran = true;
+        });
+
+        client->refreshDiscovery();
+
+        EXPECT_TRUE(ran) << row.name;
+        EXPECT_EQ(fake->startCalls, 1) << row.name;
+        EXPECT_TRUE(fake->configWrites.empty()) << row.name;
+        EXPECT_EQ(client->agentState(), AgentState::Ready) << row.name;
+        EXPECT_TRUE(client->isAvailable()) << row.name;
+    }
+}
+
+TEST(SeamAgentState, InstallHelpFollowsTheLanguage)
+{
+    const QString english = AgentClient::installHelpUrl(QLocale(QLocale::English));
+    const QString serbian = AgentClient::installHelpUrl(QLocale(QStringLiteral("sr")));
+    const QString latin = AgentClient::installHelpUrl(QLocale(QStringLiteral("sr@latin")));
+    EXPECT_TRUE(english.startsWith(QStringLiteral("https://librescrs.github.io/user-guide/")));
+    EXPECT_TRUE(serbian.startsWith(QStringLiteral("https://librescrs.github.io/sr/user-guide/")));
+    EXPECT_EQ(latin, serbian);
 }
 
 TEST(SeamRegistry, ReadersAreSortedById)
@@ -758,6 +968,85 @@ TEST(SeamOperation, LiveResultThenFinishedYieldsPayloadAndSyncFinished)
     EXPECT_EQ(op->status(), OperationStatus::Ok);
     ASSERT_EQ(op->identityResult().size(), 1);
     EXPECT_EQ(op->identityResult().first().fields.first().value, QStringLiteral("Doe"));
+}
+
+// ---- stall bound -----------------------------------------------------------------
+
+namespace {
+bool spinUntil(const std::function<bool()>& done, int ms)
+{
+    QElapsedTimer clock;
+    clock.start();
+    while (!done() && clock.elapsed() < ms) {
+        QCoreApplication::processEvents(QEventLoop::AllEvents, 10);
+        QThread::msleep(2);
+    }
+    return done();
+}
+} // namespace
+
+TEST(SeamStall, AnAgentThatGoesQuietIsGivenUpAndCancelled)
+{
+    ClientOnFake h;
+    h.fake->nextOperationId = QStringLiteral("/op/1");
+    AgentOperation* op = h.client->card(QStringLiteral("/card/0"))->readIdentity();
+    op->setStallBudget(80);
+    int finished = 0;
+    QObject::connect(op, &AgentOperation::finished, op, [&finished]() { ++finished; });
+
+    // Progress keeps it alive past one budget...
+    OperationListener* listener = h.fake->soleOperationListener();
+    ASSERT_NE(listener, nullptr);
+    for (int i = 0; i < 3; ++i) {
+        QThread::msleep(40);
+        listener->onPhaseChanged(OperationPhase::Reading, 0.1 * i);
+        QCoreApplication::processEvents();
+    }
+    EXPECT_EQ(finished, 0);
+
+    // ...silence does not.
+    ASSERT_TRUE(spinUntil([&] { return finished == 1; }, 2000));
+    EXPECT_EQ(op->status(), OperationStatus::Error);
+    EXPECT_EQ(op->callError(), CallError::Timeout);
+    EXPECT_EQ(op->errorCode(), ErrorCode::None);
+    ASSERT_EQ(h.fake->cancelled.size(), 1U);
+    EXPECT_EQ(h.fake->cancelled.front(), QStringLiteral("/op/1"));
+
+    // A terminal arriving after the give-up changes nothing.
+    listener->onFinished(OperationStatus::Ok, ErrorCode::None, QString(), QString());
+    EXPECT_EQ(finished, 1);
+}
+
+TEST(SeamStall, APersonAtThePromptStopsTheClock)
+{
+    ClientOnFake h;
+    h.fake->nextOperationId = QStringLiteral("/op/1");
+    AgentOperation* op = h.client->card(QStringLiteral("/card/0"))->readIdentity();
+    op->setStallBudget(60);
+    OperationListener* listener = h.fake->soleOperationListener();
+    ASSERT_NE(listener, nullptr);
+
+    listener->onPhaseChanged(OperationPhase::AwaitingConsent, 0.0);
+    EXPECT_FALSE(spinUntil([&] { return op->isFinished(); }, 300));
+    listener->onPhaseChanged(OperationPhase::Authenticating, 0.0);
+    EXPECT_FALSE(spinUntil([&] { return op->isFinished(); }, 300));
+    EXPECT_TRUE(h.fake->cancelled.empty());
+
+    // Back to machine work: bounded again.
+    listener->onPhaseChanged(OperationPhase::Signing, 0.5);
+    EXPECT_TRUE(spinUntil([&] { return op->isFinished(); }, 2000));
+    EXPECT_EQ(op->callError(), CallError::Timeout);
+}
+
+TEST(SeamStall, ZeroTurnsTheBoundOff)
+{
+    ClientOnFake h;
+    h.fake->nextOperationId = QStringLiteral("/op/1");
+    AgentOperation* op = h.client->card(QStringLiteral("/card/0"))->readIdentity();
+    op->setStallBudget(40);
+    op->setStallBudget(0);
+    EXPECT_FALSE(spinUntil([&] { return op->isFinished(); }, 300));
+    EXPECT_TRUE(h.fake->cancelled.empty());
 }
 
 TEST(SeamOperation, LostResultIsRecoveredThroughTheSeamPull)

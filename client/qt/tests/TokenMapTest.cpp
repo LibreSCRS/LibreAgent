@@ -1,10 +1,11 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 // SPDX-FileCopyrightText: 2026 hirashix0
 //
-// Round-trip (enum -> token -> enum) coverage for every SignatureFormat/
-// SignatureLevel/Packaging/PinVerb value, the exact token strings pinned
-// against the CDDL/agent-side vocabulary (see TokenMap.h's doc comment for
-// the authoritative sources), and unknown-token -> nullopt for each family.
+// The exact token strings for every SignatureFormat/SignatureLevel/Packaging/
+// PinVerb value, pinned against the CDDL/agent-side vocabulary (see
+// TokenMap.h's doc comment for the authoritative sources), plus a round trip
+// through the test-only inverse (TokenMapDecode.h): every token distinct, and
+// no near-miss spelling that would decode.
 //
 // TokenMap.cpp is compiled directly into this test binary (see
 // client/qt/tests/CMakeLists.txt) rather than linked from the
@@ -12,7 +13,7 @@
 // internal TU by design (CXX_VISIBILITY_PRESET hidden, no export macro on
 // any of its functions), so its symbols are not part of the library's
 // dynamic symbol table for an external test executable to link against.
-#include "../src/TokenMap.h"
+#include "TokenMapDecode.h"
 
 #include <gtest/gtest.h>
 

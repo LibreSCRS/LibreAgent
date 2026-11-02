@@ -32,8 +32,8 @@
 #include <LibreSCRS/Plugin/CardPlugin.h>
 #include <LibreSCRS/Secure/String.h>
 #include <LibreSCRS/SmartCard/AppletAid.h>
-#include <LibreSCRS/SmartCard/CardMap.h>
 #include <LibreSCRS/SmartCard/CardSession.h>
+#include <LibreSCRS/SmartCard/testing/CardSessionTesting.h>
 #include <gtest/gtest.h>
 #include <atomic>
 #include <chrono>
@@ -145,7 +145,7 @@ class StubPlugin final : public LibreSCRS::Plugin::CardPlugin
 public:
     StubPlugin(std::string id, LibreSCRS::Plugin::CardCapabilities caps) : m_caps(caps)
     {
-        setIdentity(std::move(id), "stub", 0);
+        setIdentity(std::move(id), 0);
     }
     LibreSCRS::Plugin::CardCapabilities capabilities() const override
     {
@@ -176,33 +176,29 @@ std::unique_ptr<CardSessionHolder> makeHolder()
 {
     auto factory = [](const std::string& r)
         -> std::expected<std::shared_ptr<LibreSCRS::SmartCard::CardSession>, LibreSCRS::SmartCard::OpenError> {
-        return LibreSCRS::SmartCard::detail::makeDetachedCardSession(r);
+        return LibreSCRS::SmartCard::Testing::makeDetachedCardSession(r);
     };
     auto resolver = [](std::span<const std::uint8_t>, LibreSCRS::SmartCard::CardSession&) {
         return signingCandidate();
     };
-    return std::make_unique<CardSessionHolder>("FakeReader", std::move(factory), std::move(resolver),
-                                               std::make_shared<LibreSCRS::SmartCard::CardMap>());
+    return std::make_unique<CardSessionHolder>("FakeReader", std::move(factory), std::move(resolver));
 }
 
 LibreSCRS::Auth::AuthRequirement canRequirement()
 {
-    return LibreSCRS::Auth::AuthRequirement::forPaceSecret(LibreSCRS::SmartCard::AppletAid{},
-                                                           LibreSCRS::Auth::PaceSecretKind::Can, std::nullopt,
+    return LibreSCRS::Auth::AuthRequirement::forPaceSecret(LibreSCRS::Auth::PaceSecretKind::Can,
                                                            LibreSCRS::LocalizedText{});
 }
 
 LibreSCRS::Auth::AuthRequirement mrzRequirement()
 {
-    return LibreSCRS::Auth::AuthRequirement::forPaceSecret(LibreSCRS::SmartCard::AppletAid{},
-                                                           LibreSCRS::Auth::PaceSecretKind::Mrz, std::nullopt,
+    return LibreSCRS::Auth::AuthRequirement::forPaceSecret(LibreSCRS::Auth::PaceSecretKind::Mrz,
                                                            LibreSCRS::LocalizedText{});
 }
 
 LibreSCRS::Auth::AuthRequirement signingRequirement()
 {
-    return LibreSCRS::Auth::AuthRequirement::forSigning(
-        LibreSCRS::LocalizedText{.key = "", .defaultText = "PIN", .placeholders = {}}, std::nullopt);
+    return LibreSCRS::Auth::AuthRequirement::forSigning();
 }
 
 // Drives the channel-establishment secret and then the signing PIN through

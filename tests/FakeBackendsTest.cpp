@@ -15,12 +15,13 @@
 #include "fakes/FakeOperationChannel.h"
 #include "fakes/FakePrompter.h"
 
-#include <LibreSCRS/Agent/backend/Logging.h>
+#include <LibreSCRS/Logging.h>
 #include <LibreSCRS/Agent/cache/MrzPayload.h>
 
 #include <LibreSCRS/Auth/PaceSecretKind.h>
 #include <LibreSCRS/Secure/String.h>
 #include <LibreSCRS/SmartCard/CardSession.h>
+#include <LibreSCRS/SmartCard/testing/CardSessionTesting.h>
 #include <gtest/gtest.h>
 
 #include <string>
@@ -106,7 +107,7 @@ TEST(FakePrompter, RecordsAltKinds)
 // the contract the renegotiation leg asserts against.
 TEST(FakeCredentialDepositor, RecordsThePartsHandedThroughTheSeam)
 {
-    auto session = LibreSCRS::SmartCard::detail::makeDetachedCardSession("FakeReader");
+    auto session = LibreSCRS::SmartCard::Testing::makeDetachedCardSession("FakeReader");
     ASSERT_NE(session, nullptr);
 
     // ICAO Doc 9303 TD3 specimen values -- not a real document's secret.
@@ -135,7 +136,7 @@ TEST(FakeCredentialDepositor, RecordsThePartsHandedThroughTheSeam)
 // with no plugin registry hands the flow so the reference stays well-formed.
 TEST(NullCredentialDepositor, AcceptsNothing)
 {
-    auto session = LibreSCRS::SmartCard::detail::makeDetachedCardSession("FakeReader");
+    auto session = LibreSCRS::SmartCard::Testing::makeDetachedCardSession("FakeReader");
     ASSERT_NE(session, nullptr);
     NullCredentialDepositor depositor;
     CredentialDepositor& iface = depositor;
@@ -200,15 +201,15 @@ TEST(FakeLogSink, CapturesInjectedLines)
     FakeLogSink sink;
     sink.install();
 
-    log::info("hello");
-    log::warn("careful");
+    LibreSCRS::log::info("hello");
+    LibreSCRS::log::warn("careful");
 
     // The facade hands the sink a fully-formatted line (priority prefix +
     // category + level + message + newline) together with the severity — the
     // fake captures both verbatim.
     ASSERT_EQ(sink.lines.size(), 2u);
-    EXPECT_EQ(sink.lines[0].first, log::Level::Info);
+    EXPECT_EQ(sink.lines[0].first, LibreSCRS::log::Level::Info);
     EXPECT_NE(sink.lines[0].second.find("hello"), std::string::npos);
-    EXPECT_EQ(sink.lines[1].first, log::Level::Warn);
+    EXPECT_EQ(sink.lines[1].first, LibreSCRS::log::Level::Warn);
     EXPECT_NE(sink.lines[1].second.find("careful"), std::string::npos);
 }

@@ -97,7 +97,7 @@ struct RawCryptoPreflight
 // ONE CARD TRANSACTION PER PIN: a non-null @p pin is handed to the resolving
 // plugin (CardPlugin::setCredentials "pin"), which presents it to the card
 // and uses the key inside the operation's own card transaction. There is no
-// separate verifyPIN call: a key the card wants the PIN for on every operation
+// separate VERIFY step: a key the card wants the PIN for on every operation
 // (PIV 9C) loses its verified state between two plugin calls. A refused PIN
 // comes back as the plugin's PinIncorrect / PinBlocked => AuthFailed.
 //

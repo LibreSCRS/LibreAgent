@@ -395,9 +395,13 @@ std::optional<ReaderState> decodeReaderState(const Map& m)
     rs.name = r.text("name");
     rs.hasCard = r.boolean("hasCard");
     rs.card = r.optText("card");
+    rs.model = r.optText("model").value_or(std::string{});
+    // Append-only vocabulary: a token this build does not know is Unknown.
+    const auto iface = r.optText("interface");
     if (!r.ok()) {
         return std::nullopt;
     }
+    rs.iface = iface ? readerInterfaceFromToken(*iface).value_or(ReaderInterface::Unknown) : ReaderInterface::Unknown;
     return rs;
 }
 

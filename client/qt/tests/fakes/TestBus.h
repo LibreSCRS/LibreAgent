@@ -221,6 +221,20 @@ public:
         runOnThread(m_context, [this, cardType]() { m_agent->emitCardTypeChanged(cardType); });
     }
 
+    /// @brief Relabel the initial reader: Reader1 PropertiesChanged carrying
+    ///        Model and Interface together.
+    void emitReaderRelabelled(const QString& model, const QString& interfaceToken)
+    {
+        runOnThread(m_context,
+                    [this, model, interfaceToken]() { m_agent->emitReaderRelabelled(model, interfaceToken); });
+    }
+
+    /// @brief Emit Manager1.Quiesced(@p reason) on the root object.
+    void emitQuiesced(uint reason)
+    {
+        runOnThread(m_context, [this, reason]() { m_agent->emitQuiesced(reason); });
+    }
+
     /// @brief Emit a PropertiesChanged that invalidates Capabilities (GetAll path).
     void invalidateCardCapabilities(unsigned capabilities)
     {

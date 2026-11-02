@@ -125,7 +125,7 @@ jobs:
           cmake -B build -G Ninja \
             -DCMAKE_BUILD_TYPE=RelWithDebInfo \
             -DCMAKE_PREFIX_PATH="$LM_PREFIX" \
-            -DLIBRESCRS_AGENT_WERROR=ON \
+            -DLIBRESCRS_WERROR=ON \
             -DLIBREAGENT_BUILD_CLIENT_QT=ON
 
       - name: Create the CodeQL database

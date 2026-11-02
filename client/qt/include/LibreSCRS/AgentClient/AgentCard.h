@@ -175,7 +175,7 @@ private:
     ///        that terminalizes with the mapped failure.
     [[nodiscard]] AgentOperation* startOperation(OperationRequest request);
 
-    struct Private;
+    struct LIBRESCRS_AGENTCLIENT_NO_EXPORT Private;
     std::unique_ptr<Private> d;
 };
 

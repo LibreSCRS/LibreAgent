@@ -120,6 +120,12 @@ if(LIBREAGENT_BUILD_WIRE)
     # D-Bus interface surface; this schema mirrors it rather than forking it.
     install(FILES wire/librescrs-agent.cddl
         DESTINATION ${CMAKE_INSTALL_DATADIR}/librescrs)
+    # The D-Bus introspection XML the CDDL mirrors: the bus host (LibreLinux)
+    # installs or generates its interfaces from this one copy, exported to a
+    # consumer as LIBREAGENT_DBUS_XML_DIR.
+    install(DIRECTORY wire/dbus/
+        DESTINATION ${CMAKE_INSTALL_DATADIR}/librescrs/dbus
+        FILES_MATCHING PATTERN "*.xml")
 
     if(NOT LIBREAGENT_BUILD_CORE)
         # Core's install(DIRECTORY include/LibreSCRS ...) above already ships
@@ -176,6 +182,11 @@ if(LIBREAGENT_BUILD_PKCS11_FACADE)
         install(DIRECTORY include/LibreSCRS/Agent/pkcs11
             DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/LibreSCRS/Agent
             FILES_MATCHING PATTERN "*.h")
+        # The agent's prompt budget the module's own wait is asserted against,
+        # and the public-key value types (pkcs11/AgentClient.h); std-only.
+        install(FILES include/LibreSCRS/Agent/operations/PromptPolicy.h
+                include/LibreSCRS/Agent/operations/RsaPublicKey.h
+            DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/LibreSCRS/Agent/operations)
     endif()
 endif()
 
@@ -242,4 +253,6 @@ install(FILES
     # Whatever components a consumer links, its own suites need the same
     # discovery function this repository's do (see that file).
     ${CMAKE_CURRENT_SOURCE_DIR}/cmake/LibreAgentGTest.cmake
+    # The case libreagent_private_session_bus() compiles into a host's suite.
+    ${CMAKE_CURRENT_SOURCE_DIR}/testsupport/PrivateSessionBusTest.cpp
     DESTINATION ${_cfgdir})

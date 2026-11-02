@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 // SPDX-FileCopyrightText: 2026 hirashix0
 #pragma once
+#include <LibreSCRS/Agent/wire/QuiesceReason.h>
 #include <LibreSCRS/AgentClient/AgentCard.h>
 #include <LibreSCRS/AgentClient/AgentReader.h>
 #include <LibreSCRS/AgentClient/Export.h>
@@ -9,6 +10,7 @@
 #include <LibreSCRS/AgentClient/Types.h>
 
 #include <QList>
+#include <QLocale>
 #include <QObject>
 #include <QRectF>
 #include <QString>
@@ -16,6 +18,7 @@
 #include <QVariant>
 #include <QVariantMap>
 
+#include <cstdint>
 #include <expected>
 #include <memory>
 #include <optional>
@@ -28,8 +31,32 @@
 namespace LibreSCRS::AgentClient {
 
 class AgentOperation;
-class TransportSeam;
-struct ClientTestAccess;
+
+/// @brief Why the agent quiesced card access -- the agent's own wire
+///        vocabulary, re-exported so a client names it without reaching into
+///        the agent's headers. See `AgentClient::quiesced()`.
+///
+/// @since 5.0
+using LibreSCRS::Agent::QuiesceReason;
+
+/// @brief What asking for the agent to be started achieved
+///        (`AgentClient::requestAgentStart()`).
+enum class AgentStartResult : std::uint8_t {
+    Running,           ///< The agent is reachable now (it already was, or it was started and answered).
+    Requested,         ///< The platform was asked to start it; `refreshDiscovery()` picks it up once it is up.
+    NotInstalled,      ///< Nothing on this system can start an agent: it has to be installed first.
+    NotInApplications, ///< macOS only: the agent's host app exists only outside an Applications
+                       ///< folder (a mounted disk image, Downloads), where it cannot register the agent.
+    Failed,            ///< An agent is installed, but starting it did not succeed.
+};
+
+/// @brief Whether there is an agent, and whether it runs
+///        (`AgentClient::agentState()`).
+enum class AgentState : std::uint8_t {
+    Ready,   ///< The agent is reachable.
+    Stopped, ///< An agent is installed but not running; `requestAgentStart()` can start it.
+    Missing, ///< No agent is installed: point the user at `AgentClient::installHelpUrl()`.
+};
 
 /// @brief Connection + discovery for the card agent.
 ///
@@ -66,8 +93,22 @@ public:
     /// @brief Whether an agent is INSTALLED on this system (reachable now, or
     ///        startable on demand), even if not currently running — the
     ///        "install the agent" vs "start a card operation" empty-state
-    ///        split. A bounded probe; never hangs.
+    ///        split. `agentState() != AgentState::Missing`; no I/O.
     [[nodiscard]] bool agentInstalled() const;
+
+    /// @brief The agent's state as this client last learned it, without asking
+    ///        anyone: it is safe to call from any signal handler, as often as a
+    ///        view repaints. Learned at construction, kept current by the
+    ///        agent appearing and vanishing, and re-learned by
+    ///        `refreshDiscovery()` and by every call that starts the agent — so
+    ///        an agent installed while the client runs reads as `Missing`
+    ///        until the user's next "try again".
+    [[nodiscard]] AgentState agentState() const;
+
+    /// @brief Where a user learns how to install the agent on this platform,
+    ///        in @p locale's language when the guide has it (Serbian, either
+    ///        script, gets the Serbian page; everything else English).
+    [[nodiscard]] static QString installHelpUrl(const QLocale& locale = QLocale());
 
     /// @brief Manually re-run discovery: re-probe agent availability (in case
     ///        a liveness notification was missed) and re-populate the
@@ -76,9 +117,72 @@ public:
     ///        card-added notification (a card the agent exported but this
     ///        client never saw) and reconciles availability if the agent
     ///        reappeared silently. Fires `availabilityChanged` only on an
-    ///        actual flip and always ends with `readersChanged` so consumers
-    ///        recompute.
+    ///        actual flip and ends with `readersChanged` so consumers
+    ///        recompute. Called while a start is already in flight, it adds
+    ///        nothing and returns at once: that start reports the outcome.
+    ///
+    ///        This is also the one place a GUI's "try again" gesture starts
+    ///        the agent: an agent that is installed but not running is started
+    ///        first (see `requestAgentStart()`), exactly like a configuration
+    ///        call or a certificate fetch does. Construction never starts it —
+    ///        merely creating a client, as a panel does at login, must not
+    ///        bring up a service nobody asked for.
+    ///
+    ///        It waits on the agent in local event loops, and whatever those
+    ///        loops deliver -- the agent coming up, a card inserted -- reaches
+    ///        this client's signals before it returns. A control whose view
+    ///        those signals can replace (a QML item behind a Loader) must call
+    ///        `refreshDiscoveryLater()` instead.
     void refreshDiscovery();
+
+    /// @brief `refreshDiscovery()`, run from the event loop once the caller
+    ///        has returned — the form for the handler of a control that the
+    ///        outcome may destroy.
+    ///
+    ///        A deferred delete posted while a local event loop delivers an
+    ///        event runs in the next local loop of the same call stack, so a
+    ///        view swapped while the refresh waits would be deleted under the
+    ///        handler that asked for it. Run from the event loop, the refresh
+    ///        has no caller frame beneath its waits. The outcome arrives as
+    ///        `refreshDiscovery()` reports it: `availabilityChanged`,
+    ///        `configChanged` and `readersChanged`, or, when a start was
+    ///        already in flight, whatever that start reports. Asking again
+    ///        before that refresh has ended asks for nothing more.
+    ///
+    /// @since 5.0
+    void refreshDiscoveryLater();
+
+    /// @brief Start the agent if it is installed but not running.
+    ///
+    ///        Linux: the agent is a D-Bus-activatable session service; this
+    ///        asks the bus to start it and waits (bounded) for it to answer,
+    ///        so `Running` means it is reachable on return and the registry is
+    ///        already populated. macOS: the agent is a launchd job the LibreMac
+    ///        host app registers; this launches that app in the background and
+    ///        kicks the job, and answers `Requested` — call
+    ///        `refreshDiscovery()` once the agent has had time to come up.
+    ///
+    ///        Every other agent-addressed call in this class (configuration,
+    ///        certificate fetch, layout preview, and `refreshDiscovery()`)
+    ///        runs the same start first, so a consumer needs this only for an
+    ///        explicit "start the service" control.
+    ///
+    ///        One start at a time: the wait runs a local event loop, and a
+    ///        call that arrives from it (a second click, a timer) starts
+    ///        nothing and answers `Requested`; the start in flight reports
+    ///        the outcome through the usual signals. A control whose view the
+    ///        agent's arrival can replace must call `requestAgentStartLater()`
+    ///        instead (see `refreshDiscoveryLater()` for why).
+    AgentStartResult requestAgentStart();
+
+    /// @brief `requestAgentStart()`, run from the event loop once the caller
+    ///        has returned — the form for a "start the service" control that
+    ///        the agent's arrival may destroy. Its result arrives as
+    ///        `agentStartFinished()`; asking again before then asks for
+    ///        nothing more, and that one signal answers both.
+    ///
+    /// @since 5.0
+    void requestAgentStartLater();
 
     /// @brief All tracked readers in DETERMINISTIC id-sorted order (never
     ///        hash iteration order) — the shared ordering primitive for
@@ -350,16 +454,45 @@ Q_SIGNALS:
     ///        timestamped signature).
     ///
     /// Carries only @p key: read the value from `configSnapshot()`, which is
-    /// already refreshed when this fires. Declared LAST on purpose — a signal
-    /// appended after the existing ones keeps every earlier signal's moc
-    /// index stable, so an already-compiled consumer keeps working.
+    /// already refreshed when this fires. An EMPTY @p key means every setting
+    /// may have changed: the agent has just become reachable, so a snapshot
+    /// taken while it was not (an empty one) must be read again. Appended
+    /// after the existing signals on purpose — that keeps every earlier
+    /// signal's moc index stable, so an already-compiled consumer keeps
+    /// working.
     void configChanged(const QString& key);
+    /// @brief The agent quiesced card access: the holder's session went away
+    ///        (the machine sleeps, the user switched away, the screen locked)
+    ///        or the agent is stopping.
+    ///
+    /// By then the agent has forgotten what @p reason calls for: on
+    /// `SystemSleep`, `SessionInactive` and `Shutdown` every cached CAN/MRZ,
+    /// every card session and every PKCS#11 login; on `ScreenLocked` the
+    /// PKCS#11 logins only. The next operation asks again. A reason this
+    /// build does not name arrives verbatim.
+    ///
+    /// Over the socket the agent also counts as unavailable from here until
+    /// `refreshDiscovery()` finds it answering again (`availabilityChanged`
+    /// follows this signal); over D-Bus the agent stays available. Appended
+    /// after the signals declared before it, like `configChanged()`, to keep
+    /// their indices.
+    ///
+    /// @since 5.0
+    void quiesced(LibreSCRS::AgentClient::QuiesceReason reason);
+    /// @brief What the start `requestAgentStartLater()` asked for answered,
+    ///        exactly as `requestAgentStart()` would have returned it.
+    ///
+    /// `Requested` does not end the start: on macOS the agent comes up later
+    /// (see `requestAgentStart()`), and when another start was already in
+    /// flight, that start reports its outcome through the usual signals
+    /// (`availabilityChanged` once the agent is up). Appended after the
+    /// signals declared before it, like `configChanged()`, to keep their
+    /// indices.
+    ///
+    /// @since 5.0
+    void agentStartFinished(LibreSCRS::AgentClient::AgentStartResult result);
 
 private:
-    friend struct ClientTestAccess; // internal: inject a TransportSeam in tests
-
-    AgentClient(std::unique_ptr<TransportSeam> transport, QObject* parent);
-
     void onServiceRegistered();
     void onServiceUnregistered();
     void repopulate();
@@ -376,7 +509,7 @@ private:
     /// at the end).
     void removeReader(const QString& readerId);
 
-    struct Private;
+    struct LIBRESCRS_AGENTCLIENT_NO_EXPORT Private;
     std::unique_ptr<Private> d;
 };
 

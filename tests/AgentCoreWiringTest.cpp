@@ -13,6 +13,7 @@
 #include "fakes/FakeAgentTransport.h"
 #include "fakes/FakeAuthorizer.h"
 #include "fakes/FakePrompter.h"
+#include "fakes/ScratchDir.h"
 
 #include <gtest/gtest.h>
 #include <chrono>
@@ -34,7 +35,7 @@ class NeutralResolver final : public CapabilityResolver
 
 fs::path uniqueDir()
 {
-    return fs::temp_directory_path() / "libreagent-agentcore-wiring";
+    return LibreSCRS::Agent::Testing::makeScratchDir("libreagent-agentcore-wiring-");
 }
 
 } // namespace
@@ -42,7 +43,6 @@ fs::path uniqueDir()
 TEST(AgentCoreWiring, AccessorsReturnLiveMembersAndBorrowedCollaborators)
 {
     const auto dir = uniqueDir();
-    fs::remove_all(dir);
 
     NeutralResolver resolver;
     FakeAgentTransport transport;
@@ -97,7 +97,7 @@ TEST(AgentCoreWiring, AccessorsReturnLiveMembersAndBorrowedCollaborators)
         // The caches accept and return per-card state (proves their storage is
         // the aggregate's own, not a dangling borrow).
         core.credentialCache().putCan("card-1", CredentialCache::Secret{"1234"});
-        EXPECT_TRUE(core.credentialCache().hasCan("card-1"));
+        EXPECT_TRUE(core.credentialCache().getCan("card-1").has_value());
     }
 
     // The aggregate is gone: it dropped its prompter share in reverse

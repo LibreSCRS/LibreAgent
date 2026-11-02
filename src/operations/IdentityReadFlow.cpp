@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 // SPDX-FileCopyrightText: 2026 hirashix0
 #include <LibreSCRS/Agent/operations/IdentityReadFlow.h>
-#include <LibreSCRS/Agent/backend/Logging.h>
+#include <LibreSCRS/Logging.h>
 #include <LibreSCRS/Agent/cache/AttemptContext.h>         // per-operation retry context
 #include <LibreSCRS/Agent/cache/MrzPayload.h>             // parseMrzPayload (the canonical payload contract)
 #include <LibreSCRS/Agent/operations/CardPluginRouting.h> // identityCandidates
@@ -86,8 +86,6 @@ ErrorCode mapReadStatus(ReadOutcome::Status s) noexcept
         return ErrorCode::None;
     case ReadOutcome::Status::AuthFailed:
         return ErrorCode::AuthFailed;
-    case ReadOutcome::Status::ParseError:
-        return ErrorCode::ParseError;
     case ReadOutcome::Status::UnsupportedCard:
         return ErrorCode::UnsupportedCard;
     case ReadOutcome::Status::CommunicationError:

@@ -3,15 +3,16 @@
 #pragma once
 
 /// @file
-/// @brief INTERNAL — never installed. Shared D-Bus wire constants for the
-///        client's D-Bus transport.
+/// @brief INTERNAL — not client API, never installed. Shared D-Bus wire
+///        constants for the client's D-Bus transport.
 ///
 /// The single source of truth for the agent's bus name, the manager object
 /// path, and every interface name the transport touches. Hand-spelling these
 /// per translation unit turns a typo into a silent routing failure with no
 /// compile error; declaring them once here keeps every call site referencing
-/// the same literal. (The agent's D-Bus XML remains the cross-stack contract;
-/// this header is the client-side mirror of those names. Timeout budgets live
+/// the same literal. (The agent's D-Bus XML in wire/dbus/ is the cross-stack
+/// contract; this header is the client-side mirror of those names, and
+/// DBusContractTest holds the two together. Timeout budgets live
 /// in the PUBLIC ClientTimeouts.h — they are transport-neutral contract, not
 /// D-Bus vocabulary.)
 

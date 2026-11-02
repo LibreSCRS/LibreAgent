@@ -37,6 +37,8 @@ struct AgentReader::Private final : public PropertyListener
     quint64 fetchGeneration = 0;
 
     QString name;
+    QString model;
+    ReaderInterface iface = ReaderInterface::Unknown;
     bool hasCard = false;
     QString cardId;
 
@@ -50,6 +52,16 @@ struct AgentReader::Private final : public PropertyListener
     {
         if (props.contains(QStringLiteral("Name"))) {
             name = props.value(QStringLiteral("Name")).toString();
+        }
+        if (props.contains(QStringLiteral("Model"))) {
+            model = props.value(QStringLiteral("Model")).toString();
+        }
+        if (props.contains(QStringLiteral("Interface"))) {
+            // Append-only vocabulary: a token this build does not know is
+            // Unknown, never a guess.
+            iface = LibreSCRS::Agent::Wire::readerInterfaceFromToken(
+                        props.value(QStringLiteral("Interface")).toString().toStdString())
+                        .value_or(ReaderInterface::Unknown);
         }
         if (props.contains(QStringLiteral("HasCard"))) {
             hasCard = props.value(QStringLiteral("HasCard")).toBool();
@@ -122,6 +134,16 @@ QString AgentReader::id() const
 QString AgentReader::name() const
 {
     return d->name;
+}
+
+QString AgentReader::model() const
+{
+    return d->model.isEmpty() ? d->name : d->model;
+}
+
+ReaderInterface AgentReader::interface() const
+{
+    return d->iface;
 }
 
 bool AgentReader::hasCard() const

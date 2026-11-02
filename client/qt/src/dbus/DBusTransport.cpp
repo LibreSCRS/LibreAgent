@@ -3,8 +3,8 @@
 
 #include "DBusTransport.h"
 
-#include "../ConfigKeys.h"
-#include "../CscaAnchorKeys.h"
+#include <LibreSCRS/AgentClient/ConfigKeys.h>
+#include <LibreSCRS/AgentClient/CscaAnchorKeys.h>
 #include "AgentDBus.h"
 #include "CappedCall.h"
 #include "ErrorNameMap.h"
@@ -20,6 +20,9 @@
 #include <QVariant>
 
 #include <fcntl.h> // F_DUPFD_CLOEXEC (appearanceFont's per-call dup)
+
+#include <limits>
+#include <type_traits>
 
 namespace {
 Q_LOGGING_CATEGORY(lcTransport, "librescrs.agentclient.dbus")
@@ -60,7 +63,7 @@ QVariant demarshalTslSources(const QVariant& raw)
 
 /// The `a(sb) CscaSources` property value, the same way — the country-signing
 /// twin of the function above, and the same all-or-nothing posture. Rows are
-/// TWO cells here, not three: there is no isLotl to carry (see Marshal.h's
+/// TWO cells here, not three: there is no isLotl to carry (see WireShapes.h's
 /// CscaSourceWire).
 QVariant demarshalCscaSources(const QVariant& raw)
 {
@@ -322,6 +325,10 @@ DBusTransport::DBusTransport(const QDBusConnection& connection, const QString& s
     // without the interface simply never emits it.
     m_connection.connect(m_service, QLatin1String(kRootPath), QLatin1String(kConfigIface), QStringLiteral("Changed"),
                          this, SLOT(onConfigChanged(QString)));
+    // Manager1.Quiesced, subscribed up front for the same reason: a sleep is
+    // announced once, to whoever is listening at that moment.
+    m_connection.connect(m_service, QLatin1String(kRootPath), QLatin1String(kManagerIface), QStringLiteral("Quiesced"),
+                         this, SLOT(onQuiesced(uint)));
 }
 
 DBusTransport::~DBusTransport() = default;
@@ -347,6 +354,51 @@ bool DBusTransport::nameHasOwner()
            reply.arguments().constFirst().toBool();
 }
 
+bool DBusTransport::nameIsActivatable()
+{
+    QDBusMessage call =
+        QDBusMessage::createMethodCall(QStringLiteral("org.freedesktop.DBus"), QStringLiteral("/org/freedesktop/DBus"),
+                                       QStringLiteral("org.freedesktop.DBus"), QStringLiteral("ListActivatableNames"));
+    const QDBusMessage reply = cappedCall(m_connection, call, kHandshakeTimeoutMs);
+    if (reply.type() != QDBusMessage::ReplyMessage || reply.arguments().isEmpty()) {
+        return false;
+    }
+    return reply.arguments().constFirst().toStringList().contains(m_service);
+}
+
+QDBusMessage DBusTransport::agentCall(const QString& path, const QString& iface, const QString& method) const
+{
+    QDBusMessage call = QDBusMessage::createMethodCall(m_service, path, iface, method);
+    call.setAutoStartService(false);
+    return call;
+}
+
+AgentStartResult DBusTransport::startAgent()
+{
+    if (probeAvailability()) {
+        return AgentStartResult::Running;
+    }
+    if (!nameIsActivatable()) {
+        return AgentStartResult::NotInstalled;
+    }
+    // The bus daemon answers StartServiceByName only once the started process
+    // has claimed the name (or the start failed), so a reply here means the
+    // agent is on the bus now -- there is no separate wait for the watcher's
+    // registration signal, which arrives later and finds the client already
+    // available. The flags argument is reserved and must be 0.
+    QDBusMessage call =
+        QDBusMessage::createMethodCall(QStringLiteral("org.freedesktop.DBus"), QStringLiteral("/org/freedesktop/DBus"),
+                                       QStringLiteral("org.freedesktop.DBus"), QStringLiteral("StartServiceByName"));
+    call.setArguments(QList<QVariant>{m_service, QVariant::fromValue(0U)});
+    const QDBusMessage reply = cappedCall(m_connection, call, kAgentStartTimeoutMs);
+    if (reply.type() != QDBusMessage::ReplyMessage) {
+        qCWarning(lcTransport).noquote() << "starting" << m_service << "failed:" << reply.errorName()
+                                         << reply.errorMessage();
+        return AgentStartResult::Failed;
+    }
+    return probeAvailability() ? AgentStartResult::Running : AgentStartResult::Failed;
+}
+
 bool DBusTransport::probeAvailability()
 {
     const bool hasOwner = nameHasOwner();
@@ -362,8 +414,7 @@ bool DBusTransport::probeAvailability()
 
 void DBusTransport::refreshManagerProperties()
 {
-    QDBusMessage call = QDBusMessage::createMethodCall(m_service, QLatin1String(kRootPath),
-                                                       QLatin1String(kPropertiesIface), QStringLiteral("GetAll"));
+    QDBusMessage call = agentCall(QLatin1String(kRootPath), QLatin1String(kPropertiesIface), QStringLiteral("GetAll"));
     call.setArguments(QList<QVariant>{QLatin1String(kManagerIface)});
     // Bounded exactly like every other discovery-path property read. An agent
     // predating either property (or Manager1 entirely) answers with a D-Bus
@@ -392,8 +443,7 @@ QString DBusTransport::agentVersion() const
 
 void DBusTransport::refreshConfig()
 {
-    QDBusMessage call = QDBusMessage::createMethodCall(m_service, QLatin1String(kRootPath),
-                                                       QLatin1String(kPropertiesIface), QStringLiteral("GetAll"));
+    QDBusMessage call = agentCall(QLatin1String(kRootPath), QLatin1String(kPropertiesIface), QStringLiteral("GetAll"));
     call.setArguments(QList<QVariant>{QLatin1String(kConfigIface)});
     // ONE GetAll for the whole set, bounded like every other discovery-path
     // property read. An agent without Config1 answers a D-Bus error, which
@@ -414,8 +464,7 @@ void DBusTransport::refreshConfigKey(const QString& key)
     if (!m_configFetched) {
         return; // nothing cached yet — the first configSnapshot() reads it all
     }
-    QDBusMessage call = QDBusMessage::createMethodCall(m_service, QLatin1String(kRootPath),
-                                                       QLatin1String(kPropertiesIface), QStringLiteral("Get"));
+    QDBusMessage call = agentCall(QLatin1String(kRootPath), QLatin1String(kPropertiesIface), QStringLiteral("Get"));
     call.setArguments(QList<QVariant>{QLatin1String(kConfigIface), key});
     const QDBusMessage reply = cappedCall(m_connection, call, kHandshakeTimeoutMs);
     if (reply.type() != QDBusMessage::ReplyMessage || reply.arguments().isEmpty()) {
@@ -443,8 +492,7 @@ QVariantMap DBusTransport::configSnapshot()
 
 std::optional<SyncError> DBusTransport::setConfig(const QString& key, const QVariant& value)
 {
-    QDBusMessage call = QDBusMessage::createMethodCall(m_service, QLatin1String(kRootPath), QLatin1String(kConfigIface),
-                                                       QStringLiteral("SetValue"));
+    QDBusMessage call = agentCall(QLatin1String(kRootPath), QLatin1String(kConfigIface), QStringLiteral("SetValue"));
     call.setArguments(QList<QVariant>{key, QVariant::fromValue(marshalConfigValue(key, value))});
     // No local refusal on this wire: every key marshals, and the agent owns
     // both the vocabulary and the authorization decision (its polkit tiers
@@ -460,8 +508,7 @@ std::optional<SyncError> DBusTransport::setConfig(const QString& key, const QVar
 
 std::optional<SyncError> DBusTransport::resetConfig(const QString& key)
 {
-    QDBusMessage call = QDBusMessage::createMethodCall(m_service, QLatin1String(kRootPath), QLatin1String(kConfigIface),
-                                                       QStringLiteral("Reset"));
+    QDBusMessage call = agentCall(QLatin1String(kRootPath), QLatin1String(kConfigIface), QStringLiteral("Reset"));
     call.setArguments(QList<QVariant>{key});
     // Same gate as setConfig(): a reset of a gated key prompts too.
     return configOutcome(cappedCall(m_connection, call, kAuthorizedCallTimeoutMs));
@@ -469,8 +516,8 @@ std::optional<SyncError> DBusTransport::resetConfig(const QString& key)
 
 std::expected<CscaAnchorState, SyncError> DBusTransport::importCscaMasterList(int masterListFd)
 {
-    QDBusMessage call = QDBusMessage::createMethodCall(m_service, QLatin1String(kRootPath), QLatin1String(kConfigIface),
-                                                       QStringLiteral("ImportCscaMasterList"));
+    QDBusMessage call =
+        agentCall(QLatin1String(kRootPath), QLatin1String(kConfigIface), QStringLiteral("ImportCscaMasterList"));
     // QDBusUnixFileDescriptor DUPS what it is given and owns the duplicate, so
     // the caller's descriptor is untouched by this call and stays the caller's
     // to close. The duplicate still refers to the SAME open file description,
@@ -512,10 +559,25 @@ void DBusTransport::onConfigChanged(const QString& key)
     }
 }
 
+void DBusTransport::onQuiesced(uint reason)
+{
+    // The reason is a uint8 vocabulary carried in a uint32. A value past the
+    // last one this build names is a future reason and goes on verbatim, as
+    // the socket decoder carries it; one too wide for the vocabulary cannot be
+    // stored without aliasing another and is dropped, as the socket decoder
+    // rejects it.
+    if (reason > std::numeric_limits<std::underlying_type_t<QuiesceReason>>::max()) {
+        return;
+    }
+    if (m_registry != nullptr) {
+        m_registry->onQuiesced(static_cast<QuiesceReason>(reason));
+    }
+}
+
 std::optional<LayoutResult> DBusTransport::layoutVisualSignature(const QString& text, QRectF box)
 {
-    QDBusMessage call = QDBusMessage::createMethodCall(
-        m_service, QLatin1String(kRootPath), QLatin1String(kManagerIface), QStringLiteral("LayoutVisualSignature"));
+    QDBusMessage call =
+        agentCall(QLatin1String(kRootPath), QLatin1String(kManagerIface), QStringLiteral("LayoutVisualSignature"));
     call.setArguments(QList<QVariant>{text, box.x(), box.y(), box.width(), box.height()});
     // Bounded like every other cheap, card-independent synchronous round-trip
     // (kHandshakeTimeoutMs — see ClientTimeouts.h's own budget-class doc).
@@ -539,8 +601,8 @@ FdHandle DBusTransport::appearanceFont()
         // sooner than the next reconnect (onServiceUnregistered resets the
         // flag below).
         m_appearanceFontFetched = true;
-        QDBusMessage call = QDBusMessage::createMethodCall(
-            m_service, QLatin1String(kRootPath), QLatin1String(kManagerIface), QStringLiteral("GetAppearanceFont"));
+        QDBusMessage call =
+            agentCall(QLatin1String(kRootPath), QLatin1String(kManagerIface), QStringLiteral("GetAppearanceFont"));
         const QDBusMessage reply = cappedCall(m_connection, call, kHandshakeTimeoutMs);
         if (reply.type() == QDBusMessage::ReplyMessage && !reply.arguments().isEmpty()) {
             m_appearanceFont = toFdHandle(qvariant_cast<QDBusUnixFileDescriptor>(reply.arguments().constFirst()));
@@ -562,21 +624,14 @@ bool DBusTransport::agentInstalled()
         return true;
     }
     // Not running — but a D-Bus-activatable agent still counts as installed:
-    // the bus daemon can start it on demand.
-    QDBusMessage call =
-        QDBusMessage::createMethodCall(QStringLiteral("org.freedesktop.DBus"), QStringLiteral("/org/freedesktop/DBus"),
-                                       QStringLiteral("org.freedesktop.DBus"), QStringLiteral("ListActivatableNames"));
-    const QDBusMessage reply = cappedCall(m_connection, call, kHandshakeTimeoutMs);
-    if (reply.type() != QDBusMessage::ReplyMessage || reply.arguments().isEmpty()) {
-        return false;
-    }
-    return reply.arguments().constFirst().toStringList().contains(m_service);
+    // startAgent() can bring it up.
+    return nameIsActivatable();
 }
 
 std::optional<RegistrySnapshot> DBusTransport::fetchRegistry()
 {
-    QDBusMessage call = QDBusMessage::createMethodCall(
-        m_service, QLatin1String(kRootPath), QLatin1String(kObjectManagerIface), QStringLiteral("GetManagedObjects"));
+    QDBusMessage call =
+        agentCall(QLatin1String(kRootPath), QLatin1String(kObjectManagerIface), QStringLiteral("GetManagedObjects"));
     // Event-loop-safe capped call rather than QDBus::Block, so a running outer
     // loop stays responsive and the wait is bounded even with no loop at all.
     // On a wedged/absent agent this returns an error reply at ~the handshake
@@ -632,8 +687,7 @@ quint64 DBusTransport::requestProperties(const QString& objectId, ObjectKind kin
     // returns immediately instead. The watcher's finished() is delivered
     // through this thread's event loop, so the reply lands on the listener's
     // thread.
-    QDBusMessage call =
-        QDBusMessage::createMethodCall(m_service, objectId, QLatin1String(kPropertiesIface), QStringLiteral("GetAll"));
+    QDBusMessage call = agentCall(objectId, QLatin1String(kPropertiesIface), QStringLiteral("GetAll"));
     call.setArguments(QList<QVariant>{QLatin1String(propertiesIfaceFor(kind))});
     auto* watcher = new QDBusPendingCallWatcher(m_connection.asyncCall(call, kDefaultCallTimeoutMs), this);
     connect(watcher, &QDBusPendingCallWatcher::finished, this,
@@ -713,7 +767,7 @@ StartOutcome DBusTransport::startOperation(const QString& cardId, OperationReque
         break;
     }
 
-    QDBusMessage call = QDBusMessage::createMethodCall(m_service, cardId, QLatin1String(iface), method);
+    QDBusMessage call = agentCall(cardId, QLatin1String(iface), method);
     if (!args.isEmpty()) {
         call.setArguments(args);
     }
@@ -774,10 +828,8 @@ void DBusTransport::subscribeOperation(const QString& operationId, OperationKind
                              SLOT(onIdentityResult(LibreSCRS::AgentClient::IdentityFieldsWire)));
         // Progressive per-group delivery (Group(s groupKey, a{s(sssv)}
         // fields)), strictly ahead of the Result above for the SAME op.
-        // Connected unconditionally -- the client does not gate its OWN
-        // subscription on the "identity-stream" feature token (unlike a
-        // request-side gate): an agent that does not advertise the token
-        // simply never emits this signal, so subscribing costs nothing extra
+        // Connected unconditionally: an agent that does not stream simply
+        // never emits this signal, so subscribing costs nothing extra
         // against an older agent.
         m_connection.connect(m_service, operationId, QLatin1String(kIdentityIface), QStringLiteral("Group"), watch,
                              SLOT(onIdentityGroup(QString, LibreSCRS::AgentClient::IdentityFieldGroupWire)));
@@ -812,8 +864,7 @@ std::optional<TerminalSnapshot> DBusTransport::fetchOperationState(const QString
     // ONE capped low-level Properties.GetAll — not a QDBusInterface (blocking
     // introspection round-trip) plus per-property uncapped Gets (each waiting
     // out the ~25 s default D-Bus timeout on a wedged agent).
-    QDBusMessage call = QDBusMessage::createMethodCall(m_service, operationId, QLatin1String(kPropertiesIface),
-                                                       QStringLiteral("GetAll"));
+    QDBusMessage call = agentCall(operationId, QLatin1String(kPropertiesIface), QStringLiteral("GetAll"));
     call.setArguments(QList<QVariant>{QLatin1String(kOperationIface)});
     const QDBusMessage reply = m_connection.call(call, QDBus::Block, kDefaultCallTimeoutMs);
     if (reply.type() != QDBusMessage::ReplyMessage || reply.arguments().isEmpty()) {
@@ -838,8 +889,7 @@ std::optional<OperationPayload> DBusTransport::fetchOperationResult(const QStrin
     // multi-second default D-Bus timeout. A non-reply (Error.NoResult, grace
     // window elapsed, UnknownMethod version skew, or timeout) yields nullopt
     // so the operation layer falls through to its loud CommunicationError.
-    QDBusMessage call = QDBusMessage::createMethodCall(m_service, operationId, QLatin1String(typedIfaceFor(kind)),
-                                                       QStringLiteral("GetResult"));
+    QDBusMessage call = agentCall(operationId, QLatin1String(typedIfaceFor(kind)), QStringLiteral("GetResult"));
     const QDBusMessage reply = m_connection.call(call, QDBus::Block, kDefaultCallTimeoutMs);
     if (reply.type() != QDBusMessage::ReplyMessage) {
         return std::nullopt;
@@ -942,8 +992,7 @@ void DBusTransport::cancelOperation(const QString& operationId)
     // would block on a synchronous Introspect() before the asyncCall — a
     // multi-second GUI freeze on a wedged agent precisely when the user
     // clicked Cancel to escape it.
-    QDBusMessage call = QDBusMessage::createMethodCall(m_service, operationId, QLatin1String(kOperationIface),
-                                                       QStringLiteral("Cancel"));
+    QDBusMessage call = agentCall(operationId, QLatin1String(kOperationIface), QStringLiteral("Cancel"));
     m_connection.asyncCall(call);
 }
 
@@ -963,8 +1012,7 @@ void DBusTransport::warmCertificates(const QString& cardId)
     // and an entry error (a card with no certificates, a missing capability)
     // is dropped on purpose. The agent reaps the operation it minted along
     // with the card, so dropping the path strands nothing on this wire.
-    QDBusMessage call = QDBusMessage::createMethodCall(m_service, cardId, QLatin1String(kCardIface),
-                                                       QStringLiteral("ReadCertificates"));
+    QDBusMessage call = agentCall(cardId, QLatin1String(kCardIface), QStringLiteral("ReadCertificates"));
     auto* watcher = new QDBusPendingCallWatcher(m_connection.asyncCall(call, kDefaultCallTimeoutMs), this);
     m_warmingCards.insert(cardId);
     // Bound to `this` as the context object, so a transport torn down with a
@@ -982,8 +1030,7 @@ quint64 DBusTransport::requestCertificateDer(const QString& readerId, const QStr
 {
     const quint64 token = m_derListeners.add(listener);
 
-    QDBusMessage call = QDBusMessage::createMethodCall(m_service, QLatin1String(kRootPath), QLatin1String(kPkcs11Iface),
-                                                       QStringLiteral("CertDer"));
+    QDBusMessage call = agentCall(QLatin1String(kRootPath), QLatin1String(kPkcs11Iface), QStringLiteral("CertDer"));
     call.setArguments(QList<QVariant>{QVariant::fromValue(QDBusObjectPath(readerId)), certId});
 
     // Asynchronous, bounded by the default call budget: this is a real

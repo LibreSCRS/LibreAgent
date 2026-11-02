@@ -47,9 +47,12 @@ set(_agentclient_public_headers
     AgentReader.h
     CallError.h
     ClientTimeouts.h
+    ConfigKeys.h
     CredentialTypes.h
+    CscaAnchorKeys.h
     ErrorCode.h
     Export.h
+    FailureCopy.h
     FdHandle.h
     FieldOrder.h
     IdentityRows.h

@@ -484,3 +484,87 @@ TEST(ObjectModel, AKeyOfNoKnownSizeProducesNoObjects)
     EXPECT_TRUE(m.slots[0].objects.empty());
     EXPECT_TRUE(m.slots[0].mechanisms.empty());
 }
+
+// ---- certEntryFrom: the key policy every transport applies ------------------
+
+namespace {
+
+using LibreSCRS::Agent::KeyType;
+using LibreSCRS::Agent::Wire::PreReadAuth;
+using LibreSCRS::Pkcs11Agent::certEntryFrom;
+using LibreSCRS::Pkcs11Agent::NeutralCert;
+
+NeutralCert rsaCert(std::uint32_t keyUsage)
+{
+    NeutralCert c;
+    c.certId = "abc";
+    c.keyType = KeyType::Rsa;
+    c.keyBits = 2048;
+    c.signingCapable = true;
+    c.keyUsageBits = keyUsage;
+    c.subjectCn = "Jane Doe";
+    return c;
+}
+
+} // namespace
+
+TEST(CertEntryFrom, RsaDecryptsOnlyWhenKeyUsagePermitsAndTheCardDeciphers)
+{
+    constexpr std::uint32_t kDigitalSignature = 1U << 0;
+    constexpr std::uint32_t kKeyEncipherment = 1U << 2;
+    constexpr std::uint32_t kDataEncipherment = 1U << 3;
+    EXPECT_TRUE(certEntryFrom(rsaCert(kKeyEncipherment), PreReadAuth::None)->canDecrypt);
+    EXPECT_TRUE(certEntryFrom(rsaCert(kDataEncipherment), PreReadAuth::None)->canDecrypt);
+    EXPECT_FALSE(certEntryFrom(rsaCert(kDigitalSignature), PreReadAuth::None)->canDecrypt);
+    EXPECT_FALSE(certEntryFrom(rsaCert(kKeyEncipherment), PreReadAuth::Can)->canDecrypt);
+    EXPECT_FALSE(certEntryFrom(rsaCert(kKeyEncipherment), PreReadAuth::Mrz)->canDecrypt);
+}
+
+TEST(CertEntryFrom, TheCardFamilyDecidesSigningAndWhereTheHashIsMade)
+{
+    const auto none = certEntryFrom(rsaCert(0), PreReadAuth::None);
+    const auto can = certEntryFrom(rsaCert(0), PreReadAuth::Can);
+    const auto mrz = certEntryFrom(rsaCert(0), PreReadAuth::Mrz);
+    ASSERT_TRUE(none && can && mrz);
+    EXPECT_TRUE(none->canSign);
+    EXPECT_FALSE(none->signsHashOnCard);
+    EXPECT_TRUE(can->canSign);
+    EXPECT_TRUE(can->signsHashOnCard);
+    EXPECT_FALSE(mrz->canSign);
+}
+
+TEST(CertEntryFrom, EcKeysDeriveSignAndNeverDecryptOrHashOnCard)
+{
+    NeutralCert ec;
+    ec.certId = "ec";
+    ec.keyType = KeyType::Ec;
+    ec.keyBits = 384;
+    ec.canDerive = true;
+    ec.keyUsageBits = 1U << 2;
+    const auto deriveOnly = certEntryFrom(ec, PreReadAuth::Can);
+    ASSERT_TRUE(deriveOnly);
+    EXPECT_TRUE(deriveOnly->canDerive);
+    EXPECT_FALSE(deriveOnly->canSign);
+    EXPECT_FALSE(deriveOnly->canDecrypt);
+    EXPECT_FALSE(deriveOnly->signsHashOnCard);
+    EXPECT_EQ(deriveOnly->label, "ec") << "no CN: the certificate id";
+
+    NeutralCert rsaDerive = rsaCert(0);
+    rsaDerive.signingCapable = false;
+    rsaDerive.canDerive = true;
+    EXPECT_FALSE(certEntryFrom(rsaDerive, PreReadAuth::None)) << "only an EC key derives";
+}
+
+TEST(CertEntryFrom, TheFactsPassThrough)
+{
+    NeutralCert c = rsaCert(0);
+    c.keyId = {1, 2, 3};
+    c.alwaysAuthenticate = true;
+    const auto e = certEntryFrom(c, PreReadAuth::None);
+    ASSERT_TRUE(e);
+    EXPECT_EQ(e->ckaId, (std::vector<std::uint8_t>{1, 2, 3}));
+    EXPECT_EQ(e->label, "Jane Doe");
+    EXPECT_EQ(e->holderName, "Jane Doe");
+    EXPECT_TRUE(e->alwaysAuthenticate);
+    EXPECT_EQ(e->keyBits, 2048u);
+}

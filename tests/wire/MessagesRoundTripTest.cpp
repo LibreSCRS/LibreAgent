@@ -591,6 +591,15 @@ int dumpFixtures(const std::filesystem::path& dir)
     {
         StateReply state;
         state.readers.push_back(ReaderState{"r1", "Reader One", true, std::string("c1")});
+        // A labelled reader: model + interface, the keys a client shows
+        // instead of parsing the PC/SC name.
+        state.readers.push_back(ReaderState{.handle = "r2",
+                                            .name = "HID Global OMNIKEY 5422 Smartcard Reader [OMNIKEY 5422CL "
+                                                    "Smartcard Reader] (IM0O2C00NF10456904) 00 00",
+                                            .hasCard = false,
+                                            .card = std::nullopt,
+                                            .model = "OMNIKEY 5422",
+                                            .iface = ReaderInterface::Contactless});
         CardState card{"c1", "r1", 0x3, PreReadAuth::Can};
         // cardType/atr populated -- the first real byte growth of this
         // wire (both keys were absent before this task).

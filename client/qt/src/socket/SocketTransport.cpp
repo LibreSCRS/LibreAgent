@@ -6,8 +6,8 @@
 #include "SocketPath.h"
 
 #include "../CertFieldsExtra.h"
-#include "../ConfigKeys.h"
-#include "../CscaAnchorKeys.h"
+#include <LibreSCRS/AgentClient/ConfigKeys.h>
+#include <LibreSCRS/AgentClient/CscaAnchorKeys.h>
 #include "../FieldExtraKeys.h"
 #include "../KeyTypeMapping.h"
 #include "../dbus/AgentDBus.h"    // shared object/interface name spellings (constants only, no QtDBus)
@@ -16,6 +16,9 @@
 #include <LibreSCRS/AgentClient/ClientTimeouts.h>
 #include <LibreSCRS/AgentClient/CredentialTypes.h>
 
+#if defined(Q_OS_MACOS)
+#include <LibreSCRS/Agent/wire/darwin/PeerCodeSigning.h>
+#endif
 #include <LibreSCRS/Agent/wire/Framing.h>
 
 #include <QDateTime>
@@ -30,6 +33,7 @@
 #include <fcntl.h>
 #include <poll.h>
 #include <sys/socket.h>
+#include <sys/time.h>
 #include <sys/un.h>
 #include <unistd.h>
 
@@ -91,7 +95,10 @@ QString preAuthToken(Wire::PreReadAuth preAuth)
     case Wire::PreReadAuth::Can:
         return QStringLiteral("Can");
     }
-    return QStringLiteral("None");
+    // A method appended after this build: forwarded as a token no client
+    // names, which preReadAuthFromToken() reads as unknown -- never as None,
+    // which would let a client read the card without unlocking it.
+    return QStringLiteral("Unknown%1").arg(static_cast<unsigned>(preAuth));
 }
 
 /// The canonical seam property vocabulary (the SAME keys the D-Bus transport
@@ -104,6 +111,10 @@ QVariantMap readerProps(const Wire::ReaderState& reader)
     props.insert(QStringLiteral("Name"), fromStd(reader.name));
     props.insert(QStringLiteral("HasCard"), reader.hasCard);
     props.insert(QStringLiteral("Card"), reader.card ? fromStd(*reader.card) : QString());
+    // The label, under the D-Bus property names and the same interface
+    // tokens; an unlabelled reader (an older agent) carries an empty model.
+    props.insert(QStringLiteral("Model"), fromStd(reader.model));
+    props.insert(QStringLiteral("Interface"), fromStd(std::string(Wire::readerInterfaceToken(reader.iface))));
     return props;
 }
 
@@ -697,7 +708,10 @@ Wire::SignOpts toSignOpts(const QVariantMap& options)
 
 // ---- construction ----------------------------------------------------------------
 
-SocketTransport::SocketTransport() : SocketTransport(resolveAgentSocketPath()) {}
+SocketTransport::SocketTransport() : SocketTransport(resolveAgentSocketPath())
+{
+    m_verifyPeer = true;
+}
 
 SocketTransport::SocketTransport(QString socketPath) : m_socketPath(std::move(socketPath)) {}
 
@@ -738,6 +752,19 @@ bool SocketTransport::agentInstalled()
     // (running, or resumable): the socket analogue of a D-Bus-activatable
     // name.
     return !m_socketPath.isEmpty() && QFileInfo::exists(m_socketPath);
+}
+
+AgentStartResult SocketTransport::startAgent()
+{
+    // This wire has no on-demand start of its own: the agent is a launchd job
+    // the host app registers, and launching that app is the client's explicit
+    // requestAgentStart(), never a side effect of an ordinary call. What this
+    // transport CAN do is dial again, which reaches an agent that has come up
+    // since the last attempt.
+    if (probeAvailability()) {
+        return AgentStartResult::Running;
+    }
+    return agentInstalled() ? AgentStartResult::Failed : AgentStartResult::NotInstalled;
 }
 
 bool SocketTransport::isConnected() const
@@ -1024,7 +1051,7 @@ quint64 SocketTransport::requestProperties(const QString& objectId, ObjectKind k
     }
     const quint64 requestId = ++m_nextRequestId;
     const std::vector<std::uint8_t> body = Wire::encodeRequest(Wire::GetState{}, requestId);
-    if (!Wire::sendFrame(m_fd.get(), body, {})) {
+    if (!sendFrameBounded(body, {}, kDefaultCallTimeoutMs)) {
         dropConnection();
         queueFailure();
         return token;
@@ -1240,7 +1267,7 @@ void SocketTransport::cancelOperation(const QString& operationId)
     // Fire-and-forget: the ack lands as an unmatched reply and is dropped.
     const quint64 requestId = ++m_nextRequestId;
     const std::vector<std::uint8_t> body = Wire::encodeRequest(Wire::CancelOp{op}, requestId);
-    if (!Wire::sendFrame(m_fd.get(), body, {})) {
+    if (!sendFrameBounded(body, {}, kDefaultCallTimeoutMs)) {
         dropConnection();
     }
 }
@@ -1311,7 +1338,7 @@ quint64 SocketTransport::requestCertificateDer(const QString& readerId, const QS
     request.cert = certId.toStdString();
     const quint64 requestId = ++m_nextRequestId;
     const std::vector<std::uint8_t> body = Wire::encodeRequest(request, requestId);
-    if (!Wire::sendFrame(m_fd.get(), body, {})) {
+    if (!sendFrameBounded(body, {}, kDefaultCallTimeoutMs)) {
         dropConnection();
         queueFailure(CallError::AgentUnavailable);
         return token;
@@ -1383,6 +1410,17 @@ bool SocketTransport::connectAndHandshake()
     if (::connect(fd.get(), reinterpret_cast<const sockaddr*>(&address), sizeof(address)) != 0) {
         return false; // refused / absent — the agent is not reachable
     }
+#if defined(Q_OS_MACOS)
+    // Before a single byte goes out — the Hello, and after it documents, PINs
+    // and identity reads: anything able to bind this path (a process running
+    // as the user can unlink and re-bind it) must not receive them.
+    if (m_verifyPeer && !Wire::Darwin::verifyConnectedPeer(fd.get(), Wire::Darwin::expectedAgentIdentity())) {
+        qCWarning(lcSocket) << "refusing" << m_socketPath << ": the process serving it is not the card agent";
+        return false;
+    }
+#endif
+    // Non-blocking for the reader (the notifier drains what is there and
+    // returns); sends go through sendFrameBounded().
     const int flags = ::fcntl(fd.get(), F_GETFL, 0);
     ::fcntl(fd.get(), F_SETFL, flags | O_NONBLOCK);
 
@@ -1692,10 +1730,8 @@ void SocketTransport::dispatchEvent(Wire::DecodedEvent&& decoded, std::vector<Wi
     }
     if (const auto* group = std::get_if<Wire::OpIdentityGroup>(&event)) {
         // Progressive delivery, strictly ahead of the SAME op's eventual
-        // OpResultReady below -- the client does not gate this on the
-        // "identity-stream" feature token (unlike a request-side gate): an
-        // agent that does not advertise it simply never writes this frame,
-        // so there is nothing here to refuse.
+        // OpResultReady below. An agent that does not stream simply never
+        // writes this frame, so there is nothing here to refuse.
         if (OperationListener* listener = operationListenerFor(group->op)) {
             listener->onGroupReady(toFieldGroup(fromStd(group->groupKey), group->fields));
         }
@@ -1740,9 +1776,10 @@ void SocketTransport::dispatchEvent(Wire::DecodedEvent&& decoded, std::vector<Wi
         // user switch), so the agent counts as unavailable — in-flight
         // operations are terminalized by the consumer exactly like an agent
         // death — while the connection itself stays open for the re-probe.
-        Q_UNUSED(quiesced)
+        // The reason goes first, so a consumer knows why the agent left.
         m_quiesced = true;
         if (m_registry != nullptr) {
+            m_registry->onQuiesced(quiesced->reason);
             m_registry->onServiceUnregistered();
         }
         return;
@@ -1826,6 +1863,25 @@ OperationListener* SocketTransport::operationListenerFor(quint64 op, OperationKi
 
 // ---- bounded synchronous exchange ----------------------------------------------------------
 
+bool SocketTransport::sendFrameBounded(std::span<const std::uint8_t> body, std::span<const int> passFds, int timeoutMs)
+{
+    // Wire::sendFrame is written for a blocking socket, and this descriptor is
+    // non-blocking for the reader's sake: on a send buffer the agent has not
+    // drained yet it would read EAGAIN as an I/O failure and drop a healthy
+    // connection mid-call. Send blocking instead, bounded by the call's own
+    // budget through SO_SNDTIMEO, and give the reader its flag back.
+    const int fd = m_fd.get();
+    timeval limit{};
+    limit.tv_sec = static_cast<decltype(limit.tv_sec)>(timeoutMs / 1000);
+    limit.tv_usec = static_cast<decltype(limit.tv_usec)>((timeoutMs % 1000) * 1000);
+    ::setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &limit, sizeof(limit));
+    const int flags = ::fcntl(fd, F_GETFL, 0);
+    ::fcntl(fd, F_SETFL, flags & ~O_NONBLOCK);
+    const bool sent = Wire::sendFrame(fd, body, passFds).has_value();
+    ::fcntl(fd, F_SETFL, flags);
+    return sent;
+}
+
 SocketTransport::SyncResult SocketTransport::callSync(const Wire::RequestVariant& request, int timeoutMs,
                                                       std::span<const int> passFds)
 {
@@ -1836,7 +1892,7 @@ SocketTransport::SyncResult SocketTransport::callSync(const Wire::RequestVariant
     }
     const quint64 requestId = ++m_nextRequestId;
     const std::vector<std::uint8_t> body = Wire::encodeRequest(request, requestId);
-    if (!Wire::sendFrame(m_fd.get(), body, passFds)) {
+    if (!sendFrameBounded(body, passFds, timeoutMs)) {
         dropConnection();
         out.failure = CallError::AgentUnavailable;
         return out;

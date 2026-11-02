@@ -4,6 +4,7 @@
 #include <LibreSCRS/Agent/Identity.h>
 
 #include <cstdint>
+#include <functional>
 #include <string_view>
 
 namespace LibreSCRS::Agent {
@@ -47,22 +48,36 @@ inline constexpr const char* kActionCredentialsManage = "org.librescrs.agent.cre
 // the in-flight message). Unlike a bare pid_t it is REUSE-IMMUNE for the
 // connection's lifetime, so it is a TOCTOU-safe handle for an authorization
 // subject: the platform Authorizer impl resolves it to a process subject (pidfd
-// / start-time pinned) at authorization-check time. authorize() MUST be called synchronously
-// while the requesting client is blocked on the reply.
+// / start-time pinned) at authorization-check time, while the requesting client
+// is still waiting on its reply.
+//
+// Two ways to ask. authorizeAsync() is the one a request dispatcher uses: an
+// authority may hold its answer while a PERSON decides (a polkit password
+// dialog), and a dispatcher that waited for it would stop serving every other
+// client -- and, on a bus connection, every signal the agent's worker threads
+// emit -- for as long as the dialog stays open. authorize() remains for callers
+// that are not on a dispatch thread and for the authorities that never wait
+// (every in-core implementation below).
 class Authorizer
 {
 public:
-    virtual ~Authorizer() = default;
-    [[nodiscard]] virtual AuthorizationOutcome authorize(std::string_view actionId, const CallerToken& caller) = 0;
-};
+    /// Receives the outcome of one authorizeAsync() call, exactly once.
+    using Completion = std::function<void(AuthorizationOutcome)>;
 
-// Allows every action. Test/dev only, and the explicit "no policy gate" mode.
-class AllowAllAuthorizer final : public Authorizer
-{
-public:
-    [[nodiscard]] AuthorizationOutcome authorize(std::string_view /*actionId*/, const CallerToken& /*caller*/) override
+    virtual ~Authorizer() = default;
+
+    /// Decide synchronously. The caller waits for the authority's answer.
+    [[nodiscard]] virtual AuthorizationOutcome authorize(std::string_view actionId, const CallerToken& caller) = 0;
+
+    /// Decide without making the caller wait. @p done runs exactly once with
+    /// the outcome: inline, before this returns, for an authority that answers
+    /// at once (the default, which forwards to authorize()), or later -- on
+    /// whatever thread the authority answers on -- for one that has to wait.
+    /// The caller therefore defers its own reply into @p done and must not
+    /// assume where or when it runs; what @p done captures must outlive that.
+    virtual void authorizeAsync(std::string_view actionId, const CallerToken& caller, Completion done)
     {
-        return AuthorizationOutcome::Granted;
+        done(authorize(actionId, caller));
     }
 };
 

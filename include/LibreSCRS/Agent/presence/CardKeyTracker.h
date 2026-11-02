@@ -4,7 +4,6 @@
 #include <LibreSCRS/Agent/Identity.h> // ObjectId
 #include <functional>
 #include <map>
-#include <optional>
 #include <string>
 namespace LibreSCRS::Agent {
 
@@ -39,8 +38,6 @@ public:
     void onCardInserted(const std::string& readerName, ObjectId cardId);
     void onCardRemoved(const std::string& readerName);   // fires callback with the dropped cardKey
     void onReaderRemoved(const std::string& readerName); // same as onCardRemoved + erases reader
-
-    [[nodiscard]] std::optional<ObjectId> currentKey(const std::string& readerName) const;
 
 private:
     std::map<std::string, ObjectId> m_readerToCardKey;

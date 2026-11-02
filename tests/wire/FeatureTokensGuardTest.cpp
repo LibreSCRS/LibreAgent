@@ -86,17 +86,15 @@ std::vector<std::string> cddlFeatureVocabulary(const std::string& cddl)
 // this compares membership, not position.
 TEST(FeatureTokensGuard, LiveArrayContainsEveryServedTokenIncludingEcKeys)
 {
-    ASSERT_EQ(LibreSCRS::Agent::kAgentFeatures.size(), 11U);
+    ASSERT_EQ(LibreSCRS::Agent::kAgentFeatures.size(), 9U);
     const std::vector<std::string_view> tokens(LibreSCRS::Agent::kAgentFeatures.begin(),
                                                LibreSCRS::Agent::kAgentFeatures.end());
     EXPECT_NE(std::find(tokens.begin(), tokens.end(), std::string_view{"credentials"}), tokens.end());
     EXPECT_NE(std::find(tokens.begin(), tokens.end(), std::string_view{"card-type"}), tokens.end());
     EXPECT_NE(std::find(tokens.begin(), tokens.end(), std::string_view{"token-info"}), tokens.end());
-    EXPECT_NE(std::find(tokens.begin(), tokens.end(), std::string_view{"trust-status"}), tokens.end());
     EXPECT_NE(std::find(tokens.begin(), tokens.end(), std::string_view{"tsa-url"}), tokens.end());
     EXPECT_NE(std::find(tokens.begin(), tokens.end(), std::string_view{"visual-sign"}), tokens.end());
     EXPECT_NE(std::find(tokens.begin(), tokens.end(), std::string_view{"layout-preview"}), tokens.end());
-    EXPECT_NE(std::find(tokens.begin(), tokens.end(), std::string_view{"identity-stream"}), tokens.end());
     EXPECT_NE(std::find(tokens.begin(), tokens.end(), std::string_view{"batch-sign"}), tokens.end());
     EXPECT_NE(std::find(tokens.begin(), tokens.end(), std::string_view{"ec-keys"}), tokens.end());
     EXPECT_NE(std::find(tokens.begin(), tokens.end(), std::string_view{"login-state"}), tokens.end());

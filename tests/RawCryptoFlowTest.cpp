@@ -27,8 +27,8 @@
 #include <LibreSCRS/Plugin/CardPlugin.h>
 #include <LibreSCRS/Secure/String.h>
 #include <LibreSCRS/SmartCard/AppletAid.h>
-#include <LibreSCRS/SmartCard/CardMap.h>
 #include <LibreSCRS/SmartCard/CardSession.h>
+#include <LibreSCRS/SmartCard/testing/CardSessionTesting.h>
 #include <gtest/gtest.h>
 #include <cstdint>
 #include <expected>
@@ -50,7 +50,7 @@ class StubPlugin final : public LibreSCRS::Plugin::CardPlugin
 public:
     StubPlugin(std::string id, LibreSCRS::Plugin::CardCapabilities caps) : m_caps(caps)
     {
-        setIdentity(std::move(id), "stub", 0);
+        setIdentity(std::move(id), 0);
     }
     LibreSCRS::Plugin::CardCapabilities capabilities() const override
     {
@@ -88,12 +88,11 @@ inline std::unique_ptr<CardSessionHolder> makeHolder(std::optional<LibreSCRS::Sm
         if (failWith) {
             return std::unexpected{*failWith};
         }
-        return LibreSCRS::SmartCard::detail::makeDetachedCardSession(r);
+        return LibreSCRS::SmartCard::Testing::makeDetachedCardSession(r);
     };
     auto resolver = [candidates = std::move(candidates)](std::span<const std::uint8_t>,
                                                          LibreSCRS::SmartCard::CardSession&) { return candidates; };
-    return std::make_unique<CardSessionHolder>("FakeReader", std::move(factory), std::move(resolver),
-                                               std::make_shared<LibreSCRS::SmartCard::CardMap>());
+    return std::make_unique<CardSessionHolder>("FakeReader", std::move(factory), std::move(resolver));
 }
 
 class FakePrompter final : public PrompterClientBase

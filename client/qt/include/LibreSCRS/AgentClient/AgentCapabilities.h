@@ -9,6 +9,7 @@
 #include <QStringView>
 
 #include <cstdint>
+#include <optional>
 
 /// @file
 /// @brief Plain-constant mirror of the agent's card-capability bitfield plus
@@ -190,18 +191,34 @@ enum class UiState : std::uint32_t {
 }
 
 /// @brief Decode the verbatim pre-read-auth wire token AgentCard::preReadAuth()
-///        forwards ("None" / "Mrz" / "Can"). Anything unrecognized —
-///        including a future appended method — decodes to PreReadAuth::None,
-///        matching the lifted client's lenient parse.
-[[nodiscard]] inline PreReadAuth preReadAuthFromToken(QStringView token) noexcept
+///        forwards ("None" / "Mrz" / "Can").
+///
+/// An EMPTY token (an agent predating the property) decodes to
+/// PreReadAuth::None. Any other token this build does not name -- a method
+/// appended to the wire later -- decodes to std::nullopt: the card wants
+/// SOMETHING before it can be read, this client just cannot say what. Treat
+/// that as "unlock required" (preReadUnlockRequired()), never as None, which
+/// would read the card without unlocking it.
+[[nodiscard]] inline std::optional<PreReadAuth> preReadAuthFromToken(QStringView token) noexcept
 {
+    if (token.isEmpty() || token == QLatin1String("None")) {
+        return PreReadAuth::None;
+    }
     if (token == QLatin1String("Mrz")) {
         return PreReadAuth::Mrz;
     }
     if (token == QLatin1String("Can")) {
         return PreReadAuth::Can;
     }
-    return PreReadAuth::None;
+    return std::nullopt;
+}
+
+/// @brief Whether a card with pre-read-auth @p token must be unlocked before
+///        its data is read: every method, known or not, except None.
+[[nodiscard]] inline bool preReadUnlockRequired(QStringView token) noexcept
+{
+    const std::optional<PreReadAuth> method = preReadAuthFromToken(token);
+    return !method || *method != PreReadAuth::None;
 }
 
 } // namespace LibreSCRS::AgentClient

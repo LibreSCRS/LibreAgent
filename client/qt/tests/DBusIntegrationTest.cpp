@@ -20,7 +20,7 @@
 #include <LibreSCRS/AgentClient/ClientTimeouts.h>
 #include <LibreSCRS/AgentClient/IdentityRows.h>
 
-#include "ConfigKeys.h"
+#include <LibreSCRS/AgentClient/ConfigKeys.h>
 #include "fakes/ClientOnHarness.h"
 #include "fakes/TestBus.h"
 
@@ -107,6 +107,53 @@ TEST(DBusIntegration, AvailabilityAppearAndVanish)
     ASSERT_TRUE(waitFor([&]() { return client->readers().size() == 1; }))
         << "re-appearance must re-run discovery, not just flip the flag";
     EXPECT_NE(client->card(h.cardPath()), nullptr);
+}
+
+// ---- Manager1.Quiesced: the reason reaches the client, the agent stays -------
+
+TEST(DBusIntegration, QuiescedReachesTheClientAndTheAgentStaysAvailable)
+{
+    FakeAgent::Config cfg;
+    cfg.capabilities = Cap::Pki;
+    Harness h(cfg);
+    auto client = makeClient(h);
+    ASSERT_TRUE(client->isAvailable());
+
+    QList<QuiesceReason> reasons;
+    int availabilityChanges = 0;
+    QObject::connect(client.get(), &AgentClient::quiesced, client.get(),
+                     [&](QuiesceReason reason) { reasons.append(reason); });
+    QObject::connect(client.get(), &AgentClient::availabilityChanged, client.get(),
+                     [&](bool) { ++availabilityChanges; });
+
+    h.emitQuiesced(static_cast<uint>(QuiesceReason::SystemSleep));
+    ASSERT_TRUE(waitFor([&]() { return reasons.size() == 1; }));
+    EXPECT_EQ(reasons.constFirst(), QuiesceReason::SystemSleep);
+    EXPECT_TRUE(client->isAvailable()) << "the agent stays on the bus: a quiesce is not an agent loss";
+    EXPECT_EQ(availabilityChanges, 0);
+    EXPECT_EQ(client->readers().size(), 1) << "the agent's objects stay valid";
+}
+
+// A reason past this build's vocabulary arrives verbatim; one too wide for the
+// vocabulary's own width cannot be stored without aliasing another and is
+// dropped, as the socket decoder rejects it.
+TEST(DBusIntegration, QuiescedCarriesAFutureReasonAndDropsOneTooWideToStore)
+{
+    FakeAgent::Config cfg;
+    Harness h(cfg);
+    auto client = makeClient(h);
+    ASSERT_TRUE(client->isAvailable());
+
+    QList<QuiesceReason> reasons;
+    QObject::connect(client.get(), &AgentClient::quiesced, client.get(),
+                     [&](QuiesceReason reason) { reasons.append(reason); });
+
+    h.emitQuiesced(256);
+    h.emitQuiesced(42);
+    ASSERT_TRUE(waitFor([&]() { return !reasons.isEmpty(); }));
+    // Signals on one connection arrive in order: 256 was handled before 42.
+    ASSERT_EQ(reasons.size(), 1) << "256 must not alias onto reason 0";
+    EXPECT_EQ(static_cast<unsigned>(reasons.constFirst()), 42u);
 }
 
 // ---- agent version: Manager1.Version, and empty once the agent is gone ------

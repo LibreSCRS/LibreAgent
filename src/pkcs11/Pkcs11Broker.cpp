@@ -3,7 +3,7 @@
 #include <LibreSCRS/Agent/pkcs11/Pkcs11Broker.h>
 #include <LibreSCRS/Agent/backend/Authorizer.h>
 #include <LibreSCRS/Agent/SecureZero.h>
-#include <LibreSCRS/Agent/backend/Logging.h>
+#include <LibreSCRS/Logging.h>
 
 #include <algorithm>
 #include <utility>
@@ -94,14 +94,35 @@ void Pkcs11Broker::login(const std::string& reader, const Caller& caller, Reply<
     // CKR_FUNCTION_REJECTED. The anti-phishing flood throttle lives on the
     // consent surfaces (Card1.Sign, and every PIN prompt of a crypto op).
     //
-    // Undecided folds into the same refusal here -- default-allow means polkit
-    // answers without a dialog, there is no human waiting on this leg, and the
-    // PKCS#11 caller has no user to tell.
-    if (m_deps.authorizer.authorize(kActionPkcs11Login, caller.busName) != AuthorizationOutcome::Granted) {
-        reply.fail(LoginOutcome::NotAuthorized);
-        return;
-    }
-    const auto cardKey = m_deps.resolveCardKey(reader);
+    // Undecided folds into the same refusal here -- the PKCS#11 caller has no
+    // user to tell.
+    //
+    // Asked asynchronously: a site policy may turn this action into a dialog,
+    // and the thread calling login() is the one dispatching every other
+    // request. The rest of the login runs in the completion, which may come
+    // later and on the authority's thread, so it takes copies of what it uses
+    // -- never the broker itself, which may be gone by then.
+    m_deps.authorizer.authorizeAsync(
+        kActionPkcs11Login, caller.busName,
+        [resolveCardKey = m_deps.resolveCardKey, loginSeam = m_deps.login, lease = m_deps.lease, now = m_deps.now,
+         shutdown = m_deps.shutdown, reader, caller, reply](AuthorizationOutcome outcome) {
+            if (outcome != AuthorizationOutcome::Granted) {
+                reply.fail(LoginOutcome::NotAuthorized);
+                return;
+            }
+            if (shutdown.isCancelled()) {
+                return; // teardown began while the authority decided; the dropped reply fails closed
+            }
+            continueLogin(resolveCardKey, loginSeam, lease, now, reader, caller, reply);
+        });
+}
+
+void Pkcs11Broker::continueLogin(const ResolveCardKeySeam& resolveCardKey, const LoginSeam& loginSeam,
+                                 const std::shared_ptr<Pkcs11::LeaseManager>& lease, const NowSeam& now,
+                                 const std::string& reader, const Caller& caller,
+                                 const Reply<LoginOutcome, std::uint32_t>& reply)
+{
+    const auto cardKey = resolveCardKey(reader);
     if (!cardKey) {
         reply.fail(LoginOutcome::UnknownCard);
         return;
@@ -120,9 +141,8 @@ void Pkcs11Broker::login(const std::string& reader, const Caller& caller, Reply<
     // the broker `this`) and captures the clock seam + the fixed idle-timeout by
     // value — mirroring the pinState callbacks below — so on unblock it grants
     // through its own captured lease rather than dereferencing a freed broker.
-    m_deps.login(reader, [lease = m_deps.lease, now = m_deps.now,
-                          idleSecs = static_cast<std::uint32_t>(m_deps.lease->idleTimeout().count()), reply, caller,
-                          card = *cardKey](LoginOutcome outcome) {
+    loginSeam(reader, [lease, now, idleSecs = static_cast<std::uint32_t>(lease->idleTimeout().count()), reply, caller,
+                       card = *cardKey](LoginOutcome outcome) {
         switch (outcome) {
         case LoginOutcome::Ok:
             break;

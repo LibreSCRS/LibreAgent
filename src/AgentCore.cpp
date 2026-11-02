@@ -2,6 +2,7 @@
 // SPDX-FileCopyrightText: 2026 hirashix0
 #include <LibreSCRS/Agent/AgentCore.h>
 #include <LibreSCRS/Agent/SecureZero.h>
+#include <LibreSCRS/Agent/cache/FullScrubCaches.h>
 #include <LibreSCRS/Agent/operations/CardSessionHolder.h>
 #include <LibreSCRS/Agent/operations/CertDerExport.h>
 #include <LibreSCRS/Agent/operations/LmRawCrypto.h>
@@ -355,6 +356,26 @@ Pkcs11Broker::Deps AgentCore::makeBrokerDeps(Pkcs11Broker::ResolveCardKeySeam re
         .shutdown = m_cryptoCtx->shutdown,
         .now = {}, // steady_clock::now
     };
+}
+
+void AgentCore::quiesce(QuiesceReason reason)
+{
+    if (reason == QuiesceReason::ScreenLocked) {
+        revokeLeases();
+        return;
+    }
+    clearFullScrubCaches(credentialCache(), credentialSnapshotCache());
+    for (const auto& reader : m_registry.readers()) {
+        m_opManager.invalidateReaderSession(reader.id);
+    }
+    revokeLeases();
+}
+
+void AgentCore::revokeLeases()
+{
+    for (const auto& card : m_registry.cards()) {
+        m_pkcs11.onCardRemoved(card.id);
+    }
 }
 
 } // namespace LibreSCRS::Agent

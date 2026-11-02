@@ -5,6 +5,7 @@
 // card is removed (CardKeyTracker onKeyRemoved -> onCardRemoved) and when the
 // D-Bus client disconnects (NameOwnerChanged -> onClientDisconnected). These
 // hooks are the PKCS#11 analogue of the credential/read-cache scrub-on-removal.
+#include "AllowAllAuthorizer.h"
 #include <LibreSCRS/Agent/backend/Authorizer.h>
 #include "Pkcs11BrokerTestSupport.h"
 #include <LibreSCRS/Agent/pkcs11/Pkcs11Broker.h>

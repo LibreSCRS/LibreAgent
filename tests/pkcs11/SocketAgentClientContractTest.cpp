@@ -31,6 +31,8 @@ using P::Testing::Refusal;
 // RFC 5280 keyEncipherment, so the served cert is a complete one rather than a
 // cert-shaped placeholder.
 constexpr std::uint32_t kKeyEncipherment = 1U << 2;
+// RFC 5280 digitalSignature alone: a key that signs and may not encipher.
+constexpr std::uint32_t kDigitalSignature = 1U << 0;
 // RFC 5280 keyAgreement: a key that derives and does not sign.
 constexpr std::uint32_t kKeyAgreement = 1U << 4;
 
@@ -156,6 +158,17 @@ struct SocketContractTraits
         });
     }
 
+    static std::unique_ptr<Harness> servingSigningOnlyRsaCert()
+    {
+        return make({}, /*withCert=*/true, holderName(), /*signingCapable=*/true, kDigitalSignature);
+    }
+
+    static std::unique_ptr<Harness> servingHashOnCardRsaCert()
+    {
+        return make({}, /*withCert=*/true, holderName(), /*signingCapable=*/true, kKeyEncipherment,
+                    W::PreReadAuth::Can);
+    }
+
     static std::unique_ptr<Harness> servingDeriveOnlyEcCert()
     {
         return make(
@@ -210,11 +223,12 @@ struct SocketContractTraits
 private:
     static std::unique_ptr<Harness> make(const std::function<void(T::FakeSocketAgent&)>& script, bool withCert = true,
                                          const std::string& subjectCn = holderName(), bool signingCapable = true,
-                                         std::uint32_t keyUsage = kKeyEncipherment)
+                                         std::uint32_t keyUsage = kKeyEncipherment,
+                                         W::PreReadAuth preAuth = W::PreReadAuth::None)
     {
         auto h = std::make_unique<Harness>();
         h->fake = std::make_unique<T::FakeSocketAgent>();
-        h->fake->addReader(reader(), /*hasCard=*/true, "c1");
+        h->fake->addReader(reader(), /*hasCard=*/true, "c1", preAuth);
         if (withCert) {
             h->fake->addCert("c1", certId(), signingCapable, keyUsage, subjectCn);
         }

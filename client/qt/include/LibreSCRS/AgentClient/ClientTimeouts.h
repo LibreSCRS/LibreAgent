@@ -18,13 +18,11 @@
 ///       override any of these per-call; these are only the library's
 ///       out-of-the-box defaults.
 ///
-/// @note Enforcement differs per constant: the transports apply
-///       kHandshakeTimeoutMs and kDefaultCallTimeoutMs internally to their
-///       synchronous round-trips, but kLongOperationTimeoutMs is a
-///       CALLER-ENFORCED advisory budget — the library has NO internal
-///       watchdog and never auto-fails a stalled operation. A consumer that
-///       wants stall detection must run its own timer against this constant
-///       and call AgentOperation::cancel() when it expires.
+/// @note The transports apply kHandshakeTimeoutMs and kDefaultCallTimeoutMs
+///       to their synchronous round-trips; kLongOperationTimeoutMs is the
+///       default stall bound every AgentOperation enforces on itself between
+///       two signs of life from the agent, phase-aware (see
+///       AgentOperation::setStallBudget()).
 
 namespace LibreSCRS::AgentClient {
 
@@ -39,6 +37,13 @@ inline constexpr int kHandshakeTimeoutMs = 1000;
 ///        acknowledgement, ListCredentials, ManagePin, Pkcs11.* method
 ///        calls) but does no network I/O.
 inline constexpr int kDefaultCallTimeoutMs = 3000;
+/// @brief Budget for starting an installed agent that is not running
+///        (`AgentClient::requestAgentStart()` and every call that starts the
+///        agent first): the bus launches the service and answers once it has
+///        claimed its name, which covers process start and the agent loading
+///        its card plugins. Well under the bus daemon's own activation limit,
+///        so a start that hangs is reported by this client, not by the bus.
+inline constexpr int kAgentStartTimeoutMs = 15000;
 
 /// @brief Budget for a synchronous call the agent may hold open while a PERSON
 ///        authorizes it (a polkit prompt on Linux, the equivalent ceremony on
@@ -65,13 +70,14 @@ inline constexpr int kDefaultCallTimeoutMs = 3000;
 /// wrong, and that one happens on every ordinary use.
 inline constexpr int kAuthorizedCallTimeoutMs = 120000;
 
-/// @brief Budget for long-running operations whose completion may involve a
-///        network round trip on the agent side (a TSA contact for a
-///        timestamped Sign, or a trusted-list revocation fetch for the
-///        b-lt/b-lta chain-completion family) — these finish via the async
-///        op-progress/op-result-ready/op-finished event sequence, not a
-///        single reply, but a client still needs an overall budget to give
-///        up waiting on a stalled operation.
+/// @brief How long an operation may go without a sign of life from the agent
+///        while the agent is working — long enough for a network round trip
+///        on the agent side (a TSA contact for a timestamped Sign, or a
+///        trusted-list revocation fetch for the b-lt/b-lta chain-completion
+///        family). Operations finish via the async op-progress /
+///        op-result-ready / op-finished sequence, not a single reply; every
+///        AgentOperation gives up after this much silence by default, and the
+///        clock does not run while a person is at the agent's prompt.
 inline constexpr int kLongOperationTimeoutMs = 35000;
 
 } // namespace LibreSCRS::AgentClient

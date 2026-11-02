@@ -3,7 +3,7 @@
 #include <LibreSCRS/Agent/operations/CertReadFlow.h>
 #include <LibreSCRS/Agent/cache/AttemptContext.h>
 #include <LibreSCRS/Agent/cache/CredentialCache.h>
-#include <LibreSCRS/Agent/backend/Logging.h>
+#include <LibreSCRS/Logging.h>
 #include <LibreSCRS/Agent/operations/CardPluginRouting.h> // pkiCandidates
 #include <LibreSCRS/Agent/operations/FlowPrelude.h>
 #include <LibreSCRS/Agent/operations/OperationBase.h> // Phase enum
@@ -117,8 +117,6 @@ ErrorCode mapCertStatus(CertReadOutcome::Status s) noexcept
         return ErrorCode::None;
     case CertReadOutcome::Status::AuthFailed:
         return ErrorCode::AuthFailed;
-    case CertReadOutcome::Status::ParseError:
-        return ErrorCode::ParseError;
     case CertReadOutcome::Status::UnsupportedCard:
         return ErrorCode::UnsupportedCard;
     case CertReadOutcome::Status::CommunicationError:

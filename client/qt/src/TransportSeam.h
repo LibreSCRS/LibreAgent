@@ -2,7 +2,7 @@
 // SPDX-FileCopyrightText: 2026 hirashix0
 #pragma once
 //
-// INTERNAL — never installed. The pure-virtual seam between the public
+// INTERNAL — not client API, never installed. The pure-virtual seam between the public
 // AgentClient/AgentReader/AgentCard/AgentOperation classes and a concrete
 // transport. The D-Bus transport (src/dbus/DBusTransport) implements it now;
 // the socket transport (a later task) implements the SAME interface, and the
@@ -24,6 +24,7 @@
 // Threading contract: single-threaded. Every listener callback is delivered
 // on the thread the seam lives in, either synchronously from within a seam
 // call or from the thread's event loop — never from a foreign thread.
+#include <LibreSCRS/AgentClient/AgentClient.h>
 #include <LibreSCRS/AgentClient/CallError.h>
 #include <LibreSCRS/AgentClient/CredentialTypes.h>
 #include <LibreSCRS/AgentClient/ErrorCode.h>
@@ -203,6 +204,11 @@ public:
     /// into its snapshot cache when this arrives (see `configSnapshot()`), so
     /// a consumer reached from here reads the new value, never the old one.
     virtual void onConfigChanged(const QString& key) = 0;
+    /// The agent quiesced card access for @p reason (D-Bus `Manager1.Quiesced`,
+    /// socket `AgentQuiesced`), delivered before any availability change the
+    /// transport derives from it. A reason this build does not name arrives
+    /// verbatim.
+    virtual void onQuiesced(QuiesceReason reason) = 0;
 };
 
 /// Implemented by AgentReader/AgentCard: live property updates for one
@@ -262,6 +268,13 @@ public:
     /// Bounded install probe: is an agent present on this system (reachable
     /// now, or startable on demand)?
     [[nodiscard]] virtual bool agentInstalled() = 0;
+    /// Start the agent when it is installed but not running, using this
+    /// transport's own on-demand mechanism, and report whether it is reachable
+    /// afterwards. The ONE place a transport starts the agent: every other call
+    /// here addresses an agent that is already up and never starts one as a
+    /// side effect. Bounded by kAgentStartTimeoutMs. `Running` leaves the
+    /// transport in the state a successful probeAvailability() would.
+    [[nodiscard]] virtual AgentStartResult startAgent() = 0;
 
     // ---- registry ----------------------------------------------------------
     /// Bounded discovery snapshot; nullopt when discovery failed (wedged or

@@ -10,7 +10,7 @@ OUTPUT_DIRECTORY        = build/doc/publicapi
 # types they re-export under LibreSCRS::AgentClient (ErrorCode.h,
 # OperationPhase.h, SyncError.h — see those headers' own "why a re-export"
 # doc comments) and the wire/ subtree those re-exports pull in transitively
-# (currently just PreReadAuth.h; the rest of wire/ is CBOR/framing plumbing
+# (PreReadAuth.h, QuiesceReason.h, ReaderInterface.h; the rest of wire/ is CBOR/framing plumbing
 # the Qt client never includes, so it is not part of this reference).
 #
 # A re-exported type must be listed here or its members never reach this
@@ -23,6 +23,8 @@ INPUT                   = client/qt/include/LibreSCRS/AgentClient \
                            include/LibreSCRS/Agent/OperationPhase.h \
                            include/LibreSCRS/Agent/wire/ErrorCode.h \
                            include/LibreSCRS/Agent/wire/PreReadAuth.h \
+                           include/LibreSCRS/Agent/wire/QuiesceReason.h \
+                           include/LibreSCRS/Agent/wire/ReaderInterface.h \
                            include/LibreSCRS/Agent/wire/SyncError.h
 RECURSIVE                = YES
 

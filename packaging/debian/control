@@ -9,8 +9,6 @@ Build-Depends: debhelper-compat (= 13),
                pkg-config,
                git,
                qt6-base-dev,
-               libgtest-dev,
-               dbus-daemon,
                libssl-dev,
                liblibrescrs-dev (>= 5.0)
 Standards-Version: 4.7.0
@@ -61,7 +59,6 @@ Multi-Arch: same
 Depends: ${misc:Depends},
          liblibrescrs-agentclient-qt5 (= ${binary:Version}),
          librescrs-agent-common-dev (= ${source:Version}),
-         librescrs-agent-core-dev (= ${source:Version}),
          qt6-base-dev
 Description: Development files for the LibreSCRS agent Qt client library
  Headers, linker symlink and the CMake component targets for building against

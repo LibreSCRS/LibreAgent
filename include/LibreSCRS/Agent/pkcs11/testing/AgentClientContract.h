@@ -63,6 +63,12 @@
 //       static std::unique_ptr<Harness> servingDeriveOnlyEcCert();
 //       // The secret Z servingEcCert()'s agent answers every derive() with.
 //       static std::vector<std::uint8_t> cannedSecret();
+//       // The same reader and card, its cert an RSA key whose keyUsage permits
+//       // signing only (no key or data encipherment).
+//       static std::unique_ptr<Harness> servingSigningOnlyRsaCert();
+//       // The same reader, its card one that asks for its CAN before reading
+//       // (it hashes on the card), its cert an RSA key permitting encipherment.
+//       static std::unique_ptr<Harness> servingHashOnCardRsaCert();
 //       // A client with nothing on the other end at all.
 //       static std::unique_ptr<Harness> unreachable();
 //
@@ -224,7 +230,7 @@ TYPED_TEST_P(AgentClientContract, WithNoAgentEveryCallIsDeviceRemoved)
     EXPECT_EQ(c.login(reader).status, Status::DeviceRemoved);
     EXPECT_EQ(c.logout(reader), Status::DeviceRemoved);
     EXPECT_EQ(c.certDer(reader, certId).status, Status::DeviceRemoved);
-    EXPECT_EQ(c.publicKey(reader, certId, LibreSCRS::Agent::KeyType::Rsa).status, Status::DeviceRemoved);
+    EXPECT_EQ(c.publicKey(reader, certId, LibreSCRS::Agent::KeyType::Rsa), std::unexpected(Status::DeviceRemoved));
     EXPECT_EQ(c.signRaw(reader, certId, LibreSCRS::Agent::Mechanism::RsaPkcs1Sign, payload).status,
               Status::DeviceRemoved);
     EXPECT_EQ(c.decrypt(reader, certId, payload).status, Status::DeviceRemoved);
@@ -413,6 +419,55 @@ TYPED_TEST_P(AgentClientContract, TheKeyFactsReachTheEntry)
     EXPECT_TRUE(e.canSign) << "a signing-capable key on a card the agent signs with";
 }
 
+namespace Detail {
+template <typename Traits>
+const CertEntry* firstCertOn(const AgentSnapshot& snap)
+{
+    const std::string want = Traits::reader();
+    const auto reader = std::find_if(snap.readers.begin(), snap.readers.end(),
+                                     [&want](const ReaderState& r) { return r.readerPath == want; });
+    return (reader == snap.readers.end() || reader->certs.empty()) ? nullptr : &reader->certs.front();
+}
+} // namespace Detail
+
+// What the module may ask the card to do with an RSA key is one policy on
+// every transport (certEntryFrom). An RSA key the certificate does not let
+// encipher is not offered for decryption, even on a card that decrypts.
+TYPED_TEST_P(AgentClientContract, AnRsaKeyWithoutEnciphermentDoesNotDecrypt)
+{
+    {
+        auto harness = TypeParam::serving();
+        ASSERT_NE(harness, nullptr);
+        const AgentSnapshot snap = harness->client().snapshot();
+        const CertEntry* e = Detail::firstCertOn<TypeParam>(snap);
+        ASSERT_NE(e, nullptr);
+        EXPECT_EQ(e->keyType, LibreSCRS::Agent::KeyType::Rsa);
+        EXPECT_TRUE(e->canDecrypt) << "an RSA key permitting encipherment, on a card that decrypts";
+        EXPECT_FALSE(e->signsHashOnCard);
+    }
+    auto harness = TypeParam::servingSigningOnlyRsaCert();
+    ASSERT_NE(harness, nullptr);
+    const AgentSnapshot snap = harness->client().snapshot();
+    const CertEntry* e = Detail::firstCertOn<TypeParam>(snap);
+    ASSERT_NE(e, nullptr);
+    EXPECT_FALSE(e->canDecrypt) << "keyUsage permits neither key nor data encipherment";
+    EXPECT_TRUE(e->canSign);
+}
+
+// A card that asks for its CAN hashes on the card: its RSA key signs the
+// message, and the card has no decipher primitive to offer.
+TYPED_TEST_P(AgentClientContract, AHashOnCardKeySignsTheMessageAndDoesNotDecrypt)
+{
+    auto harness = TypeParam::servingHashOnCardRsaCert();
+    ASSERT_NE(harness, nullptr);
+    const AgentSnapshot snap = harness->client().snapshot();
+    const CertEntry* e = Detail::firstCertOn<TypeParam>(snap);
+    ASSERT_NE(e, nullptr);
+    EXPECT_TRUE(e->signsHashOnCard);
+    EXPECT_TRUE(e->canSign);
+    EXPECT_FALSE(e->canDecrypt);
+}
+
 // A key the agent derives with but whose certificate does not sign still
 // arrives -- as a key that derives and does not sign, on both transports.
 TYPED_TEST_P(AgentClientContract, ADeriveOnlyKeyArrivesAsOneThatDoesNotSign)
@@ -439,11 +494,12 @@ TYPED_TEST_P(AgentClientContract, AnEcKeyServesItsPoint)
     ASSERT_NE(harness, nullptr);
     const PublicKeyResult pk =
         harness->client().publicKey(TypeParam::reader(), TypeParam::certId(), LibreSCRS::Agent::KeyType::Ec);
-    EXPECT_EQ(pk.status, Status::Ok);
-    EXPECT_EQ(pk.crv, "P-384");
-    EXPECT_EQ(pk.x.size(), 48u);
-    EXPECT_EQ(pk.y.size(), 48u);
-    EXPECT_TRUE(pk.modulus.empty());
+    ASSERT_TRUE(pk.has_value()) << "status " << static_cast<int>(pk.error());
+    const auto* ec = std::get_if<LibreSCRS::Agent::Operations::EcPublicKey>(&*pk);
+    ASSERT_NE(ec, nullptr) << "an EC key was served as RSA";
+    EXPECT_EQ(ec->crv, "P-384");
+    EXPECT_EQ(ec->x.size(), 48u);
+    EXPECT_EQ(ec->y.size(), 48u);
 }
 
 // An input the agent refuses before any prompt is the caller's mistake on both
@@ -480,9 +536,8 @@ TYPED_TEST_P(AgentClientContract, OnlyASigningMechanismIsSentAsASignature)
     auto harness = TypeParam::refusingSign(Refusal::UserNotLoggedIn);
     ASSERT_NE(harness, nullptr);
     const std::vector<std::uint8_t> payload(48, 0x01);
-    for (const Mechanism m : {Mechanism::RsaPkcs1Sign, Mechanism::RsaPssSign, Mechanism::EcdsaSign,
-                              Mechanism::RsaPkcs1Decrypt, Mechanism::RsaOaepDecrypt, Mechanism::EcdhDerive,
-                              Mechanism::RsaPkcs1Encrypt, Mechanism::RsaOaepEncrypt, Mechanism::Sha256RsaPkcs1Sign}) {
+    for (const Mechanism m : {Mechanism::RsaPkcs1Sign, Mechanism::EcdsaSign, Mechanism::RsaPkcs1Decrypt,
+                              Mechanism::EcdhDerive, Mechanism::Sha256RsaPkcs1Sign}) {
         const bool signs = LibreSCRS::Agent::signMechanismFromToken(LibreSCRS::Agent::mechanismToken(m)) == m;
         const Status got = harness->client().signRaw(TypeParam::reader(), TypeParam::certId(), m, payload).status;
         EXPECT_EQ(got, signs ? Status::UserNotLoggedIn : Status::NotSupported)
@@ -557,9 +612,11 @@ REGISTER_TYPED_TEST_SUITE_P(AgentClientContract, EveryRefusalReachesItsOwnStatus
                             AServingAgentEnumeratesItsCard, ACardIsNamedAfterItsCertificateHolder,
                             ACardWithoutACertificateIsNamedAfterItsReader, ACertWithoutACommonNameDoesNotNameTheToken,
                             AReaderCarriesItsName, TheCardsConsentRuleReachesTheEntry, ASignWithoutALeaseIsNotLoggedIn,
-                            TheKeyFactsReachTheEntry, ADeriveOnlyKeyArrivesAsOneThatDoesNotSign, AnEcKeyServesItsPoint,
-                            ASignTheAgentRefusesAsInvalidIsInvalidInput, ADecryptTheAgentRefusesAsInvalidIsInvalidInput,
-                            OnlyASigningMechanismIsSentAsASignature, ADeriveAnswersTheSecretOrItsRefusal,
-                            ALoginHoldsUntilItEnds, AnAgentThatDoesNotOfferTheQuestionLeavesItUnanswered);
+                            TheKeyFactsReachTheEntry, AnRsaKeyWithoutEnciphermentDoesNotDecrypt,
+                            AHashOnCardKeySignsTheMessageAndDoesNotDecrypt, ADeriveOnlyKeyArrivesAsOneThatDoesNotSign,
+                            AnEcKeyServesItsPoint, ASignTheAgentRefusesAsInvalidIsInvalidInput,
+                            ADecryptTheAgentRefusesAsInvalidIsInvalidInput, OnlyASigningMechanismIsSentAsASignature,
+                            ADeriveAnswersTheSecretOrItsRefusal, ALoginHoldsUntilItEnds,
+                            AnAgentThatDoesNotOfferTheQuestionLeavesItUnanswered);
 
 } // namespace LibreSCRS::Pkcs11Agent::Testing

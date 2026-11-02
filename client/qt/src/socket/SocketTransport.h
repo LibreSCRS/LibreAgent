@@ -45,9 +45,9 @@
 //     connection survives; a call awaiting that reply fails
 //     CallError::ProtocolError for itself alone.
 //   - AgentQuiesced -> availability semantics: the agent quiesced card
-//     access (sleep/lock/user-switch), so the seam reports
-//     onServiceUnregistered (terminalizing in-flight operations exactly like
-//     an agent death) while the connection stays open; the next
+//     access (sleep/lock/user-switch), so the seam reports onQuiesced(reason)
+//     and then onServiceUnregistered (terminalizing in-flight operations
+//     exactly like an agent death) while the connection stays open; the next
 //     probeAvailability() issues a bounded GetState round-trip and reports
 //     available again only once the agent answers (there is no resume event
 //     on the wire).
@@ -83,11 +83,15 @@ class SocketTransport : public QObject, public TransportSeam
 {
     Q_OBJECT
 public:
-    /// Production: resolveAgentSocketPath() (env override, then the platform
-    /// default). The connection is established lazily by the first
-    /// probeAvailability() — the AgentClient ctor's probe — never eagerly.
+    /// Production: resolveAgentSocketPath(). The connection is established
+    /// lazily by the first probeAvailability() — the AgentClient ctor's probe —
+    /// never eagerly. On macOS every connection checks, before the first byte
+    /// is sent, that the process serving the socket is the card agent (its
+    /// code signature: Wire/darwin/PeerCodeSigning.h); a socket served by
+    /// anything else reads as no agent at all.
     SocketTransport();
-    /// Tests: an explicit socket path (the fake agent's temp path).
+    /// Tests: an explicit socket path (the fake agent's temp path). No peer
+    /// check: the fake is this test process, which no one signed as the agent.
     explicit SocketTransport(QString socketPath);
     ~SocketTransport() override;
 
@@ -95,6 +99,7 @@ public:
     void setRegistryListener(RegistryListener* listener) override;
     [[nodiscard]] bool probeAvailability() override;
     [[nodiscard]] bool agentInstalled() override;
+    [[nodiscard]] AgentStartResult startAgent() override;
     [[nodiscard]] std::optional<RegistrySnapshot> fetchRegistry() override;
     [[nodiscard]] QStringList features() const override;
     // TransportSeam::agentVersion() is deliberately absent from this override
@@ -228,9 +233,14 @@ private:
     /// correlated reply.
     [[nodiscard]] SyncResult callSync(const LibreSCRS::Agent::Wire::RequestVariant& request, int timeoutMs,
                                       std::span<const int> passFds = {});
+    /// Send one frame within @p timeoutMs, waiting for room in the send buffer
+    /// instead of reading a full one as a broken connection.
+    [[nodiscard]] bool sendFrameBounded(std::span<const std::uint8_t> body, std::span<const int> passFds,
+                                        int timeoutMs);
     [[nodiscard]] OperationListener* operationListenerFor(quint64 op, OperationKind* kindOut = nullptr) const;
 
     QString m_socketPath;
+    bool m_verifyPeer = false; // production connections only (see the ctors)
     LibreSCRS::Agent::Wire::UniqueFd m_fd;
     std::unique_ptr<QSocketNotifier> m_notifier;
     // Recreated per connection (the class is deliberately non-copyable and

@@ -11,15 +11,15 @@
 # block, AFTER that block's find_package(Qt6 ...) call -- Qt enters this
 # whole repo's build ONLY there; LibreAgent::Core/::Wire never see it.
 
-# The four public QObject headers are listed as target sources so AUTOMOC
-# scans them (their generated moc TUs are compiled into this library -- the
-# QObject types must never be duplicated across .so boundaries).
-qt_add_library(LibreAgentClientQt SHARED
+# One source list for the shipped library and for the testing archive below,
+# so the two are always built from the same code.
+set(_clientqt_sources
     src/AgentClient.cpp
     src/AgentCard.cpp
     src/AgentOperation.cpp
     src/AgentReader.cpp
     src/CredentialTypes.cpp
+    src/FailureCopy.cpp
     src/FdHandle.cpp
     src/FieldOrder.cpp
     src/IdentityRows.cpp
@@ -27,51 +27,54 @@ qt_add_library(LibreAgentClientQt SHARED
     src/SealedPayloadInternal.cpp
     src/SecurityChecks.cpp
     src/SharedAgentClient.cpp
+    src/SignedOutputPath.cpp
     src/TokenMap.cpp
     include/LibreSCRS/AgentClient/AgentClient.h
     include/LibreSCRS/AgentClient/AgentCard.h
     include/LibreSCRS/AgentClient/AgentOperation.h
-    include/LibreSCRS/AgentClient/AgentReader.h)
-add_library(LibreAgent::ClientQt ALIAS LibreAgentClientQt)
-
-# The socket transport (AF_UNIX + canonical CBOR over LibreAgent::Wire):
-# compiled on EVERY platform — it is the macOS production transport, written
-# portably, and both Linux and Darwin are where it is testable against the
-# fake socket agent. ErrorNameMap sits here too (not in the Linux-only D-Bus
-# block): it is pure string classification with no QtDBus dependency, and its
-# short-name half is the socket wire's sync-error vocabulary, so both
-# transports share the one table. MemfdSource.{h,cpp} (same directory) is
-# deliberately NOT a library source — it is the Linux/Darwin-test-only
-# document source, compiled only into the socket test binary.
-target_sources(LibreAgentClientQt PRIVATE
+    include/LibreSCRS/AgentClient/AgentReader.h
+    # The socket transport (AF_UNIX + canonical CBOR over LibreAgent::Wire):
+    # compiled on EVERY platform -- it is the macOS production transport,
+    # written portably, and both Linux and Darwin are where it is testable
+    # against the fake socket agent. ErrorNameMap sits here too (not in the
+    # Linux-only D-Bus block): it is pure string classification with no QtDBus
+    # dependency, and its short-name half is the socket wire's sync-error
+    # vocabulary, so both transports share the one table.
     src/dbus/ErrorNameMap.cpp
     src/socket/SocketPath.cpp
     src/socket/SocketTransport.cpp
     src/socket/SocketTransport.h)
-
-# The Apple team the macOS client is built for: the App Group container that
-# holds the agent's socket is named after it (empty: "group.", a build for CI
-# and tests). A compiled constant, never read from the environment. The same
-# cache variable the macOS agent reads, so a build that pulls both in sets the
-# team once.
-set(LIBRESCRS_TEAM_ID "" CACHE STRING
-    "Apple Team ID the App Group holding the agent socket is named after (empty: group.)")
-if(NOT LIBRESCRS_TEAM_ID STREQUAL "" AND NOT LIBRESCRS_TEAM_ID MATCHES "^[A-Z0-9]+$")
-    message(FATAL_ERROR "LIBRESCRS_TEAM_ID must be upper-case letters and digits, got '${LIBRESCRS_TEAM_ID}'")
-endif()
-# PRIVATE: no header carries the macro. The test binaries that compile
-# SocketPath.cpp directly set the same definition (client/qt/tests/).
-target_compile_definitions(LibreAgentClientQt PRIVATE LIBRESCRS_TEAM_ID="${LIBRESCRS_TEAM_ID}")
-
 # The D-Bus transport: Linux-only, matching the Linux-only Qt6::DBus
 # dependency below (the socket transport above is the macOS production path).
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
-    target_sources(LibreAgentClientQt PRIVATE
+    list(APPEND _clientqt_sources
         src/dbus/CappedCall.cpp
         src/dbus/DBusTransport.cpp
         src/dbus/DBusTransport.h
         src/dbus/Marshal.cpp)
 endif()
+# Starting the agent on macOS launches its host app through AppKit.
+if(APPLE)
+    enable_language(OBJCXX)
+    list(APPEND _clientqt_sources
+        src/socket/MacAgentHost.h
+        src/socket/MacAgentHost.mm)
+endif()
+
+# The four public QObject headers are listed as sources so AUTOMOC scans them
+# (their generated moc TUs are compiled into this library -- the QObject types
+# must never be duplicated across .so boundaries).
+qt_add_library(LibreAgentClientQt SHARED ${_clientqt_sources})
+add_library(LibreAgent::ClientQt ALIAS LibreAgentClientQt)
+if(APPLE)
+    target_link_libraries(LibreAgentClientQt PRIVATE "-framework AppKit")
+endif()
+
+# The Apple team the macOS client is built for (LIBRESCRS_TEAM_ID, declared
+# with the wire library at the top level): the App Group container that holds
+# the agent's socket is named after it.
+# PRIVATE: no header carries the macro.
+target_compile_definitions(LibreAgentClientQt PRIVATE LIBRESCRS_TEAM_ID="${LIBRESCRS_TEAM_ID}")
 
 set_target_properties(LibreAgentClientQt PROPERTIES
     OUTPUT_NAME librescrs-agentclient-qt
@@ -81,6 +84,16 @@ set_target_properties(LibreAgentClientQt PROPERTIES
     VISIBILITY_INLINES_HIDDEN ON
     AUTOMOC ON
     POSITION_INDEPENDENT_CODE ON)
+
+# The exported surface is what the public headers declare; see the script
+# for why hidden visibility alone does not get there. GNU ld and lld read it;
+# Apple's linker has no version scripts.
+if(NOT APPLE)
+    target_link_options(LibreAgentClientQt PRIVATE
+        "LINKER:--version-script=${CMAKE_CURRENT_SOURCE_DIR}/agentclient-qt.map")
+    set_property(TARGET LibreAgentClientQt APPEND PROPERTY
+        LINK_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/agentclient-qt.map")
+endif()
 
 include(GenerateExportHeader)
 # EXPORT_FILE_NAME is an addition beyond generate_export_header()'s default
@@ -114,14 +127,7 @@ target_link_libraries(LibreAgentClientQt
         $<$<PLATFORM_ID:Linux>:Qt6::DBus>
         LibreAgent::Wire)
 
-target_compile_options(LibreAgentClientQt PRIVATE
-    -Wall -Wextra -Wpedantic
-    -Wshadow -Wnon-virtual-dtor -Wold-style-cast -Wcast-align
-    -Woverloaded-virtual -Wconversion -Wsign-conversion -Wnull-dereference
-    -Wdouble-promotion -Wformat=2)
-if(LIBRESCRS_AGENT_WERROR)
-    target_compile_options(LibreAgentClientQt PRIVATE -Werror)
-endif()
+libreagent_strict_warnings(LibreAgentClientQt)
 
 # Exposed to cmake/InstallExport.cmake (install() the generated header) and
 # to client/qt/tests/HeaderAcceptance/ (the exact include-path set that
@@ -146,20 +152,35 @@ set(LIBREAGENT_CLIENTQT_PUBLIC_INCLUDE_DIR ${LIBREAGENT_CLIENTQT_PUBLIC_INCLUDE_
 set(LIBREAGENT_CLIENTQT_EXPORT_INCLUDE_DIR ${LIBREAGENT_CLIENTQT_EXPORT_INCLUDE_DIR} PARENT_SCOPE)
 set(LIBREAGENT_CLIENTQT_EXPORT_HEADER ${LIBREAGENT_CLIENTQT_EXPORT_HEADER} PARENT_SCOPE)
 
-# This component's own tests (TypesTest/TokenMapTest/HeaderAcceptance) live
-# under client/qt/tests/ rather than the top-level tests/ directory Core/Wire
-# share -- ClientQt is meant to stay a self-contained subtree. Same
-# FetchContent-consumer gate as the root CMakeLists.txt's own
-# `if(PROJECT_IS_TOP_LEVEL) ... add_subdirectory(tests)`: a platform backend
-# pulling this repo in via FetchContent gets the library, not its test suite.
-# enable_testing() is safe to call again here even though the root
-# CMakeLists.txt may already have called it -- add_subdirectory(client/qt)
-# runs BEFORE that root call (this block sits above the WIRE-gated
-# `if(PROJECT_IS_TOP_LEVEL)` block that includes InstallExport.cmake and
-# enables testing), so this component needs its own call for ctest to
-# discover add_test() registrations made below it.
+# The testing archive: the same sources, built once more with the one seam the
+# shipped library does not have -- ClientTestAccess, which constructs an
+# AgentClient over an injected transport (a fake, or a real transport bound to
+# a private test bus or socket). This repository's suites link it INSTEAD of
+# the shared library, so the shipped .so carries no way to swap its transport
+# and its public header names no test hook. Never installed, never exported.
 if(PROJECT_IS_TOP_LEVEL)
-    enable_testing()
+    qt_add_library(LibreAgentClientQtTesting STATIC ${_clientqt_sources} src/ClientTestAccess.cpp)
+    set_target_properties(LibreAgentClientQtTesting PROPERTIES
+        AUTOMOC ON
+        POSITION_INDEPENDENT_CODE ON)
+    # LIBREAGENT_CLIENT_SOCKET_TESTING: the socket path may come from the
+    # test-only override (src/socket/SocketPath.h).
+    target_compile_definitions(LibreAgentClientQtTesting
+        PRIVATE LIBRESCRS_TEAM_ID="${LIBRESCRS_TEAM_ID}"
+        PUBLIC LIBREAGENT_CLIENT_TESTING LIBREAGENT_CLIENT_SOCKET_TESTING)
+    target_include_directories(LibreAgentClientQtTesting PUBLIC
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
+        ${CMAKE_CURRENT_BINARY_DIR}/include
+        ${PROJECT_SOURCE_DIR}/include
+        ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    target_compile_features(LibreAgentClientQtTesting PUBLIC cxx_std_23)
+    target_link_libraries(LibreAgentClientQtTesting PUBLIC
+        Qt6::Core
+        $<$<PLATFORM_ID:Linux>:Qt6::DBus>
+        LibreAgent::Wire)
+    if(APPLE)
+        target_link_libraries(LibreAgentClientQtTesting PUBLIC "-framework AppKit")
+    endif()
 endif()
 
 # The subdirectory is entered for a SECOND reason now: it also defines the
@@ -167,7 +188,13 @@ endif()
 # asks for without becoming the top-level project. The ctest registrations
 # inside it stay behind their own PROJECT_IS_TOP_LEVEL guard -- entering the
 # directory must not hand a FetchContent consumer this repo's test suite.
-if(PROJECT_IS_TOP_LEVEL OR LIBREAGENT_BUILD_CLIENT_QT_TEST_SUPPORT)
+#
+# A package build (BUILD_TESTING=OFF, doubles OFF) does not enter it at all, so
+# GoogleTest and dbus-run-session are needed only by a build that runs tests.
+# This component's own suite lives in client/qt/tests/ rather than the
+# top-level tests/ -- ClientQt is meant to stay a self-contained subtree.
+# BUILD_TESTING and enable_testing() come from the root include(CTest).
+if((PROJECT_IS_TOP_LEVEL AND BUILD_TESTING) OR LIBREAGENT_BUILD_CLIENT_QT_TEST_SUPPORT)
     add_subdirectory(tests)
 endif()
 
@@ -207,6 +234,8 @@ if(PROJECT_IS_TOP_LEVEL)
         OperationPhase.h
         wire/ErrorCode.h
         wire/PreReadAuth.h
+        wire/QuiesceReason.h
+        wire/ReaderInterface.h
         wire/SyncError.h)
 
     set(_clientqt_reexports_on_disk "")

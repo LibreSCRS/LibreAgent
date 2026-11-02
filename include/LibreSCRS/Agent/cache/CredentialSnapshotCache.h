@@ -35,7 +35,7 @@ class CardReadCache;
 // that never passed through this cache.
 //
 // Residency mirrors the sibling CardReadCache: a sliding idle window refreshed on
-// every get, and scrub-on-drop — every record string is OPENSSL_cleanse'd before
+// every get, and scrub-on-drop — every record string is secureZero'd before
 // an entry is dropped (overwrite / expiry / invalidate / clear) so no card-derived
 // label or lifecycle state lingers in freed heap. Never persisted.
 //

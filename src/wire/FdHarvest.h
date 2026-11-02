@@ -165,11 +165,11 @@ struct FdRecvResult
     if (!passFds.empty()) {
         const std::size_t bytes = sizeof(int) * passFds.size();
         msg.msg_control = control.data();
-        msg.msg_controllen = CMSG_SPACE(bytes);
+        msg.msg_controllen = static_cast<socklen_t>(CMSG_SPACE(bytes));
         cmsghdr* c = CMSG_FIRSTHDR(&msg);
         c->cmsg_level = SOL_SOCKET;
         c->cmsg_type = SCM_RIGHTS;
-        c->cmsg_len = CMSG_LEN(bytes);
+        c->cmsg_len = static_cast<socklen_t>(CMSG_LEN(bytes));
         std::memcpy(CMSG_DATA(c), passFds.data(), bytes);
     }
     return ::sendmsg(fd, &msg, kSendNoSigPipe);

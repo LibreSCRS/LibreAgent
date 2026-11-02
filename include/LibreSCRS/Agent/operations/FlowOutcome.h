@@ -40,7 +40,6 @@ enum class FlowOutcome {
 enum class SeamStatus {
     Ok,                 ///< The call produced its result.
     AuthFailed,         ///< The card refused the credential presented.
-    ParseError,         ///< The card answered, but the answer did not decode.
     UnsupportedCard,    ///< No plugin claims this card.
     CommunicationError, ///< The exchange itself failed.
     Cancelled,          ///< Stopped on request.

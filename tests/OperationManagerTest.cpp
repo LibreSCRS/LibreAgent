@@ -13,6 +13,7 @@
 
 #include <LibreSCRS/Auth/ErrorKeys.h>
 #include <LibreSCRS/SmartCard/CardSession.h>
+#include <LibreSCRS/SmartCard/testing/CardSessionTesting.h>
 #include <gtest/gtest.h>
 #include <atomic>
 #include <chrono>
@@ -324,7 +325,7 @@ TEST(OperationManager, InvalidateReaderSessionReopensOnNextAcquire)
         [&opens](const std::string& r)
             -> std::expected<std::shared_ptr<LibreSCRS::SmartCard::CardSession>, LibreSCRS::SmartCard::OpenError> {
             opens.fetch_add(1);
-            return LibreSCRS::SmartCard::detail::makeDetachedCardSession(r);
+            return LibreSCRS::SmartCard::Testing::makeDetachedCardSession(r);
         });
 
     // First acquire on the worker thread: opens the session once and records the
@@ -550,7 +551,7 @@ void installCountingFactory(OperationManager& mgr, std::atomic<int>& opens)
         [&opens](const std::string& r)
             -> std::expected<std::shared_ptr<LibreSCRS::SmartCard::CardSession>, LibreSCRS::SmartCard::OpenError> {
             opens.fetch_add(1);
-            return LibreSCRS::SmartCard::detail::makeDetachedCardSession(r);
+            return LibreSCRS::SmartCard::Testing::makeDetachedCardSession(r);
         });
 }
 
@@ -671,7 +672,7 @@ public:
         return
             [this](const std::string& r)
                 -> std::expected<std::shared_ptr<LibreSCRS::SmartCard::CardSession>, LibreSCRS::SmartCard::OpenError> {
-                auto owner = std::make_shared<Owned>(LibreSCRS::SmartCard::detail::makeDetachedCardSession(r), this);
+                auto owner = std::make_shared<Owned>(LibreSCRS::SmartCard::Testing::makeDetachedCardSession(r), this);
                 {
                     const std::lock_guard lock(m_mutex);
                     ++m_opens;
@@ -1012,17 +1013,17 @@ TEST(OperationManager, RefusedInsertionProbeReportsTheOpenErrorAndNextOperationR
             -> std::expected<std::shared_ptr<LibreSCRS::SmartCard::CardSession>, LibreSCRS::SmartCard::OpenError> {
             if (opens.fetch_add(1) == 0) {
                 return std::unexpected{LibreSCRS::SmartCard::OpenError{
-                    LibreSCRS::SmartCard::OpenError::Kind::ReaderUnavailable, LibreSCRS::Auth::ErrorKeys::genericComm(),
+                    LibreSCRS::SmartCard::OpenError::Kind::SessionRefused, LibreSCRS::Auth::ErrorKeys::genericComm(),
                     std::string{"SCARD_E_SHARING_VIOLATION"}}};
             }
-            return LibreSCRS::SmartCard::detail::makeDetachedCardSession(r);
+            return LibreSCRS::SmartCard::Testing::makeDetachedCardSession(r);
         });
 
     auto refused = unwritten();
     probeOnWorker(mgr, [&](CardSessionHolder& h) { refused = h.fullResolution(); });
     EXPECT_EQ(opens.load(), 1);
     ASSERT_FALSE(refused.has_value()) << "a refused probe resolves nothing and says so";
-    EXPECT_EQ(refused.error().kind, LibreSCRS::SmartCard::OpenError::Kind::ReaderUnavailable)
+    EXPECT_EQ(refused.error().kind, LibreSCRS::SmartCard::OpenError::Kind::SessionRefused)
         << "the factory's own error, not a stand-in";
     EXPECT_EQ(refused.error().diagnosticDetail, std::optional<std::string>{"SCARD_E_SHARING_VIOLATION"});
 
@@ -1092,7 +1093,7 @@ TEST(OperationManager, ReaderBIsNotDelayedByReaderA)
                 cv.notify_all();
                 cv.wait_for(lock, 10s, [&] { return releaseA; });
             }
-            return LibreSCRS::SmartCard::detail::makeDetachedCardSession(r);
+            return LibreSCRS::SmartCard::Testing::makeDetachedCardSession(r);
         });
 
     mgr.enqueueHolderProbeForTest(readerA, [&](CardSessionHolder& h) {

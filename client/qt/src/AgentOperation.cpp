@@ -2,9 +2,11 @@
 // SPDX-FileCopyrightText: 2026 hirashix0
 
 #include <LibreSCRS/AgentClient/AgentOperation.h>
+#include <LibreSCRS/AgentClient/ClientTimeouts.h>
 
 #include "TransportSeam.h"
 
+#include <QTimer>
 #include <QLoggingCategory>
 #include <QMetaObject>
 
@@ -114,7 +116,28 @@ struct AgentOperation::Private final : public OperationListener, public Transpor
     QByteArray der;
     quint64 derToken = 0; // nonzero while a DER fetch is in flight
 
-    Private(AgentOperation* owner, Kind operationKind) : q(owner), kind(operationKind) {}
+    Private(AgentOperation* owner, Kind operationKind) : q(owner), kind(operationKind)
+    {
+        stallTimer.setSingleShot(true);
+        QObject::connect(&stallTimer, &QTimer::timeout, q, [this]() { q->giveUpStalled(); });
+    }
+
+    // ---- stall bound ----------------------------------------------------------
+    QTimer stallTimer;
+    int stallBudgetMs = kLongOperationTimeoutMs;
+
+    /// The one arming rule: a person at the prompt stops the clock, any other
+    /// phase (re)starts it, so every report from the agent is a heartbeat.
+    void armForPhase(OperationPhase current)
+    {
+        const bool personAtPrompt =
+            current == OperationPhase::AwaitingConsent || current == OperationPhase::Authenticating;
+        if (finishedEmitted || stallBudgetMs <= 0 || personAtPrompt) {
+            stallTimer.stop();
+            return;
+        }
+        stallTimer.start(stallBudgetMs);
+    }
 
     // ---- OperationListener --------------------------------------------------
 
@@ -131,6 +154,7 @@ struct AgentOperation::Private final : public OperationListener, public Transpor
             phase = newPhase;
         }
         progress = newProgress;
+        armForPhase(phase);
         Q_EMIT q->phaseChanged(phase, newProgress);
     }
 
@@ -286,6 +310,7 @@ AgentOperation::AgentOperation(TransportSeam* transport, const QString& operatio
     d->inCtorRecovery = true;
     recoverIfAlreadyFinished();
     d->inCtorRecovery = false;
+    d->armForPhase(d->phase);
 }
 
 AgentOperation::AgentOperation(Kind kind, QObject* parent) : QObject(parent), d(std::make_unique<Private>(this, kind))
@@ -299,6 +324,32 @@ AgentOperation::~AgentOperation()
     if (d->transport != nullptr && d->derToken != 0) {
         d->transport->cancelCertificateDer(d->derToken, d.get());
     }
+}
+
+void AgentOperation::setStallBudget(int milliseconds)
+{
+    d->stallBudgetMs = milliseconds;
+    if (d->stallTimer.isActive() || milliseconds <= 0) {
+        d->armForPhase(d->phase);
+    }
+}
+
+void AgentOperation::giveUpStalled()
+{
+    // The agent went quiet while it was supposed to be working: a lost
+    // terminal signal, or an agent that holds its name and answers nothing.
+    // Tell it to stop, then finish here -- a cancel the agent never hears is
+    // still a finished operation for the consumer.
+    if (d->finishedEmitted) {
+        return;
+    }
+    cancel();
+    if (d->transport != nullptr && d->derToken != 0) {
+        d->transport->cancelCertificateDer(d->derToken, d.get());
+        d->derToken = 0;
+    }
+    emitFinishedOnce(OperationStatus::Error, ErrorCode::None, CallError::Timeout, std::nullopt, QString(),
+                     QStringLiteral("The card agent stopped reporting progress."));
 }
 
 void AgentOperation::cancel()
@@ -424,6 +475,7 @@ void AgentOperation::startCertificateDer(TransportSeam* transport, const QString
 {
     d->transport = transport;
     d->derToken = transport->requestCertificateDer(readerId, certId, d.get());
+    d->armForPhase(d->phase);
 }
 
 void AgentOperation::finalizeTerminal(OperationStatus terminalStatus, ErrorCode code, const QString& msgKey,
@@ -499,6 +551,7 @@ void AgentOperation::emitFinishedOnce(OperationStatus terminalStatus, ErrorCode 
     // onResult / the recovery pull) must be true the instant this returns, so
     // the ctor's synchronous recovery still reports a terminal operation.
     d->finishedEmitted = true;
+    d->stallTimer.stop();
     d->status = terminalStatus;
     d->errorCode = code;
     d->callError = call;

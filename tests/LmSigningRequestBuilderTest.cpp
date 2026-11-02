@@ -40,8 +40,7 @@ TEST(LmSigningRequestBuilder, NoTsaUrlInstallsNoOverride)
     const SignParams params = baseParams();
     auto request = buildSigningRequest(params, sign::SignatureFormat::Pades, sign::SignatureLevel::B_T,
                                        sign::PackagingMode::Enveloped, {}, false);
-    EXPECT_FALSE(request.hasTsaOverride());
-    EXPECT_FALSE(static_cast<bool>(request.tsaOverride()));
+    EXPECT_TRUE(request.tsaOverride().url.empty());
 }
 
 TEST(LmSigningRequestBuilder, TsaUrlInstallsAPerRequestOverrideCarryingTheUrl)
@@ -50,10 +49,7 @@ TEST(LmSigningRequestBuilder, TsaUrlInstallsAPerRequestOverrideCarryingTheUrl)
     params.tsaUrl = "https://tsa.example.com/ts";
     auto request = buildSigningRequest(params, sign::SignatureFormat::Pades, sign::SignatureLevel::B_T,
                                        sign::PackagingMode::Enveloped, {}, false);
-    ASSERT_TRUE(request.hasTsaOverride());
-    sign::TsaContext ctx;
-    const auto tsaRequest = request.tsaOverride()(ctx);
-    EXPECT_EQ(tsaRequest.url, "https://tsa.example.com/ts");
+    EXPECT_EQ(request.tsaOverride().url, "https://tsa.example.com/ts");
 }
 
 TEST(LmSigningRequestBuilder, NoVisualLeavesVisualParamsEmpty)
@@ -122,11 +118,9 @@ TEST(LmSigningRequestBuilder, ReasonLocationDisplayNameAndAllowExpiredThreadThro
     EXPECT_EQ(request.level(), sign::SignatureLevel::B_B);
     EXPECT_EQ(request.packaging(), sign::PackagingMode::Enveloped);
     EXPECT_EQ(request.keyId(), (std::vector<std::uint8_t>{0xAB, 0xCD}));
-    // The display name rides LM's documentName API -- NOT a name-hint abuse of
-    // inputFile. inputFile stays EMPTY: this is the buffer-sign path, where
-    // nothing is ever opened, so no code here has any business setting a path.
+    // The display name rides LM's documentName API: this is the buffer-sign
+    // path, where nothing is ever opened.
     EXPECT_EQ(request.documentName(), "Doc.pdf");
-    EXPECT_TRUE(request.inputFile().empty());
 }
 
 TEST(LmSigningRequestBuilder, EmptyDisplayNameLeavesDocumentNameUnset)
@@ -135,7 +129,6 @@ TEST(LmSigningRequestBuilder, EmptyDisplayNameLeavesDocumentNameUnset)
     auto request = buildSigningRequest(params, sign::SignatureFormat::Pades, sign::SignatureLevel::B_T,
                                        sign::PackagingMode::Enveloped, {}, false);
     EXPECT_TRUE(request.documentName().empty());
-    EXPECT_TRUE(request.inputFile().empty());
 }
 
 TEST(LmSigningRequestBuilder, DisplayNameIsForwardedVerbatimWithoutASecondSanitisationLayer)
@@ -149,5 +142,4 @@ TEST(LmSigningRequestBuilder, DisplayNameIsForwardedVerbatimWithoutASecondSaniti
     auto request = buildSigningRequest(params, sign::SignatureFormat::Pades, sign::SignatureLevel::B_T,
                                        sign::PackagingMode::Enveloped, {}, false);
     EXPECT_EQ(request.documentName(), "../etc/Doc.pdf");
-    EXPECT_TRUE(request.inputFile().empty());
 }

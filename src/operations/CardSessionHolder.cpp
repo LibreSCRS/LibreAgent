@@ -10,33 +10,39 @@
 namespace LibreSCRS::Agent::Operations {
 
 CardSessionHolder::CardSessionHolder(std::string readerName, SessionFactory factory, CandidateResolver resolver,
-                                     std::shared_ptr<LibreSCRS::SmartCard::CardMap> sharedMap, Clock clock)
+                                     Clock clock)
     : m_readerName(std::move(readerName)), m_factory(std::move(factory)), m_resolver(std::move(resolver)),
-      m_sharedMap(std::move(sharedMap)),
       m_clock(clock ? std::move(clock) : Clock{[] { return std::chrono::steady_clock::now(); }})
 {}
 
 std::expected<AcquiredCard, LibreSCRS::SmartCard::OpenError> CardSessionHolder::acquire()
 {
     if (!m_session) {
+        std::shared_ptr<LibreSCRS::SmartCard::CardSession> session;
         if (m_hold) {
             // Promote: the parked connection serves the operation again. It
             // carries no secrets (demote erased them), so the candidates are
             // resolved afresh by the same resolver -- the same union of plugins.
-            m_session = std::move(m_hold);
+            session = std::move(m_hold);
         } else {
             auto opened = m_factory(m_readerName);
             if (!opened) {
                 return std::unexpected{opened.error()};
             }
-            m_session = std::move(*opened);
+            session = std::move(*opened);
         }
-        m_candidates = m_resolver(m_session->atr(), *m_session);
+        // Resolve before committing: a resolver that throws must leave no
+        // session behind, or every later acquire would reuse it with an empty
+        // candidate list and never resolve again. The local closes the
+        // connection on the way out; the next acquire starts over.
+        CandidateList candidates = m_resolver(session->atr(), *session);
+        m_session = std::move(session);
+        m_candidates = std::move(candidates);
     }
     // Stamp on every successful acquire (new or reused session) so a busy
     // reader is never swept.
     m_lastUsed = m_clock();
-    return AcquiredCard{m_session, m_candidates, m_sharedMap};
+    return AcquiredCard{m_session, m_candidates};
 }
 
 void CardSessionHolder::eraseCredentials() noexcept
@@ -171,6 +177,15 @@ void CardSessionHolder::releaseHold() noexcept
 
 void CardSessionHolder::demote() noexcept
 {
+    // A session that ran secure messaging is not parked. Clearing the host's
+    // side of the channel leaves the CHIP mid-session -- it still expects
+    // protected APDUs under keys nobody holds any more -- and a held connection
+    // keeps it powered in that state. Close it instead; the next operation
+    // opens a fresh connection and the card starts from its reset state.
+    if (m_session->hasLiveSecureChannel()) {
+        invalidate();
+        return;
+    }
     // Every secret the session carried goes before the connection is parked:
     // what the candidate plugins deposited for it (a signing PIN, an eMRTD
     // CAN/MRZ), the PACE secrets the session cached, and the secure channel.

@@ -50,26 +50,6 @@ ErrorCode errorCodeFor(LibreSCRS::SecureChannel::ChannelActivationError err) noe
     return ErrorCode::CommunicationError;
 }
 
-ErrorCode errorCodeFor(LibreSCRS::Plugin::ReadResult::Status status) noexcept
-{
-    using Status = LibreSCRS::Plugin::ReadResult::Status;
-    switch (status) {
-    case Status::Ok:
-        return ErrorCode::None;
-    case Status::CommunicationError:
-        return ErrorCode::CommunicationError;
-    case Status::ParseError:
-        return ErrorCode::ParseError;
-    case Status::UnsupportedCard:
-        return ErrorCode::UnsupportedCard;
-    case Status::AuthenticationFailed:
-        return ErrorCode::AuthFailed;
-    case Status::Cancelled:
-        return ErrorCode::None;
-    }
-    return ErrorCode::CommunicationError;
-}
-
 CredentialFinish errorCodeFor(CredentialOutcome outcome) noexcept
 {
     using Status = Operations::OperationStatus;

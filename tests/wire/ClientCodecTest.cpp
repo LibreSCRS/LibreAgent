@@ -223,6 +223,13 @@ TEST(ClientCodec, StateReplyRoundTrips)
     StateReply state;
     state.readers.push_back(ReaderState{"r1", "Reader One", true, std::string("c1")});
     state.readers.push_back(ReaderState{"r2", "Reader Two", false, std::nullopt}); // exercises optText absent
+    state.readers.push_back(ReaderState{.handle = "r3",
+                                        .name = "HID Global OMNIKEY 5422 Smartcard Reader [OMNIKEY 5422CL Smartcard "
+                                                "Reader] (IM0O2C00NF10456904) 00 00",
+                                        .hasCard = false,
+                                        .card = std::nullopt,
+                                        .model = "OMNIKEY 5422",
+                                        .iface = ReaderInterface::Contactless});
     state.cards.push_back(CardState{"c1", "r1", 0x3, PreReadAuth::Can});
     expectReplyRoundTrip(3, state, [](std::uint64_t r, const StateReply& a) { return makeReply(r, a); });
 }
@@ -473,6 +480,66 @@ TEST(ClientCodec, CscaAnchorStateReplyRejectsAMissingReplayRefusalFlag)
     EXPECT_FALSE(parseReply(CborValue(std::move(m)).encode(), {}).has_value());
 }
 
+// The anchor state as a value of its own -- GetConfig's CscaAnchorState entry
+// -- is the reply's fields without the reply. Pinned to the bytes the reply
+// encoder produced for the three shapes above, so a field renamed or an
+// optional emitted differently changes both places or fails here.
+TEST(ClientCodec, TheAnchorStateEntryIsTheReplyWithoutItsEnvelope)
+{
+    struct Row
+    {
+        const char* name;
+        CscaAnchorStateReply state;
+        const char* hex;
+    };
+    CscaAnchorStateReply dated;
+    dated.anchors = 212;
+    dated.issuers = 47;
+    dated.replayRefusalActive = true;
+    dated.signer = std::string("9c1f5c7b");
+    dated.signerPinned = true;
+    dated.acceptedAt = 1756000000;
+    dated.signedAt = 1755000000;
+    dated.origin = std::string("import");
+    CscaAnchorStateReply undated;
+    undated.anchors = 3;
+    undated.issuers = 1;
+    CscaAnchorStateReply firstImport;
+    firstImport.anchors = 90;
+    firstImport.issuers = 12;
+    firstImport.replayRefusalActive = true;
+    firstImport.signerPinned = false;
+    const Row rows[] = {
+        {"dated", dated,
+         "a8666f726967696e66696d706f7274667369676e657268396331663563376267616e63686f727318d4676973737565"
+         "7273182f687369676e656441741a689b2cc06a616363657074656441741a68aa6f006c7369676e657250696e6e"
+         "6564f5737265706c61795265667573616c416374697665f5"},
+        {"undated", undated, "a367616e63686f727303676973737565727301737265706c61795265667573616c416374697665f4"},
+        {"first import", firstImport,
+         "a467616e63686f7273185a67697373756572730c6c7369676e657250696e6e6564f4737265706c61795265667573616c41"
+         "6374697665f5"},
+    };
+    for (const Row& row : rows) {
+        const CborValue entry = encodeCscaAnchorState(row.state);
+        std::string hex;
+        for (const std::uint8_t b : entry.encode()) {
+            static constexpr char kDigits[] = "0123456789abcdef";
+            hex += kDigits[b >> 4];
+            hex += kDigits[b & 0xF];
+        }
+        EXPECT_EQ(hex, row.hex) << row.name;
+
+        // And the reply is that entry plus its envelope, nothing else.
+        const CborValue reply = makeReply(7, row.state);
+        ASSERT_NE(reply.asMap(), nullptr);
+        CborValue::Map rebuilt = *entry.asMap();
+        rebuilt.emplace("t", CborValue("Reply"));
+        rebuilt.emplace("req", CborValue::uint(7));
+        rebuilt.emplace("kind", CborValue("CscaAnchorState"));
+        EXPECT_EQ(CborValue(std::move(rebuilt)).encode(), reply.encode()) << row.name;
+    }
+}
+
 TEST(ClientCodec, AckReplyRoundTrips)
 {
     expectReplyRoundTrip(9, AckReply{}, [](std::uint64_t r, const AckReply& a) { return makeReply(r, a); });
@@ -717,6 +784,86 @@ TEST(ClientCodec, ParseReplyRejectsNonCanonicalCbor)
 TEST(ClientCodec, ReaderAddedRoundTrips)
 {
     expectEventRoundTrip(ReaderAdded{ReaderState{"r1", "Reader One", false, std::nullopt}});
+}
+
+TEST(ClientCodec, ALabelledReaderAddedRoundTrips)
+{
+    for (const auto iface : {ReaderInterface::Unknown, ReaderInterface::Contact, ReaderInterface::Contactless}) {
+        const ReaderAdded added{ReaderState{.handle = "r1",
+                                            .name = "raw",
+                                            .hasCard = false,
+                                            .card = std::nullopt,
+                                            .model = "OMNIKEY 5422",
+                                            .iface = iface}};
+        expectEventRoundTrip(added);
+        // Byte stability alone would pass a codec that dropped the label on
+        // both sides: the decoded reader must be the one that was sent.
+        const auto decoded = parseEvent(toCbor(added).encode(), noFds());
+        ASSERT_TRUE(decoded.has_value());
+        const auto* got = std::get_if<ReaderAdded>(&decoded->event);
+        ASSERT_NE(got, nullptr);
+        EXPECT_EQ(got->reader, added.reader);
+    }
+}
+
+// The label travels under the contract's keys, as the contract's tokens, and
+// a reader with no label sends neither key.
+TEST(ClientCodec, AReadersLabelTravelsUnderTheContractKeys)
+{
+    ReaderState labelled{.handle = "r1",
+                         .name = "raw",
+                         .hasCard = false,
+                         .card = std::nullopt,
+                         .model = "OMNIKEY 5422",
+                         .iface = ReaderInterface::Contact};
+    const CborValue event = toCbor(ReaderAdded{labelled});
+    const auto* reader = event.find("reader");
+    ASSERT_NE(reader, nullptr);
+    ASSERT_NE(reader->find("model"), nullptr);
+    EXPECT_EQ(*reader->find("model")->asText(), "OMNIKEY 5422");
+    ASSERT_NE(reader->find("interface"), nullptr);
+    EXPECT_EQ(*reader->find("interface")->asText(), "contact");
+
+    const CborValue bare = toCbor(ReaderAdded{ReaderState{"r1", "raw", false, std::nullopt}});
+    EXPECT_EQ(bare.find("reader")->find("model"), nullptr);
+    EXPECT_EQ(bare.find("reader")->find("interface"), nullptr);
+}
+
+namespace {
+std::optional<ReaderState> decodeReaderWith(CborValue interfaceValue)
+{
+    CborValue::Map reader;
+    reader.emplace("handle", CborValue(std::string("r1")));
+    reader.emplace("name", CborValue(std::string("raw")));
+    reader.emplace("hasCard", CborValue(false));
+    reader.emplace("model", CborValue(std::string("OMNIKEY 5422")));
+    reader.emplace("interface", std::move(interfaceValue));
+    CborValue::Map event;
+    event.emplace("t", CborValue(std::string("ReaderAdded")));
+    event.emplace("reader", CborValue(std::move(reader)));
+    const auto decoded = parseEvent(CborValue(std::move(event)).encode(), noFds());
+    if (!decoded) {
+        return std::nullopt;
+    }
+    const auto* added = std::get_if<ReaderAdded>(&decoded->event);
+    return added == nullptr ? std::nullopt : std::optional<ReaderState>(added->reader);
+}
+} // namespace
+
+// An interface appended after this build is "unknown", not a failed decode;
+// a value of the wrong type still fails closed.
+TEST(ClientCodec, AnInterfaceTokenThisBuildDoesNotKnowDecodesAsUnknown)
+{
+    const auto appended = decodeReaderWith(CborValue(std::string("optical")));
+    ASSERT_TRUE(appended.has_value());
+    EXPECT_EQ(appended->iface, ReaderInterface::Unknown);
+    EXPECT_EQ(appended->model, "OMNIKEY 5422");
+
+    const auto known = decodeReaderWith(CborValue(std::string("contactless")));
+    ASSERT_TRUE(known.has_value());
+    EXPECT_EQ(known->iface, ReaderInterface::Contactless);
+
+    EXPECT_FALSE(decodeReaderWith(CborValue::uint(2)).has_value());
 }
 
 TEST(ClientCodec, ReaderRemovedRoundTrips)

@@ -27,7 +27,7 @@
 
 #include "ClientTestAccess.h"
 #include "fakes/FakeSocketAgent.h"
-#include "socket/MemfdSource.h"
+#include "fakes/MemfdSource.h"
 #include "socket/SocketPath.h"
 #include "socket/SocketTransport.h"
 
@@ -147,6 +147,14 @@ public:
     void sendNonCanonicalFrame()
     {
         runOnThread(m_context, [this]() { m_agent->sendNonCanonicalFrame(); });
+    }
+    /// Keep the fake's thread busy for @p ms without blocking the caller: for
+    /// that long the agent reads nothing, so what the client sends piles up in
+    /// the socket buffer.
+    void stopReadingFor(int ms)
+    {
+        QMetaObject::invokeMethod(
+            m_context, [ms]() { QThread::msleep(static_cast<unsigned long>(ms)); }, Qt::QueuedConnection);
     }
     void setNonCanonicalAfterStateReply()
     {
@@ -294,12 +302,14 @@ constexpr const char* kReaderId = "reader/0";
 
 TEST(SocketIntegration, SocketPathResolutionOrder)
 {
+    // This binary is built with the test-only override (SocketPath.h); the
+    // shipped library is not, which SocketPathTest holds.
     const QByteArray saved = qgetenv(kAgentSocketEnvVar);
     qputenv(kAgentSocketEnvVar, "/tmp/laqt-resolution-test.sock");
     EXPECT_EQ(resolveAgentSocketPath(), QStringLiteral("/tmp/laqt-resolution-test.sock"));
     qunsetenv(kAgentSocketEnvVar);
 #if !defined(Q_OS_DARWIN)
-    // No production default on this platform — tests always set the override.
+    // No production default on this platform.
     EXPECT_TRUE(resolveAgentSocketPath().isEmpty());
 #endif
     if (!saved.isEmpty()) {
@@ -323,7 +333,7 @@ TEST(SocketIntegration, AppGroupIsNamedAfterTheTeam)
                               ? QStringLiteral("group.org.librescrs.LibreMac")
                               : QStringLiteral(LIBRESCRS_TEAM_ID) + QStringLiteral(".org.librescrs.LibreMac");
     const QString expected =
-        QDir::homePath() + QStringLiteral("/Library/Group Containers/") + group + QStringLiteral("/agent.sock");
+        accountHomeDirectory() + QStringLiteral("/Library/Group Containers/") + group + QStringLiteral("/agent.sock");
     EXPECT_EQ(resolveAgentSocketPath().toStdString(), expected.toStdString());
     if (!saved.isEmpty()) {
         qputenv(kAgentSocketEnvVar, saved);
@@ -333,17 +343,18 @@ TEST(SocketIntegration, AppGroupIsNamedAfterTheTeam)
 
 // ---- production transport selection -------------------------------------------
 
-// The PRODUCTION ctor, not ClientTestAccess::create: this is the one assertion
-// that tells a null transport from a real one. Everything else in this file
-// injects a transport and would pass either way.
-TEST(SocketIntegration, ProductionCtorSelectsTheSocketTransportOnApple)
+// The production constructor never takes its socket from the environment:
+// `launchctl setenv` reaches every process the user's launchd starts, so a
+// variable that moved the socket would put any same-user listener in front of
+// every client. On Apple the shipped library resolves the App-Group path only.
+TEST(SocketIntegration, ProductionCtorIgnoresTheSocketOverrideOnApple)
 {
 #if !defined(Q_OS_DARWIN)
     GTEST_SKIP() << "the socket transport is the production default on Apple only";
 #else
     FakeSocketAgent::Config cfg;
     cfg.capabilities = Cap::Pki;
-    cfg.agentVersion = QStringLiteral("9.9-production-ctor");
+    cfg.agentVersion = QStringLiteral("9.9-must-not-be-seen");
     SocketHarness h(cfg);
 
     const QByteArray saved = qgetenv(kAgentSocketEnvVar);
@@ -351,8 +362,7 @@ TEST(SocketIntegration, ProductionCtorSelectsTheSocketTransportOnApple)
 
     {
         AgentClient client;
-        EXPECT_TRUE(client.isAvailable());
-        EXPECT_EQ(client.agentVersion(), QStringLiteral("9.9-production-ctor"));
+        EXPECT_NE(client.agentVersion(), QStringLiteral("9.9-must-not-be-seen"));
     }
 
     if (saved.isEmpty()) {
@@ -363,27 +373,18 @@ TEST(SocketIntegration, ProductionCtorSelectsTheSocketTransportOnApple)
 #endif
 }
 
-// The regression this change itself introduces: LibreCelik on macOS does not
-// attempt a connection today and will after it. With no agent listening it must
-// still report unavailable -- never hang, never crash.
+// With no agent listening, the production client on Apple must still report
+// unavailable -- never hang, never crash.
 TEST(SocketIntegration, ProductionCtorDegradesWhenNoAgentIsListening)
 {
 #if !defined(Q_OS_DARWIN)
     GTEST_SKIP() << "the socket transport is the production default on Apple only";
 #else
-    const QByteArray saved = qgetenv(kAgentSocketEnvVar);
-    qputenv(kAgentSocketEnvVar, "/tmp/laqt-no-such-agent-should-not-exist.sock");
-
-    {
-        AgentClient client;
-        EXPECT_FALSE(client.isAvailable());
+    AgentClient client;
+    // A developer Mac may run a real agent; a CI runner does not. Either way
+    // nothing here may block, and an absent agent leaves an empty roster.
+    if (!client.isAvailable()) {
         EXPECT_TRUE(client.readers().isEmpty());
-    }
-
-    if (saved.isEmpty()) {
-        qunsetenv(kAgentSocketEnvVar);
-    } else {
-        qputenv(kAgentSocketEnvVar, saved);
     }
 #endif
 }
@@ -419,6 +420,32 @@ TEST(SocketIntegration, ProductionCtorIgnoresTheSocketOverrideOnLinux)
         qputenv(kAgentSocketEnvVar, saved);
     }
 #endif
+}
+
+// ---- sending into a full socket buffer -----------------------------------------
+
+// The client's descriptor is non-blocking for its reader. A request larger
+// than the socket can hold while the agent is busy must wait for the agent to
+// read, not be reported as a dead agent: before, the first EAGAIN dropped the
+// connection and the write came back CommunicationError.
+TEST(SocketIntegration, ARequestLargerThanTheSocketBufferWaitsForTheAgent)
+{
+    FakeSocketAgent::Config cfg;
+    SocketHarness h(cfg);
+    auto client = makeClient(h);
+    ASSERT_TRUE(client->isAvailable());
+
+    // Well past a default AF_UNIX send buffer (about 200 KiB on Linux, less on
+    // macOS) and inside the decoder's item cap: few entries, long ones.
+    const QString filler(1500, QLatin1Char('x'));
+    QStringList urls;
+    for (int i = 0; i < 400; ++i) {
+        urls.append(QStringLiteral("https://tsa.example.org/%1/").arg(i) + filler);
+    }
+    h.stopReadingFor(500);
+    EXPECT_EQ(client->setConfigValue(QStringLiteral("TsaUrls"), urls), std::nullopt);
+    EXPECT_TRUE(client->isAvailable());
+    EXPECT_EQ(h.configValue(QStringLiteral("TsaUrls")).toStringList().size(), urls.size());
 }
 
 // ---- availability: handshake capture, vanish, reappear -------------------------
@@ -458,6 +485,10 @@ TEST(SocketIntegration, AvailabilityHandshakeFeatureTokensAndReappear)
     ASSERT_TRUE(waitFor([&]() { return sawUnavailable; }));
     EXPECT_FALSE(client->isAvailable());
     EXPECT_TRUE(client->readers().isEmpty());
+    // The state is cached: the vanish alone reads as stopped, and the next
+    // reconcile finds the socket gone from disk.
+    EXPECT_EQ(client->agentState(), AgentState::Stopped);
+    client->refreshDiscovery();
     EXPECT_FALSE(client->agentInstalled()) << "the unbound socket path must read as not-installed";
 
     // Reappear: the agent re-binds; there is no bus daemon to push a
@@ -1819,8 +1850,18 @@ TEST(SocketIntegration, AgentQuiescedIsUnavailableUntilReprobe)
         finishedCallError = op->callError();
     });
 
+    // The reason reaches the client FIRST, so a consumer knows why the agent
+    // is about to count as gone.
+    QStringList order;
+    QObject::connect(client.get(), &AgentClient::quiesced, client.get(), [&](QuiesceReason reason) {
+        order.append(QStringLiteral("quiesced:%1").arg(static_cast<unsigned>(reason)));
+    });
+    QObject::connect(client.get(), &AgentClient::availabilityChanged, client.get(),
+                     [&](bool available) { order.append(QStringLiteral("available:%1").arg(available)); });
+
     h.sendAgentQuiesced(1); // ScreenLocked
     ASSERT_TRUE(waitFor([&]() { return !client->isAvailable(); }));
+    EXPECT_EQ(order, (QStringList{QStringLiteral("quiesced:1"), QStringLiteral("available:0")}));
     EXPECT_TRUE(finishedSeen);
     EXPECT_EQ(finishedCallError, CallError::AgentUnavailable);
     EXPECT_TRUE(client->readers().isEmpty());
@@ -1929,6 +1970,10 @@ struct RecordingRegistryListener final : RegistryListener
     void onConfigChanged(const QString& key) override
     {
         Q_UNUSED(key)
+    }
+    void onQuiesced(QuiesceReason reason) override
+    {
+        Q_UNUSED(reason)
     }
 };
 

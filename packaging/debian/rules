@@ -3,6 +3,9 @@
 export DEB_BUILD_MAINT_OPTIONS = hardening=+all
 export DEB_CPPFLAGS_MAINT_APPEND = -DNDEBUG
 
+# DEB_VERSION, for the exact-version shlibs below.
+include /usr/share/dpkg/pkg-info.mk
+
 %:
 	dh $@ --buildsystem=cmake+ninja --builddirectory=build
 
@@ -15,10 +18,11 @@ export DEB_CPPFLAGS_MAINT_APPEND = -DNDEBUG
 override_dh_auto_configure:
 	test -f thirdparty/QCBOR/CMakeLists.txt || \
 	  { echo "thirdparty/QCBOR is missing; the source tarball has to carry it"; exit 1; }
-	dh_auto_configure -- -DBUILD_TESTING=OFF -DINSTALL_GTEST=OFF \
+	dh_auto_configure -- -DBUILD_TESTING=OFF \
 	                     -DLIBREAGENT_BUILD_CORE=ON \
 	                     -DLIBREAGENT_BUILD_WIRE=ON \
 	                     -DLIBREAGENT_BUILD_CLIENT_QT=ON \
+	                     -DLIBREAGENT_BUILD_CLIENT_QT_TEST_SUPPORT=OFF \
 	                     -DLIBREAGENT_BUILD_PKCS11_FACADE=ON \
 	                     -DLIBREAGENT_BUILD_PKCS11_SOCKET_CLIENT=ON \
 	                     -DLIBREAGENT_INSTALL_WIRE_ARCHIVE=ON \
@@ -30,6 +34,15 @@ override_dh_auto_configure:
 	  { echo "QCBOR source dir is not the one shipped in the tarball"; exit 1; }
 
 override_dh_auto_test:
+
+# The Qt client library is released in lockstep with its consumers and has no
+# ABI gate of its own, so a consumer built against it depends on THIS version
+# exactly, not on ">= the version that introduced a symbol". dpkg-shlibdeps
+# copies the shlibs dependency verbatim into each consumer's ${shlibs:Depends};
+# substitution variables are not expanded there, hence the make variable.
+override_dh_makeshlibs:
+	dh_makeshlibs -pliblibrescrs-agentclient-qt5 -V'liblibrescrs-agentclient-qt5 (= $(DEB_VERSION))'
+	dh_makeshlibs -Nliblibrescrs-agentclient-qt5
 
 override_dh_missing:
 	dh_missing --fail-missing

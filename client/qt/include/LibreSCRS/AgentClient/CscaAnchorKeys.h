@@ -2,7 +2,7 @@
 // SPDX-FileCopyrightText: 2026 hirashix0
 #pragma once
 //
-// INTERNAL — never installed. The `CscaAnchorState` key vocabulary and the ONE
+// The `CscaAnchorState` key vocabulary and the ONE
 // canonical conversion between the agent's untyped state dict and the public
 // `CscaAnchorState` value type, shared by both transports (and by the fakes
 // that model each wire) so the two cannot drift.

@@ -22,8 +22,8 @@
 #include <LibreSCRS/LocalizedText.h>
 #include <LibreSCRS/Plugin/PinStatusEntry.h>
 #include <LibreSCRS/SmartCard/AppletAid.h>
-#include <LibreSCRS/SmartCard/CardMap.h>
 #include <LibreSCRS/SmartCard/CardSession.h>
+#include <LibreSCRS/SmartCard/testing/CardSessionTesting.h>
 #include <LibreSCRS/SmartCard/SmProtocolRequest.h>
 #include <gtest/gtest.h>
 #include <cstddef>
@@ -49,11 +49,10 @@ inline std::unique_ptr<CardSessionHolder> makeHolder(std::optional<LibreSCRS::Sm
         if (failWith) {
             return std::unexpected{*failWith};
         }
-        return LibreSCRS::SmartCard::detail::makeDetachedCardSession(r);
+        return LibreSCRS::SmartCard::Testing::makeDetachedCardSession(r);
     };
     auto resolver = [](std::span<const std::uint8_t>, LibreSCRS::SmartCard::CardSession&) { return CandidateList{}; };
-    return std::make_unique<CardSessionHolder>("FakeReader", std::move(factory), std::move(resolver),
-                                               std::make_shared<LibreSCRS::SmartCard::CardMap>());
+    return std::make_unique<CardSessionHolder>("FakeReader", std::move(factory), std::move(resolver));
 }
 
 // Seam double that mimics a PACE plugin's getPINList: it self-activates the
@@ -371,24 +370,4 @@ TEST(CredentialListFlow, OversizedLengthFieldFinishesErrorNotEscape)
     EXPECT_EQ(result.outcome, CredentialListFlow::Outcome::Error);
     EXPECT_EQ(result.code, ErrorCode::ParseError);
     EXPECT_TRUE(result.snapshot.records.empty());
-}
-
-// Placeholder-bearing guidance is the OTHER unrepresentable-data case (previously
-// a std::logic_error, now the same runtime family): the single catch handles it
-// too, so the op finishes Error rather than crashing/escaping.
-TEST(CredentialListFlow, PlaceholderGuidanceFieldFinishesErrorNotEscape)
-{
-    Harness h;
-    auto bad = makeEntry("Signature PIN", LibreSCRS::Plugin::PinKind::SignPin, 0x92, 3);
-    bad.blockedGuidance = LibreSCRS::LocalizedText{
-        .key = "core.pin.blockedRetryLater",
-        .defaultText = "Try again in {minutes} minutes.",
-        .placeholders = {{.name = "minutes", .value = std::int64_t{5}}},
-    };
-    h.credentials.listResult = {bad};
-
-    CredentialListFlow::Result result;
-    ASSERT_NO_THROW(result = h.make().run()) << "the mapper throw must be caught inside the flow, not escape the op";
-    EXPECT_EQ(result.outcome, CredentialListFlow::Outcome::Error);
-    EXPECT_EQ(result.code, ErrorCode::ParseError);
 }

@@ -684,6 +684,32 @@ TEST(CscaAnchorImport, OnePublishedListIsStillOneList)
     EXPECT_TRUE(Trust::masterListsIn(prose).empty());
 }
 
+TEST(CscaAnchorImport, AListsOuterLengthIsReadByTheSharedRuleAndMayBeIndefinite)
+{
+    // Only the outer shape is judged here -- a SEQUENCE whose content starts
+    // with id-signedData -- so a bare OID is enough content. The signature is
+    // verified later, by the import.
+    const std::vector<std::uint8_t> oid{0x06, 0x09, 0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x07, 0x02};
+    const auto object = [&](std::vector<std::uint8_t> head, std::vector<std::uint8_t> tail = {}) {
+        head.insert(head.end(), oid.begin(), oid.end());
+        head.insert(head.end(), tail.begin(), tail.end());
+        return head;
+    };
+    // Short, long, and the most length octets the rule accepts.
+    EXPECT_EQ(Trust::masterListsIn(object({0x30, 0x0B})).size(), 1u);
+    EXPECT_EQ(Trust::masterListsIn(object({0x30, 0x81, 0x0B})).size(), 1u);
+    EXPECT_EQ(Trust::masterListsIn(object({0x30, 0x84, 0x00, 0x00, 0x00, 0x0B})).size(), 1u);
+    // BER indefinite, closed by end-of-contents: the shape a real ICAO
+    // collection carries at least once.
+    EXPECT_EQ(Trust::masterListsIn(object({0x30, 0x80}, {0x00, 0x00})).size(), 1u);
+    // Refused: never closed, one length octet too many, a length that does not
+    // cover the bytes exactly in either direction.
+    EXPECT_TRUE(Trust::masterListsIn(object({0x30, 0x80}, {0x00, 0x01})).empty());
+    EXPECT_TRUE(Trust::masterListsIn(object({0x30, 0x85, 0x00, 0x00, 0x00, 0x00, 0x0B})).empty());
+    EXPECT_TRUE(Trust::masterListsIn(object({0x30, 0x0C})).empty());
+    EXPECT_TRUE(Trust::masterListsIn(object({0x30, 0x0B}, {0x05, 0x00})).empty());
+}
+
 TEST(CscaAnchorImport, OneListThatDoesNotVerifyDoesNotDenyTheOthers)
 {
     const CacheDir dir("collection-partial");

@@ -4,7 +4,7 @@
 
 #include <LibreSCRS/Agent/cache/CardReadCache.h> // invalidateForMutationOutcome drops the read cache too
 
-#include <openssl/crypto.h> // OPENSSL_cleanse (zeroize card-derived metadata on drop)
+#include <LibreSCRS/Agent/SecureZero.h>
 
 #include <optional>
 #include <string>
@@ -17,7 +17,7 @@ namespace {
 void cleanse(std::string& s) noexcept
 {
     if (!s.empty()) {
-        OPENSSL_cleanse(s.data(), s.size());
+        secureZero(std::span<std::uint8_t>(reinterpret_cast<std::uint8_t*>(s.data()), s.size()));
     }
     s.clear();
 }

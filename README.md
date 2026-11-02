@@ -77,8 +77,10 @@ core never links D-Bus, systemd, polkit or Qt:
   requesting client.
 - **OperationChannel** (`Operations::OperationChannel`) — per-operation
   progress, result and error emission.
-- **LogSink** (`log::LogSink`) — an injected sink so the host owns the
-  platform logging surface.
+- **LogSink** (`LibreSCRS::log::LogSink`, LibreMiddleware's
+  `<LibreSCRS/Logging.h>`) — an injected sink so the host owns the platform
+  logging surface. The agent core logs through the middleware's facade, so
+  one sink receives both.
 
 ## Building
 

@@ -3,10 +3,10 @@
 
 #include "FakeSocketAgent.h"
 
-#include "ConfigKeys.h"         // the Config1 key vocabulary + the canonical TslSources row shape
-#include "CscaAnchorKeys.h"     // the CscaAnchorState key vocabulary, shared with the other fake
-#include "dbus/AgentDBus.h"     // the shared object/interface name spellings (constants only)
-#include "socket/MemfdSource.h" // memfd document/artifact source + readFdAll (Linux test helper)
+#include <LibreSCRS/AgentClient/ConfigKeys.h>     // the Config1 key vocabulary + the canonical TslSources row shape
+#include <LibreSCRS/AgentClient/CscaAnchorKeys.h> // the CscaAnchorState key vocabulary, shared with the other fake
+#include "dbus/AgentDBus.h"                       // the shared object/interface name spellings (constants only)
+#include "MemfdSource.h"                          // memfd document/artifact source + readFdAll (Linux test helper)
 
 #include <LibreSCRS/Agent/KeyType.h>
 #include <LibreSCRS/Agent/wire/Framing.h>
@@ -493,6 +493,12 @@ Wire::ReaderState FakeSocketAgent::buildReaderState() const
     if (m_config.hasCard) {
         reader.card = std::string(kCardHandle);
     }
+    reader.model = (m_config.readerModel.isEmpty() ? m_config.readerName : m_config.readerModel).toStdString();
+    // The typed wire state holds only the interfaces this build names; a
+    // token past them reaches a client through emitReaderRelabelled(), which
+    // sends it verbatim.
+    reader.iface =
+        Wire::readerInterfaceFromToken(m_config.readerInterface.toStdString()).value_or(Wire::ReaderInterface::Unknown);
     return reader;
 }
 
@@ -1320,6 +1326,18 @@ void FakeSocketAgent::emitCardTypeChanged(const QString& cardType)
     changed.handle = kCardHandle;
     changed.iface = kCardIface;
     changed.props.emplace("CardType", Wire::CborValue(cardType.toStdString()));
+    broadcastCbor(Wire::toCbor(changed));
+}
+
+void FakeSocketAgent::emitReaderRelabelled(const QString& model, const QString& interfaceToken)
+{
+    m_config.readerModel = model;
+    m_config.readerInterface = interfaceToken;
+    Wire::PropertyChanged changed;
+    changed.handle = kReaderHandle;
+    changed.iface = kReaderIface;
+    changed.props.emplace("Model", Wire::CborValue(model.toStdString()));
+    changed.props.emplace("Interface", Wire::CborValue(interfaceToken.toStdString()));
     broadcastCbor(Wire::toCbor(changed));
 }
 

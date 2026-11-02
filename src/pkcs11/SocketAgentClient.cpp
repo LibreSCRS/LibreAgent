@@ -34,13 +34,6 @@ namespace W = LibreSCRS::Agent::Wire;
 
 namespace {
 
-// RFC 5280 4.2.1.3 KeyUsage bit ordinals (== the agent's frozen keyUsageBits
-// mask). Decrypt needs keyEncipherment OR dataEncipherment. The same two
-// constants the bus client uses, for the same reason: the bit is the contract,
-// the card name is not.
-constexpr std::uint32_t kKeyEnciphermentBit = 1U << 2;
-constexpr std::uint32_t kDataEnciphermentBit = 1U << 3;
-
 /// Map a wire refusal onto the module's own vocabulary.
 ///
 /// Every row the two transports share is here, the dismissed prompt included:
@@ -104,7 +97,7 @@ struct SocketAgentClient::Impl
     // Public-key results are immutable for the life of a card and the loader
     // asks for them per attribute read, so they are cached exactly as the bus
     // client caches them.
-    std::map<std::string, PublicKeyResult> keyCache;
+    std::map<std::string, LibreSCRS::Agent::Operations::CertPublicKey> keyCache;
 
     // One connection, so one call at a time -- and that is exactly why a
     // presence read must not queue behind one. The module deliberately drops
@@ -374,43 +367,25 @@ AgentSnapshot SocketAgentClient::snapshot()
         const auto it = cardsByHandle.find(*r.card);
         const W::PreReadAuth preAuth = (it == cardsByHandle.end()) ? W::PreReadAuth::None : it->second->preAuth;
 
-        // The capability gate, spelled exactly as the other transport spells
-        // it: sign is driveable for both credential families, decrypt only for
-        // the one whose plugin has a decipher primitive, and the hash-on-card
-        // family selects a different advertised mechanism.
-        const bool canDriveSigning = (preAuth == W::PreReadAuth::None || preAuth == W::PreReadAuth::Can);
-        const bool canDriveDecrypt = (preAuth == W::PreReadAuth::None);
-        const bool hashesOnCard = (preAuth == W::PreReadAuth::Can);
-
         const auto certs = m_impl->readCertificates(*r.card);
         for (const auto& e : certs) {
-            // Derive counts only for an EC key, the same restricted value the
-            // entry carries below and the other transport skips on.
-            const bool derives = e.canDerive && e.keyType == LibreSCRS::Agent::KeyType::Ec;
-            if (!e.signingCapable && !derives)
-                continue;
-            CertEntry ce;
-            ce.certId = e.certId;
-            ce.signingCapable = e.signingCapable;
-            // The key's own CKA_ID, as the card -- or, failing that, the agent -- names it.
-            ce.ckaId = e.keyId;
-            ce.keyType = e.keyType;
-            ce.keyBits = e.keyBits;
-            ce.label = e.certId;
+            NeutralCert cert;
+            cert.certId = e.certId;
+            cert.keyId = e.keyId;
+            cert.keyType = e.keyType;
+            cert.keyBits = e.keyBits;
+            cert.signingCapable = e.signingCapable;
+            cert.canDerive = e.canDerive;
+            cert.keyUsageBits = e.keyUsageBits;
+            cert.alwaysAuthenticate = e.alwaysAuthenticate;
             if (const auto sg = e.fields.find("subject"); sg != e.fields.end()) {
                 if (const auto cn = sg->second.find("cn"); cn != sg->second.end()) {
-                    ce.holderName = cn->second.value;
-                    ce.label = ce.holderName;
+                    cert.subjectCn = cn->second.value;
                 }
             }
-            const bool isRsa = e.keyType == LibreSCRS::Agent::KeyType::Rsa;
-            const bool keyUsagePermitsDecrypt = (e.keyUsageBits & (kKeyEnciphermentBit | kDataEnciphermentBit)) != 0;
-            ce.canSign = e.signingCapable && canDriveSigning;
-            ce.canDecrypt = isRsa && canDriveDecrypt && keyUsagePermitsDecrypt;
-            ce.canDerive = derives;
-            ce.signsHashOnCard = isRsa && hashesOnCard;
-            ce.alwaysAuthenticate = e.alwaysAuthenticate;
-            reader.certs.push_back(std::move(ce));
+            if (auto entry = certEntryFrom(cert, preAuth)) {
+                reader.certs.push_back(std::move(*entry));
+            }
         }
         // What a loader shows for the token, and what tells two of them apart.
         reader.tokenLabel = tokenLabelFor(reader.certs, r.name);
@@ -453,53 +428,40 @@ BytesResult SocketAgentClient::certDer(const std::string& reader, const std::str
 PublicKeyResult SocketAgentClient::publicKey(const std::string& reader, const std::string& certId,
                                              LibreSCRS::Agent::KeyType keyType)
 {
+    using LibreSCRS::Agent::KeyType;
+    namespace Ops = LibreSCRS::Agent::Operations;
     const std::lock_guard<std::mutex> lock{m_impl->callMutex};
     if (const auto hit = m_impl->keyCache.find(certId); hit != m_impl->keyCache.end()) {
         // The cache holds the key the agent served; a request for another
         // family is answered as an uncached one would be.
-        const auto cached = hit->second.x.empty() ? LibreSCRS::Agent::KeyType::Rsa : LibreSCRS::Agent::KeyType::Ec;
-        if (cached != keyType) {
-            PublicKeyResult other;
-            other.status = Status::NotSupported;
-            return other;
-        }
+        const auto cached = std::holds_alternative<Ops::EcPublicKey>(hit->second) ? KeyType::Ec : KeyType::Rsa;
+        if (cached != keyType)
+            return std::unexpected(Status::NotSupported);
         return hit->second;
     }
 
-    PublicKeyResult out;
-    if (!m_impl->connect()) {
-        out.status = Status::DeviceRemoved;
-        return out;
-    }
+    if (!m_impl->connect())
+        return std::unexpected(Status::DeviceRemoved);
     const auto reply = m_impl->call(W::PkPublicKey{reader, certId}, m_impl->budgets.publicDataSecs);
-    if (!reply.has_value()) {
-        out.status = Status::DeviceRemoved;
-        return out;
-    }
-    if (const auto* err = std::get_if<W::ErrInfo>(&*reply)) {
-        out.status = statusOf(*err);
-        return out;
-    }
+    if (!reply.has_value())
+        return std::unexpected(Status::DeviceRemoved);
+    if (const auto* err = std::get_if<W::ErrInfo>(&*reply))
+        return std::unexpected(statusOf(*err));
     const auto* pk = std::get_if<W::PublicKeyReply>(&*reply);
     if (pk == nullptr)
-        return out;
-    using LibreSCRS::Agent::KeyType;
+        return std::unexpected(Status::GeneralError);
+    Ops::CertPublicKey key;
     if (const auto* rsa = std::get_if<W::RsaPublicKey>(pk); rsa != nullptr && keyType == KeyType::Rsa) {
-        out.modulus = rsa->n;
-        out.exponent = rsa->e;
+        key = Ops::RsaPublicKey{.modulus = rsa->n, .exponent = rsa->e};
     } else if (const auto* ec = std::get_if<W::EcPublicKey>(pk); ec != nullptr && keyType == KeyType::Ec) {
         // The wire decoder already refused any other curve or width.
-        out.crv = ec->crv;
-        out.x = ec->x;
-        out.y = ec->y;
+        key = Ops::EcPublicKey{.crv = ec->crv, .x = ec->x, .y = ec->y};
     } else {
         // The agent's key is not of the family the snapshot reported.
-        out.status = Status::NotSupported;
-        return out;
+        return std::unexpected(Status::NotSupported);
     }
-    out.status = Status::Ok;
-    m_impl->keyCache.emplace(certId, out);
-    return out;
+    m_impl->keyCache.emplace(certId, key);
+    return key;
 }
 
 LoginResult SocketAgentClient::login(const std::string& reader)

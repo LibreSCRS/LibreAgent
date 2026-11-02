@@ -2,19 +2,26 @@
 // SPDX-FileCopyrightText: 2026 hirashix0
 #pragma once
 #include <LibreSCRS/Agent/Identity.h>
+#include <LibreSCRS/Agent/value/ReaderLabels.h>
 #include <LibreSCRS/Auth/AuthRequirement.h> // PreReadAuthMethod
 #include <cstdint>
 #include <string>
 
 namespace LibreSCRS::Agent {
 
-// One published reader (Reader1: Name / HasCard / Card).
+// One published reader (Reader1: Name / HasCard / Card / Model / Interface).
 struct ReaderState
 {
     ObjectId id;
     std::string name;
     bool hasCard{false};
     ObjectId card; // default/invalid == no card
+    // Reader1.Model / Reader1.Interface: the reader's label, derived from the
+    // whole roster by readerIdentities() (value/ReaderLabels.h). ObjectRegistry
+    // fills both -- whatever a caller puts here is replaced -- and they can
+    // change while the reader stays, when a reader arrives or leaves beside it.
+    std::string model;
+    ReaderInterface iface{ReaderInterface::Unknown};
 };
 
 // One published card insertion (Card1: Capabilities / Reader / PreReadAuthMethod /

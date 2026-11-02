@@ -15,8 +15,11 @@ namespace LibreSCRS::Agent {
 // @p separator is inserted between bytes when non-NUL ('\0' = none).
 // @p upper selects upper- vs lower-case nibbles.
 //
-// LM's own formatHex is unexported across the .so boundary, so consolidating
-// here (agent-internal) is correct rather than reaching into LM.
+// Why there are two encoders in the stack, and only two: LibreMiddleware has
+// its own (internal, unexported across its .so boundary), and this one serves
+// every LibreAgent component -- including the wire library, the PKCS#11
+// facade and the Qt client, which link no LibreMiddleware at all and so could
+// not reach that one. Every other hex loop in this repository calls this.
 [[nodiscard]] inline std::string toHex(std::span<const std::uint8_t> bytes, char separator = '\0', bool upper = true)
 {
     static constexpr char kUpper[] = "0123456789ABCDEF";

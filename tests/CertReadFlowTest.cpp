@@ -21,8 +21,8 @@
 #include <LibreSCRS/CancelToken.h>
 #include <LibreSCRS/LocalizedText.h>
 #include <LibreSCRS/SmartCard/AppletAid.h>
-#include <LibreSCRS/SmartCard/CardMap.h>
 #include <LibreSCRS/SmartCard/CardSession.h>
+#include <LibreSCRS/SmartCard/testing/CardSessionTesting.h>
 #include <gtest/gtest.h>
 #include <atomic>
 #include <cstdint>
@@ -49,11 +49,10 @@ inline std::unique_ptr<CardSessionHolder> makeHolder(std::optional<LibreSCRS::Sm
         if (failWith) {
             return std::unexpected{*failWith};
         }
-        return LibreSCRS::SmartCard::detail::makeDetachedCardSession(r);
+        return LibreSCRS::SmartCard::Testing::makeDetachedCardSession(r);
     };
     auto resolver = [](std::span<const std::uint8_t>, LibreSCRS::SmartCard::CardSession&) { return CandidateList{}; };
-    return std::make_unique<CardSessionHolder>("FakeReader", std::move(factory), std::move(resolver),
-                                               std::make_shared<LibreSCRS::SmartCard::CardMap>());
+    return std::make_unique<CardSessionHolder>("FakeReader", std::move(factory), std::move(resolver));
 }
 
 class FakeCertReader final : public CertificateReader
@@ -139,8 +138,7 @@ public:
 
 LibreSCRS::Auth::AuthRequirement paceReq(LibreSCRS::Auth::PaceSecretKind kind)
 {
-    return LibreSCRS::Auth::AuthRequirement::forPaceSecret(LibreSCRS::SmartCard::AppletAid{}, kind, std::nullopt,
-                                                           LibreSCRS::LocalizedText{});
+    return LibreSCRS::Auth::AuthRequirement::forPaceSecret(kind, LibreSCRS::LocalizedText{});
 }
 
 // A PACE requirement carrying the rejected-retry reason LM sets ONLY on a
@@ -148,8 +146,7 @@ LibreSCRS::Auth::AuthRequirement paceReq(LibreSCRS::Auth::PaceSecretKind kind)
 // evicts and re-prompts on THIS shape, never on a bare same-kind re-invocation.
 LibreSCRS::Auth::AuthRequirement rejectedPaceReq(LibreSCRS::Auth::PaceSecretKind kind)
 {
-    return LibreSCRS::Auth::AuthRequirement::forPaceSecret(LibreSCRS::SmartCard::AppletAid{}, kind, std::nullopt,
-                                                           LibreSCRS::Auth::ErrorKeys::preReadAuthFailed());
+    return LibreSCRS::Auth::AuthRequirement::forPaceSecret(kind, LibreSCRS::Auth::ErrorKeys::preReadAuthFailed());
 }
 
 CertSnapshot makeCert(std::string id, bool signing)
@@ -444,7 +441,7 @@ TEST(CertReadFlow, AuthFailedWithoutProviderMarkStillMarksCredentialWrong)
 
     EXPECT_EQ(result.outcome, CertReadFlow::Outcome::Error);
     EXPECT_EQ(result.code, ErrorCode::AuthFailed);
-    EXPECT_FALSE(h.cache.hasCan("card-A")) << "a wrong secret is evicted so a retry re-prompts";
+    EXPECT_FALSE(h.cache.getCan("card-A").has_value()) << "a wrong secret is evicted so a retry re-prompts";
     EXPECT_EQ(flow.attemptContext().attempts(), 1u) << "the flow recorded the retry context";
 }
 
@@ -556,7 +553,7 @@ TEST(CertReadFlow, StructuralFailureLeavesTheCredentialAlone)
 
     EXPECT_EQ(result.outcome, CertReadFlow::Outcome::Error);
     EXPECT_EQ(result.code, ErrorCode::UnsupportedCard);
-    EXPECT_TRUE(h.cache.hasCan("card-A")) << "a structural failure must never evict/punish the credential";
+    EXPECT_TRUE(h.cache.getCan("card-A").has_value()) << "a structural failure must never evict/punish the credential";
     EXPECT_EQ(flow.attemptContext().attempts(), 0u) << "and records no retry context";
 }
 

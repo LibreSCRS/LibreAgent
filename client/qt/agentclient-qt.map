@@ -1,0 +1,44 @@
+/* GNU ld version script for liblibrescrs-agentclient-qt.so.5: export what the
+ * public headers declare and nothing else.
+ *
+ * Hidden visibility alone does not get there. A template that carries an
+ * explicit default visibility of its own stays default whatever it is
+ * instantiated over: QMetaType is Q_CORE_EXPORT, so every registerConverter and
+ * registerMutableView this library instantiates for its D-Bus types -- with
+ * their GNU_UNIQUE guard variables, which keep the library from ever being
+ * unloaded by dlclose -- was exported, along with std containers over Qt types.
+ * Marking those types hidden changes nothing; measured.
+ *
+ * Grammar (binutils ld, VERSION): inside extern "C++" an UNQUOTED pattern is a
+ * glob over the demangled name and cannot contain a space; a QUOTED one is a
+ * literal. The patterns are therefore anchored at the namespace, and `?`
+ * stands for the space in "vtable for" and its siblings. The leading-wildcard
+ * form, *LibreSCRS::*, is NOT used: it also matches a Qt instantiation over one
+ * of this library's types (QMetaType::registerConverter<QList<LibreSCRS::...>>),
+ * and a local pattern in the same node does not take that back -- also measured.
+ *
+ * A public class's nested Private matches LibreSCRS::* too; it is kept out at
+ * the declaration (LIBRESCRS_AGENTCLIENT_NO_EXPORT), since only the compiler
+ * can tell a nested implementation class from API.
+ *
+ * Anonymous node: no symbol versions, so a consumer linked against an earlier
+ * build of this library keeps resolving.
+ *
+ * ci/scripts/check-clientqt-exports.sh holds the result on the built library.
+ */
+{
+    global:
+        extern "C++" {
+            LibreSCRS::*;
+            vtable?for?LibreSCRS::*;
+            VTT?for?LibreSCRS::*;
+            construction?vtable?for?LibreSCRS::*;
+            typeinfo?for?LibreSCRS::*;
+            typeinfo?name?for?LibreSCRS::*;
+            non-virtual?thunk?to?LibreSCRS::*;
+            virtual?thunk?to?LibreSCRS::*;
+            guard?variable?for?LibreSCRS::*;
+        };
+    local:
+        *;
+};

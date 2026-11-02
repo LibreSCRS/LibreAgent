@@ -121,8 +121,7 @@ public:
 // shape LM hands the credential provider during plugin self-activation.
 AuthRequirement paceReq(PaceSecretKind kind)
 {
-    return AuthRequirement::forPaceSecret(LibreSCRS::SmartCard::AppletAid{}, kind, std::nullopt,
-                                          LibreSCRS::LocalizedText{});
+    return AuthRequirement::forPaceSecret(kind, LibreSCRS::LocalizedText{});
 }
 
 } // namespace
@@ -149,7 +148,7 @@ TEST(CredentialCacheRequest, CanCacheMissPromptsAndStores)
     EXPECT_EQ(result.status, CredentialResult::Status::Ok);
     ASSERT_NE(result.find("can"), nullptr);
     EXPECT_EQ(prompter.canCalls, 1);
-    EXPECT_TRUE(cache.hasCan("card-A")) << "prompt result must populate the cache";
+    EXPECT_TRUE(cache.getCan("card-A").has_value()) << "prompt result must populate the cache";
 
     // Second call hits cache, does not re-prompt.
     auto again = cache.requestCredential("card-A", paceReq(PaceSecretKind::Can), prompter, opts);
@@ -171,7 +170,7 @@ TEST(CredentialCacheRequest, MrzCacheMissPromptsAndStores)
     EXPECT_EQ(result.status, CredentialResult::Status::Ok);
     ASSERT_NE(result.find("mrz"), nullptr);
     EXPECT_EQ(prompter.mrzCalls, 1);
-    EXPECT_TRUE(cache.hasMrz("card-A"));
+    EXPECT_TRUE(cache.getMrz("card-A").has_value());
 }
 
 TEST(CredentialCacheRequest, PrompterCancelledMapsToUserCancelled)
@@ -182,7 +181,7 @@ TEST(CredentialCacheRequest, PrompterCancelledMapsToUserCancelled)
     PromptOptions opts;
     auto result = cache.requestCredential("card-A", paceReq(PaceSecretKind::Can), prompter, opts);
     EXPECT_EQ(result.status, CredentialResult::Status::UserCancelled);
-    EXPECT_FALSE(cache.hasCan("card-A")) << "cancelled prompt must not populate the cache";
+    EXPECT_FALSE(cache.getCan("card-A").has_value()) << "cancelled prompt must not populate the cache";
 }
 
 TEST(CredentialCacheRequest, PrompterErrorMapsToError)
@@ -193,7 +192,7 @@ TEST(CredentialCacheRequest, PrompterErrorMapsToError)
     PromptOptions opts;
     auto result = cache.requestCredential("card-A", paceReq(PaceSecretKind::Can), prompter, opts);
     EXPECT_EQ(result.status, CredentialResult::Status::Error);
-    EXPECT_FALSE(cache.hasCan("card-A"));
+    EXPECT_FALSE(cache.getCan("card-A").has_value());
 }
 
 // A cancelled CAN prompt must raise the userCancelled flag — and ONLY that
@@ -267,7 +266,7 @@ TEST(CredentialCacheRequest, ExpiredCanPromptSetsEntryExpiredFlagOnly)
     EXPECT_TRUE(entryExpired.load()) << "an expired entry window must raise the clock signal";
     EXPECT_FALSE(userCancelled.load()) << "the clock took it; the holder did not cancel";
     EXPECT_FALSE(prompterFailed.load()) << "the prompter answered; it did not break";
-    EXPECT_FALSE(cache.hasCan("card-A")) << "an expired prompt must not populate the cache";
+    EXPECT_FALSE(cache.getCan("card-A").has_value()) << "an expired prompt must not populate the cache";
 }
 
 TEST(CredentialCacheRequest, ExpiredMrzPromptSetsEntryExpiredFlagOnly)
@@ -327,7 +326,7 @@ TEST(CredentialCacheRequest, RefusedPromptSetsHelperTooOldFlagOnly)
     EXPECT_FALSE(prompterFailed.load()) << "the helper is running; it did not break";
     EXPECT_FALSE(entryExpired.load()) << "no window was shown, so no clock ran out";
     EXPECT_FALSE(userCancelled.load()) << "no window was shown, so nobody cancelled";
-    EXPECT_FALSE(cache.hasCan("card-A"));
+    EXPECT_FALSE(cache.getCan("card-A").has_value());
 }
 
 // The signal has to outlive the RUN that produced it. The first attempt raises
@@ -406,7 +405,7 @@ TEST(CredentialCacheRequest, AbsentPaceKindYieldsError)
     CredentialCache cache;
     FakePrompter prompter;
     PromptOptions opts;
-    auto signing = AuthRequirement::forSigning(LibreSCRS::LocalizedText{"", "PIN", {}}, std::nullopt);
+    auto signing = AuthRequirement::forSigning();
     auto result = cache.requestCredential("card-A", signing, prompter, opts);
     EXPECT_EQ(result.status, CredentialResult::Status::Error);
     EXPECT_EQ(prompter.canCalls, 0);
@@ -556,7 +555,7 @@ TEST(CredentialCacheRequest, MrzPromptYieldsUnionEntries)
     EXPECT_EQ(docNo->view(), std::string_view{"L898902C3"});              // cd stripped
     EXPECT_EQ(dob->view(), std::string_view{"740812"});
     EXPECT_EQ(doe->view(), std::string_view{"120415"});
-    EXPECT_TRUE(cache.hasMrz("card-A")) << "an accepted MRZ payload must populate the cache";
+    EXPECT_TRUE(cache.getMrz("card-A").has_value()) << "an accepted MRZ payload must populate the cache";
 }
 
 TEST(CredentialCacheRequest, MrzCacheHitYieldsSameUnionEntries)
@@ -591,7 +590,7 @@ TEST(CredentialCacheRequest, MalformedMrzPromptPayloadIsErrorAndNotCached)
     auto result = cache.requestCredential("card-A", paceReq(PaceSecretKind::Mrz), prompter, opts);
 
     EXPECT_EQ(result.status, CredentialResult::Status::Error) << "a malformed MRZ payload is an error, not an Ok union";
-    EXPECT_FALSE(cache.hasMrz("card-A")) << "a malformed payload must not be cached";
+    EXPECT_FALSE(cache.getMrz("card-A").has_value()) << "a malformed payload must not be cached";
 
     // A following call prompts again (nothing was cached to hit).
     auto second = cache.requestCredential("card-A", paceReq(PaceSecretKind::Mrz), prompter, opts);
@@ -609,7 +608,8 @@ TEST(CredentialCacheRequest, MalformedCachedMrzIsEvictedAndErrors)
     auto result = cache.requestCredential("card-A", paceReq(PaceSecretKind::Mrz), prompter, opts);
 
     EXPECT_EQ(result.status, CredentialResult::Status::Error);
-    EXPECT_FALSE(cache.hasMrz("card-A")) << "a malformed cached value must be EVICTED so it cannot poison the next try";
+    EXPECT_FALSE(cache.getMrz("card-A").has_value())
+        << "a malformed cached value must be EVICTED so it cannot poison the next try";
     EXPECT_EQ(prompter.mrzCalls, 0) << "the hit path returns the error without prompting";
 }
 
@@ -638,7 +638,7 @@ TEST(CredentialCacheRequest, CanPayloadWithNewlineRejectedNotCached)
     PromptOptions opts;
     auto result = cache.requestCredential("card-A", paceReq(PaceSecretKind::Can), prompter, opts);
     EXPECT_EQ(result.status, CredentialResult::Status::Error);
-    EXPECT_FALSE(cache.hasCan("card-A")) << "a newline-bearing CAN payload must not be cached";
+    EXPECT_FALSE(cache.getCan("card-A").has_value()) << "a newline-bearing CAN payload must not be cached";
 }
 
 // -- The in-dialog CAN -> MRZ switch (the renegotiation hand-off) ------------
@@ -674,8 +674,8 @@ TEST(CredentialCacheRequest, ChosenMrzOnCanPromptFillsSinkAndCancelsWalk)
     EXPECT_FALSE(sink.take().has_value()) << "a second take yields nothing";
     EXPECT_FALSE(userCancelled.load()) << "an in-dialog switch is NOT a user cancel";
     EXPECT_FALSE(prompterFailed.load()) << "an in-dialog switch is NOT a prompter failure";
-    EXPECT_FALSE(cache.hasCan("card-A")) << "an MRZ payload must never land in the CAN slot";
-    EXPECT_FALSE(cache.hasMrz("card-A")) << "the sink owns the payload; the cache write is the flow's call";
+    EXPECT_FALSE(cache.getCan("card-A").has_value()) << "an MRZ payload must never land in the CAN slot";
+    EXPECT_FALSE(cache.getMrz("card-A").has_value()) << "the sink owns the payload; the cache write is the flow's call";
 }
 
 TEST(CredentialCacheRequest, ChosenMrzWithoutSinkIsPrompterError)
@@ -696,8 +696,8 @@ TEST(CredentialCacheRequest, ChosenMrzWithoutSinkIsPrompterError)
     EXPECT_EQ(result.status, CredentialResult::Status::Error);
     EXPECT_TRUE(prompterFailed.load()) << "a chosen-kind reply to a non-opting caller is a broken prompter";
     EXPECT_FALSE(userCancelled.load());
-    EXPECT_FALSE(cache.hasCan("card-A"));
-    EXPECT_FALSE(cache.hasMrz("card-A"));
+    EXPECT_FALSE(cache.getCan("card-A").has_value());
+    EXPECT_FALSE(cache.getMrz("card-A").has_value());
 }
 
 TEST(CredentialCacheRequest, ChosenKindEchoingTheRequestedKindIsAnOrdinaryReply)
@@ -716,7 +716,7 @@ TEST(CredentialCacheRequest, ChosenKindEchoingTheRequestedKindIsAnOrdinaryReply)
     EXPECT_EQ(result.status, CredentialResult::Status::Ok);
     ASSERT_NE(result.find("can"), nullptr);
     EXPECT_FALSE(sink.taken());
-    EXPECT_TRUE(cache.hasCan("card-A"));
+    EXPECT_TRUE(cache.getCan("card-A").has_value());
 }
 
 TEST(CredentialCacheRequest, MrzChoiceSinkResetScrubsAnUnconsumedPayload)
@@ -1107,7 +1107,7 @@ TEST(CredentialCacheRequest, ACorrectlyAnsweredDialogSurvivesAnUnrelatedSiblings
         << "a correctly answered dialog must not be discarded because an unrelated sibling's refusal bumped the "
            "generation while it was still open";
     EXPECT_EQ(inner.canCalls.load(), 1) << "only the first operation ever reached the prompter";
-    ASSERT_TRUE(cache.hasCan("card-A")) << "the correct secret must be CACHED, not discarded";
+    ASSERT_TRUE(cache.getCan("card-A").has_value()) << "the correct secret must be CACHED, not discarded";
     ASSERT_TRUE(cache.getCan("card-A").has_value());
     EXPECT_EQ(cache.getCan("card-A")->view(), std::string_view{"123456"});
 }

@@ -93,6 +93,7 @@ public:
     void setRegistryListener(RegistryListener* listener) override;
     [[nodiscard]] bool probeAvailability() override;
     [[nodiscard]] bool agentInstalled() override;
+    [[nodiscard]] AgentStartResult startAgent() override;
     [[nodiscard]] std::optional<RegistrySnapshot> fetchRegistry() override;
     [[nodiscard]] QStringList features() const override;
     [[nodiscard]] QString agentVersion() const override;
@@ -122,6 +123,9 @@ private Q_SLOTS:
     /// `Config1.Changed(key)`. The signal carries ONLY the key, so this
     /// re-reads that one property before forwarding — see refreshConfigKey().
     void onConfigChanged(const QString& key);
+    /// `Manager1.Quiesced(reason)`: handed on verbatim. The agent stays on the
+    /// bus and its objects stay valid, so availability does not change.
+    void onQuiesced(uint reason);
     void onInterfacesAdded(const QDBusObjectPath& path,
                            const LibreSCRS::AgentClient::AgentInterfaceProps& interfacesAndProperties);
     void onInterfacesRemoved(const QDBusObjectPath& path, const QStringList& interfaces);
@@ -131,6 +135,11 @@ private:
     /// isServiceRegistered helper, which can block ~25 s against a wedged
     /// daemon and would freeze a running outer loop the whole time).
     [[nodiscard]] bool nameHasOwner();
+    [[nodiscard]] bool nameIsActivatable();
+    /// A method call addressed to the agent. Never auto-starts it: starting
+    /// is startAgent()'s decision alone, so whether a call brings the agent up
+    /// does not depend on which call a consumer happened to make first.
+    [[nodiscard]] QDBusMessage agentCall(const QString& path, const QString& iface, const QString& method) const;
     /// Re-read the root `Manager1` properties — `Features` into `m_features`
     /// and `Version` into `m_agentVersion` — with ONE bounded
     /// `Properties.GetAll` on the root path, tolerating an agent that lacks

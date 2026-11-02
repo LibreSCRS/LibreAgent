@@ -42,7 +42,7 @@ class PriorityStubPlugin final : public LibreSCRS::Plugin::CardPlugin
 public:
     PriorityStubPlugin(std::string id, int priority)
     {
-        setIdentity(std::move(id), "stub", priority);
+        setIdentity(std::move(id), priority);
     }
     LibreSCRS::Plugin::CardCapabilities capabilities() const override
     {

@@ -37,20 +37,6 @@ std::optional<CredentialCache::Secret> CredentialCache::getMrz(const std::string
     return it->second.mrz;
 }
 
-bool CredentialCache::hasCan(const std::string& cardKey) const
-{
-    std::lock_guard lock(m_mutex);
-    auto it = m_entries.find(cardKey);
-    return it != m_entries.end() && it->second.can.has_value();
-}
-
-bool CredentialCache::hasMrz(const std::string& cardKey) const
-{
-    std::lock_guard lock(m_mutex);
-    auto it = m_entries.find(cardKey);
-    return it != m_entries.end() && it->second.mrz.has_value();
-}
-
 void CredentialCache::invalidate(const std::string& cardKey)
 {
     std::lock_guard lock(m_mutex);

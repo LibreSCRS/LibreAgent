@@ -8,8 +8,8 @@
 #include <LibreSCRS/Agent/operations/PromptSerializer.h>
 #include <LibreSCRS/Agent/operations/ReadIdentityOperation.h>
 
-#include <LibreSCRS/SmartCard/CardMap.h>
 #include <LibreSCRS/SmartCard/CardSession.h>
+#include <LibreSCRS/SmartCard/testing/CardSessionTesting.h>
 #include <gtest/gtest.h>
 #include <expected>
 #include <memory>
@@ -58,11 +58,10 @@ inline std::unique_ptr<CardSessionHolder> makeHolder()
 {
     auto factory = [](const std::string& r)
         -> std::expected<std::shared_ptr<LibreSCRS::SmartCard::CardSession>, LibreSCRS::SmartCard::OpenError> {
-        return LibreSCRS::SmartCard::detail::makeDetachedCardSession(r);
+        return LibreSCRS::SmartCard::Testing::makeDetachedCardSession(r);
     };
     auto resolver = [](std::span<const std::uint8_t>, LibreSCRS::SmartCard::CardSession&) { return CandidateList{}; };
-    return std::make_unique<CardSessionHolder>("FakeReader", std::move(factory), std::move(resolver),
-                                               std::make_shared<LibreSCRS::SmartCard::CardMap>());
+    return std::make_unique<CardSessionHolder>("FakeReader", std::move(factory), std::move(resolver));
 }
 class FakeReader final : public CardReader
 {
@@ -249,7 +248,7 @@ TEST(ReadIdentityOperation, FlowErrorMapsToFinishedError)
 {
     auto holder = makeHolder();
     FakeReader reader;
-    reader.outcome = ReadOutcome{ReadOutcome::Status::ParseError, std::nullopt, "malformed"};
+    reader.outcome = ReadOutcome{ReadOutcome::Status::CommunicationError, std::nullopt, "card removed"};
     FakePrompter prompter;
     PromptSerializer serializer;
     CredentialCache credCache;
@@ -276,7 +275,7 @@ TEST(ReadIdentityOperation, FlowErrorMapsToFinishedError)
 
     ASSERT_EQ(raw->finishes.size(), 1u);
     EXPECT_EQ(raw->finishes[0].status, 2u) << "OperationStatus::Error";
-    EXPECT_EQ(raw->finishes[0].errorCode, static_cast<std::uint32_t>(ErrorCode::ParseError));
+    EXPECT_EQ(raw->finishes[0].errorCode, static_cast<std::uint32_t>(ErrorCode::CommunicationError));
     EXPECT_TRUE(raw->identityEmits.empty()) << "no Identity1.Result on error path";
     EXPECT_FALSE(readCache.get("card-A").has_value()) << "cache not populated on error";
 }

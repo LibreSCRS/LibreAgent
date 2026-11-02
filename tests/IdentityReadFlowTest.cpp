@@ -33,7 +33,7 @@
 #include <LibreSCRS/Plugin/CardPluginService.h>
 #include <LibreSCRS/Plugin/PluginTypes.h>
 #include <LibreSCRS/SmartCard/AppletAid.h>
-#include <LibreSCRS/SmartCard/CardMap.h>
+#include <LibreSCRS/SmartCard/testing/CardSessionTesting.h>
 #include <gtest/gtest.h>
 #include <algorithm>
 #include <atomic>
@@ -61,8 +61,7 @@ namespace {
 
 LibreSCRS::Auth::AuthRequirement paceReq(PaceSecretKind kind)
 {
-    return LibreSCRS::Auth::AuthRequirement::forPaceSecret(LibreSCRS::SmartCard::AppletAid{}, kind, std::nullopt,
-                                                           LibreSCRS::LocalizedText{});
+    return LibreSCRS::Auth::AuthRequirement::forPaceSecret(kind, LibreSCRS::LocalizedText{});
 }
 
 // A PACE requirement carrying the rejected-retry reason LM sets ONLY on a
@@ -71,8 +70,7 @@ LibreSCRS::Auth::AuthRequirement paceReq(PaceSecretKind kind)
 // re-invocation.
 LibreSCRS::Auth::AuthRequirement rejectedPaceReq(PaceSecretKind kind)
 {
-    return LibreSCRS::Auth::AuthRequirement::forPaceSecret(LibreSCRS::SmartCard::AppletAid{}, kind, std::nullopt,
-                                                           LibreSCRS::Auth::ErrorKeys::preReadAuthFailed());
+    return LibreSCRS::Auth::AuthRequirement::forPaceSecret(kind, LibreSCRS::Auth::ErrorKeys::preReadAuthFailed());
 }
 
 // ICAO Doc 9303 TD3 canonical specimen (UTO / ERIKSSON / L898902C3) in the
@@ -238,7 +236,7 @@ public:
                        std::shared_ptr<ProbeRecorder> rec = nullptr)
         : m_caps(caps), m_rec(std::move(rec))
     {
-        setIdentity(std::move(id), "stub", 0);
+        setIdentity(std::move(id), 0);
     }
     LibreSCRS::Plugin::CardCapabilities capabilities() const override
     {
@@ -297,12 +295,11 @@ inline std::unique_ptr<CardSessionHolder> makeHolder(std::optional<LibreSCRS::Sm
         if (failWith) {
             return std::unexpected{*failWith};
         }
-        return LibreSCRS::SmartCard::detail::makeDetachedCardSession(r);
+        return LibreSCRS::SmartCard::Testing::makeDetachedCardSession(r);
     };
     auto resolver = [candidates = std::move(candidates)](std::span<const std::uint8_t>,
                                                          LibreSCRS::SmartCard::CardSession&) { return candidates; };
-    return std::make_unique<CardSessionHolder>("FakeReader", std::move(factory), std::move(resolver),
-                                               std::make_shared<LibreSCRS::SmartCard::CardMap>());
+    return std::make_unique<CardSessionHolder>("FakeReader", std::move(factory), std::move(resolver));
 }
 
 struct Harness
@@ -421,14 +418,15 @@ TEST(IdentityReadFlow, AuthFailedEvictsCachedSecretForThisCard)
     // wrong secret from cache.
     Harness h;
     h.cache.putCan("card-A", LibreSCRS::Secure::String{"000000"}); // a stale/wrong CAN
-    ASSERT_TRUE(h.cache.hasCan("card-A"));
+    ASSERT_TRUE(h.cache.getCan("card-A").has_value());
 
     h.reader.outcome = ReadOutcome{ReadOutcome::Status::AuthFailed, std::nullopt, "auth rejected"};
     auto result = h.make().run();
 
     EXPECT_EQ(result.outcome, IdentityReadFlow::Outcome::Error);
     EXPECT_EQ(result.code, ErrorCode::AuthFailed);
-    EXPECT_FALSE(h.cache.hasCan("card-A")) << "the wrong CAN must be evicted on auth failure so a retry re-prompts";
+    EXPECT_FALSE(h.cache.getCan("card-A").has_value())
+        << "the wrong CAN must be evicted on auth failure so a retry re-prompts";
 }
 
 TEST(IdentityReadFlow, SuccessfulReadDoesNotEvictCachedSecret)
@@ -442,7 +440,7 @@ TEST(IdentityReadFlow, SuccessfulReadDoesNotEvictCachedSecret)
     auto result = h.make().run();
 
     EXPECT_EQ(result.outcome, IdentityReadFlow::Outcome::Ok);
-    EXPECT_TRUE(h.cache.hasCan("card-A")) << "a successful read must not evict the cached CAN";
+    EXPECT_TRUE(h.cache.getCan("card-A").has_value()) << "a successful read must not evict the cached CAN";
 }
 
 TEST(IdentityReadFlow, CancelledReadDoesNotEvictCachedSecret)
@@ -454,16 +452,7 @@ TEST(IdentityReadFlow, CancelledReadDoesNotEvictCachedSecret)
     auto result = h.make().run();
 
     EXPECT_EQ(result.outcome, IdentityReadFlow::Outcome::Cancelled);
-    EXPECT_TRUE(h.cache.hasCan("card-A")) << "a user cancel must not evict the cached CAN";
-}
-
-TEST(IdentityReadFlow, ReadParseErrorMapsToParseError)
-{
-    Harness h;
-    h.reader.outcome = ReadOutcome{ReadOutcome::Status::ParseError, std::nullopt, "malformed"};
-    auto result = h.make().run();
-    EXPECT_EQ(result.outcome, IdentityReadFlow::Outcome::Error);
-    EXPECT_EQ(result.code, ErrorCode::ParseError);
+    EXPECT_TRUE(h.cache.getCan("card-A").has_value()) << "a user cancel must not evict the cached CAN";
 }
 
 TEST(IdentityReadFlow, ReadCancelledMapsToCancelled)
@@ -806,12 +795,12 @@ TEST(IdentityReadFlow, StreamedGroupsAreIgnoredOnAFailedRead)
     GroupSnapshot g1;
     g1.groupKey = "personal";
     h.reader.groupsToStream = {g1};
-    h.reader.outcome = ReadOutcome{ReadOutcome::Status::ParseError, std::nullopt, "malformed"};
+    h.reader.outcome = ReadOutcome{ReadOutcome::Status::CommunicationError, std::nullopt, "card removed"};
 
     auto result = h.make().run();
 
     EXPECT_EQ(result.outcome, IdentityReadFlow::Outcome::Error);
-    EXPECT_EQ(result.code, ErrorCode::ParseError);
+    EXPECT_EQ(result.code, ErrorCode::CommunicationError);
     ASSERT_EQ(h.groupSink.groups.size(), 1u);
     EXPECT_EQ(h.groupSink.groups[0].groupKey, "personal");
 }
@@ -837,7 +826,7 @@ TEST(IdentityReadFlow, RejectedRetryPromptEvictsAndRepromptsWithContext)
     auto first = provider(paceReq(PaceSecretKind::Can));
     ASSERT_EQ(first.status, LibreSCRS::Auth::CredentialResult::Status::Ok);
     EXPECT_EQ(h.prompter.canPrompts, 1);
-    ASSERT_TRUE(h.cache.hasCan("card-A"));
+    ASSERT_TRUE(h.cache.getCan("card-A").has_value());
 
     // Second invocation carries the M5' rejection signal: evict the cached CAN
     // and PROMPT AGAIN (not replay); the re-prompt must carry attempt==2 and
@@ -869,12 +858,12 @@ TEST(IdentityReadFlow, PaceUnsupportedFallbackDoesNotMarkCredentialWrong)
     auto first = provider(paceReq(PaceSecretKind::Mrz));
     ASSERT_EQ(first.status, LibreSCRS::Auth::CredentialResult::Status::Ok);
     EXPECT_EQ(h.prompter.mrzPrompts, 1);
-    ASSERT_TRUE(h.cache.hasMrz("card-A"));
+    ASSERT_TRUE(h.cache.getMrz("card-A").has_value());
 
     auto second = provider(paceReq(PaceSecretKind::Mrz)); // same kind, EMPTY reason -- no rejection
     EXPECT_EQ(second.status, LibreSCRS::Auth::CredentialResult::Status::Ok);
     EXPECT_EQ(h.prompter.mrzPrompts, 1) << "a same-kind re-invocation with no rejection serves the cache, no re-prompt";
-    EXPECT_TRUE(h.cache.hasMrz("card-A"))
+    EXPECT_TRUE(h.cache.getMrz("card-A").has_value())
         << "no eviction: the never-rejected MRZ stays cached (no markCredentialWrong)";
 }
 
@@ -1004,7 +993,7 @@ TEST(IdentityReadFlow, FirstInvocationStillUsesWarmCache)
     auto cred = provider(paceReq(PaceSecretKind::Can));
     EXPECT_EQ(cred.status, LibreSCRS::Auth::CredentialResult::Status::Ok);
     EXPECT_EQ(h.prompter.canPrompts, 0) << "a warm cache serves with zero prompts";
-    EXPECT_TRUE(h.cache.hasCan("card-A"));
+    EXPECT_TRUE(h.cache.getCan("card-A").has_value());
 }
 
 TEST(IdentityReadFlow, RejectedSecretIsMarkedWrongExactlyOnce)
@@ -1117,7 +1106,7 @@ TEST(IdentityReadFlow, StructuralPaceFailureDoesNotMarkCredentialWrong)
 
     EXPECT_EQ(result.outcome, IdentityReadFlow::Outcome::Error);
     EXPECT_EQ(result.code, ErrorCode::UnsupportedCard);
-    EXPECT_TRUE(h.cache.hasCan("card-A")) << "a structural failure must never evict/punish the credential";
+    EXPECT_TRUE(h.cache.getCan("card-A").has_value()) << "a structural failure must never evict/punish the credential";
     EXPECT_EQ(flow.attemptContext().attempts(), 0u) << "and records no retry context";
 }
 
@@ -1138,7 +1127,7 @@ TEST(IdentityReadFlow, WrongSecretStillMarksCredentialWrong)
 
     EXPECT_EQ(result.outcome, IdentityReadFlow::Outcome::Error);
     EXPECT_EQ(result.code, ErrorCode::AuthFailed);
-    EXPECT_FALSE(h.cache.hasCan("card-A")) << "a wrong secret is evicted so a retry re-prompts";
+    EXPECT_FALSE(h.cache.getCan("card-A").has_value()) << "a wrong secret is evicted so a retry re-prompts";
     EXPECT_EQ(flow.attemptContext().attempts(), 1u) << "the rejection is recorded on this operation's own context";
     EXPECT_EQ(flow.attemptContext().lastErrorKey(), LibreSCRS::Auth::ErrorKeys::preReadAuthFailed().key);
 }
@@ -1187,7 +1176,7 @@ TEST(IdentityReadFlow, RenegotiationDepositsAndRerunsOnce)
     EXPECT_EQ(result.snapshot->cardType, "fake-passport");
     ASSERT_EQ(h.groupSink.groups.size(), 1u) << "the groups streamed are the re-run's";
     EXPECT_EQ(h.groupSink.groups[0].groupKey, "personal");
-    EXPECT_TRUE(h.cache.hasMrz("card-A")) << "the chosen MRZ is cached for the rest of this insertion";
+    EXPECT_TRUE(h.cache.getMrz("card-A").has_value()) << "the chosen MRZ is cached for the rest of this insertion";
 }
 
 TEST(IdentityReadFlow, RenegotiationRunsReadExactlyTwice)
@@ -1225,7 +1214,7 @@ TEST(IdentityReadFlow, MalformedChosenPayloadFailsWithoutCachePoison)
     const auto result = flow.run();
 
     EXPECT_EQ(result.outcome, IdentityReadFlow::Outcome::Error);
-    EXPECT_FALSE(h.cache.hasMrz("card-A")) << "a payload that does not parse must never be cached";
+    EXPECT_FALSE(h.cache.getMrz("card-A").has_value()) << "a payload that does not parse must never be cached";
     EXPECT_TRUE(h.depositor.deposits.empty()) << "nothing may be deposited from an unparsed payload";
     EXPECT_EQ(h.reader.reads, 1) << "no re-run without a usable secret";
 }
@@ -1277,7 +1266,7 @@ TEST(IdentityReadFlow, ALaterEmptyReasonInvocationLeavesTheMarkedFlagAlone)
 
     const auto first = provider(rejectedPaceReq(PaceSecretKind::Can));
     ASSERT_NE(first.status, LibreSCRS::Auth::CredentialResult::Status::Ok);
-    EXPECT_FALSE(h.cache.hasCan("card-A")) << "the rejection signal must evict";
+    EXPECT_FALSE(h.cache.getCan("card-A").has_value()) << "the rejection signal must evict";
     EXPECT_TRUE(marked->load()) << "the marking invocation must set the flag";
 
     const auto second = provider(paceReq(PaceSecretKind::Can));
@@ -1325,7 +1314,7 @@ TEST(IdentityReadFlow, RenegotiationAbortsOnCancelledToken)
     EXPECT_EQ(result.outcome, IdentityReadFlow::Outcome::Cancelled);
     EXPECT_EQ(h.reader.reads, 1) << "the cancelled token stops the second read";
     EXPECT_TRUE(h.depositor.deposits.empty()) << "nothing is deposited past the guard";
-    EXPECT_FALSE(h.cache.hasMrz("card-A")) << "no cache write past the guard";
+    EXPECT_FALSE(h.cache.getMrz("card-A").has_value()) << "no cache write past the guard";
 }
 
 TEST(IdentityReadFlow, UnconsumedSinkIsScrubbedAtFlowExit)
@@ -1459,7 +1448,7 @@ TEST(IdentityReadFlow, DepositorUsesPureCandidateLookup)
     // never probes the candidates it was handed) and structurally (the
     // resolution helper takes NO session, so the probing lookup is unreachable
     // from it, and the shipped source names neither probing entry point).
-    auto session = LibreSCRS::SmartCard::detail::makeDetachedCardSession("FakeReader");
+    auto session = LibreSCRS::SmartCard::Testing::makeDetachedCardSession("FakeReader");
     ASSERT_NE(session, nullptr);
 
     auto recorder = std::make_shared<ProbeRecorder>();

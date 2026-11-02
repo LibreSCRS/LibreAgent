@@ -112,12 +112,13 @@ TEST(CacheScrubOnRemoval, CardRemovedScrubsCredentialAndReadCachesKeyedByCardPat
     // (deps.cardKey = cardPath). This is exactly the production population key.
     h.cache.putCan(cardPath, Secret{"123456"});
     h.readCache.put(cardPath, makeSnapshot());
-    ASSERT_TRUE(h.cache.hasCan(cardPath));
+    ASSERT_TRUE(h.cache.getCan(cardPath).has_value());
     ASSERT_TRUE(h.readCache.get(cardPath).has_value());
 
     h.remove("Acme CL 0");
 
-    EXPECT_FALSE(h.cache.hasCan(cardPath)) << "CardRemoved must scrub the cached CAN (was a guaranteed leak)";
+    EXPECT_FALSE(h.cache.getCan(cardPath).has_value())
+        << "CardRemoved must scrub the cached CAN (was a guaranteed leak)";
     EXPECT_FALSE(h.readCache.get(cardPath).has_value()) << "CardRemoved must scrub the cached identity snapshot";
 }
 
@@ -131,7 +132,7 @@ TEST(CacheScrubOnRemoval, ReaderRemovedScrubsCachesKeyedByCardPath)
 
     h.removeReader("Acme CL 0");
 
-    EXPECT_FALSE(h.cache.hasMrz(cardPath));
+    EXPECT_FALSE(h.cache.getMrz(cardPath).has_value());
     EXPECT_FALSE(h.readCache.get(cardPath).has_value());
 }
 
@@ -147,10 +148,10 @@ TEST(CacheScrubOnRemoval, ReinsertScrubsPreviousCardPathCache)
     const std::string secondPath = h.insert("Acme CL 0", {0x3B, 0x02});
     EXPECT_NE(firstPath, secondPath);
 
-    EXPECT_FALSE(h.cache.hasCan(firstPath)) << "the previous card's CAN must be scrubbed on swap";
+    EXPECT_FALSE(h.cache.getCan(firstPath).has_value()) << "the previous card's CAN must be scrubbed on swap";
     EXPECT_FALSE(h.readCache.get(firstPath).has_value());
 
     // The new card's cache (under its own path) is independent and untouched.
     h.cache.putCan(secondPath, Secret{"222222"});
-    EXPECT_TRUE(h.cache.hasCan(secondPath));
+    EXPECT_TRUE(h.cache.getCan(secondPath).has_value());
 }

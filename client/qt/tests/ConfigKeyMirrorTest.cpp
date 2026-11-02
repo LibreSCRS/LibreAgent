@@ -21,7 +21,7 @@
 // fakes above cannot notice, since they only ever probe with real published
 // keys.
 
-#include "ConfigKeys.h"
+#include <LibreSCRS/AgentClient/ConfigKeys.h>
 
 #include <QFile>
 #include <QIODevice>

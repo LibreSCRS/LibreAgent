@@ -108,6 +108,10 @@ public:
         /// predating the credential request family.
         QStringList features = {QStringLiteral("credentials")};
         QString readerName = QStringLiteral("Fake");
+        /// reader-state's label. An empty model publishes the name, as the
+        /// agent does for a name it cannot shorten.
+        QString readerModel;
+        QString readerInterface = QStringLiteral("unknown");
         quint32 capabilities = 0;
         bool hasCard = true;
         QString preReadAuth = QStringLiteral("None"); ///< None | Mrz | Can
@@ -247,6 +251,10 @@ public:
     /// Change the card's CardType and broadcast the PropertyChanged carrying
     /// the full new value -- the post-read authoritative update.
     void emitCardTypeChanged(const QString& cardType);
+    /// Relabel the reader (another reader arrived or left beside it) and
+    /// broadcast the Reader1 PropertyChanged carrying Model and Interface
+    /// together, as the agent does.
+    void emitReaderRelabelled(const QString& model, const QString& interfaceToken);
     void sendAgentQuiesced(quint32 reason);
     /// Broadcast a "ConfigChanged" event for @p key with no client-side
     /// mutation behind it — the agent-internal change path (LastTsaUrl after

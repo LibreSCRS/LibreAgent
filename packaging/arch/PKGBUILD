@@ -64,14 +64,13 @@ makedepends=(
     'git'           # cmake/GitVersion.cmake does find_package(Git REQUIRED)
                     #   unconditionally; without it configure fails outright
     'qt6-base'      # Qt6 Core/DBus/Test is a configure-time find_package()
-    'gtest'         # the client test suite does find_package(GTest REQUIRED)
-    'dbus'          # CONFIGURE-time, not merely check-time: the client test
-                    #   CMakeLists does find_program(dbus-run-session REQUIRED)
     'librescrs-middleware>=5.0'  # LibreAgent::Core links LibreSCRS::* and needs
                                  #   its CMake config package at configure time
     'openssl'
 )
-options=('!lto')   # built in a clean chroot with LTO off; not measured to be required
+# No GoogleTest or dbus: only the test tree looks for them, and build() below
+# configures with BUILD_TESTING=OFF, which never enters it.
+options=('!lto')   # LTO off, as the RPM spec does; not measured to be required
 
 _srcname=LibreAgent
 # The immutable SHA that QCBOR's (mutable) v1.6.1 tag resolves to. Must stay in
@@ -203,23 +202,17 @@ build() {
     cmake -S . -B build -G Ninja \
         -DCMAKE_BUILD_TYPE=RelWithDebInfo \
         -DCMAKE_INSTALL_PREFIX=/usr \
+        -DBUILD_TESTING=OFF \
         -DLIBREAGENT_BUILD_CORE=ON \
         -DLIBREAGENT_BUILD_WIRE=ON \
         -DLIBREAGENT_BUILD_CLIENT_QT=ON \
+        -DLIBREAGENT_BUILD_CLIENT_QT_TEST_SUPPORT=OFF \
         -DLIBREAGENT_BUILD_PKCS11_FACADE=ON \
         -DLIBREAGENT_BUILD_PKCS11_SOCKET_CLIENT=ON \
         -DLIBREAGENT_INSTALL_WIRE_ARCHIVE=ON \
         -DFETCHCONTENT_SOURCE_DIR_QCBOR="$srcdir/QCBOR-$_qcbor_commit" \
         -DFETCHCONTENT_FULLY_DISCONNECTED=ON
     cmake --build build -j4
-}
-
-check() {
-    cd "$srcdir/$_srcname"
-    # Qt needs a headless platform plugin. No bus is set up here on purpose:
-    # every suite that needs one already wraps its own add_test() command in
-    # dbus-run-session, which gives each suite a private session bus.
-    QT_QPA_PLATFORM=offscreen ctest --test-dir build --output-on-failure -j4
 }
 
 # --- shared staging -----------------------------------------------------------
@@ -318,15 +311,8 @@ package_librescrs-agent-core() {
 # --- librescrs-agent-client-qt: the Qt client library -------------------------
 package_librescrs-agent-client-qt() {
     pkgdesc="Qt client library for the LibreSCRS smart-card agent (D-Bus and AF_UNIX socket transports)"
-    # The core package is a dependency because this one ships the
-    # ClientQtTestSupport CMake component, whose exported target links
-    # LibreAgent::Wire, and Wire is in the core package. Without it
-    # find_package(LibreAgent COMPONENTS ClientQtTestSupport) fails on a
-    # machine with only this package installed. Arch has no separate
-    # development package to carry that edge, so the runtime package does.
     depends=(
         'librescrs-agent-common'
-        'librescrs-agent-core'  # LibreAgent::Wire, linked by ClientQtTestSupport
         'qt6-base'      # Qt6::Core (PUBLIC) and Qt6::DBus (PRIVATE, Linux transport)
         'gcc-libs'
         'glibc'

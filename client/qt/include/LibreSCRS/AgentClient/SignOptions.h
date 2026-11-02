@@ -2,6 +2,7 @@
 // SPDX-FileCopyrightText: 2026 hirashix0
 #pragma once
 #include <LibreSCRS/AgentClient/ErrorCode.h>
+#include <LibreSCRS/AgentClient/Export.h>
 #include <LibreSCRS/AgentClient/FdHandle.h>
 
 #include <QString>
@@ -9,6 +10,10 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <expected>
+#include <functional>
+
+class QIODevice;
 
 /// @file
 /// @brief Typed `Card1.Sign` / `Credentials1` vocabulary for the
@@ -244,5 +249,69 @@ struct BatchSignRow
         meta; ///< Signature metadata (format/level/...), as `AgentOperation::signMeta()`; empty on a failed row.
     ErrorCode error = ErrorCode::None; ///< `ErrorCode::None` on success; the row's (or halt's) failure code otherwise.
 };
+
+/// @brief Where a signature of @p inputPath is written: the one naming rule
+///        every client of the agent uses, so the same document signed from any
+///        of them lands under the same name.
+///
+/// The name, in @p folder (next to the input when @p folder is empty):
+///
+/// | format | packaging            | output                    |
+/// |--------|----------------------|---------------------------|
+/// | PAdES  | any                  | `<stem>-signed.pdf`       |
+/// | XAdES  | Detached             | `<name>.xsig`             |
+/// | XAdES  | Enveloped/Enveloping | `<stem>-signed.xml`       |
+/// | CAdES  | Detached             | `<name>.p7s`              |
+/// | CAdES  | Enveloped/Enveloping | `<name>.p7m`              |
+/// | JAdES  | any                  | `<name>.jose`             |
+/// | ASiCe  | any                  | `<stem>.asice`            |
+///
+/// `<name>` is the input's file name, `<stem>` that name without its last
+/// extension. A detached signature keeps the whole input name, so it stays
+/// recognisable next to the document it belongs to; `.p7s`/`.p7m` follow the
+/// S/MIME convention for a detached and an attached CMS signature (RFC 8551
+/// section 3.2.2), `.asice` is the ASiC-E container's (ETSI EN 319 162-1).
+///
+/// Never an existing file: when the name is taken, the first free numbered
+/// sibling is returned, the number before the last extension
+/// (`report-signed (2).pdf`, then `(3)`, ...). Empty when even that search
+/// finds nothing free, so the caller reports a write failure instead of
+/// replacing anything. The answer is a snapshot: write the file with
+/// `writeSignedFile()`, which creates it exclusively.
+[[nodiscard]] LIBRESCRS_AGENTCLIENT_EXPORT QString signedOutputPath(const QString& inputPath, SignatureFormat format,
+                                                                    Packaging packaging,
+                                                                    const QString& folder = QString());
+
+/// @brief Why `writeSignedFile()` left no file.
+enum class SignedFileError : std::uint8_t {
+    UnreadableArtifact, ///< The artifact could not be rewound or read to its end.
+    EmptyArtifact,      ///< The artifact holds no bytes; no signed file is empty.
+    NoFreeName,         ///< No name was given, or every name given was taken.
+    WriteFailed,        ///< The folder or the disk refused the file.
+};
+
+/// @brief Write a signed artifact into a file of its own, never replacing one.
+///
+/// @p nextName answers the name to write under -- normally
+/// `signedOutputPath()` for the document -- and is asked again, up to eight
+/// times, when the name it gave is taken by the time the file is created: a
+/// name is a snapshot, and another signer can create the same file in between.
+/// The name is claimed with an exclusive create before anything is written,
+/// and the artifact is then committed over that claim in one step, so the name
+/// never holds part of an artifact: until the commit it holds the empty claim.
+/// Every failure after the claim removes the claimed file again.
+///
+/// The artifact is read from its start whatever its offset (the agent hands
+/// a descriptor left at its end); a descriptor that cannot seek is read from
+/// where it is. An artifact with no bytes is `EmptyArtifact`, never a file.
+///
+/// @return The path written.
+[[nodiscard]] LIBRESCRS_AGENTCLIENT_EXPORT std::expected<QString, SignedFileError>
+writeSignedFile(int artifactFd, const std::function<QString()>& nextName);
+
+/// @brief `writeSignedFile()` from an open, readable device instead of a
+///        descriptor; a random-access device is read from its start.
+[[nodiscard]] LIBRESCRS_AGENTCLIENT_EXPORT std::expected<QString, SignedFileError>
+writeSignedFile(QIODevice& artifact, const std::function<QString()>& nextName);
 
 } // namespace LibreSCRS::AgentClient

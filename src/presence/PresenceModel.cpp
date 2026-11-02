@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 // SPDX-FileCopyrightText: 2026 hirashix0
 #include <LibreSCRS/Agent/presence/PresenceModel.h>
-#include <LibreSCRS/Agent/backend/Logging.h>
+#include <LibreSCRS/Logging.h>
 #include <LibreSCRS/Agent/presence/ObjectRegistry.h>
 #include <LibreSCRS/Agent/PresenceTypes.h>
 #include <LibreSCRS/Agent/operations/CardPluginRouting.h>
@@ -35,7 +35,10 @@ void PresenceModel::onReaderAdded(const std::string& readerName)
     }
     const ObjectId id{++m_nextId};
     m_readerIds[readerName] = id;
-    m_registry.addReader(ReaderState{.id = id, .name = readerName, .hasCard = false, .card = {}});
+    ReaderState reader; // no card yet; the registry gives it its label
+    reader.id = id;
+    reader.name = readerName;
+    m_registry.addReader(reader);
 }
 
 void PresenceModel::onReaderRemoved(const std::string& readerName)

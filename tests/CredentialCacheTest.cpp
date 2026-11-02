@@ -25,8 +25,6 @@ const std::string kCardB = "card-fp-B";
 TEST(CredentialCache, EmptyByDefault)
 {
     CredentialCache c;
-    EXPECT_FALSE(c.hasCan(kCardA));
-    EXPECT_FALSE(c.hasMrz(kCardA));
     EXPECT_FALSE(c.getCan(kCardA).has_value());
     EXPECT_FALSE(c.getMrz(kCardA).has_value());
 }
@@ -36,7 +34,7 @@ TEST(CredentialCache, PutCanThenGetRoundTrips)
     CredentialCache c;
     c.putCan(kCardA, Secret{"123456"});
 
-    EXPECT_TRUE(c.hasCan(kCardA));
+    EXPECT_TRUE(c.getCan(kCardA).has_value());
     const auto got = c.getCan(kCardA);
     ASSERT_TRUE(got.has_value());
     EXPECT_EQ(got->view(), "123456");
@@ -47,7 +45,7 @@ TEST(CredentialCache, PutMrzThenGetRoundTrips)
     CredentialCache c;
     c.putMrz(kCardA, Secret{"P<XXX..."});
 
-    EXPECT_TRUE(c.hasMrz(kCardA));
+    EXPECT_TRUE(c.getMrz(kCardA).has_value());
     const auto got = c.getMrz(kCardA);
     ASSERT_TRUE(got.has_value());
     EXPECT_EQ(got->view(), "P<XXX...");
@@ -59,8 +57,8 @@ TEST(CredentialCache, CanAndMrzCoexistForSameCard)
     c.putCan(kCardA, Secret{"123456"});
     c.putMrz(kCardA, Secret{"MRZ-DATA"});
 
-    EXPECT_TRUE(c.hasCan(kCardA));
-    EXPECT_TRUE(c.hasMrz(kCardA));
+    EXPECT_TRUE(c.getCan(kCardA).has_value());
+    EXPECT_TRUE(c.getMrz(kCardA).has_value());
     EXPECT_EQ(c.getCan(kCardA)->view(), "123456");
     EXPECT_EQ(c.getMrz(kCardA)->view(), "MRZ-DATA");
 }
@@ -81,16 +79,16 @@ TEST(CredentialCache, InvalidateDropsBothCanAndMrz)
 
     c.invalidate(kCardA);
 
-    EXPECT_FALSE(c.hasCan(kCardA));
-    EXPECT_FALSE(c.hasMrz(kCardA));
+    EXPECT_FALSE(c.getCan(kCardA).has_value());
+    EXPECT_FALSE(c.getMrz(kCardA).has_value());
 }
 
 TEST(CredentialCache, InvalidateUnknownCardIsNoOp)
 {
     CredentialCache c;
     c.invalidate(kCardA); // never set
-    EXPECT_FALSE(c.hasCan(kCardA));
-    EXPECT_FALSE(c.hasMrz(kCardA));
+    EXPECT_FALSE(c.getCan(kCardA).has_value());
+    EXPECT_FALSE(c.getMrz(kCardA).has_value());
 }
 
 TEST(CredentialCache, InvalidateOneCardLeavesOthers)
@@ -101,8 +99,8 @@ TEST(CredentialCache, InvalidateOneCardLeavesOthers)
 
     c.invalidate(kCardA);
 
-    EXPECT_FALSE(c.hasCan(kCardA));
-    EXPECT_TRUE(c.hasCan(kCardB));
+    EXPECT_FALSE(c.getCan(kCardA).has_value());
+    EXPECT_TRUE(c.getCan(kCardB).has_value());
     EXPECT_EQ(c.getCan(kCardB)->view(), "BBBBBB");
 }
 
@@ -115,9 +113,9 @@ TEST(CredentialCache, ClearWipesEverything)
 
     c.clear();
 
-    EXPECT_FALSE(c.hasCan(kCardA));
-    EXPECT_FALSE(c.hasMrz(kCardA));
-    EXPECT_FALSE(c.hasCan(kCardB));
+    EXPECT_FALSE(c.getCan(kCardA).has_value());
+    EXPECT_FALSE(c.getMrz(kCardA).has_value());
+    EXPECT_FALSE(c.getCan(kCardB).has_value());
 }
 
 TEST(CredentialCache, MarkCredentialWrongEvictsBothCanAndMrz)
@@ -128,8 +126,8 @@ TEST(CredentialCache, MarkCredentialWrongEvictsBothCanAndMrz)
 
     c.markCredentialWrong(kCardA);
 
-    EXPECT_FALSE(c.hasCan(kCardA));
-    EXPECT_FALSE(c.hasMrz(kCardA));
+    EXPECT_FALSE(c.getCan(kCardA).has_value());
+    EXPECT_FALSE(c.getMrz(kCardA).has_value());
 }
 
 TEST(CredentialCache, MarkCredentialWrongOnUnknownCardIsNotACrash)
@@ -139,8 +137,8 @@ TEST(CredentialCache, MarkCredentialWrongOnUnknownCardIsNotACrash)
     // getters (they only report can/mrz), but must not misbehave.
     CredentialCache c;
     c.markCredentialWrong(kCardA);
-    EXPECT_FALSE(c.hasCan(kCardA));
-    EXPECT_FALSE(c.hasMrz(kCardA));
+    EXPECT_FALSE(c.getCan(kCardA).has_value());
+    EXPECT_FALSE(c.getMrz(kCardA).has_value());
 }
 
 TEST(CredentialCache, InvalidateAfterMarkCredentialWrongIsNotACrash)
@@ -154,8 +152,8 @@ TEST(CredentialCache, InvalidateAfterMarkCredentialWrongIsNotACrash)
     CredentialCache c;
     c.markCredentialWrong(kCardA);
     c.invalidate(kCardA);
-    EXPECT_FALSE(c.hasCan(kCardA));
-    EXPECT_FALSE(c.hasMrz(kCardA));
+    EXPECT_FALSE(c.getCan(kCardA).has_value());
+    EXPECT_FALSE(c.getMrz(kCardA).has_value());
 }
 
 TEST(CredentialCache, EmptyKeyIsValidKey)
@@ -164,9 +162,9 @@ TEST(CredentialCache, EmptyKeyIsValidKey)
     // this fingerprint in practice, but the cache should not crash on it.
     CredentialCache c;
     c.putCan("", Secret{"x"});
-    EXPECT_TRUE(c.hasCan(""));
+    EXPECT_TRUE(c.getCan("").has_value());
     c.invalidate("");
-    EXPECT_FALSE(c.hasCan(""));
+    EXPECT_FALSE(c.getCan("").has_value());
 }
 
 // Concurrency stress: in production the accessors run BOTH from the monitor
@@ -210,7 +208,7 @@ TEST(CredentialCache, ConcurrentGetPutInvalidateStress)
                     (void)c.getCan(key);
                     break;
                 case 3:
-                    (void)c.hasMrz(key);
+                    (void)c.getMrz(key).has_value();
                     break;
                 case 4:
                     c.invalidate(key);
@@ -239,6 +237,6 @@ TEST(CredentialCache, ConcurrentGetPutInvalidateStress)
     // The cache is still fully functional after the storm.
     c.clear();
     c.putCan("after", Secret{"999999"});
-    ASSERT_TRUE(c.hasCan("after"));
+    ASSERT_TRUE(c.getCan("after").has_value());
     EXPECT_EQ(c.getCan("after")->view(), "999999");
 }

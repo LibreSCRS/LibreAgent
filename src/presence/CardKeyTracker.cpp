@@ -48,13 +48,4 @@ void CardKeyTracker::onReaderRemoved(const std::string& readerName)
     onCardRemoved(readerName);
 }
 
-std::optional<ObjectId> CardKeyTracker::currentKey(const std::string& readerName) const
-{
-    auto it = m_readerToCardKey.find(readerName);
-    if (it == m_readerToCardKey.end()) {
-        return std::nullopt;
-    }
-    return it->second;
-}
-
 } // namespace LibreSCRS::Agent

@@ -470,13 +470,25 @@ TEST(RawCryptoCaptureGuard, LoginContinuationCoOwnsTheLeaseShareNotTheBroker)
     ASSERT_FALSE(raw.empty()) << "Pkcs11Broker source path not wired";
     const std::string code = codeText(raw);
 
-    // The login continuation runs on the (abandonable) worker thread and grants the
-    // lease; it must co-own the lease SHARE + clock seam, never the broker `this`.
-    const auto captures = capturesAfter(code, "m_deps.login(");
+    // Login continues twice off the dispatch thread, and the broker may be gone
+    // by either time: in the authorization completion (an authority answers
+    // whenever a person has decided) and in the login seam's continuation (the
+    // abandonable worker that grants the lease). Both must co-own the lease
+    // SHARE + clock seam, never the broker `this`.
+    const auto authorized = capturesAfter(code, "m_deps.authorizer.authorizeAsync(");
+    ASSERT_TRUE(authorized.has_value()) << "the login authorization completion not found exactly once in the broker";
+    EXPECT_TRUE(hasCapture(*authorized, "lease = m_deps.lease"))
+        << "the authorization completion must co-own the lease share; got " << fmtCaptures(*authorized);
+    EXPECT_TRUE(hasCapture(*authorized, "now = m_deps.now"))
+        << "the authorization completion must capture the clock seam by value; got " << fmtCaptures(*authorized);
+    EXPECT_FALSE(hasCapture(*authorized, "this"))
+        << "the authorization completion may outlive the broker; got " << fmtCaptures(*authorized);
+
+    const auto captures = capturesAfter(code, "loginSeam(reader,");
     ASSERT_TRUE(captures.has_value()) << "the login continuation lambda not found exactly once in the broker";
-    EXPECT_TRUE(hasCapture(*captures, "lease = m_deps.lease"))
+    EXPECT_TRUE(hasCapture(*captures, "lease"))
         << "the login continuation must co-own the lease share; got " << fmtCaptures(*captures);
-    EXPECT_TRUE(hasCapture(*captures, "now = m_deps.now"))
+    EXPECT_TRUE(hasCapture(*captures, "now"))
         << "the login continuation must capture the clock seam by value; got " << fmtCaptures(*captures);
     EXPECT_FALSE(hasCapture(*captures, "this"))
         << "the pre-fix login continuation captured the broker `this`; that must be gone";

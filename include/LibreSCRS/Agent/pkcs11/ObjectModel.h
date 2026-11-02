@@ -25,9 +25,11 @@
 
 #include <LibreSCRS/Agent/KeyType.h>
 #include <LibreSCRS/Agent/pkcs11/pkcs11.h>
+#include <LibreSCRS/Agent/wire/PreReadAuth.h>
 
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -112,6 +114,69 @@ struct ReaderState
         }
     }
     return std::string{readerName};
+}
+
+/// @brief One certificate as a transport decodes it from its wire, before any
+///        PKCS#11 decision is made about it.
+struct NeutralCert
+{
+    std::string certId;
+    std::vector<std::uint8_t> keyId; ///< The key's CKA_ID as the card (or the agent) names it.
+    LibreSCRS::Agent::KeyType keyType = LibreSCRS::Agent::KeyType::Other;
+    std::uint32_t keyBits = 0;
+    bool signingCapable = false;    ///< Paired on-card key + signing-suitable keyUsage.
+    bool canDerive = false;         ///< The agent derives with the key (meaningful for EC only).
+    std::uint32_t keyUsageBits = 0; ///< RFC 5280 KeyUsage, bit n = ordinal n.
+    bool alwaysAuthenticate = false;
+    std::string subjectCn; ///< Empty when the subject carries no CN.
+};
+
+/// RFC 5280 4.2.1.3 KeyUsage ordinals that permit decryption.
+inline constexpr std::uint32_t kKeyEnciphermentBit = 1U << 2;
+inline constexpr std::uint32_t kDataEnciphermentBit = 1U << 3;
+
+/// @brief What the module may do with a certificate's key: the one policy
+///        every transport applies, so a card offers the same mechanisms on
+///        every platform.
+///
+/// - Only a key that signs, or an EC key the agent derives with, enters the
+///   token at all (nullopt otherwise).
+/// - Signing is driveable for a card that needs no secret before reading or
+///   asks for its CAN (@p preAuth None or Can).
+/// - Decryption: an RSA key, on a card needing no pre-read secret (the family
+///   whose plugins decipher), whose KeyUsage permits key or data encipherment.
+/// - A card that asks for its CAN hashes on the card: its RSA key signs the
+///   message, not a caller-built DigestInfo.
+/// - Derivation: an EC key the agent derives with.
+/// - The label is the subject CN, the certificate id when there is none.
+[[nodiscard]] inline std::optional<CertEntry> certEntryFrom(const NeutralCert& cert,
+                                                            LibreSCRS::Agent::Wire::PreReadAuth preAuth)
+{
+    using LibreSCRS::Agent::KeyType;
+    using LibreSCRS::Agent::Wire::PreReadAuth;
+    const bool derives = cert.canDerive && cert.keyType == KeyType::Ec;
+    if (!cert.signingCapable && !derives) {
+        return std::nullopt;
+    }
+    const bool canDriveSigning = preAuth == PreReadAuth::None || preAuth == PreReadAuth::Can;
+    const bool canDriveDecrypt = preAuth == PreReadAuth::None;
+    const bool isRsa = cert.keyType == KeyType::Rsa;
+    const bool keyUsagePermitsDecrypt = (cert.keyUsageBits & (kKeyEnciphermentBit | kDataEnciphermentBit)) != 0;
+
+    CertEntry entry;
+    entry.certId = cert.certId;
+    entry.signingCapable = cert.signingCapable;
+    entry.ckaId = cert.keyId;
+    entry.keyType = cert.keyType;
+    entry.keyBits = cert.keyBits;
+    entry.holderName = cert.subjectCn;
+    entry.label = cert.subjectCn.empty() ? cert.certId : cert.subjectCn;
+    entry.canSign = cert.signingCapable && canDriveSigning;
+    entry.canDecrypt = isRsa && canDriveDecrypt && keyUsagePermitsDecrypt;
+    entry.canDerive = derives;
+    entry.signsHashOnCard = isRsa && preAuth == PreReadAuth::Can;
+    entry.alwaysAuthenticate = cert.alwaysAuthenticate;
+    return entry;
 }
 
 /// @brief Maximum length of CK_TOKEN_INFO.serialNumber, in bytes.

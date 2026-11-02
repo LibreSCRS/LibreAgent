@@ -32,8 +32,8 @@
 #include <LibreSCRS/LocalizedText.h>
 #include <LibreSCRS/Secure/String.h>
 #include <LibreSCRS/SmartCard/AppletAid.h>
-#include <LibreSCRS/SmartCard/CardMap.h>
 #include <LibreSCRS/SmartCard/CardSession.h>
+#include <LibreSCRS/SmartCard/testing/CardSessionTesting.h>
 #include <gtest/gtest.h>
 #include <cstdint>
 #include <cstring>
@@ -60,7 +60,7 @@ class StubPlugin final : public LibreSCRS::Plugin::CardPlugin
 public:
     StubPlugin(std::string id, LibreSCRS::Plugin::CardCapabilities caps) : m_caps(caps)
     {
-        setIdentity(std::move(id), "stub", 0);
+        setIdentity(std::move(id), 0);
     }
     LibreSCRS::Plugin::CardCapabilities capabilities() const override
     {
@@ -95,12 +95,11 @@ inline std::unique_ptr<CardSessionHolder> makeHolder(std::optional<LibreSCRS::Sm
         if (failWith) {
             return std::unexpected{*failWith};
         }
-        return LibreSCRS::SmartCard::detail::makeDetachedCardSession(r);
+        return LibreSCRS::SmartCard::Testing::makeDetachedCardSession(r);
     };
     auto resolver = [candidates = std::move(candidates)](std::span<const std::uint8_t>,
                                                          LibreSCRS::SmartCard::CardSession&) { return candidates; };
-    return std::make_unique<CardSessionHolder>("FakeReader", std::move(factory), std::move(resolver),
-                                               std::make_shared<LibreSCRS::SmartCard::CardMap>());
+    return std::make_unique<CardSessionHolder>("FakeReader", std::move(factory), std::move(resolver));
 }
 
 class FakePrompter final : public PrompterClientBase
@@ -166,8 +165,7 @@ public:
         captured = params;
         capturedCandidates = candidates;
         if (drive == Drive::Pin) {
-            auto req = LibreSCRS::Auth::AuthRequirement::forSigning(
-                LibreSCRS::LocalizedText{.key = "", .defaultText = "PIN", .placeholders = {}}, std::nullopt);
+            auto req = LibreSCRS::Auth::AuthRequirement::forSigning();
             auto r = credentials(req);
             if (r.status == LibreSCRS::Auth::CredentialResult::Status::UserCancelled) {
                 SignOutcome c;
@@ -181,9 +179,8 @@ public:
             }
             sawPin = (r.find("pin") != nullptr);
         } else if (drive == Drive::Can) {
-            auto req = LibreSCRS::Auth::AuthRequirement::forPaceSecret(LibreSCRS::SmartCard::AppletAid{},
-                                                                       LibreSCRS::Auth::PaceSecretKind::Can,
-                                                                       std::nullopt, LibreSCRS::LocalizedText{});
+            auto req = LibreSCRS::Auth::AuthRequirement::forPaceSecret(LibreSCRS::Auth::PaceSecretKind::Can,
+                                                                       LibreSCRS::LocalizedText{});
             (void)credentials(req);
         }
         return outcome;
@@ -346,7 +343,7 @@ TEST(SignFlow, AuthFailedEvictsCachedPaceSecret)
 
     EXPECT_EQ(r.outcome, SignFlow::Outcome::Error);
     EXPECT_EQ(r.code, ErrorCode::AuthFailed);
-    EXPECT_FALSE(h.cache.hasCan("card-A")) << "AuthFailed must evict the cached CAN so a retry re-prompts";
+    EXPECT_FALSE(h.cache.getCan("card-A").has_value()) << "AuthFailed must evict the cached CAN so a retry re-prompts";
 }
 
 TEST(SignFlow, CardBlockedEvictsCachedPaceSecret)
@@ -360,7 +357,7 @@ TEST(SignFlow, CardBlockedEvictsCachedPaceSecret)
 
     EXPECT_EQ(r.outcome, SignFlow::Outcome::Error);
     EXPECT_EQ(r.code, ErrorCode::CredentialBlocked);
-    EXPECT_FALSE(h.cache.hasCan("card-A")) << "CardBlocked must evict the cached CAN too";
+    EXPECT_FALSE(h.cache.getCan("card-A").has_value()) << "CardBlocked must evict the cached CAN too";
 }
 
 TEST(SignFlow, NonAuthFailureKeepsCachedPaceSecret)
@@ -377,7 +374,7 @@ TEST(SignFlow, NonAuthFailureKeepsCachedPaceSecret)
 
     EXPECT_EQ(r.outcome, SignFlow::Outcome::Error);
     EXPECT_EQ(r.code, ErrorCode::KeyNotFound);
-    EXPECT_TRUE(h.cache.hasCan("card-A")) << "a non-auth failure must not evict a correct cached CAN";
+    EXPECT_TRUE(h.cache.getCan("card-A").has_value()) << "a non-auth failure must not evict a correct cached CAN";
 }
 
 TEST(SignFlow, ExpiredBlockedNeverPrompts)
@@ -489,7 +486,7 @@ TEST(SignFlow, CanPathIsCachedAndAddsNoSignPhases)
     EXPECT_EQ(r.outcome, SignFlow::Outcome::Ok);
     EXPECT_EQ(h.prompter.canCalls, 1);
     EXPECT_EQ(h.prompter.pinCalls, 0);
-    EXPECT_TRUE(h.cache.hasCan("card-A")) << "CAN cached for reuse (PIN never is)";
+    EXPECT_TRUE(h.cache.getCan("card-A").has_value()) << "CAN cached for reuse (PIN never is)";
     // Reading (armed before the channel-establishment prompt) then
     // AwaitingConsent only -- channel establishment never surfaces the sign
     // phases. Asserted as the full sequence, not just its length.

@@ -50,9 +50,10 @@
 //       * PreReadAuth: the transport's card-property mapping (e.g.
 //         SocketTransport's preAuthToken()) treats an unrecognised value the
 //         same as the default, None.
-//       * QuiesceReason: nothing branches on it client-side today, so an
-//         unrecognised reason is inertly a "generic quiesce" -- no separate
-//         mapping is needed.
+//       * QuiesceReason: the client hands it on verbatim
+//         (AgentClient::quiesced) and branches on nothing, so an
+//         unrecognised reason is a quiesce for a reason it cannot name -- no
+//         separate mapping is needed.
 //       * ErrorCode: unchanged from before this policy existed -- opaque
 //         display/log data the client never branches on.
 //   - TEXT-TOKEN enums -- CredentialOutcome, and err-info's named SyncError

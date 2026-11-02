@@ -124,21 +124,19 @@ const QDBusArgument& operator>>(const QDBusArgument& arg, CertInfoWire& c)
 
     // Pull the display fields out of the demarshaled field-groups. Each field
     // value is a D-Bus variant `v` (the agent wire is (ssv)); the string lives
-    // inside it.
-    if (const auto subj = fields.constFind(QStringLiteral("subject")); subj != fields.constEnd()) {
-        c.subjectCn = subj->value(QStringLiteral("cn")).value.variant().toString();
-    }
-    if (const auto iss = fields.constFind(QStringLiteral("issuer")); iss != fields.constEnd()) {
-        c.issuerCn = iss->value(QStringLiteral("cn")).value.variant().toString();
-    }
-    if (const auto val = fields.constFind(QStringLiteral("validity")); val != fields.constEnd()) {
-        c.notBefore = val->value(QStringLiteral("notBefore")).value.variant().toString();
-        c.notAfter = val->value(QStringLiteral("notAfter")).value.variant().toString();
-    }
-    if (const auto sec = fields.constFind(QStringLiteral("security")); sec != fields.constEnd()) {
-        for (auto it = sec->constBegin(); it != sec->constEnd(); ++it) {
-            c.securityStatus.append(it->value.variant().toString());
-        }
+    // inside it. Looked up by value, not through a found iterator: an absent
+    // group or field reads as empty either way, and GCC's -Wnull-dereference
+    // cannot prove a QMap iterator's node non-null in an optimised build.
+    const auto text = [&fields](const QString& group, const QString& key) {
+        return fields.value(group).value(key).value.variant().toString();
+    };
+    c.subjectCn = text(QStringLiteral("subject"), QStringLiteral("cn"));
+    c.issuerCn = text(QStringLiteral("issuer"), QStringLiteral("cn"));
+    c.notBefore = text(QStringLiteral("validity"), QStringLiteral("notBefore"));
+    c.notAfter = text(QStringLiteral("validity"), QStringLiteral("notAfter"));
+    const CertFieldGroupWire security = fields.value(QStringLiteral("security"));
+    for (const CertFieldWire& field : security) {
+        c.securityStatus.append(field.value.variant().toString());
     }
     // The convenience members above are an EXTRACTION, not a filter: the dict
     // itself is kept whole for the decode to surface, groups this build knows

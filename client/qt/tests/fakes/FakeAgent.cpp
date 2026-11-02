@@ -3,7 +3,9 @@
 
 #include "FakeAgent.h"
 
-#include "ConfigKeys.h" // the Config1 key vocabulary + the canonical TslSources row shape
+#include "dbus/Marshal.h" // demarshalVariantMap: compiled into the archive, not part of the installed headers
+
+#include <LibreSCRS/AgentClient/ConfigKeys.h> // the Config1 key vocabulary + the canonical TslSources row shape
 
 #include <QDBusConnection>
 #include <QDBusMessage>
@@ -1188,8 +1190,30 @@ void Config1Adaptor::Reset(const QString& key)
 
 // --- ReaderAdaptor ---------------------------------------------------------
 ReaderAdaptor::ReaderAdaptor(QObject* parent, QString name, bool hasCard, QDBusObjectPath card)
-    : QDBusAbstractAdaptor(parent), m_name(std::move(name)), m_hasCard(hasCard), m_card(std::move(card))
+    : QDBusAbstractAdaptor(parent), m_name(std::move(name)), m_hasCard(hasCard), m_card(std::move(card)),
+      m_model(m_name)
 {}
+QString ReaderAdaptor::model() const
+{
+    return m_model;
+}
+QString ReaderAdaptor::interfaceToken() const
+{
+    return m_interface;
+}
+void ReaderAdaptor::setLabel(QString model, QString interfaceToken)
+{
+    m_model = std::move(model);
+    m_interface = std::move(interfaceToken);
+}
+QVariantMap ReaderAdaptor::properties() const
+{
+    return {{QStringLiteral("Name"), m_name},
+            {QStringLiteral("HasCard"), m_hasCard},
+            {QStringLiteral("Card"), QVariant::fromValue(m_card)},
+            {QStringLiteral("Model"), m_model},
+            {QStringLiteral("Interface"), m_interface}};
+}
 QString ReaderAdaptor::name() const
 {
     return m_name;
@@ -1530,6 +1554,9 @@ void FakeAgent::exportTree()
     m_readerObject = new ContextObject(this);
     m_readerAdaptor =
         new ReaderAdaptor(m_readerObject, m_config.readerName, m_config.hasCard, QDBusObjectPath(m_cardPath));
+    if (!m_config.readerModel.isEmpty()) {
+        m_readerAdaptor->setLabel(m_config.readerModel, m_config.readerInterface);
+    }
     if (m_config.wedgeReaderProperties) {
         m_readerPropsWedge = new WedgedPropertiesAdaptor(m_readerObject);
     }
@@ -1646,11 +1673,7 @@ FakeManagedObjects FakeAgent::managedObjects() const
     FakeManagedObjects out;
 
     FakeInterfaceProps readerIfaces;
-    QVariantMap readerProps;
-    readerProps.insert(QStringLiteral("Name"), m_readerAdaptor->name());
-    readerProps.insert(QStringLiteral("HasCard"), m_readerAdaptor->hasCard());
-    readerProps.insert(QStringLiteral("Card"), QVariant::fromValue(m_readerAdaptor->card()));
-    readerIfaces.insert(QStringLiteral("org.librescrs.Agent.Reader1"), readerProps);
+    readerIfaces.insert(QStringLiteral("org.librescrs.Agent.Reader1"), m_readerAdaptor->properties());
     out.insert(QDBusObjectPath(m_readerPath), readerIfaces);
 
     if (m_cardAdaptor) {
@@ -1671,11 +1694,7 @@ FakeManagedObjects FakeAgent::managedObjects() const
     // the client's live signal path missed.
     if (m_reader2Adaptor) {
         FakeInterfaceProps reader2Ifaces;
-        QVariantMap reader2Props;
-        reader2Props.insert(QStringLiteral("Name"), m_reader2Adaptor->name());
-        reader2Props.insert(QStringLiteral("HasCard"), m_reader2Adaptor->hasCard());
-        reader2Props.insert(QStringLiteral("Card"), QVariant::fromValue(m_reader2Adaptor->card()));
-        reader2Ifaces.insert(QStringLiteral("org.librescrs.Agent.Reader1"), reader2Props);
+        reader2Ifaces.insert(QStringLiteral("org.librescrs.Agent.Reader1"), m_reader2Adaptor->properties());
         out.insert(QDBusObjectPath(m_reader2Path), reader2Ifaces);
     }
     if (m_card2Adaptor) {
@@ -1973,11 +1992,7 @@ void FakeAgent::emitReaderArrivesEmpty()
     m_connection.registerObject(m_reader2Path, m_reader2Object);
 
     FakeInterfaceProps readerIfaces;
-    QVariantMap readerProps;
-    readerProps.insert(QStringLiteral("Name"), m_reader2Adaptor->name());
-    readerProps.insert(QStringLiteral("HasCard"), false);
-    readerProps.insert(QStringLiteral("Card"), QVariant::fromValue(QDBusObjectPath(QStringLiteral("/"))));
-    readerIfaces.insert(QStringLiteral("org.librescrs.Agent.Reader1"), readerProps);
+    readerIfaces.insert(QStringLiteral("org.librescrs.Agent.Reader1"), m_reader2Adaptor->properties());
     Q_EMIT m_objectManager->InterfacesAdded(QDBusObjectPath(m_reader2Path), readerIfaces);
 }
 
@@ -2012,6 +2027,21 @@ void FakeAgent::emitArrivedReaderHasCard()
     changed.insert(QStringLiteral("HasCard"), true);
     changed.insert(QStringLiteral("Card"), QVariant::fromValue(QDBusObjectPath(m_card2Path)));
     sig << QStringLiteral("org.librescrs.Agent.Reader1") << changed << QStringList{};
+    m_connection.send(sig);
+}
+
+void FakeAgent::emitReaderRelabelled(const QString& model, const QString& interfaceToken)
+{
+    m_readerAdaptor->setLabel(model, interfaceToken);
+    emitReaderPropertiesChanged(
+        QVariantMap{{QStringLiteral("Model"), model}, {QStringLiteral("Interface"), interfaceToken}}, {});
+}
+
+void FakeAgent::emitQuiesced(uint reason)
+{
+    QDBusMessage sig = QDBusMessage::createSignal(m_rootPath, QStringLiteral("org.librescrs.Agent.Manager1"),
+                                                  QStringLiteral("Quiesced"));
+    sig << reason;
     m_connection.send(sig);
 }
 

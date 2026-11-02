@@ -3,7 +3,15 @@
 
 #include "SocketPath.h"
 
+#include <LibreSCRS/Agent/wire/SocketLocation.h>
+
 #include <QDir>
+#include <QFile>
+
+#include <pwd.h>
+#include <unistd.h>
+
+#include <string>
 
 // The team is a compiled constant, never read from the environment: every
 // target that compiles this file must say which team it was built for, even
@@ -16,10 +24,7 @@ namespace LibreSCRS::AgentClient {
 
 QString appGroupFor(QStringView team)
 {
-    if (team.isEmpty()) {
-        return QStringLiteral("group.org.librescrs.LibreMac");
-    }
-    return team.toString() + QStringLiteral(".org.librescrs.LibreMac");
+    return QString::fromStdString(Agent::Wire::appGroupFor(team.toString().toStdString()));
 }
 
 QString agentAppGroupIdentifier()
@@ -27,31 +32,41 @@ QString agentAppGroupIdentifier()
     return appGroupFor(QStringLiteral(LIBRESCRS_TEAM_ID));
 }
 
+QString accountHomeDirectory()
+{
+    // getpwuid_r, not getpwuid: a GUI process may resolve this from more than
+    // one thread, and the static buffer of the plain call is shared.
+    passwd entry{};
+    passwd* found = nullptr;
+    std::string buffer(16384, '\0');
+    if (::getpwuid_r(::getuid(), &entry, buffer.data(), buffer.size(), &found) == 0 && found != nullptr &&
+        found->pw_dir != nullptr && found->pw_dir[0] != '\0') {
+        return QFile::decodeName(found->pw_dir);
+    }
+    return QDir::homePath();
+}
+
 QString resolveAgentSocketPath()
 {
+#if defined(LIBREAGENT_CLIENT_SOCKET_TESTING)
     const QByteArray override = qgetenv(kAgentSocketEnvVar);
     if (!override.isEmpty()) {
         return QString::fromLocal8Bit(override);
     }
+#endif
 // Q_OS_MACOS, not Q_OS_DARWIN. The two agreed on macOS and nowhere else, and
 // the factory that decides whether this transport exists at all
 // (AgentClient.cpp) says Q_OS_MACOS. A path helper claiming a platform the
-// factory refuses is a promise nothing keeps: on another Darwin target it would
-// hand back an App-Group container path for a transport that is never built,
-// and the socket tests would FAIL there rather than not run.
+// factory refuses is a promise nothing keeps.
 #if defined(Q_OS_MACOS)
     // The App-Group container's socket, addressed by its well-known absolute
     // path — the same directory the entitlement-gated container lookup
-    // resolves, reachable without the application-groups entitlement (the
-    // Swift client's last-resort spelling of the same location). Documentation
-    // only, not checked by any gate: the Swift client's own path lives in a
-    // repository outside this project's canonical-types registry.
-    return QDir::homePath() + QStringLiteral("/Library/Group Containers/") + agentAppGroupIdentifier() +
-           QStringLiteral("/agent.sock");
+    // resolves, reachable without the application-groups entitlement.
+    return accountHomeDirectory() + QStringLiteral("/Library/Group Containers/") + agentAppGroupIdentifier() +
+           QLatin1Char('/') +
+           QString::fromUtf8(Agent::Wire::kAgentSocketName.data(),
+                             static_cast<qsizetype>(Agent::Wire::kAgentSocketName.size()));
 #else
-    // No production default on this platform: the socket transport is built
-    // here as the portable, testable implementation, and tests always export
-    // the environment override for their fake agent's temp path.
     return {};
 #endif
 }

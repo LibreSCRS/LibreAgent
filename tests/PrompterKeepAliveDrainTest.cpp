@@ -16,6 +16,7 @@
 // the still-blocked worker reads the prompter's own storage — which must be live
 // because the captured shared_ptr kept it alive. A regression (a raw reference
 // capture) would read freed memory and trip ThreadSanitizer here.
+#include "AllowAllAuthorizer.h"
 #include <LibreSCRS/Agent/Identity.h>
 #include <LibreSCRS/Agent/Reply.h>
 #include <LibreSCRS/Agent/backend/Authorizer.h>
@@ -39,8 +40,8 @@
 #include <LibreSCRS/LocalizedText.h>
 #include <LibreSCRS/Secure/String.h>
 #include <LibreSCRS/SmartCard/AppletAid.h>
-#include <LibreSCRS/SmartCard/CardMap.h>
 #include <LibreSCRS/SmartCard/CardSession.h>
+#include <LibreSCRS/SmartCard/testing/CardSessionTesting.h>
 
 #include <gtest/gtest.h>
 #include <atomic>
@@ -339,20 +340,11 @@ std::shared_ptr<CardSessionHolder> makeDetachedHolder()
 {
     auto factory = [](const std::string& r)
         -> std::expected<std::shared_ptr<LibreSCRS::SmartCard::CardSession>, LibreSCRS::SmartCard::OpenError> {
-        return LibreSCRS::SmartCard::detail::makeDetachedCardSession(r);
+        return LibreSCRS::SmartCard::Testing::makeDetachedCardSession(r);
     };
     auto resolver = [](std::span<const std::uint8_t>, LibreSCRS::SmartCard::CardSession&) { return CandidateList{}; };
-    return std::make_shared<CardSessionHolder>("FakeReader", std::move(factory), std::move(resolver),
-                                               std::make_shared<LibreSCRS::SmartCard::CardMap>());
+    return std::make_shared<CardSessionHolder>("FakeReader", std::move(factory), std::move(resolver));
 }
-
-struct AllowAllAuthorizer final : Authorizer
-{
-    AuthorizationOutcome authorize(std::string_view, const CallerToken&) override
-    {
-        return AuthorizationOutcome::Granted;
-    }
-};
 
 const std::vector<std::uint8_t> kWedgeInput{0x01, 0x02, 0x03, 0x04};
 const ObjectId kWedgeCard{7};
@@ -497,8 +489,7 @@ void driveTerminalWedge(RawCryptoStatus wedgeStatus, Latch& latch, std::atomic<b
 // hands the read credential provider during plugin self-activation.
 LibreSCRS::Auth::AuthRequirement paceReq(LibreSCRS::Auth::PaceSecretKind kind)
 {
-    return LibreSCRS::Auth::AuthRequirement::forPaceSecret(LibreSCRS::SmartCard::AppletAid{}, kind, std::nullopt,
-                                                           LibreSCRS::LocalizedText{});
+    return LibreSCRS::Auth::AuthRequirement::forPaceSecret(kind, LibreSCRS::LocalizedText{});
 }
 
 } // namespace

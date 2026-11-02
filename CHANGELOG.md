@@ -7,6 +7,95 @@ Notable user-visible changes per release. Format follows
 
 ### Added
 
+- **`encodeCscaAnchorState()`: the country-signing anchor state as a value.**
+  The fields of the import's reply without the reply around it, so a host
+  that reports the state elsewhere (a configuration read) writes it with the
+  same names and the same absent fields.
+
+- **`writeSignedFile()`: one way to save a signed document.** Beside
+  `signedOutputPath()`, it claims the name with an exclusive create (asking
+  for the next numbered name when another signer took it meanwhile), then
+  commits the artifact over the claim in one step, so the name never holds
+  half a signature, and a failure leaves nothing behind. It reads a
+  descriptor or a `QIODevice` from its start; an empty artifact is an error,
+  never a file.
+
+- **`OperationLauncher`: one place a host starts a card operation.** The host
+  gives where the operation runs and who asked, how to build its result
+  channel on the host's own transport, and the arguments of that one
+  operation (`OperationLauncher::Sign{params}`, …). The prompter, the caches,
+  the card seams, the reader's session, the consent-prompt category, the
+  keep-alives and the shutdown binding come from the core, and a full reader
+  queue answers `RateLimited`. A dependency added to an operation is filled
+  in one place instead of once per host and operation.
+
+- **One quiesce policy for sleep, user switch and screen lock.**
+  `AgentCore::quiesce(reason)` is where a host reports that the holder's
+  session went away; the agent then forgets the same things on every
+  platform: on sleep, a user switch or a stop every cached CAN/MRZ, every card
+  session (secure channel included) and every PKCS#11 login, on a screen lock
+  the PKCS#11 logins only. The reason goes to clients as D-Bus
+  `Manager1.Quiesced` (new) and socket `AgentQuiesced`, and reaches
+  `AgentClient::quiesced()` from both.
+
+- **Every reader carries its label: model and interface.** The agent reads
+  the PC/SC name once and publishes a short model ("OMNIKEY 5422") and which
+  interface the slot is (`unknown`, `contact`, `contactless`) on every reader:
+  D-Bus `Reader1.Model`/`Reader1.Interface`, socket `reader-state.model`/
+  `.interface`, `AgentReader::model()`/`interface()`. A client says the
+  interface in its own language and no longer parses reader names. One rule
+  now covers what the desktop clients showed: a lone PICC/NFC/contactless
+  reader is contactless, a trailing "Reader" is dropped from the model, and
+  two readers that would read alike get a short serial suffix. The label is
+  decided over all readers, so it is updated when a reader arrives or leaves
+  beside it.
+
+- **`CardResolutionPolicy`: one rule for a freshly inserted card.** Probe it
+  on its reader's worker, ask again only when the probe could not open it,
+  within a retry budget and for the failures the host chooses, and hold the
+  reader only for a served card on the contact slot of a dual-interface unit.
+  With `PresenceRoster`, `identityForCardIn()` and
+  `releaseReaderOnCardRemoved()`, every host retries and holds a card the
+  same way.
+
+- **`ConfigKeys.h` and `CscaAnchorKeys.h` are public client headers.** The
+  agent's settings vocabulary (which keys exist, which a client may write,
+  the canonical `TslSources`/`CscaSources` row shapes) and the CSCA anchor
+  state keys, so a desktop client stops spelling them itself.
+
+- **The agent's D-Bus introspection XML ships with LibreAgent.** The 14
+  interface files that define the bus are installed to
+  `share/librescrs/dbus/` and named by `LIBREAGENT_DBUS_XML_DIR` (in the
+  installed package and in a subproject build), so the bus host and every
+  client read one copy. A test holds the Qt client's interface names, calls,
+  properties and signal argument types against them.
+
+- **`describeFailure()`: which part of a failure a user reads.** A failed
+  operation reports a code, a call class, a message key and the agent's
+  English message; the order in which a client prefers them is now one
+  function (`FailureCopy.h`) instead of one per client, and
+  `kLocalizedMessageKeys` lists the keys a client gives its own sentence, so
+  a cancelled or expired operation reads in the user's language everywhere.
+
+- **`AgentClient::agentState()` and `installHelpUrl()`.** One answer to "is
+  there an agent, and does it run" (`Ready`, `Stopped`, `Missing`) for every
+  client, read without touching the bus, plus the address of the install
+  guide for the platform and language. `agentInstalled()` no longer asks the
+  bus on every call: it ran a nested event loop inside the very signal
+  handlers that read it.
+
+- **`Authorizer::authorizeAsync`: authorization without a waiting dispatcher.**
+  An authority that holds its answer while a person decides (a polkit
+  password dialog) no longer has to stop the thread serving every other
+  client; the PKCS#11 login asks this way and defers its reply. Authorities
+  that answer at once keep implementing `authorize()` only.
+
+- **`signedOutputPath()`: one name for a signed document's output.** Every
+  client now derives where a signature is written the same way
+  (`<stem>-signed.pdf`, `<name>.xsig`, `<name>.p7s`/`.p7m`, `<name>.jose`,
+  `<stem>.asice`) and never names an existing file: a taken name gets the
+  first free numbered sibling, `report-signed (2).pdf`.
+
 - **`Pkcs11.LoginState` and the `login-state` feature token:** whether a
   caller's login on the card in a reader still holds, asked without extending
   it (`AgentClient::loginActive` in the PKCS#11 facade).
@@ -124,7 +213,8 @@ Three targets ship, each independently usable:
   desktop stack: `Prompter` (PIN / CAN / MRZ collection, returning a
   cleansing secret rather than a raw fd), `Authorizer` (per-operation
   gate, with a fail-closed default shipped in-tree), `AgentTransport`,
-  `OperationChannel`, and `LogSink`.
+  `OperationChannel`, and `LogSink` (LibreMiddleware's
+  `LibreSCRS::log` facade, which the agent core logs through).
 - **Stable error taxonomy** carried on each finished operation. Codes
   are wire-frozen and append-only so clients can branch on the numeric
   value across releases. This release adds two signing-related codes:
@@ -216,6 +306,64 @@ Three targets ship, each independently usable:
 
 ### Changed
 
+- **The installed agent doubles carry only what they speak.**
+  `ClientQtTestSupport` no longer installs the client's transport seam,
+  its wire conversions or its bus constants; besides the doubles it installs
+  the D-Bus wire shapes alone (`AgentClientTestSupport/dbus/WireShapes.h`).
+  Hosts that include `TestBus.h`, `FakeAgent.h` or `FakeSocketAgent.h` are
+  unaffected.
+
+- **A suite's private session bus starts nothing installed on the machine.**
+  `libreagent_private_session_bus()` runs the bus from a configuration with
+  no service directories, so a suite that starts the agent can no longer
+  launch the real one; `SERVICE_DIR <dir>` names the one directory a suite
+  puts its own activation files in.
+
+- **The Qt client library exports only its API.** `liblibrescrs-agentclient-qt`
+  no longer exports the Qt and standard-library template code it instantiates
+  internally, nor its classes' private implementations; programs built
+  against it are unaffected. Without the unique symbols those exports carried,
+  a process that loads the library through a plugin can unload it again.
+
+- **Test-only code left the agent's API.** `AllowAllAuthorizer` ships with
+  the test support component (`LibreSCRS/AgentTestSupport/AllowAllAuthorizer.h`)
+  instead of `backend/Authorizer.h`; `CredentialCache::hasCan`/`hasMrz` and
+  `CardKeyTracker::currentKey`, which only tests called, are gone (`getCan`/
+  `getMrz` answer the same question). The PKCS#11 facade's `publicKey()`
+  returns `std::expected` over the agent's own RSA/EC key types instead of a
+  structure carrying both families' fields at once.
+
+- **A document signature reads the card's certificates once.** The agent
+  chooses the signing key and hands it, with the certificates it read, to
+  the middleware's signing service, which no longer reads the card a second
+  time or chooses again by its own rule. A certificate the card lists without
+  a key of its own is reported as no key found instead of reaching the
+  signing service.
+
+- **`LIBRESCRS_WERROR` replaces `LIBRESCRS_AGENT_WERROR`.** The option that
+  turns warnings into errors has the name every LibreSCRS repository uses,
+  and one CMake function gives every library here its warning flags.
+
+- **An unknown pre-read unlock method now means "unlock required".**
+  `preReadAuthFromToken()` returns `std::optional<PreReadAuth>`: a method
+  this build does not name is `std::nullopt`, no longer `None`, and
+  `preReadUnlockRequired()` gives the one answer every client should act on.
+  The socket transport forwards such a method as an unknown token instead of
+  `None`.
+
+- **One log facade.** The agent core logs through LibreMiddleware's
+  `LibreSCRS::log` (`<LibreSCRS/Logging.h>`); its own
+  `LibreSCRS/Agent/backend/Logging.h` is gone. A host installs one sink and
+  receives the middleware's and the agent's lines alike.
+
+- **Every client operation now gives up on a silent agent by itself.** An
+  `AgentOperation` that hears nothing from a working agent for
+  `kLongOperationTimeoutMs` is cancelled at the agent and finishes with
+  `CallError::Timeout`; the clock stops while a person is at the agent's
+  prompt. `setStallBudget()` changes or turns off the bound. Before, each
+  client had to run this timer itself, and those that did not stayed busy
+  forever after a lost terminal signal.
+
 - **The PKCS#11 module advertises `CKA_ALWAYS_AUTHENTICATE` per key, from the
   card,** instead of TRUE on every private key. The agent asks for the PIN
   again for every raw signature or decryption with a key the card marks,
@@ -277,7 +425,83 @@ Three targets ship, each independently usable:
   the login's own idle limit; that on-card state is visible to any other local
   shared PC/SC client while the card stays powered.
 
+### Removed
+
+- **`CardSessionHolder` no longer carries a `SmartCard::CardMap`.** Nothing
+  read the map it handed out with every acquired card. The constructor takes
+  the reader, the session factory, the candidate resolver and an optional
+  clock; `AcquiredCard` holds the session and its candidates.
+
+- **The credential listing no longer checks guidance for placeholders.** No
+  card plugin puts `LocalizedText` placeholders into PIN guidance, and the
+  wire record never carried them; the guidance's key and default text are
+  copied as they are.
+
+- **`errorCodeFor(Plugin::ReadResult::Status)`.** No operation mapped a
+  plugin's read status through it; the overloads for a secure-channel error
+  and a credential outcome stay.
+
+- **`SeamStatus::ParseError`.** Its one source was LibreMiddleware's parse-error
+  read status, which no plugin returned and which is gone; a read that fails
+  still ends with the error the plugin reported.
+
+- **The `Mechanism` values nothing runs.** `RsaPssSign`, `RsaOaepDecrypt`,
+  `RsaPkcs1Encrypt`, `RsaOaepEncrypt` and `MechParamsRsaOaep` had no wire
+  token, no seam and no caller; every path refused them. The enumerators
+  that remain are the five the agent runs.
+
+- **The `trust-status` and `identity-stream` feature tokens.** No client
+  checks either: a certificate's trust verdict is a field every agent
+  sends, and the per-group identity events are handled whenever they
+  arrive. The agent advertises nine tokens; the events and the field are
+  unchanged.
+
 ### Fixed
+
+- **A second "start the agent" while one is starting asks for nothing.**
+  Starting the agent waits in a local event loop, so a second click, a timer
+  or a settings read can arrive inside it. Such a call now starts nothing
+  and `requestAgentStart()` answers `Requested`; the start in flight reports
+  how it ended.
+
+- **"Start service" and "Refresh" can no longer delete the button under its
+  own click.** Both wait on the agent in local event loops, and a view swapped
+  inside one of them (the agent came up, a card was inserted) was deleted in
+  the next one, while the button's click handler was still running.
+  `requestAgentStartLater()` (its result arrives as `agentStartFinished()`)
+  and `refreshDiscoveryLater()` do the same from the event loop once the
+  handler has returned; a control the outcome may replace calls those.
+
+- **An idle card that ran secure messaging is no longer kept powered
+  mid-session.** Keeping a reader's connection for the next operation
+  cleared only the agent's side of a PACE/BAC channel while the chip still
+  expected protected commands; such a session is now closed, and the next
+  operation starts from a fresh connection. A card whose plugin probe failed
+  once is also probed again on the next attempt instead of being served
+  with no plugin.
+
+- **A slow answer from the agent no longer freezes every PKCS#11 call in the
+  browser.** Refreshing the slot list held the module's lock across the round
+  trip to the agent, so while the agent read a card for one thread, every
+  other thread's call waited too. The refresh now runs unlocked and publishes
+  its result under the lock.
+
+- **A large request to the macOS agent no longer reads as a dead agent.** The
+  Qt client's socket is non-blocking for its reader, and a request bigger than
+  the socket buffer while the agent was busy failed on the first full buffer
+  and dropped the connection. Sends now wait for room, within the call's own
+  time budget.
+
+- **On Linux, a desktop client could not start the agent.** The agent is a
+  session service started on demand, but the Qt client only ever asked whether
+  it was already running, so after a fresh login every client reported the
+  service as unavailable and "try again" could never succeed. Retrying,
+  opening the settings, fetching a certificate or asking for a layout preview
+  now start an installed agent first; merely constructing a client does not.
+  `AgentClient::requestAgentStart()` starts it explicitly (on macOS by
+  launching the LibreMac host in the background), and `configChanged` with an
+  empty key tells a client holding settings to read them again once the agent
+  is up.
 
 - **Firefox stopped completing TLS client authentication once the agent's
   login had idled out, until the PKCS#11 module was reloaded.** The module kept
@@ -314,6 +538,17 @@ Three targets ship, each independently usable:
 
 ### Security
 
+- **The Qt client on macOS checks who serves the agent socket.** Before the
+  first byte is sent it now requires the process behind `agent.sock` to be the
+  agent (its signing identifier, the App Group and, in a team-signed build,
+  the designated requirement), the same check the Swift clients and the
+  PKCS#11 module make; anything else reads as no agent. The socket path no
+  longer comes from `LIBRESCRS_AGENT_SOCK` or `$HOME`, both of which any
+  process running as the user can set for every other one; the home directory
+  is the one the password database records. The check itself now lives in the
+  wire library (`wire/darwin/PeerCodeSigning.h`) and the container rule in
+  `wire/SocketLocation.h`, so every end uses one copy.
+
 - **Secrets never outlive the card.** The credential cache holds no
   PIN by construction, and both the read cache and credential cache are
   scrubbed the moment the card is removed. Collected secrets use
@@ -339,6 +574,14 @@ Three targets ship, each independently usable:
   bytes on the wire are unchanged.
 
 ### Packaging
+
+- **The Qt client's agent doubles are no longer packaged.** No package ships
+  `ClientQtTestSupport` (the in-process fake agents for testing a desktop
+  client) any more; it stays a build option for development trees. The Qt
+  client's packages therefore no longer depend on the agent core, and the
+  shared library no longer exports a way to construct a client over a
+  substituted transport: that test seam now exists only in this
+  repository's own test build.
 
 - **This release is 5.0.0, and the Qt client library's soname moves with
   it** — `liblibrescrs-agentclient-qt.so.5`, out of a file named

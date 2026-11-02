@@ -5,6 +5,7 @@
 #include <LibreSCRS/Agent/cache/CredentialCache.h>
 #include <LibreSCRS/Agent/operations/CardPluginRouting.h> // signingCandidates
 #include <LibreSCRS/Agent/operations/FlowPrelude.h>
+#include <LibreSCRS/Agent/operations/OperationArtifact.h>
 #include <LibreSCRS/Agent/operations/OperationBase.h> // Phase enum
 #include <LibreSCRS/Agent/operations/SerializingPrompter.h>
 #include <LibreSCRS/Agent/operations/SignatureParams.h> // isQualifiedSignLevel
@@ -149,7 +150,7 @@ SignFlow::Result SignFlow::run()
         try {
             PromptOptions opts;
             opts.requester = requester;
-            opts.artifact = "signature";
+            opts.artifact = Artifact::kSignature;
             opts.description = description;
             // The still-wanted check re-runs requestCredential's own
             // queued-refusal comparison AFTER this operation has waited its

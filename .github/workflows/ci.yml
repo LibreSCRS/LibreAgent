@@ -34,9 +34,9 @@ jobs:
   gates:
     # The shared gates this step names (LibreSCRS/ci): the workflows' bounds
     # and pins, a reason on every skip, the version everywhere, the locked
-    # upstream revisions, every self-test this repository ships, and the Arch
-    # recipe; then the source-shape checks only this repository has, and the
-    # format. Nothing here builds.
+    # upstream revisions, every self-test this repository ships, the Arch
+    # recipe and the BIGNUM deleters; then the source-shape checks only this
+    # repository has, and the format. Nothing here builds.
     timeout-minutes: 20
     runs-on: ubuntu-24.04
     permissions:
@@ -50,8 +50,12 @@ jobs:
       - name: Shared gates
         uses: LibreSCRS/ci/actions/gates@d68f5d781a665759eaba63c67ef0e6eb1f738063
         with:
-          gates: check-workflows check-skip-reasons check-version deps-lock selftests check-recipe
+          gates: check-workflows check-skip-reasons check-version deps-lock selftests check-recipe check-cleansing-deleters
           recipe-args: --pin _qcbor_commit=cmake/FetchQCBOR.cmake
+          # The master-list fixture's BnDeleter is a marked mirror of the
+          # middleware's: it must still cleanse and still name its canonical,
+          # and no other BIGNUM deleter here may release through plain BN_free.
+          deleter-args: --mirror tests/SyntheticMasterList.cpp --canonical-name OpenSslPtr.h
 
       - name: One clamped SCM_RIGHTS harvest, not two
         # cmsg_len says what the SENDER attached. XNU keeps reporting that
@@ -61,13 +65,6 @@ jobs:
         # what it delivered, which is why no test running here can see the
         # difference and why this is a source-shape gate rather than a test.
         run: ./ci/scripts/check-fd-harvest.sh
-
-      - name: BIGNUM deleters cleanse, and the mirror still names its canonical
-        # The master-list fixture's deleter is a marked mirror of the
-        # middleware's, and nothing else compares their bodies. Checks the call
-        # and the marker as two separate failures, and every other BIGNUM
-        # deleter in the checkout as a third.
-        run: ./ci/scripts/check-cleansing-deleters.sh
 
       # The exact clang-format-21 the rest of the org uses (apt.llvm.org); the
       # build jobs' Arch images carry a newer major that formats differently.
@@ -194,7 +191,7 @@ jobs:
           cmake --install build
 
       # --- LibreAgent (Core+Wire+ClientQt): configure / build -----------------
-      # -DLIBRESCRS_AGENT_WERROR=ON: every warning fails the build, which is
+      # -DLIBRESCRS_WERROR=ON: every warning fails the build, which is
       # why this repository keeps no warning baseline.
       - name: Configure (RelWithDebInfo, ClientQt ON)
         working-directory: LibreAgent
@@ -202,7 +199,7 @@ jobs:
           cmake -B build -G Ninja \
             -DCMAKE_BUILD_TYPE=RelWithDebInfo \
             -DCMAKE_PREFIX_PATH="$LM_PREFIX" \
-            -DLIBRESCRS_AGENT_WERROR=ON \
+            -DLIBRESCRS_WERROR=ON \
             -DLIBREAGENT_BUILD_CLIENT_QT=ON
 
       - name: Build
@@ -233,6 +230,27 @@ jobs:
           QT_QPA_PLATFORM: offscreen
         # --no-tests=error: ctest exits 0 when it finds nothing at all.
         run: ctest --test-dir build --output-on-failure --no-tests=error
+
+      # The split packages install from packaging/payload/*.files; compare them
+      # with a real staged install of the configuration the recipes build, in
+      # both directions (packaging/payload/check.sh).
+      - name: Package payload matches the install manifest
+        working-directory: LibreAgent
+        run: |
+          cmake -B build-packaging -G Ninja \
+            -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+            -DCMAKE_PREFIX_PATH="$LM_PREFIX" \
+            -DBUILD_TESTING=OFF \
+            -DLIBREAGENT_BUILD_CORE=ON \
+            -DLIBREAGENT_BUILD_WIRE=ON \
+            -DLIBREAGENT_BUILD_CLIENT_QT=ON \
+            -DLIBREAGENT_BUILD_CLIENT_QT_TEST_SUPPORT=OFF \
+            -DLIBREAGENT_BUILD_PKCS11_FACADE=ON \
+            -DLIBREAGENT_BUILD_PKCS11_SOCKET_CLIENT=ON \
+            -DLIBREAGENT_INSTALL_WIRE_ARCHIVE=ON
+          cmake --build build-packaging -j4
+          DESTDIR="$PWD/_stage" cmake --install build-packaging --prefix /usr
+          packaging/payload/check.sh "$PWD/_stage/usr"
 
       # --- Installed CONFIG package smoke -----------------------------------
       # Prove the EXPORTED package actually resolves downstream: install the
@@ -358,7 +376,7 @@ jobs:
             -DLIBREAGENT_BUILD_CLIENT_QT_TEST_SUPPORT=OFF \
             -DLIBREAGENT_INSTALL_WIRE_ARCHIVE=OFF \
             -DCMAKE_DISABLE_FIND_PACKAGE_LibreMiddleware=ON \
-            -DLIBRESCRS_AGENT_WERROR=ON
+            -DLIBRESCRS_WERROR=ON
 
       - name: Build
         working-directory: LibreAgent
@@ -469,7 +487,7 @@ jobs:
             -DLIBREAGENT_BUILD_PKCS11_FACADE=ON \
             -DLIBREAGENT_BUILD_PKCS11_SOCKET_CLIENT=ON \
             -DCMAKE_DISABLE_FIND_PACKAGE_LibreMiddleware=ON \
-            -DLIBRESCRS_AGENT_WERROR=ON
+            -DLIBRESCRS_WERROR=ON
 
       - name: Build
         working-directory: LibreAgent
@@ -502,13 +520,20 @@ jobs:
     # check-pkcs11-facade.sh is not run: it reads ELF, and the Linux job keeps it.
     timeout-minutes: 20
     name: pkcs11-facade (macOS)
-    runs-on: macos-15
+    # The runner image is chosen by the Xcode it carries (the one named in
+    # .xcode-version), and that Xcode and its SDK are then selected
+    # explicitly by the shared action: an image's default Xcode changes on the
+    # image's schedule.
+    runs-on: xcode-27
     permissions:
       contents: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           persist-credentials: false
+
+      - name: Select Xcode
+        uses: LibreSCRS/ci/actions/select-xcode@d68f5d781a665759eaba63c67ef0e6eb1f738063
 
       - name: Install build tools
         # bash: the test scripts use bash 4 features and macOS ships 3.2.
@@ -518,9 +543,6 @@ jobs:
           command -v pkcs11-tool
 
       - name: Configure (Core OFF, Wire + both pkcs11 components ON, LibreMiddleware disabled)
-        # No -DLIBRESCRS_AGENT_WERROR=ON, unlike the Linux job:
-        # -Wshorten-64-to-32 fires on src/wire/Framing.cpp's CMSG_SPACE/CMSG_LEN
-        # use under AppleClang, a pre-existing warning.
         run: |
           cmake -B build -G Ninja \
             -DCMAKE_BUILD_TYPE=RelWithDebInfo \
@@ -529,7 +551,8 @@ jobs:
             -DLIBREAGENT_BUILD_PKCS11_FACADE=ON \
             -DLIBREAGENT_BUILD_PKCS11_SOCKET_CLIENT=ON \
             -DCMAKE_DISABLE_FIND_PACKAGE_LibreMiddleware=ON \
-            -DOPENSSL_ROOT_DIR="$(brew --prefix openssl@3)"
+            -DOPENSSL_ROOT_DIR="$(brew --prefix openssl@3)" \
+            -DLIBRESCRS_WERROR=ON
 
       - name: Build
         run: cmake --build build -j4
@@ -554,7 +577,8 @@ jobs:
     # build. That keeps this a couple of minutes rather than half an hour.
     timeout-minutes: 30
     name: wire-asan (macOS)
-    runs-on: macos-15
+    # Runner image and Xcode: as for pkcs11-facade (macOS) above.
+    runs-on: xcode-27
     permissions:
       contents: read
     env:
@@ -573,6 +597,9 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           persist-credentials: false
+
+      - name: Select Xcode
+        uses: LibreSCRS/ci/actions/select-xcode@d68f5d781a665759eaba63c67ef0e6eb1f738063
 
       - name: Install build tools
         # googletest as well as ninja: this job builds no LibreMiddleware, which
@@ -615,13 +642,17 @@ jobs:
     # shrinks what the job proves.
     timeout-minutes: 30
     name: client (macOS)
-    runs-on: macos-15
+    # Runner image and Xcode: as for pkcs11-facade (macOS) above.
+    runs-on: xcode-27
     permissions:
       contents: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           persist-credentials: false
+
+      - name: Select Xcode
+        uses: LibreSCRS/ci/actions/select-xcode@d68f5d781a665759eaba63c67ef0e6eb1f738063
 
       - name: Install build tools
         run: brew install ninja googletest
@@ -638,15 +669,13 @@ jobs:
           cache: true
 
       - name: Configure (Core OFF, Wire+ClientQt ON)
-        # No -DLIBRESCRS_AGENT_WERROR=ON, unlike the Linux jobs:
-        # -Wshorten-64-to-32 fires on src/wire/Framing.cpp's CMSG_SPACE/CMSG_LEN
-        # use under AppleClang, a pre-existing warning.
         run: |
           cmake -B build -G Ninja \
             -DCMAKE_BUILD_TYPE=RelWithDebInfo \
             -DLIBREAGENT_BUILD_CORE=OFF \
             -DLIBREAGENT_BUILD_WIRE=ON \
-            -DLIBREAGENT_BUILD_CLIENT_QT=ON
+            -DLIBREAGENT_BUILD_CLIENT_QT=ON \
+            -DLIBRESCRS_WERROR=ON
 
       - name: Build
         run: cmake --build build -j4

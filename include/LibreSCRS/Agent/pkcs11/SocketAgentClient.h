@@ -18,16 +18,6 @@
 
 namespace LibreSCRS::Pkcs11Agent {
 
-/// @brief What the agent is given for a human-paced call, in seconds.
-///        A PIN prompt plus the on-card operation behind it.
-inline constexpr int kInteractiveTimeoutSecs = 600;
-/// @brief What it is given for public data nobody has to be asked about.
-inline constexpr int kPublicDataTimeoutSecs = 60;
-/// @brief What it is given to say whether a login still holds: a loader asks
-///        that before it signs, about once a second, and must not be held long
-///        by an agent that does not answer.
-inline constexpr int kLoginStateTimeoutSecs = 2;
-
 /// @brief The two deadlines a socket call can be given.
 ///
 /// They are two and not one because a PIN prompt is paced by a person and a

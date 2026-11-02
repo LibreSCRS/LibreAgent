@@ -212,3 +212,83 @@ TEST(ObjectRegistry, SetEmptyObserversDetachesSafely)
     EXPECT_TRUE(r.contains(ObjectId{2}));
     EXPECT_FALSE(r.contains(ObjectId{1}));
 }
+
+namespace {
+const std::string kContactSlot =
+    "HID Global OMNIKEY 5422 Smartcard Reader [OMNIKEY 5422 Smartcard Reader] (IM0O2C00NF10456904) 01 00";
+const std::string kContactlessSlot =
+    "HID Global OMNIKEY 5422 Smartcard Reader [OMNIKEY 5422CL Smartcard Reader] (IM0O2C00NF10456904) 00 00";
+
+struct Heard
+{
+    std::vector<std::string> events; // "add:<id>:<model>:<iface>" / "relabel:..." / "remove:<id>"
+};
+
+std::string describe(const char* what, const ReaderState& r)
+{
+    return std::string(what) + ":" + std::to_string(r.id.value()) + ":" + r.model + ":" +
+           std::string(LibreSCRS::Agent::Wire::readerInterfaceToken(r.iface));
+}
+
+void listen(ObjectRegistry& r, Heard& heard)
+{
+    r.setObservers([&](const ReaderState& rs) { heard.events.push_back(describe("add", rs)); }, {},
+                   [&](ObjectId id) { heard.events.push_back("remove:" + std::to_string(id.value())); }, {},
+                   [&](const ReaderState& rs) { heard.events.push_back(describe("relabel", rs)); });
+}
+} // namespace
+
+// A reader is published with the label the whole roster gives it -- whatever
+// label the caller handed in is not the registry's to keep.
+TEST(ObjectRegistry, AReaderIsPublishedWithItsLabel)
+{
+    ObjectRegistry r;
+    Heard heard;
+    listen(r, heard);
+    r.addReader(ReaderState{.id = ObjectId{1}, .name = "Gemalto PC Twin Reader (69988A87) 02 00", .model = "stale"});
+    EXPECT_EQ(heard.events, std::vector<std::string>{"add:1:Gemalto PC Twin:unknown"});
+    EXPECT_EQ(r.readers().front().model, "Gemalto PC Twin");
+}
+
+// The contact slot is only a contact slot once its contactless twin is there:
+// the twin's arrival relabels the reader already published, after the twin
+// itself is announced, and its departure relabels it back.
+TEST(ObjectRegistry, ATwinArrivingOrLeavingRelabelsTheReaderBesideIt)
+{
+    ObjectRegistry r;
+    Heard heard;
+    listen(r, heard);
+    r.addReader(ReaderState{.id = ObjectId{1}, .name = kContactSlot});
+    r.addReader(ReaderState{.id = ObjectId{2}, .name = kContactlessSlot});
+    r.remove(ObjectId{2});
+    EXPECT_EQ(heard.events, (std::vector<std::string>{"add:1:OMNIKEY 5422:unknown", "add:2:OMNIKEY 5422:contactless",
+                                                      "relabel:1:OMNIKEY 5422:contact", "remove:2",
+                                                      "relabel:1:OMNIKEY 5422:unknown"}));
+    EXPECT_EQ(r.readers().front().iface, ReaderInterface::Unknown);
+}
+
+// A neighbour whose label does not change hears nothing.
+TEST(ObjectRegistry, AnUnrelatedArrivalRelabelsNothing)
+{
+    ObjectRegistry r;
+    Heard heard;
+    listen(r, heard);
+    r.addReader(ReaderState{.id = ObjectId{1}, .name = "Gemalto PC Twin Reader (69988A87) 02 00"});
+    r.addReader(ReaderState{.id = ObjectId{2}, .name = kContactlessSlot});
+    r.remove(ObjectId{2});
+    EXPECT_EQ(heard.events, (std::vector<std::string>{"add:1:Gemalto PC Twin:unknown", "add:2:OMNIKEY 5422:contactless",
+                                                      "remove:2"}));
+}
+
+// A second reader of the same model makes both labels take a serial suffix.
+TEST(ObjectRegistry, ASameModelNeighbourRelabelsTheFirstReader)
+{
+    ObjectRegistry r;
+    Heard heard;
+    listen(r, heard);
+    r.addReader(ReaderState{.id = ObjectId{1}, .name = "Gemalto PC Twin Reader (AAAA1111) 00 00"});
+    r.addReader(ReaderState{.id = ObjectId{2}, .name = "Gemalto PC Twin Reader (BBBB2222) 01 00"});
+    EXPECT_EQ(heard.events,
+              (std::vector<std::string>{"add:1:Gemalto PC Twin:unknown", "add:2:Gemalto PC Twin (2222):unknown",
+                                        "relabel:1:Gemalto PC Twin (1111):unknown"}));
+}
