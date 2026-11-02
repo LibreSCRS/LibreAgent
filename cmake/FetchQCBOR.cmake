@@ -33,7 +33,11 @@ FetchContent_Declare(qcbor
     # a standalone qcbor package on disk. Requires CMake >= 3.28 (see this
     # project's cmake_minimum_required); below that the keyword is silently
     # forwarded to ExternalProject_Add and does nothing.
-    EXCLUDE_FROM_ALL)
+    EXCLUDE_FROM_ALL
+    # A foreign header: its include directory reaches Cbor.cpp as -isystem,
+    # so the project's strict warning set (-Werror under LIBRESCRS_WERROR)
+    # judges our code, not QCBOR's casts.
+    SYSTEM)
 FetchContent_MakeAvailable(qcbor) # provides qcbor::qcbor
 
 set(BUILD_SHARED_LIBS "${_libredarwin_saved_shared}")
