@@ -68,7 +68,7 @@ jobs:
       # is built or linked here. At the commit deps.lock names, like every
       # other job that reads it.
       - name: Checkout LibreMiddleware at the lock
-        uses: LibreSCRS/ci/actions/checkout-deps@b9848b4990ae046072497f10d6f5b2bfdfa45470
+        uses: LibreSCRS/ci/actions/checkout-deps@d68f5d781a665759eaba63c67ef0e6eb1f738063
         with:
           root: LibreAgent
           names: LibreMiddleware
