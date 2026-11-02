@@ -12,6 +12,7 @@
 // this test binary, which no team signed, so the positive half waits for a
 // Developer ID build.
 #include <LibreSCRS/Agent/wire/darwin/PeerCodeSigning.h>
+#include <LibreSCRS/Agent/wire/SocketLocation.h>
 #include <LibreSCRS/Agent/wire/darwin/PeerIdentity.h>
 
 #include <gtest/gtest.h>
