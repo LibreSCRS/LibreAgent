@@ -58,10 +58,11 @@ Notable user-visible changes per release. Format follows
   `releaseReaderOnCardRemoved()`, every host retries and holds a card the
   same way.
 
-- **`ConfigKeys.h` and `CscaAnchorKeys.h` are public client headers.** The
-  agent's settings vocabulary (which keys exist, which a client may write,
-  the canonical `TslSources`/`CscaSources` row shapes) and the CSCA anchor
-  state keys, so a desktop client stops spelling them itself.
+- **The agent's settings keys are public to clients.** `ConfigKeys.h`
+  carries the agent's settings vocabulary (which keys exist, which a client
+  may write, the canonical `TslSources`/`CscaSources` row shapes) and
+  `CscaAnchorKeys.h` the CSCA anchor state keys, so a desktop client stops
+  spelling them itself.
 
 - **The agent's D-Bus introspection XML ships with LibreAgent.** The 14
   interface files that define the bus are installed to
