@@ -46,10 +46,10 @@ enum class FailureSource : std::uint8_t {
 /// @brief The decision `describeFailure()` returns.
 struct FailureCopy
 {
-    FailureSource source = FailureSource::Generic;
-    QString messageKey;                    ///< Set for `MessageKey`.
-    ErrorCode errorCode = ErrorCode::None; ///< Set for `ErrorCode`.
-    CallError callError = CallError::None; ///< Set for `Transport`.
+    FailureSource source = FailureSource::Generic; ///< Which of the fields below to show.
+    QString messageKey;                            ///< Set for `MessageKey`.
+    ErrorCode errorCode = ErrorCode::None;         ///< Set for `ErrorCode`.
+    CallError callError = CallError::None;         ///< Set for `Transport`.
     /// The agent's prose. For `ErrorCode` a detail line, empty when the agent
     /// said nothing (it is in English: it names WHICH failure a coarse code
     /// covers, and is often the only record of that); for `AgentMessage` the
