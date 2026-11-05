@@ -45,8 +45,8 @@
 //     connection survives; a call awaiting that reply fails
 //     CallError::ProtocolError for itself alone.
 //   - AgentQuiesced -> availability semantics: the agent quiesced card
-//     access (sleep/lock/user-switch), so the seam reports onQuiesced(reason)
-//     and then onServiceUnregistered (terminalizing in-flight operations
+//     access (sleep/lock/user-switch), so the seam reports
+//     onServiceUnregistered (terminalizing in-flight operations
 //     exactly like an agent death) while the connection stays open; the next
 //     probeAvailability() issues a bounded GetState round-trip and reports
 //     available again only once the agent answers (there is no resume event
@@ -60,7 +60,7 @@
 #include "../DerListenerRegistry.h"
 #include "../TransportSeam.h"
 
-#include <LibreSCRS/Agent/wire/ClientCodec.h>
+#include "wire/ClientCodec.h"
 #include <LibreSCRS/Agent/wire/FrameReassembler.h>
 #include <LibreSCRS/Agent/wire/UniqueFd.h>
 

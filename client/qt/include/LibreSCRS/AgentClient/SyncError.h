@@ -16,25 +16,12 @@
 /// as every other `AgentClient` type. See ErrorCode.h in this same directory
 /// for why this library re-exports rather than aliases-by-typedef-only.
 ///
-/// @note Deliberately re-exports the TYPE only. The two conversion functions
-///       declared in the upstream header (`syncErrorName()` /
-///       `decodeSyncError()`) become visible here transitively, but they are
-///       the wire library's symbols, not this library's — the wire library is a
-///       PRIVATE link of this one, so a consumer that links only this library
-///       must not call them. Consumers branch on the enumerator; nothing in
-///       this library's own API needs the token spelling, and this library
-///       never renders text for display in any case.
-///
-///       Being unsupported does not make them invisible, and the two facts
-///       are tracked separately on purpose. This header declares them and the
-///       shared library exports their definitions, so a consumer CAN bind to
-///       them by accident — which is exactly why the export check names
-///       them (`CLIENTQT_WIRE_PUBLIC` in ci/scripts/check-wire-exports.sh). That
-///       naming makes their removal visible; it is not a promise of support,
-///       and does not soften the warning above. The rest
-///       of that namespace is NOT exported — the wire library compiles hidden,
-///       and these two are annotated back in precisely because this header
-///       declares them.
+/// @note Re-exports the TYPE only. The two conversion functions declared in
+///       the upstream header (`syncErrorName()` / `decodeSyncError()`) belong
+///       to the wire library, which is a PRIVATE link of this one and
+///       compiles hidden, so a consumer cannot call them. Consumers branch on
+///       the enumerator; nothing in this library's own API needs the token
+///       spelling, and this library never renders text for display.
 #include <LibreSCRS/Agent/wire/SyncError.h>
 
 namespace LibreSCRS::AgentClient {

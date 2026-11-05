@@ -127,44 +127,12 @@ enum class UiState : std::uint32_t {
 // TOKEN spellings of the wire contract (the `capability-bit` group names and
 // the `pre-read-auth` names in wire/librescrs-agent.cddl) rather than raw
 // integers, so the public API survives append-only wire growth without an ABI
-// event. These helpers convert between the token form and the bitfield/enum
-// form the pure resolvers above take.
+// event. `capabilityBits()` converts the token form back to the bitfield the
+// pure resolvers above take.
 
-/// @brief The token list for @p caps, in ascending bit order. Known bits use
-///        their contract names ("Pki", "IdentityData", "EmrtdCrypto",
-///        "PinManagement"); an unknown bit i (a future, appended capability)
-///        round-trips as "bit<i>" instead of being silently dropped.
-[[nodiscard]] inline QStringList capabilityTokens(std::uint32_t caps)
-{
-    QStringList tokens;
-    for (unsigned int bit = 0; bit < 32U; ++bit) {
-        const std::uint32_t flag = std::uint32_t{1} << bit;
-        if (!has(caps, flag)) {
-            continue;
-        }
-        switch (flag) {
-        case Cap::Pki:
-            tokens.append(QStringLiteral("Pki"));
-            break;
-        case Cap::IdentityData:
-            tokens.append(QStringLiteral("IdentityData"));
-            break;
-        case Cap::EmrtdCrypto:
-            tokens.append(QStringLiteral("EmrtdCrypto"));
-            break;
-        case Cap::PinManagement:
-            tokens.append(QStringLiteral("PinManagement"));
-            break;
-        default:
-            tokens.append(QStringLiteral("bit%1").arg(bit));
-            break;
-        }
-    }
-    return tokens;
-}
-
-/// @brief The bitfield for @p tokens — the exact inverse of capabilityTokens()
-///        (including the "bit<i>" spelling for unknown bits). Unrecognized
+/// @brief The bitfield for @p tokens — the exact inverse of the token list
+///        `AgentCard::capabilities()` returns (including the "bit<i>" spelling
+///        for unknown bits). Unrecognized
 ///        tokens are ignored, so a FUTURE named capability this build does not
 ///        know cannot corrupt the bits it does.
 [[nodiscard]] inline std::uint32_t capabilityBits(const QStringList& tokens)

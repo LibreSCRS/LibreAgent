@@ -5,7 +5,8 @@
 
 #include "dbus/Marshal.h" // demarshalVariantMap: compiled into the archive, not part of the installed headers
 
-#include <LibreSCRS/AgentClient/ConfigKeys.h> // the Config1 key vocabulary + the canonical TslSources row shape
+#include <LibreSCRS/AgentClient/ConfigKeys.h> // the Config1 key vocabulary
+#include "ConfigKeyHelpers.h"                 // which keys are settable + the canonical source-row shapes
 
 #include <QDBusConnection>
 #include <QDBusMessage>
@@ -68,9 +69,6 @@ class FakeOperationAdaptor : public QDBusAbstractAdaptor
     Q_OBJECT
     Q_CLASSINFO("D-Bus Interface", "org.librescrs.Agent.Operation1")
     Q_PROPERTY(uint Phase READ phase)
-    Q_PROPERTY(double Progress READ progress)
-    Q_PROPERTY(bool IsIndeterminate READ isIndeterminate)
-    Q_PROPERTY(uint WatchdogTimeoutSeconds READ watchdogTimeoutSeconds)
     Q_PROPERTY(bool Completed READ completed)
     Q_PROPERTY(uint Status READ status)
     Q_PROPERTY(uint ErrorCode READ errorCode)
@@ -80,18 +78,6 @@ public:
     [[nodiscard]] uint phase() const
     {
         return m_op->m_completed ? 7u : 4u;
-    }
-    [[nodiscard]] double progress() const
-    {
-        return m_op->m_completed ? 1.0 : 0.0;
-    }
-    [[nodiscard]] bool isIndeterminate() const
-    {
-        return true;
-    }
-    [[nodiscard]] uint watchdogTimeoutSeconds() const
-    {
-        return 30u;
     }
     [[nodiscard]] bool completed() const
     {
@@ -337,14 +323,13 @@ FakeOperation::FakeOperation(QObject* parent, QDBusConnection connection, QStrin
                              bool marksListingCurrent)
     : QObject(parent), m_connection(connection), m_path(std::move(path)), m_kind(kind), m_delayMs(delayMs),
       m_finalStatus(finalStatus), m_finalErrorCode(finalErrorCode), m_suppressResult(suppressResult),
-      m_lostSignalRecoverable(lostSignalRecoverable), m_certScript(std::move(certScript)),
-      m_rawCertResult(rawCertResult), m_photoBytes(std::move(photoBytes)), m_photoEmptyMap(photoEmptyMap),
-      m_announceConsentPhase(announceConsentPhase), m_credResult(std::move(credResult)),
+      m_marksListingCurrent(marksListingCurrent), m_lostSignalRecoverable(lostSignalRecoverable),
+      m_certScript(std::move(certScript)), m_rawCertResult(rawCertResult), m_photoBytes(std::move(photoBytes)),
+      m_photoEmptyMap(photoEmptyMap), m_announceConsentPhase(announceConsentPhase), m_credResult(std::move(credResult)),
       m_credRecords(std::move(credRecords)), m_signArtifactBytes(std::move(signArtifactBytes)),
       m_signMeta(std::move(signMeta)), m_tokenInfoEmpty(tokenInfoEmpty),
       m_identityGroupScript(std::move(identityGroupScript)), m_batchDisplayNames(std::move(batchDisplayNames)),
-      m_batchHaltAtIndex(batchHaltAtIndex), m_batchHaltErrorCode(batchHaltErrorCode),
-      m_marksListingCurrent(marksListingCurrent)
+      m_batchHaltAtIndex(batchHaltAtIndex), m_batchHaltErrorCode(batchHaltErrorCode)
 {
     m_opAdaptor = std::make_unique<FakeOperationAdaptor>(this);
     if (m_kind == Kind::Sign) {
@@ -629,8 +614,9 @@ void FakeOperation::emitRawCertResult()
         arg << fc.extendedKeyUsageOids;
         arg << fc.chainSubjectCns;
         arg << fc.trustStatus;
-        arg << fc.alwaysAuthenticate;
-        arg << fc.keyId << fc.keyType << fc.keyBits << fc.canDerive;
+        arg << false; // alwaysAuthenticate
+        arg << QByteArrayLiteral("\x01") << QStringLiteral("RSA") << uint{2048}
+            << false; // keyId keyType keyBits canDerive
         arg.endStructure();
     }
     arg.endArray();
@@ -724,11 +710,9 @@ LibreSCRS::AgentClient::CertListWire FakeOperation::buildCertificateList() const
         ci.extendedKeyUsageOids = fc.extendedKeyUsageOids;
         ci.chainSubjectCns = fc.chainSubjectCns;
         ci.trustStatus = fc.trustStatus;
-        ci.alwaysAuthenticate = fc.alwaysAuthenticate;
-        ci.keyId = fc.keyId;
-        ci.keyType = fc.keyType;
-        ci.keyBits = fc.keyBits;
-        ci.canDerive = fc.canDerive;
+        ci.keyId = QByteArrayLiteral("\x01"); // never empty on the wire
+        ci.keyType = QStringLiteral("RSA");
+        ci.keyBits = 2048;
         ci.securityStatus = fc.securityStatus;
         // The scripted groups go in FIRST; operator<< then overlays the four
         // cells it derives from the typed members above, so a script that
@@ -970,9 +954,9 @@ namespace {
 
 /// A SetValue in-arg back into the canonical client-side shape this fake
 /// stores and later re-serves through its typed properties — the inverse of
-/// Config1Adaptor::tslSources() / ::cscaSources() below, and the D-Bus twin of
+/// Config1Adaptor::tslSources() below, and the D-Bus twin of
 /// the socket fake's own cborConfigValueToVariant. Storing the raw `v` payload
-/// instead would keep an a(sbb) / a(sb) QDBusArgument in the map, which the
+/// instead would keep an a(sbb) QDBusArgument in the map, which the
 /// property getter cannot read back and no test could compare against.
 ///
 /// Every structured key needs an arm here for the same reason the transport
@@ -990,18 +974,6 @@ QVariant configValueFromVariant(const QString& key, const QVariant& value)
         rows.reserve(wire.size());
         for (const LibreSCRS::AgentClient::TslSourceWire& source : std::as_const(wire)) {
             rows.append(tslSourceRow(source.url, source.isLotl, source.eager));
-        }
-        return rows;
-    }
-    if (key == kConfigCscaSources) {
-        LibreSCRS::AgentClient::CscaSourcesWire wire;
-        if (value.metaType().id() == qMetaTypeId<QDBusArgument>()) {
-            value.value<QDBusArgument>() >> wire;
-        }
-        QVariantList rows;
-        rows.reserve(wire.size());
-        for (const LibreSCRS::AgentClient::CscaSourceWire& source : std::as_const(wire)) {
-            rows.append(cscaSourceRow(source.uri, source.eager));
         }
         return rows;
     }
@@ -1049,24 +1021,6 @@ LibreSCRS::AgentClient::TslSourcesWire Config1Adaptor::tslSources() const
     }
     return wire;
 }
-LibreSCRS::AgentClient::CscaSourcesWire Config1Adaptor::cscaSources() const
-{
-    // Same round trip as tslSources() above, one cell narrower: the scripted
-    // rows are canonical TWO-entry lists, turned back here into the property's
-    // real (sb) wire struct so the client demarshals the shape a production
-    // agent serves.
-    LibreSCRS::AgentClient::CscaSourcesWire wire;
-    const QVariantList rows = m_agent->configValue(QString(kConfigCscaSources)).toList();
-    wire.reserve(rows.size());
-    for (const QVariant& row : rows) {
-        const QVariantList cells = row.toList();
-        if (cells.size() != 2) {
-            continue;
-        }
-        wire.append(LibreSCRS::AgentClient::CscaSourceWire{cells.at(0).toString(), cells.at(1).toBool()});
-    }
-    return wire;
-}
 QVariantMap Config1Adaptor::cscaAnchorState() const
 {
     // Served straight from the scripted map: QtDBus marshals a QVariantMap as
@@ -1082,10 +1036,6 @@ QString Config1Adaptor::tslCacheDir() const
 {
     return m_agent->configValue(QString(kConfigTslCacheDir)).toString();
 }
-QString Config1Adaptor::aiaCacheDir() const
-{
-    return m_agent->configValue(QString(kConfigAiaCacheDir)).toString();
-}
 QString Config1Adaptor::defaultReason() const
 {
     return m_agent->configValue(QString(kConfigDefaultReason)).toString();
@@ -1093,10 +1043,6 @@ QString Config1Adaptor::defaultReason() const
 QString Config1Adaptor::defaultLocation() const
 {
     return m_agent->configValue(QString(kConfigDefaultLocation)).toString();
-}
-QString Config1Adaptor::pluginDir() const
-{
-    return m_agent->configValue(QString(kConfigPluginDir)).toString();
 }
 
 bool Config1Adaptor::refuse(const QString& shortName, const QString& message)
@@ -2035,14 +1981,6 @@ void FakeAgent::emitReaderRelabelled(const QString& model, const QString& interf
     m_readerAdaptor->setLabel(model, interfaceToken);
     emitReaderPropertiesChanged(
         QVariantMap{{QStringLiteral("Model"), model}, {QStringLiteral("Interface"), interfaceToken}}, {});
-}
-
-void FakeAgent::emitQuiesced(uint reason)
-{
-    QDBusMessage sig = QDBusMessage::createSignal(m_rootPath, QStringLiteral("org.librescrs.Agent.Manager1"),
-                                                  QStringLiteral("Quiesced"));
-    sig << reason;
-    m_connection.send(sig);
 }
 
 void FakeAgent::emitReaderHasCardChanged(bool hasCard)

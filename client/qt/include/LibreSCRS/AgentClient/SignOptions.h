@@ -13,8 +13,6 @@
 #include <expected>
 #include <functional>
 
-class QIODevice;
-
 /// @file
 /// @brief Typed `Card1.Sign` / `Credentials1` vocabulary for the
 ///        `AgentClient` API.
@@ -59,16 +57,11 @@ enum class SignatureLevel : std::uint8_t {
 /// @brief Signature packaging relative to the signed document
 ///        (wire/librescrs-agent.cddl's `sign-opts.packaging`).
 ///
-/// `Enveloping` is forward-declared here for API completeness but has no
-/// agent-side counterpart yet — `SignatureParams::isKnownPackaging` accepts
-/// only enveloped/detached today (see `SignatureParamsTest.cpp`'s
-/// "enveloping is out of scope" case); a `sign()` call with
-/// `Packaging::Enveloping` is rejected agent-side
-/// (`Error.UnsupportedSignatureParameter`), not by this library.
+/// The agent signs enveloped and detached only; a document embedded inside
+/// the signature container is not offered.
 enum class Packaging : std::uint8_t {
-    Enveloped,  ///< Signature embedded inside the document container (e.g. PAdES-in-PDF).
-    Enveloping, ///< Document embedded inside the signature container. Not yet supported agent-side.
-    Detached,   ///< Signature and document ship as separate artifacts.
+    Enveloped, ///< Signature embedded inside the document container (e.g. PAdES-in-PDF).
+    Detached,  ///< Signature and document ship as separate artifacts.
 };
 
 /// @brief Credential mutation verb for `AgentCard::managePin()`
@@ -260,9 +253,9 @@ struct BatchSignRow
 /// |--------|----------------------|---------------------------|
 /// | PAdES  | any                  | `<stem>-signed.pdf`       |
 /// | XAdES  | Detached             | `<name>.xsig`             |
-/// | XAdES  | Enveloped/Enveloping | `<stem>-signed.xml`       |
+/// | XAdES  | Enveloped            | `<stem>-signed.xml`       |
 /// | CAdES  | Detached             | `<name>.p7s`              |
-/// | CAdES  | Enveloped/Enveloping | `<name>.p7m`              |
+/// | CAdES  | Enveloped            | `<name>.p7m`              |
 /// | JAdES  | any                  | `<name>.jose`             |
 /// | ASiCe  | any                  | `<stem>.asice`            |
 ///
@@ -308,10 +301,5 @@ enum class SignedFileError : std::uint8_t {
 /// @return The path written.
 [[nodiscard]] LIBRESCRS_AGENTCLIENT_EXPORT std::expected<QString, SignedFileError>
 writeSignedFile(int artifactFd, const std::function<QString()>& nextName);
-
-/// @brief `writeSignedFile()` from an open, readable device instead of a
-///        descriptor; a random-access device is read from its start.
-[[nodiscard]] LIBRESCRS_AGENTCLIENT_EXPORT std::expected<QString, SignedFileError>
-writeSignedFile(QIODevice& artifact, const std::function<QString()>& nextName);
 
 } // namespace LibreSCRS::AgentClient

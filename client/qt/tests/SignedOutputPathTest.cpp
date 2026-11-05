@@ -8,7 +8,6 @@
 
 #include <LibreSCRS/AgentClient/SignOptions.h>
 
-#include <QBuffer>
 #include <QByteArray>
 #include <QDir>
 #include <QFile>
@@ -20,11 +19,15 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <atomic>
+#include <chrono>
 #include <cstring>
 #include <functional>
 #include <memory>
+#include <thread>
 #include <vector>
 
+#include <fcntl.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
@@ -56,13 +59,10 @@ TEST(SignedOutputPath, EveryFormatAndPackagingHasOneName)
         {"contract.pdf", SignatureFormat::PAdES, Packaging::Enveloped, "contract-signed.pdf"},
         {"contract.pdf", SignatureFormat::PAdES, Packaging::Detached, "contract-signed.pdf"},
         {"invoice.xml", SignatureFormat::XAdES, Packaging::Enveloped, "invoice-signed.xml"},
-        {"invoice.xml", SignatureFormat::XAdES, Packaging::Enveloping, "invoice-signed.xml"},
         {"invoice.xml", SignatureFormat::XAdES, Packaging::Detached, "invoice.xml.xsig"},
         {"data.bin", SignatureFormat::CAdES, Packaging::Detached, "data.bin.p7s"},
-        {"data.bin", SignatureFormat::CAdES, Packaging::Enveloping, "data.bin.p7m"},
         {"data.bin", SignatureFormat::CAdES, Packaging::Enveloped, "data.bin.p7m"},
         {"claims.json", SignatureFormat::JAdES, Packaging::Detached, "claims.json.jose"},
-        {"claims.json", SignatureFormat::JAdES, Packaging::Enveloping, "claims.json.jose"},
         {"photo.jpg", SignatureFormat::ASiCe, Packaging::Detached, "photo.asice"},
         {"archive.tar.gz", SignatureFormat::PAdES, Packaging::Enveloped, "archive.tar-signed.pdf"},
     };
@@ -148,47 +148,6 @@ QStringList entriesOf(const QTemporaryDir& dir)
     return QDir(dir.path()).entryList(QDir::Files | QDir::Hidden | QDir::System);
 }
 
-/// Hands out its bytes in chunks no larger than the writer's, and runs
-/// @p beforeChunk before every chunk after the first; fails the read once
-/// @p failAfter bytes are out, when set.
-class ScriptedArtifact : public QIODevice
-{
-public:
-    ScriptedArtifact(QByteArray bytes, qint64 failAfter = -1) : m_bytes(std::move(bytes)), m_failAfter(failAfter)
-    {
-        open(QIODevice::ReadOnly | QIODevice::Unbuffered);
-    }
-    bool isSequential() const override
-    {
-        return true;
-    }
-    std::function<void()> beforeChunk;
-
-protected:
-    qint64 readData(char* data, qint64 maxSize) override
-    {
-        if (m_failAfter >= 0 && m_offset >= m_failAfter) {
-            return -1;
-        }
-        if (m_offset > 0 && beforeChunk) {
-            beforeChunk();
-        }
-        const qint64 n = std::min<qint64>({maxSize, m_bytes.size() - m_offset, 64 * 1024});
-        std::memcpy(data, m_bytes.constData() + m_offset, static_cast<std::size_t>(n));
-        m_offset += n;
-        return n;
-    }
-    qint64 writeData(const char*, qint64) override
-    {
-        return -1;
-    }
-
-private:
-    QByteArray m_bytes;
-    qint64 m_failAfter;
-    qint64 m_offset = 0;
-};
-
 TEST(WriteSignedFile, RewindsTheArtifactAndWritesEveryByte)
 {
     QTemporaryDir dir;
@@ -203,23 +162,6 @@ TEST(WriteSignedFile, RewindsTheArtifactAndWritesEveryByte)
     EXPECT_EQ(*written, target);
     EXPECT_EQ(contentsOf(target), payload);
     EXPECT_EQ(entriesOf(dir), QStringList{QStringLiteral("signed.pdf")});
-}
-
-TEST(WriteSignedFile, ADeviceIsReadFromItsStartToo)
-{
-    QTemporaryDir dir;
-    ASSERT_TRUE(dir.isValid());
-    const QByteArray payload = QByteArrayLiteral("<xades/>");
-    QByteArray backing = payload;
-    QBuffer device(&backing);
-    ASSERT_TRUE(device.open(QIODevice::ReadOnly));
-    ASSERT_TRUE(device.seek(payload.size()));
-    const QString target = dir.filePath(QStringLiteral("doc-signed.xml"));
-
-    const auto written = writeSignedFile(device, [&] { return target; });
-
-    ASSERT_TRUE(written.has_value());
-    EXPECT_EQ(contentsOf(target), payload);
 }
 
 TEST(WriteSignedFile, AnEmptyArtifactIsAFailureAndLeavesNoFile)
@@ -244,8 +186,6 @@ TEST(WriteSignedFile, NoArtifactOrNoNameIsAFailure)
     EXPECT_EQ(writeSignedFile(artifact->handle(), [] { return QString(); }),
               std::unexpected(SignedFileError::NoFreeName));
     EXPECT_EQ(writeSignedFile(artifact->handle(), {}), std::unexpected(SignedFileError::NoFreeName));
-    QBuffer closed;
-    EXPECT_EQ(writeSignedFile(closed, [&] { return target; }), std::unexpected(SignedFileError::UnreadableArtifact));
     EXPECT_TRUE(entriesOf(dir).isEmpty());
 }
 
@@ -325,36 +265,72 @@ TEST(WriteSignedFile, AFolderNothingCanBeCreatedInIsAWriteFailure)
 
 // While the artifact is being copied the name holds only the empty claim: a
 // writer killed half-way leaves no truncated signature under the final name.
+// The artifact is a pipe fed in slow chunks, so the copy lasts long enough for
+// a second thread to look at the name while it runs.
 TEST(WriteSignedFile, TheNameNeverHoldsPartOfTheArtifact)
 {
     QTemporaryDir dir;
     ASSERT_TRUE(dir.isValid());
     const QString target = dir.filePath(QStringLiteral("big-signed.pdf"));
     const QByteArray payload(200 * 1024, 'S');
-    ScriptedArtifact artifact(payload);
-    std::vector<qint64> sizesSeen;
-    artifact.beforeChunk = [&] { sizesSeen.push_back(QFileInfo(target).size()); };
 
-    const auto written = writeSignedFile(artifact, [&] { return target; });
+    int fds[2];
+    ASSERT_EQ(::pipe(fds), 0);
+    std::thread feeder([&] {
+        constexpr qsizetype kChunk = 32 * 1024;
+        for (qsizetype at = 0; at < payload.size(); at += kChunk) {
+            const qsizetype n = std::min(kChunk, payload.size() - at);
+            if (::write(fds[1], payload.constData() + at, static_cast<std::size_t>(n)) != n) {
+                break;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(20));
+        }
+        ::close(fds[1]);
+    });
+    std::atomic<bool> copying{true};
+    std::vector<qint64> sizesSeen;
+    std::thread observer([&] {
+        while (copying) {
+            const QFileInfo info(target);
+            if (info.exists()) {
+                sizesSeen.push_back(info.size());
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(2));
+        }
+    });
+
+    const auto written = writeSignedFile(fds[0], [&] { return target; });
+    copying = false;
+    observer.join();
+    feeder.join();
+    ::close(fds[0]);
 
     ASSERT_TRUE(written.has_value());
     ASSERT_FALSE(sizesSeen.empty());
     for (const qint64 size : sizesSeen) {
-        EXPECT_EQ(size, 0) << "part of the artifact was visible under the final name mid-copy";
+        if (size != 0) {
+            EXPECT_EQ(size, payload.size()) << "part of the artifact was visible under the final name mid-copy";
+        }
     }
     EXPECT_EQ(contentsOf(target), payload);
 }
 
-// A read that fails half-way gives the claimed name back and leaves nothing --
-// neither the claim nor a partial copy beside it.
-TEST(WriteSignedFile, AReadFailingMidCopyLeavesNothingBehind)
+// A read that fails gives the claimed name back and leaves nothing -- neither
+// the claim nor a partial copy beside it. A directory descriptor opens fine
+// and fails every read.
+TEST(WriteSignedFile, AReadFailingAfterTheClaimLeavesNothingBehind)
 {
     QTemporaryDir dir;
     ASSERT_TRUE(dir.isValid());
     const QString target = dir.filePath(QStringLiteral("big-signed.pdf"));
-    ScriptedArtifact artifact(QByteArray(200 * 1024, 'S'), 64 * 1024);
+    QTemporaryDir source;
+    ASSERT_TRUE(source.isValid());
+    const int unreadable = ::open(source.path().toLocal8Bit().constData(), O_RDONLY | O_DIRECTORY);
+    ASSERT_GE(unreadable, 0);
 
-    EXPECT_EQ(writeSignedFile(artifact, [&] { return target; }), std::unexpected(SignedFileError::UnreadableArtifact));
+    EXPECT_EQ(writeSignedFile(unreadable, [&] { return target; }),
+              std::unexpected(SignedFileError::UnreadableArtifact));
+    ::close(unreadable);
     EXPECT_TRUE(entriesOf(dir).isEmpty()) << entriesOf(dir).join(QLatin1Char(',')).toStdString();
 }
 

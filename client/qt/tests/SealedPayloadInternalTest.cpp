@@ -37,8 +37,8 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
-using LibreSCRS::AgentClient::kMaxBoundedPayloadBytes;
 using LibreSCRS::AgentClient::Internal::acceptablePayloadSize;
+using LibreSCRS::AgentClient::Internal::kMaxBoundedPayloadBytes;
 using LibreSCRS::AgentClient::Internal::readExactly;
 
 namespace {

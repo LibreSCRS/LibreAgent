@@ -55,12 +55,7 @@ struct FakeSocketCert
     quint32 keyUsageBits = 0;
     QStringList extendedKeyUsageOids;
     QStringList chainSubjectCns;
-    quint32 trustStatus = 255;                    ///< 255 = Unknown; 5 = Revoked, 6 = OfflineUnverified.
-    bool alwaysAuthenticate = false;              ///< b: the card asks for the PIN before every use
-    QByteArray keyId = QByteArrayLiteral("\x01"); ///< ay keyId: never empty on the wire
-    QString keyType = QStringLiteral("RSA");      ///< s keyType token
-    quint32 keyBits = 2048;
-    bool canDerive = false;
+    quint32 trustStatus = 255; ///< 255 = Unknown; 5 = Revoked, 6 = OfflineUnverified.
     /// Tokens riding the "security" fields-group, mirroring trustStatus (e.g.
     /// {"revoked"} for trustStatus=5). Empty by default.
     QStringList securityStatus;
@@ -202,11 +197,10 @@ public:
         /// (default) applies the real policy. Mirrors
         /// FakeAgent::Config::configMutationError.
         std::optional<LibreSCRS::Agent::Wire::SyncError> configMutationError;
-        /// Encode the two struct-array keys as arrays of MAPS — `TslSources`
-        /// as {url, lotl, eager}, `CscaSources` as {uri, eager} — rather than
-        /// the canonical arrays of fixed-width ARRAYS. Both are lawful: the
+        /// Encode `TslSources` as an array of MAPS {url, lotl, eager} rather
+        /// than the canonical array of fixed-width ARRAYS. Both are lawful: the
         /// socket grammar types a config value as bare `any` (unlike D-Bus's
-        /// typed `a(sbb)` / `a(sb)`), so the client — not the wire — is what
+        /// typed `a(sbb)`), so the client — not the wire — is what
         /// guarantees consumers one shape. This knob is how that normalization
         /// gets tested against a shape it does not itself emit.
         bool structuredSourcesAsMaps = false;

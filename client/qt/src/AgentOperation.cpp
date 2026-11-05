@@ -103,7 +103,6 @@ struct AgentOperation::Private final : public OperationListener, public Transpor
     QString messageFallback;
 
     OperationPhase phase = OperationPhase::Created;
-    double progress = 0.0;
 
     QList<FieldGroup> identityResult;
     QList<CertificateInfo> certificatesResult;
@@ -141,21 +140,20 @@ struct AgentOperation::Private final : public OperationListener, public Transpor
 
     // ---- OperationListener --------------------------------------------------
 
-    void onPhaseChanged(OperationPhase newPhase, double newProgress) override
+    void onPhaseChanged(OperationPhase newPhase) override
     {
         // Wire tolerance: a future agent may report a phase this build does
-        // not name yet (OperationPhase is wire-frozen append-only). Progress
-        // is still delivered either way, but the held/public phase never
+        // not name yet (OperationPhase is wire-frozen append-only). The
+        // signal is still emitted either way, but the held/public phase never
         // regresses to an unrecognised value — it holds the last known-good
         // phase until (if ever) a recognised one arrives. The signal's own
-        // `phase` argument mirrors the held value too, so a direct slot and
-        // the polled phase() getter never disagree.
+        // `phase` argument is the held value too, so a slot never sees a phase
+        // regress.
         if (isKnownPhase(newPhase)) {
             phase = newPhase;
         }
-        progress = newProgress;
         armForPhase(phase);
-        Q_EMIT q->phaseChanged(phase, newProgress);
+        Q_EMIT q->phaseChanged(phase);
     }
 
     void onFinished(OperationStatus terminalStatus, ErrorCode code, const QString& msgKey,
@@ -367,16 +365,6 @@ bool AgentOperation::isFinished() const
 OperationStatus AgentOperation::status() const
 {
     return d->status;
-}
-
-OperationPhase AgentOperation::phase() const
-{
-    return d->phase;
-}
-
-double AgentOperation::progress() const
-{
-    return d->progress;
 }
 
 ErrorCode AgentOperation::errorCode() const

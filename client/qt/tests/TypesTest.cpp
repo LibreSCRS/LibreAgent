@@ -8,6 +8,8 @@
 // internal TU, not part of the public value-type API this file covers.
 #include <LibreSCRS/AgentClient/CallError.h>
 #include <LibreSCRS/AgentClient/ClientTimeouts.h>
+
+#include "ClientTimeouts.h"
 #include <LibreSCRS/AgentClient/FdHandle.h>
 #include <LibreSCRS/AgentClient/SignOptions.h>
 #include <LibreSCRS/AgentClient/Types.h>
@@ -195,7 +197,6 @@ TEST(CertificateInfoValueType, DefaultsAreUnknownTrustAndNotSigningCapable)
 {
     CertificateInfo info;
     EXPECT_FALSE(info.signingCapable);
-    EXPECT_FALSE(info.alwaysAuthenticate);
     EXPECT_EQ(info.trust, TrustStatus::Unknown);
     EXPECT_TRUE(info.securityStatus.isEmpty());
     EXPECT_TRUE(info.extra.isEmpty());
@@ -239,14 +240,4 @@ TEST(ClientTimeoutsValueType, HasTheDocumentedMillisecondBudgets)
     // constants being edited out of their intended relative order.
     EXPECT_LT(kHandshakeTimeoutMs, kDefaultCallTimeoutMs);
     EXPECT_LT(kDefaultCallTimeoutMs, kLongOperationTimeoutMs);
-}
-
-// A certificate the agent has not described has no key facts yet.
-TEST(Types, CertificateInfoKeyFactsDefaultToUnknown)
-{
-    const CertificateInfo info;
-    EXPECT_TRUE(info.keyId.isEmpty());
-    EXPECT_EQ(info.keyType, KeyType::Other);
-    EXPECT_EQ(info.keyBits, 0u);
-    EXPECT_FALSE(info.canDerive);
 }

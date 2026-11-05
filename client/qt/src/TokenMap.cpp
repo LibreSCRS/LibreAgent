@@ -46,8 +46,6 @@ std::string_view toToken(Packaging packaging) noexcept
     switch (packaging) {
     case Packaging::Enveloped:
         return "enveloped";
-    case Packaging::Enveloping:
-        return "enveloping";
     case Packaging::Detached:
         return "detached";
     }

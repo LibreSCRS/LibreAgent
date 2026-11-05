@@ -39,15 +39,6 @@ enum class CredentialState {
     Blocked,     ///< Retry counter exhausted; needs `RecoveryPath` before further use.
 };
 
-/// @brief How a blocked credential can be unblocked (wire `unblock_style`:
-///        "resetOnly" / "setsNewPin" / "unblockAndChange").
-enum class UnblockStyle {
-    Unknown,          ///< An unrecognised wire token, or not applicable (unblockable == false).
-    ResetOnly,        ///< Unblock resets the retry counter only; the PIN value is unchanged.
-    SetsNewPin,       ///< Unblock requires and sets a brand-new PIN value.
-    UnblockAndChange, ///< Unblock resets the counter AND the holder must then change the PIN.
-};
-
 /// @brief Where the recovery secret/process for a blocked credential lives
 ///        (wire `recovery`: "holderViaPuk" / "issuerProcess" / "none").
 enum class RecoveryPath {
@@ -89,16 +80,12 @@ struct LIBRESCRS_AGENTCLIENT_EXPORT CredentialRecord
     std::optional<int> usesLeft;       ///< Remaining uses for a use-limited credential (e.g. a PUK), if applicable.
     std::optional<int> usesMax;        ///< Use ceiling for a use-limited credential, if applicable.
     std::optional<int> unblocksLeft;   ///< Remaining unblock attempts, if the card reports it.
-    std::optional<int> minLength;      ///< Minimum accepted secret length, if the card reports it.
-    std::optional<int> maxLength;      ///< Maximum accepted secret length, if the card reports it.
     bool canChange = false;            ///< Whether `managePin(Change)` is available for this credential.
     bool unblockable = false;          ///< Whether a `RecoveryPath` exists for this credential.
     bool activatable = false;          ///< Whether `managePin(ActivatePin)` applies to this credential.
     bool keyActivationPending = false; ///< Whether a signing key behind this credential awaits activation.
     bool keyActivatable = false;       ///< Whether `activateSigningKey()` can be called for this credential now.
-    bool probeSafe = false; ///< Whether verifying this credential is safe to probe without consuming a retry.
-    UnblockStyle unblockStyle = UnblockStyle::Unknown; ///< How unblocking behaves, when `unblockable` is true.
-    RecoveryPath recovery = RecoveryPath::Unknown;     ///< Where the recovery secret/process lives.
+    RecoveryPath recovery = RecoveryPath::Unknown; ///< Where the recovery secret/process lives.
     std::optional<QString>
         blockedGuidanceKey; ///< i18n key for holder guidance when blocked, if the agent supplies one.
     std::optional<QString> blockedGuidanceFallback;       ///< English fallback for `blockedGuidanceKey`.
@@ -124,11 +111,9 @@ using CredentialList = QList<CredentialRecord>;
 struct LIBRESCRS_AGENTCLIENT_EXPORT PinResult
 {
     CredentialOutcome outcome = CredentialOutcome::Unspecified; ///< What happened.
-    std::optional<int> retriesLeft;   ///< Remaining verify attempts after this attempt, if the card reports it.
-    bool blocked = false;             ///< Whether the credential is now blocked as a result of this attempt.
-    std::optional<bool> pinActivated; ///< Whether an `ActivatePin` attempt activated the PIN, if applicable.
-    std::optional<bool> keyActivated; ///< Whether the associated signing key was activated, if applicable.
-    QVariantMap extra;                ///< Forward-compatible pass-through, as on every result struct.
+    std::optional<int> retriesLeft; ///< Remaining verify attempts after this attempt, if the card reports it.
+    bool blocked = false;           ///< Whether the credential is now blocked as a result of this attempt.
+    QVariantMap extra;              ///< Forward-compatible pass-through, as on every result struct.
 
     /// @brief Parse one wire mutation-result map (snake_case keys, e.g.
     ///        "retries_left") into a `PinResult`. Keys not consumed by a

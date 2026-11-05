@@ -118,6 +118,9 @@ target_include_directories(LibreAgentClientQt PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_BINARY_DIR}/include>
     $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include>
     $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>)
+# SocketTransport shares the client-side wire codec, which lives under src/ and
+# is not installed.
+target_include_directories(LibreAgentClientQt PRIVATE $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/src>)
 target_compile_features(LibreAgentClientQt PUBLIC cxx_std_23)
 
 target_link_libraries(LibreAgentClientQt
@@ -173,6 +176,7 @@ if(PROJECT_IS_TOP_LEVEL)
         ${CMAKE_CURRENT_BINARY_DIR}/include
         ${PROJECT_SOURCE_DIR}/include
         ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    target_include_directories(LibreAgentClientQtTesting PRIVATE ${PROJECT_SOURCE_DIR}/src)
     target_compile_features(LibreAgentClientQtTesting PUBLIC cxx_std_23)
     target_link_libraries(LibreAgentClientQtTesting PUBLIC
         Qt6::Core
@@ -214,27 +218,23 @@ if(PROJECT_IS_TOP_LEVEL)
     #   * DOXYGEN INPUT -- Doxyfile.publicapi's INPUT must list the header, or
     #     the re-exported type's members never reach the published reference at
     #     all: the definition is simply never parsed, with no warning.
-    #   * EXPORT ANNOTATION -- any FUNCTION it declares must carry
-    #     LIBRESCRS_AGENTWIRE_EXPORT. The wire library compiles hidden, so an
-    #     un-annotated function is absent from the shared library a consumer
-    #     links against, while its public header still declares it.
-    #   * EXPORT ALLOWLIST -- ci/scripts/check-wire-exports.sh's
-    #     CLIENTQT_WIRE_PUBLIC must name those same functions: it is the list of
-    #     wire functions the shared library may export, and it fails on any
-    #     other and on a named one gone missing.
+    #   * EXPORTS -- a re-exported header declares types, never functions: the
+    #     wire library compiles hidden, so a function it declares is absent from
+    #     the shared library a consumer links against, and
+    #     ci/scripts/check-wire-exports.sh fails on any wire symbol the shared
+    #     library does export.
     #   * DOXYGEN PREDEFINED -- an export MACRO defined in the header must be
     #     predefined away in Doxyfile.publicapi, or the published reference
     #     carries a build detail as public API.
     #
     # None is derivable from another, and no tool notices its own omission, so
     # the checks live here, where the re-export is written. The two Doxygen ones
-    # are enforced below; the other two announce themselves loudly enough (a
-    # failed link, a failed export check) to need no configure-time twin.
+    # are enforced below; the export one announces itself loudly enough (a
+    # failed export check) to need no configure-time twin.
     set(_clientqt_reexported_shared_headers
         OperationPhase.h
         wire/ErrorCode.h
         wire/PreReadAuth.h
-        wire/QuiesceReason.h
         wire/ReaderInterface.h
         wire/SyncError.h)
 
@@ -264,10 +264,9 @@ if(PROJECT_IS_TOP_LEVEL)
             "  DOXYGEN INPUT -- add it to Doxyfile.publicapi's INPUT, or its "
             "members are absent from the published API reference with no "
             "warning (enforced below, so it will tell you again);\n"
-            "  EXPORT ANNOTATION + EXPORT ALLOWLIST -- if it declares FUNCTIONS "
-            "(an enum/constant-only header emits no symbols and needs "
-            "nothing), give each one LIBRESCRS_AGENTWIRE_EXPORT and add it to "
-            "CLIENTQT_WIRE_PUBLIC in ci/scripts/check-wire-exports.sh;\n"
+            "  EXPORTS -- a re-exported header must declare no functions (the "
+            "wire library compiles hidden, ci/scripts/check-wire-exports.sh "
+            "fails on any wire symbol the shared library exports);\n"
             "  DOXYGEN PREDEFINED -- if it defines an export MACRO, predefine "
             "it away in Doxyfile.publicapi (enforced below too).")
     endif()

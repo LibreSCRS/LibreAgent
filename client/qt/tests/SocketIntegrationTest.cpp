@@ -22,7 +22,8 @@
 #include <LibreSCRS/AgentClient/AgentClient.h>
 #include <LibreSCRS/AgentClient/AgentOperation.h>
 #include <LibreSCRS/AgentClient/AgentReader.h>
-#include <LibreSCRS/AgentClient/ClientTimeouts.h>
+
+#include "ClientTimeouts.h"
 #include <LibreSCRS/AgentClient/IdentityRows.h>
 
 #include "ClientTestAccess.h"
@@ -460,7 +461,7 @@ TEST(SocketIntegration, AvailabilityHandshakeFeatureTokensAndReappear)
     SocketTransport* transport = nullptr;
     auto client = makeClient(h, &transport);
     ASSERT_TRUE(client->isAvailable());
-    EXPECT_TRUE(client->agentInstalled());
+    EXPECT_NE(client->agentState(), AgentState::Missing);
     ASSERT_EQ(client->readers().size(), 1);
 
     // The HelloAck capture: agent version + feature tokens.
@@ -489,7 +490,7 @@ TEST(SocketIntegration, AvailabilityHandshakeFeatureTokensAndReappear)
     // reconcile finds the socket gone from disk.
     EXPECT_EQ(client->agentState(), AgentState::Stopped);
     client->refreshDiscovery();
-    EXPECT_FALSE(client->agentInstalled()) << "the unbound socket path must read as not-installed";
+    EXPECT_EQ(client->agentState(), AgentState::Missing) << "the unbound socket path must read as not-installed";
 
     // Reappear: the agent re-binds; there is no bus daemon to push a
     // registration, so the reconcile probe (refreshDiscovery) reconnects.
@@ -569,8 +570,8 @@ TEST(SocketIntegration, AgentVersionFromHelloAckAndEmptyOnceGone)
 //     `reset-config` is deliberately different: its argument is the FULL
 //     `config-key` set, so a read-only key IS encodable there and the agent
 //     is the one that names the refusal.
-//   * a config value is typed `any`, not D-Bus's declared `a(sbb)` / `a(sb)`,
-//     so the canonical TslSources / CscaSources row shapes are the CLIENT's
+//   * a config value is typed `any`, not D-Bus's declared `a(sbb)`,
+//     so the canonical TslSources row shape is the CLIENT's
 //     guarantee rather than the wire's.
 
 TEST(SocketIntegration, ConfigSnapshotCarriesTypedEntriesFromGetConfig)
@@ -586,7 +587,7 @@ TEST(SocketIntegration, ConfigSnapshotCarriesTypedEntriesFromGetConfig)
     EXPECT_EQ(config.value(QStringLiteral("DefaultLevel")).toString(), QStringLiteral("b-t"));
     EXPECT_EQ(config.value(QStringLiteral("TsaUrls")).toStringList(),
               QStringList{QStringLiteral("https://tsa.example.invalid/tsr")});
-    EXPECT_EQ(config.value(QStringLiteral("PluginDir")).toString(), QStringLiteral("/usr/lib/librescrs/plugins"));
+    EXPECT_EQ(config.value(QStringLiteral("TslCacheDir")).toString(), QStringLiteral("/var/cache/librescrs/tsl"));
 
     const QVariantList tslSources = config.value(QStringLiteral("TslSources")).toList();
     ASSERT_EQ(tslSources.size(), 1);
@@ -604,9 +605,7 @@ TEST(SocketIntegration, ConfigSnapshotCarriesTypedEntriesFromGetConfig)
 // The `any`-typed values, served in the OTHER lawful encoding this wire admits
 // (arrays of maps rather than of fixed-width arrays). The client normalizes
 // both onto one shape — the whole reason `configSnapshot()` can promise a
-// consumer anything at all here. Both struct-array keys in one case: they are
-// the same claim about the same normalization step, and a case that covered
-// only one would let the other's arm be added without it.
+// consumer anything at all here.
 TEST(SocketIntegration, StructuredSourcesNormalizeFromTheMapEncodingToo)
 {
     FakeSocketAgent::Config cfg;
@@ -625,13 +624,6 @@ TEST(SocketIntegration, StructuredSourcesNormalizeFromTheMapEncodingToo)
     EXPECT_EQ(tslRow.at(0).toString(), QStringLiteral("https://example.invalid/tl.xml"));
     EXPECT_FALSE(tslRow.at(1).toBool());
     EXPECT_TRUE(tslRow.at(2).toBool());
-
-    const QVariantList cscaSources = config.value(QStringLiteral("CscaSources")).toList();
-    ASSERT_EQ(cscaSources.size(), 1);
-    const QVariantList cscaRow = cscaSources.first().toList();
-    ASSERT_EQ(cscaRow.size(), 2) << "the map encoding must normalize to the SAME two-entry row";
-    EXPECT_EQ(cscaRow.at(0).toString(), QStringLiteral("https://example.invalid/csca.ldif"));
-    EXPECT_TRUE(cscaRow.at(1).toBool());
 }
 
 TEST(SocketIntegration, SetConfigRoundTripsAndSignalsConfigChanged)
@@ -671,7 +663,7 @@ TEST(SocketIntegration, SetConfigRefusesANonSettableOrUnknownKeyLocally)
     ASSERT_TRUE(client->isAvailable());
 
     const std::optional<SyncError> readOnly =
-        client->setConfigValue(QStringLiteral("PluginDir"), QStringLiteral("/tmp/x"));
+        client->setConfigValue(QStringLiteral("TslCacheDir"), QStringLiteral("/tmp/x"));
     ASSERT_TRUE(readOnly.has_value());
     EXPECT_EQ(*readOnly, SyncError::ReadOnlyConfig);
 
@@ -695,7 +687,7 @@ TEST(SocketIntegration, ResetConfigForAReadOnlyKeyReachesTheAgentAndIsRefused)
     auto client = makeClient(h);
     ASSERT_TRUE(client->isAvailable());
 
-    const std::optional<SyncError> readOnly = client->resetConfigValue(QStringLiteral("PluginDir"));
+    const std::optional<SyncError> readOnly = client->resetConfigValue(QStringLiteral("TslCacheDir"));
     ASSERT_TRUE(readOnly.has_value());
     EXPECT_EQ(*readOnly, SyncError::ReadOnlyConfig);
     EXPECT_EQ(h.configMutationCount(), 1) << "reset-config CAN encode a read-only key, so it is sent";
@@ -1011,11 +1003,6 @@ TEST(SocketIntegration, CertificatesEndToEnd)
     fc.notBefore = QStringLiteral("2021-06-01T00:00:00Z");
     fc.notAfter = QStringLiteral("2031-06-01T00:00:00Z");
     fc.trustStatus = 0U; // Trusted
-    fc.alwaysAuthenticate = true;
-    fc.keyId = QByteArray::fromHex("F7134B02");
-    fc.keyType = QStringLiteral("EC");
-    fc.keyBits = 384;
-    fc.canDerive = true;
     cfg.certScript = {fc};
     SocketHarness h(cfg);
 
@@ -1038,53 +1025,6 @@ TEST(SocketIntegration, CertificatesEndToEnd)
     EXPECT_EQ(c.notBefore, QDateTime::fromString(QStringLiteral("2021-06-01T00:00:00Z"), Qt::ISODate));
     EXPECT_EQ(c.notAfter, QDateTime::fromString(QStringLiteral("2031-06-01T00:00:00Z"), Qt::ISODate));
     EXPECT_EQ(c.trust, TrustStatus::Trusted);
-    EXPECT_TRUE(c.alwaysAuthenticate);
-    EXPECT_EQ(c.keyId, QByteArray::fromHex("F7134B02")) << "the card's key ID must reach the client";
-    EXPECT_EQ(c.keyType, KeyType::Ec);
-    EXPECT_EQ(c.keyBits, 384u);
-    EXPECT_TRUE(c.canDerive);
-}
-
-// The adjacent booleans (signingCapable, alwaysAuthenticate, canDerive) are
-// separate fields; each certificate sets a different combination so that
-// swapping any two of them is caught.
-TEST(SocketIntegration, CertificateBooleansKeepTheirPlaces)
-{
-    struct Flags
-    {
-        bool signingCapable;
-        bool alwaysAuthenticate;
-        bool canDerive;
-    };
-    const Flags flags[] = {{true, false, false}, {false, true, true}, {true, true, false}, {false, false, true}};
-    FakeSocketAgent::Config cfg;
-    cfg.capabilities = Cap::Pki;
-    for (int i = 0; i < 4; ++i) {
-        FakeSocketCert fc;
-        fc.certId = QStringLiteral("cert-flags-%1").arg(i);
-        fc.subjectCn = QStringLiteral("Flags %1").arg(i);
-        fc.signingCapable = flags[i].signingCapable;
-        fc.alwaysAuthenticate = flags[i].alwaysAuthenticate;
-        fc.canDerive = flags[i].canDerive;
-        cfg.certScript.push_back(fc);
-    }
-    SocketHarness h(cfg);
-
-    auto client = makeClient(h);
-    AgentCard* card = client->card(QLatin1String(kCardId));
-    ASSERT_NE(card, nullptr);
-    AgentOperation* op = card->readCertificates();
-    ASSERT_NE(op, nullptr);
-    ASSERT_TRUE(waitFor([&]() { return op->isFinished(); }));
-    EXPECT_EQ(op->status(), OperationStatus::Ok);
-
-    const QList<CertificateInfo> certs = op->certificatesResult();
-    ASSERT_EQ(certs.size(), 4);
-    for (int i = 0; i < 4; ++i) {
-        EXPECT_EQ(certs[i].signingCapable, flags[i].signingCapable) << i;
-        EXPECT_EQ(certs[i].alwaysAuthenticate, flags[i].alwaysAuthenticate) << i;
-        EXPECT_EQ(certs[i].canDerive, flags[i].canDerive) << i;
-    }
 }
 
 // The certificate warm is a DELIBERATE no-op on this wire, and this is the
@@ -1850,18 +1790,13 @@ TEST(SocketIntegration, AgentQuiescedIsUnavailableUntilReprobe)
         finishedCallError = op->callError();
     });
 
-    // The reason reaches the client FIRST, so a consumer knows why the agent
-    // is about to count as gone.
     QStringList order;
-    QObject::connect(client.get(), &AgentClient::quiesced, client.get(), [&](QuiesceReason reason) {
-        order.append(QStringLiteral("quiesced:%1").arg(static_cast<unsigned>(reason)));
-    });
     QObject::connect(client.get(), &AgentClient::availabilityChanged, client.get(),
                      [&](bool available) { order.append(QStringLiteral("available:%1").arg(available)); });
 
     h.sendAgentQuiesced(1); // ScreenLocked
     ASSERT_TRUE(waitFor([&]() { return !client->isAvailable(); }));
-    EXPECT_EQ(order, (QStringList{QStringLiteral("quiesced:1"), QStringLiteral("available:0")}));
+    EXPECT_EQ(order, (QStringList{QStringLiteral("available:0")}));
     EXPECT_TRUE(finishedSeen);
     EXPECT_EQ(finishedCallError, CallError::AgentUnavailable);
     EXPECT_TRUE(client->readers().isEmpty());
@@ -1970,10 +1905,6 @@ struct RecordingRegistryListener final : RegistryListener
     void onConfigChanged(const QString& key) override
     {
         Q_UNUSED(key)
-    }
-    void onQuiesced(QuiesceReason reason) override
-    {
-        Q_UNUSED(reason)
     }
 };
 

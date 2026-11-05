@@ -465,8 +465,7 @@ TEST(AgentOperation, ListCredentialsResultDeliversRecords)
                                    {QStringLiteral("unblockable"), false},
                                    {QStringLiteral("activatable"), false},
                                    {QStringLiteral("key_activation_pending"), false},
-                                   {QStringLiteral("key_activatable"), false},
-                                   {QStringLiteral("probe_safe"), true}}};
+                                   {QStringLiteral("key_activatable"), false}}};
     Harness h(cfg);
 
     auto client = makeClient(h);
@@ -484,7 +483,6 @@ TEST(AgentOperation, ListCredentialsResultDeliversRecords)
     EXPECT_EQ(r.kind, CredentialKind::User);
     EXPECT_EQ(r.state, CredentialState::Operational);
     EXPECT_TRUE(r.canChange);
-    EXPECT_TRUE(r.probeSafe);
     EXPECT_FALSE(r.unblockable);
 }
 
@@ -501,7 +499,7 @@ TEST(AgentOperation, CredentialsLostSignalRecoversViaGetResult)
     cfg.lostSignalRecoverable = true; // finish, SUPPRESS the Result signal, RETAIN for GetResult
     cfg.credResult = QVariantMap{{QStringLiteral("outcome"), QStringLiteral("ok")},
                                  {QStringLiteral("blocked"), false},
-                                 {QStringLiteral("pin_activated"), true}};
+                                 {QStringLiteral("retries_left"), 3}};
     // The listing carries the mutated id; the MUTATION's own result still has
     // empty records (a legitimate mutation result — the fake, like the real
     // agent, never attaches records to a mutation Result).
@@ -519,8 +517,8 @@ TEST(AgentOperation, CredentialsLostSignalRecoversViaGetResult)
     ASSERT_TRUE(waitFor([&]() { return op->isFinished(); }));
     EXPECT_EQ(op->status(), OperationStatus::Ok) << "the lost Result is recovered via GetResult, so the op stays Ok";
     EXPECT_EQ(op->pinResult().outcome, CredentialOutcome::Ok);
-    ASSERT_TRUE(op->pinResult().pinActivated.has_value());
-    EXPECT_TRUE(*op->pinResult().pinActivated);
+    ASSERT_TRUE(op->pinResult().retriesLeft.has_value());
+    EXPECT_EQ(*op->pinResult().retriesLeft, 3);
     EXPECT_TRUE(op->credentialsResult().isEmpty()) << "empty-records is valid; it must not be treated as no result";
 }
 

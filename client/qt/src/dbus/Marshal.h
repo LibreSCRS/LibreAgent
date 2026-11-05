@@ -57,10 +57,7 @@ namespace LibreSCRS::AgentClient {
 /// ISO-8601 strings parsed to QDateTime, and the trailing wire members
 /// keyUsageBits/extendedKeyUsageOids/chainSubjectCns landing in the TYPED
 /// CertificateInfo members of the same names -- not in `extra`, so a rename
-/// is a compile error rather than a silently empty value). Only the raw
-/// trust verdict still rides `extra`, under "trustStatusWire": no typed
-/// member mirrors it, because `trust` collapses several wire verdicts into
-/// one display value.
+/// is a compile error rather than a silently empty value).
 [[nodiscard]] QList<CertificateInfo> toCertificateInfos(const CertListWire& certs);
 
 /// Photo wire map -> move-only public photo items (each fd dup'd into an

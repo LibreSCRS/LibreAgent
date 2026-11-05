@@ -9,8 +9,6 @@
 
 #include "SealedPayloadInternal.h"
 
-#include <LibreSCRS/AgentClient/SealedPayload.h> // kMaxBoundedPayloadBytes
-
 #include <cerrno>
 #include <cstddef>
 

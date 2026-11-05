@@ -27,11 +27,10 @@ namespace LibreSCRS::AgentClient::Fakes {
 
 [[nodiscard]] inline QVariantMap defaultCscaAnchorState();
 
-/// @brief The eleven Config1 properties with plausible values, keyed by the
+/// @brief The eight Config1 properties with plausible values, keyed by the
 ///        wire spellings and valued in the canonical client-side shape
 ///        (`TslSources` as three-entry `[url, isLotl, eager]` lists,
-///        `CscaSources` as TWO-entry `[uri, eager]` ones, `CscaAnchorState`
-///        as the anchor-state dict below).
+///        `CscaAnchorState` as the anchor-state dict below).
 [[nodiscard]] inline QVariantMap defaultAgentConfig()
 {
     return QVariantMap{
@@ -39,14 +38,10 @@ namespace LibreSCRS::AgentClient::Fakes {
         {QString(kConfigTsaUrls), QStringList{QStringLiteral("https://tsa.example.invalid/tsr")}},
         {QString(kConfigLastTsaUrl), QStringLiteral("https://tsa.example.invalid/tsr")},
         {QString(kConfigTslSources),
-         QVariantList{tslSourceRow(QStringLiteral("https://example.invalid/tl.xml"), false, true)}},
-        {QString(kConfigCscaSources),
-         QVariantList{cscaSourceRow(QStringLiteral("https://example.invalid/csca.ldif"), true)}},
+         QVariantList{QVariantList{QStringLiteral("https://example.invalid/tl.xml"), false, true}}},
         {QString(kConfigTslCacheDir), QStringLiteral("/var/cache/librescrs/tsl")},
-        {QString(kConfigAiaCacheDir), QStringLiteral("/var/cache/librescrs/aia")},
         {QString(kConfigDefaultReason), QStringLiteral("Approval")},
         {QString(kConfigDefaultLocation), QStringLiteral("Belgrade")},
-        {QString(kConfigPluginDir), QStringLiteral("/usr/lib/librescrs/plugins")},
         // The read-only dictionary key. Valued from the SAME function the
         // import reply is scripted with: the property and the reply are one
         // dict on both wires, so scripting them from two tables here would let
@@ -57,7 +52,7 @@ namespace LibreSCRS::AgentClient::Fakes {
 
 /// @brief The `CscaAnchorState` dict both fakes answer an accepted
 ///        `ImportCscaMasterList` with, in the canonical client-side shape
-///        (the same eight keys the D-Bus property and the socket reply arm
+///        (the same seven keys the D-Bus property and the socket reply arm
 ///        carry). Here for the same reason `defaultAgentConfig()` above is:
 ///        the parity corpus scripts it ONCE and each fake re-encodes it into
 ///        its own wire form, so the thing under comparison cannot be scripted
@@ -78,7 +73,6 @@ namespace LibreSCRS::AgentClient::Fakes {
         {QString(kCscaAnchorSignerPinned), true},
         {QString(kCscaAnchorAcceptedAt), QVariant::fromValue<qint64>(1756000000)},
         {QString(kCscaAnchorSignedAt), QVariant::fromValue<qint64>(1755000000)},
-        {QString(kCscaAnchorOrigin), QStringLiteral("import")},
     };
 }
 

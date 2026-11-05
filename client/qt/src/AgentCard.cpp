@@ -5,6 +5,7 @@
 
 #include <LibreSCRS/AgentClient/AgentCapabilities.h>
 
+#include "CapabilityTokens.h"
 #include "TokenMap.h"
 #include "TransportSeam.h"
 #include "dbus/ErrorNameMap.h" // transport-neutral short-name -> SeamError classification (see its file comment)

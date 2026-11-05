@@ -13,8 +13,7 @@
 /// the same literal. (The agent's D-Bus XML in wire/dbus/ is the cross-stack
 /// contract; this header is the client-side mirror of those names, and
 /// DBusContractTest holds the two together. Timeout budgets live
-/// in the PUBLIC ClientTimeouts.h — they are transport-neutral contract, not
-/// D-Bus vocabulary.)
+/// in ClientTimeouts.h — they are transport-neutral, not D-Bus vocabulary.)
 
 namespace LibreSCRS::AgentClient {
 

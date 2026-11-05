@@ -110,7 +110,7 @@ TEST(AgentActivationTest, ConstructionDoesNotStartTheAgent)
     PrivateBus bus(/*agentActivatable=*/true);
     auto client = bus.makeClient();
     EXPECT_FALSE(client->isAvailable());
-    EXPECT_TRUE(client->agentInstalled());
+    EXPECT_NE(client->agentState(), AgentState::Missing);
     EXPECT_EQ(client->agentState(), AgentState::Stopped);
     // Give a start that should not have happened the time to show up.
     Fakes::waitFor([] { return false; }, 300);
@@ -334,7 +334,7 @@ TEST(AgentActivationTest, NoServiceFileMeansNotInstalled)
 {
     PrivateBus bus(/*agentActivatable=*/false);
     auto client = bus.makeClient();
-    EXPECT_FALSE(client->agentInstalled());
+    EXPECT_EQ(client->agentState(), AgentState::Missing);
     EXPECT_EQ(client->agentState(), AgentState::Missing);
     EXPECT_EQ(client->requestAgentStart(), AgentStartResult::NotInstalled);
     client->refreshDiscovery();

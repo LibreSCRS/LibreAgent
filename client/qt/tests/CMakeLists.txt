@@ -154,6 +154,7 @@ add_test(NAME ClientQtTestSupportHeaderClosure
 # visible in the .so's dynamic symbol table despite the target's hidden
 # CXX_VISIBILITY_PRESET.
 add_executable(ClientQtTypesTest TypesTest.cpp)
+target_include_directories(ClientQtTypesTest PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
 target_link_libraries(ClientQtTypesTest PRIVATE
     LibreAgent::ClientQt
     GTest::gtest
@@ -222,8 +223,9 @@ gtest_discover_tests(ClientQtSignedOutputPathTest)
 
 # Adapted from the KDE client's FakeAgent-free suite: the pure capability /
 # UI-state resolvers plus the new public token vocabulary. Links the shared
-# library (everything tested is a public inline/constexpr header surface).
+# library plus the internal token spelling of a capability bitfield.
 add_executable(ClientQtCapabilitiesTest AgentCapabilitiesTest.cpp)
+target_include_directories(ClientQtCapabilitiesTest PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
 target_link_libraries(ClientQtCapabilitiesTest PRIVATE
     LibreAgent::ClientQt
     GTest::gtest
@@ -260,13 +262,12 @@ target_link_libraries(ClientQtSecurityChecksTest PRIVATE
     GTest::gtest_main)
 gtest_discover_tests(ClientQtSecurityChecksTest)
 
-# ConfigKeys.h's isSettableConfigKey() mirror, checked in both directions
+# ConfigKeyHelpers.h's isSettableConfigKey() mirror, checked in both directions
 # against the published `settable-config-key` vocabulary in
 # wire/wire-vocabulary.json -- see ConfigKeyMirrorTest.cpp for why neither
-# direction alone is sufficient. ConfigKeys.h is a public, header-only
-# (inline functions) client header, so no extra TU has to be compiled in
-# alongside it. The manifest path is
-# handed in as a compile definition rather than copied into the test tree, so
+# direction alone is sufficient. The helper is a header-only (inline function)
+# internal header, so no extra TU has to be compiled in alongside it. The
+# manifest path is handed in as a compile definition rather than copied into the test tree, so
 # this reads the one committed copy of the file.
 add_executable(ClientQtConfigKeyMirrorTest ConfigKeyMirrorTest.cpp)
 target_include_directories(ClientQtConfigKeyMirrorTest PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
@@ -290,6 +291,7 @@ gtest_discover_tests(ClientQtConfigKeyMirrorTest)
 # empty case and the ordinary-file case are portable and must run on every
 # platform this component builds on.
 add_executable(ClientQtSealedPayloadTest SealedPayloadTest.cpp)
+target_include_directories(ClientQtSealedPayloadTest PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
 target_link_libraries(ClientQtSealedPayloadTest PRIVATE
     LibreAgent::ClientQt
     GTest::gtest
@@ -553,6 +555,8 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux" OR CMAKE_SYSTEM_NAME STREQUAL "Darwin")
         fakes/MemfdSource.cpp
         ClientTestMain.cpp)
     set_target_properties(ClientQtSocketIntegrationTest PROPERTIES AUTOMOC ON)
+    # SocketTransport.h includes the client-side wire codec, which lives under src/.
+    target_include_directories(ClientQtSocketIntegrationTest PRIVATE ${PROJECT_SOURCE_DIR}/src)
     target_compile_definitions(ClientQtSocketIntegrationTest PRIVATE LIBRESCRS_TEAM_ID="${LIBRESCRS_TEAM_ID}")
     target_link_libraries(ClientQtSocketIntegrationTest PRIVATE
         LibreAgentClientQtTesting
@@ -608,6 +612,8 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
         fakes/MemfdSource.cpp
         ClientTestMain.cpp)
     set_target_properties(ClientQtTransportParityTest PROPERTIES AUTOMOC ON)
+    # SocketTransport.h includes the client-side wire codec, which lives under src/.
+    target_include_directories(ClientQtTransportParityTest PRIVATE ${PROJECT_SOURCE_DIR}/src)
     target_link_libraries(ClientQtTransportParityTest PRIVATE
         LibreAgentClientQtTesting
         Qt6::DBus

@@ -33,6 +33,8 @@
 #include <LibreSCRS/AgentClient/FdHandle.h>
 #include <LibreSCRS/AgentClient/SealedPayload.h>
 
+#include "SealedPayloadInternal.h"
+
 #include <gtest/gtest.h>
 
 #include <QByteArray>
@@ -55,8 +57,8 @@
 #endif
 
 using LibreSCRS::AgentClient::FdHandle;
-using LibreSCRS::AgentClient::kMaxBoundedPayloadBytes;
 using LibreSCRS::AgentClient::readBoundedPayload;
+using LibreSCRS::AgentClient::Internal::kMaxBoundedPayloadBytes;
 
 namespace {
 

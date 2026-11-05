@@ -18,7 +18,7 @@ namespace LibreSCRS::AgentClient {
 
 /// @brief Progress phase of an in-flight operation (see
 ///        `LibreSCRS::Agent::Operations::OperationPhase`). Reported via
-///        `AgentOperation::phase()` / `AgentOperation::phaseChanged()`.
+///        `AgentOperation::phaseChanged()`.
 using LibreSCRS::Agent::Operations::OperationPhase;
 /// @brief Terminal outcome of an operation (see
 ///        `LibreSCRS::Agent::Operations::OperationStatus`). Reported via

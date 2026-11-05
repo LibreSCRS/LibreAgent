@@ -3,6 +3,8 @@
 
 #include <LibreSCRS/AgentClient/AgentCapabilities.h>
 
+#include "CapabilityTokens.h"
+
 #include <gtest/gtest.h>
 
 using namespace LibreSCRS::AgentClient;

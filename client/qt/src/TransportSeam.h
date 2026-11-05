@@ -16,7 +16,7 @@
 // QtDBus, no wire-internal types: everything transport-specific is scrubbed
 // by the transport BEFORE it crosses this boundary.
 //
-// Timeout contract: implementations bound EVERY call using the public
+// Timeout contract: implementations bound EVERY call using the
 // ClientTimeouts.h budgets — discovery/probe calls at kHandshakeTimeoutMs,
 // method-entry and recovery calls at kDefaultCallTimeoutMs — so a wedged
 // agent can never hang a caller (the lifted client's capped-call discipline).
@@ -204,11 +204,6 @@ public:
     /// into its snapshot cache when this arrives (see `configSnapshot()`), so
     /// a consumer reached from here reads the new value, never the old one.
     virtual void onConfigChanged(const QString& key) = 0;
-    /// The agent quiesced card access for @p reason (D-Bus `Manager1.Quiesced`,
-    /// socket `AgentQuiesced`), delivered before any availability change the
-    /// transport derives from it. A reason this build does not name arrives
-    /// verbatim.
-    virtual void onQuiesced(QuiesceReason reason) = 0;
 };
 
 /// Implemented by AgentReader/AgentCard: live property updates for one
@@ -229,7 +224,7 @@ class OperationListener
 {
 public:
     virtual ~OperationListener() = default;
-    virtual void onPhaseChanged(OperationPhase phase, double progress) = 0;
+    virtual void onPhaseChanged(OperationPhase phase) = 0;
     virtual void onFinished(OperationStatus status, ErrorCode errorCode, const QString& msgKey,
                             const QString& msgFallback) = 0;
     virtual void onResult(OperationPayload payload) = 0;
@@ -307,9 +302,9 @@ public:
     // ---- agent configuration (Config1) ---------------------------------------
     /// The agent's Config1 property set in the canonical client vocabulary
     /// (see `AgentClient::configSnapshot()` for the key/value contract this
-    /// forwards verbatim, including the two fixed-width source rows every
+    /// forwards verbatim, including the fixed-width source row every
     /// implementation must produce out of its own wire shape: TslSources'
-    /// `[url, isLotl, eager]` and CscaSources' `[uri, eager]`).
+    /// `[url, isLotl, eager]`).
     ///
     /// NOT const, unlike `features()`/`agentVersion()` above, and for the
     /// same reason `appearanceFont()` is not: this one is fetched LAZILY, on

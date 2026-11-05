@@ -5,11 +5,13 @@
 
 #include <LibreSCRS/AgentClient/ConfigKeys.h>
 #include <LibreSCRS/AgentClient/CscaAnchorKeys.h>
+#include "../ConfigKeyHelpers.h"
+#include "../CscaAnchorMapping.h"
 #include "AgentDBus.h"
 #include "CappedCall.h"
 #include "ErrorNameMap.h"
 
-#include <LibreSCRS/AgentClient/ClientTimeouts.h>
+#include "../ClientTimeouts.h"
 
 #include <QDBusArgument>
 #include <QDBusMessage>
@@ -20,9 +22,6 @@
 #include <QVariant>
 
 #include <fcntl.h> // F_DUPFD_CLOEXEC (appearanceFont's per-call dup)
-
-#include <limits>
-#include <type_traits>
 
 namespace {
 Q_LOGGING_CATEGORY(lcTransport, "librescrs.agentclient.dbus")
@@ -61,37 +60,15 @@ QVariant demarshalTslSources(const QVariant& raw)
     return rows;
 }
 
-/// The `a(sb) CscaSources` property value, the same way — the country-signing
-/// twin of the function above, and the same all-or-nothing posture. Rows are
-/// TWO cells here, not three: there is no isLotl to carry (see WireShapes.h's
-/// CscaSourceWire).
-QVariant demarshalCscaSources(const QVariant& raw)
-{
-    if (raw.metaType().id() != qMetaTypeId<QDBusArgument>()) {
-        return QVariantList();
-    }
-    CscaSourcesWire wire;
-    raw.value<QDBusArgument>() >> wire;
-    QVariantList rows;
-    rows.reserve(wire.size());
-    for (const CscaSourceWire& source : std::as_const(wire)) {
-        rows.append(cscaSourceRow(source.uri, source.eager));
-    }
-    return rows;
-}
-
 /// One Config1 property value, out of the `v` it arrived in and into the
-/// canonical client vocabulary. Three properties need work — the two
-/// struct-array source lists above and the `a{sv}` anchor-state dict below;
+/// canonical client vocabulary. Two properties need work — the
+/// struct-array source list above and the `a{sv}` anchor-state dict below;
 /// every other key is `s` or `as`, which QtDBus has already demarshaled into
 /// a QString / QStringList by the time it reaches here.
 QVariant demarshalConfigValue(const QString& key, const QVariant& raw)
 {
     if (key == kConfigTslSources) {
         return demarshalTslSources(raw);
-    }
-    if (key == kConfigCscaSources) {
-        return demarshalCscaSources(raw);
     }
     if (key == kConfigCscaAnchorState) {
         // Read-only, and a DICTIONARY rather than a string: `a{sv}` inside the
@@ -107,8 +84,7 @@ QVariant demarshalConfigValue(const QString& key, const QVariant& raw)
 /// The per-key marshal table for `Config1.SetValue`: the property's declared
 /// D-Bus type, spelled here because the caller hands us a QVariant and the
 /// agent type-checks what arrives. `s` for the three plain-text settings and
-/// the read-only paths, `as` for TsaUrls, `a(sbb)` for TslSources, `a(sb)` for
-/// CscaSources.
+/// the read-only paths, `as` for TsaUrls, `a(sbb)` for TslSources.
 ///
 /// A KNOWN key with no arm of its own does not fail, it DEGRADES: the
 /// `isKnownConfigKey` fallthrough stringifies whatever arrived, so a
@@ -136,19 +112,6 @@ QDBusVariant marshalConfigValue(const QString& key, const QVariant& value)
                 continue; // not a [url, isLotl, eager] row — see the API doc
             }
             wire.append(TslSourceWire{cells.at(0).toString(), cells.at(1).toBool(), cells.at(2).toBool()});
-        }
-        return QDBusVariant(QVariant::fromValue(wire));
-    }
-    if (key == kConfigCscaSources) {
-        CscaSourcesWire wire;
-        const QVariantList rows = value.toList();
-        wire.reserve(rows.size());
-        for (const QVariant& row : rows) {
-            const QVariantList cells = row.toList();
-            if (cells.size() != 2) {
-                continue; // not a [uri, eager] row — see the API doc
-            }
-            wire.append(CscaSourceWire{cells.at(0).toString(), cells.at(1).toBool()});
         }
         return QDBusVariant(QVariant::fromValue(wire));
     }
@@ -232,13 +195,10 @@ void DBusOperationWatch::onPropertiesChanged(const QString& iface, const QVarian
     if (iface != QLatin1String(kOperationIface)) {
         return;
     }
-    if (changed.contains(QStringLiteral("Phase")) || changed.contains(QStringLiteral("Progress"))) {
-        // Phase/Progress are read straight from the `changed` map (which may
-        // carry only one of them); no per-tick property Get is needed.
-        const QVariant phaseV = changed.value(QStringLiteral("Phase"));
-        const QVariant progressV = changed.value(QStringLiteral("Progress"));
-        const auto phase = static_cast<OperationPhase>(phaseV.isValid() ? phaseV.toUInt() : 0U);
-        listener->onPhaseChanged(phase, progressV.isValid() ? progressV.toDouble() : 0.0);
+    if (changed.contains(QStringLiteral("Phase"))) {
+        // Read straight from the `changed` map; no per-tick property Get is needed.
+        const auto phase = static_cast<OperationPhase>(changed.value(QStringLiteral("Phase")).toUInt());
+        listener->onPhaseChanged(phase);
     }
 }
 
@@ -325,10 +285,6 @@ DBusTransport::DBusTransport(const QDBusConnection& connection, const QString& s
     // without the interface simply never emits it.
     m_connection.connect(m_service, QLatin1String(kRootPath), QLatin1String(kConfigIface), QStringLiteral("Changed"),
                          this, SLOT(onConfigChanged(QString)));
-    // Manager1.Quiesced, subscribed up front for the same reason: a sleep is
-    // announced once, to whoever is listening at that moment.
-    m_connection.connect(m_service, QLatin1String(kRootPath), QLatin1String(kManagerIface), QStringLiteral("Quiesced"),
-                         this, SLOT(onQuiesced(uint)));
 }
 
 DBusTransport::~DBusTransport() = default;
@@ -556,21 +512,6 @@ void DBusTransport::onConfigChanged(const QString& key)
     refreshConfigKey(key);
     if (m_registry != nullptr) {
         m_registry->onConfigChanged(key);
-    }
-}
-
-void DBusTransport::onQuiesced(uint reason)
-{
-    // The reason is a uint8 vocabulary carried in a uint32. A value past the
-    // last one this build names is a future reason and goes on verbatim, as
-    // the socket decoder carries it; one too wide for the vocabulary cannot be
-    // stored without aliasing another and is dropped, as the socket decoder
-    // rejects it.
-    if (reason > std::numeric_limits<std::underlying_type_t<QuiesceReason>>::max()) {
-        return;
-    }
-    if (m_registry != nullptr) {
-        m_registry->onQuiesced(static_cast<QuiesceReason>(reason));
     }
 }
 
@@ -805,7 +746,7 @@ void DBusTransport::subscribeOperation(const QString& operationId, OperationKind
     m_operationWatches.insert(listener, watch);
 
     // Operation1.Finished(u status, u errorCode, s msgKey, s msgFallback) —
-    // connected FIRST, then Phase/Progress, then the typed Result, preserving
+    // connected FIRST, then Phase, then the typed Result, preserving
     // the lifted connect ordering.
     m_connection.connect(m_service, operationId, QLatin1String(kOperationIface), QStringLiteral("Finished"), watch,
                          SLOT(onFinished(uint, uint, QString, QString)));

@@ -45,7 +45,7 @@ template <typename E, std::size_t N>
 
 [[nodiscard]] inline std::optional<Packaging> packagingFromToken(std::string_view token) noexcept
 {
-    return fromToken(token, std::array{Packaging::Enveloped, Packaging::Enveloping, Packaging::Detached});
+    return fromToken(token, std::array{Packaging::Enveloped, Packaging::Detached});
 }
 
 [[nodiscard]] inline std::optional<PinVerb> pinVerbFromToken(std::string_view token) noexcept

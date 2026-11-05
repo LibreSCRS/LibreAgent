@@ -14,7 +14,8 @@
 #include <LibreSCRS/AgentClient/AgentCard.h>
 #include <LibreSCRS/AgentClient/AgentOperation.h>
 #include <LibreSCRS/AgentClient/AgentReader.h>
-#include <LibreSCRS/AgentClient/ClientTimeouts.h>
+
+#include "ClientTimeouts.h"
 #include <LibreSCRS/AgentClient/SyncError.h>
 
 #include "fakes/ClientOnHarness.h"
@@ -345,8 +346,6 @@ TEST(AgentCard, DemarshalRealShapedCertPayload)
     cfg.rawCertResult = true;  // hand-marshalled raw signal, bypasses operator<<
     FakeCert fc;
     fc.certId = QStringLiteral("sha256-handle");
-    // Unlike alwaysAuthenticate below: the struct's two booleans differ, so a
-    // decoder that swapped them is visibly wrong.
     fc.signingCapable = false;
     fc.subjectCn = QStringLiteral("Ana Anić");
     fc.issuerCn = QStringLiteral("MUP CA Građani");
@@ -356,7 +355,6 @@ TEST(AgentCard, DemarshalRealShapedCertPayload)
     fc.extendedKeyUsageOids = QStringList{QStringLiteral("1.3.6.1.5.5.7.3.4")};
     fc.chainSubjectCns = QStringList{QStringLiteral("Ana Anić"), QStringLiteral("MUP CA Građani")};
     fc.trustStatus = 2u; // BrokenChain (non-Trusted, non-Unknown)
-    fc.alwaysAuthenticate = true;
     cfg.certScript = FakeCertList{fc};
     Harness h(cfg);
 
@@ -388,17 +386,11 @@ TEST(AgentCard, DemarshalRealShapedCertPayload)
     EXPECT_EQ(c.keyUsageBits, 0x80u);
     EXPECT_EQ(c.extendedKeyUsageOids, (QStringList{QStringLiteral("1.3.6.1.5.5.7.3.4")}));
     EXPECT_EQ(c.chainSubjectCns, (QStringList{QStringLiteral("Ana Anić"), QStringLiteral("MUP CA Građani")}));
-    // The struct's last member: the card asks for the PIN before every use.
-    EXPECT_TRUE(c.alwaysAuthenticate);
     // Those three keys are GONE from `extra` -- one source of truth, so a
     // consumer cannot read a stale duplicate that nothing keeps in step.
     EXPECT_FALSE(c.extra.contains(QStringLiteral("keyUsageBits")));
     EXPECT_FALSE(c.extra.contains(QStringLiteral("extendedKeyUsageOids")));
     EXPECT_FALSE(c.extra.contains(QStringLiteral("chainSubjectCns")));
-    // trustStatusWire stays in `extra`: no typed member mirrors it, and the
-    // raw verdict is the only way to recover the cause a non-Trusted value
-    // collapsed away.
-    EXPECT_EQ(c.extra.value(QStringLiteral("trustStatusWire")).toUInt(), 2u);
 }
 
 // trustStatus=5 (Revoked) maps to the client's own Revoked case, and the
@@ -430,7 +422,6 @@ TEST(AgentCard, TrustStatusRevokedMapsToRevokedWithSecurityToken)
     const CertificateInfo& c = certs.constFirst();
     EXPECT_EQ(c.trust, TrustStatus::Revoked);
     EXPECT_EQ(c.securityStatus, (QStringList{QStringLiteral("revoked")}));
-    EXPECT_EQ(c.extra.value(QStringLiteral("trustStatusWire")).toUInt(), 5u);
 }
 
 // trustStatus=6 (OfflineUnverified) collapses to the client's Unknown case
@@ -461,7 +452,6 @@ TEST(AgentCard, TrustStatusOfflineUnverifiedMapsToUnknownWithSecurityToken)
     const CertificateInfo& c = certs.constFirst();
     EXPECT_EQ(c.trust, TrustStatus::Unknown);
     EXPECT_EQ(c.securityStatus, (QStringList{QStringLiteral("offline-unverified")}));
-    EXPECT_EQ(c.extra.value(QStringLiteral("trustStatusWire")).toUInt(), 6u);
 }
 
 // A trustStatus value this build does not recognise at all (neither the
@@ -492,7 +482,6 @@ TEST(AgentCard, UnknownFutureTrustStatusMapsToUnknown)
     const CertificateInfo& c = certs.constFirst();
     EXPECT_EQ(c.trust, TrustStatus::Unknown);
     EXPECT_TRUE(c.securityStatus.isEmpty());
-    EXPECT_EQ(c.extra.value(QStringLiteral("trustStatusWire")).toUInt(), 42u);
 }
 
 // ---- cert-info `fields` dict, one decode case per wire group ---------------

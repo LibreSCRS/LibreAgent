@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 // SPDX-FileCopyrightText: 2026 hirashix0
 #pragma once
-#include <LibreSCRS/Agent/wire/QuiesceReason.h>
 #include <LibreSCRS/AgentClient/AgentCard.h>
 #include <LibreSCRS/AgentClient/AgentReader.h>
 #include <LibreSCRS/AgentClient/Export.h>
@@ -31,13 +30,6 @@
 namespace LibreSCRS::AgentClient {
 
 class AgentOperation;
-
-/// @brief Why the agent quiesced card access -- the agent's own wire
-///        vocabulary, re-exported so a client names it without reaching into
-///        the agent's headers. See `AgentClient::quiesced()`.
-///
-/// @since 5.0
-using LibreSCRS::Agent::QuiesceReason;
 
 /// @brief What asking for the agent to be started achieved
 ///        (`AgentClient::requestAgentStart()`).
@@ -89,12 +81,6 @@ public:
 
     /// @brief Whether the agent is currently reachable.
     [[nodiscard]] bool isAvailable() const;
-
-    /// @brief Whether an agent is INSTALLED on this system (reachable now, or
-    ///        startable on demand), even if not currently running — the
-    ///        "install the agent" vs "start a card operation" empty-state
-    ///        split. `agentState() != AgentState::Missing`; no I/O.
-    [[nodiscard]] bool agentInstalled() const;
 
     /// @brief The agent's state as this client last learned it, without asking
     ///        anyone: it is safe to call from any signal handler, as often as a
@@ -225,21 +211,18 @@ public:
 
     /// @brief Snapshot of the agent's `Config1` property set, key → value —
     ///        the agent-owned, operation-affecting settings (signature level,
-    ///        TSA, trusted lists, cache dirs, plugin dir). All NON-secret:
+    ///        TSA, trusted lists, cache dir). All NON-secret:
     ///        a PIN/CAN/MRZ is never configuration and never appears here.
     ///
     ///        Keys use the wire spellings: `"DefaultLevel"`, `"TsaUrls"`,
-    ///        `"LastTsaUrl"`, `"TslSources"`, `"CscaSources"`,
-    ///        `"CscaAnchorState"`, `"TslCacheDir"`, `"AiaCacheDir"`,
-    ///        `"DefaultReason"`, `"DefaultLocation"`, `"PluginDir"`. Values
-    ///        are `QString` except `"TsaUrls"` (`QStringList`), the two source
-    ///        lists (each a `QVariantList` of fixed-width `QVariantList`
-    ///        rows) and `"CscaAnchorState"` (a `QVariantMap`):
+    ///        `"LastTsaUrl"`, `"TslSources"`,
+    ///        `"CscaAnchorState"`, `"TslCacheDir"`,
+    ///        `"DefaultReason"`, `"DefaultLocation"`. Values
+    ///        are `QString` except `"TsaUrls"` (`QStringList`), `"TslSources"`
+    ///        (a `QVariantList` of fixed-width `QVariantList` rows) and
+    ///        `"CscaAnchorState"` (a `QVariantMap`):
     ///          - `"TslSources"`  three entries,
     ///            `[QString url, bool isLotl, bool eager]`;
-    ///          - `"CscaSources"` TWO entries, `[QString uri, bool eager]` —
-    ///            no `isLotl` twin, because a country-signing source names
-    ///            anchors and never further sources;
     ///          - `"CscaAnchorState"` what the agent currently HOLDS in
     ///            country-signing trust anchors — the same report
     ///            `importCscaMasterList()` returns, readable without having
@@ -267,8 +250,6 @@ public:
     ///                the list says it was signed. ABSENT when it carried no
     ///                CMS signingTime; there is no epoch sentinel, so an
     ///                undated list never reads as one signed in 1970;
-    ///              * `"origin"`              `QString` — where the anchors
-    ///                came from (`"import"`).
     ///            An EMPTY map means nothing has been imported. A member this
     ///            build does not name is passed through verbatim.
     ///        Those shapes are a CLIENT guarantee, identical on every
@@ -285,11 +266,11 @@ public:
     /// @brief Write one agent setting (`Config1.SetValue` / socket
     ///        `SetConfig`). Synchronous and bounded; disengaged on success.
     ///
-    ///        Only six keys are writable — `"DefaultLevel"`,
+    ///        Only five keys are writable — `"DefaultLevel"`,
     ///        `"DefaultReason"`, `"DefaultLocation"`, `"TsaUrls"`,
-    ///        `"TslSources"`, `"CscaSources"`. The rest are read-only by
-    ///        design (a wire-settable `"PluginDir"` would be a code-execution
-    ///        vector, `"LastTsaUrl"` is agent-internal state, and a writable
+    ///        `"TslSources"`. The rest are read-only by
+    ///        design (`"TslCacheDir"` is chosen in the config file only,
+    ///        `"LastTsaUrl"` is agent-internal state, and a writable
     ///        `"CscaAnchorState"` would let a client CLAIM what passports are
     ///        checked against without installing an anchor), and writing one
     ///        answers `SyncError::ReadOnlyConfig`.
@@ -301,9 +282,8 @@ public:
     ///          - `InvalidConfigValue` the agent rejected @p value;
     ///          - `NotAuthorized`      the user declined, or policy denied,
     ///                                 the authorization this key needs (the
-    ///                                 trust-tier keys `"TsaUrls"`,
-    ///                                 `"TslSources"` and `"CscaSources"`
-    ///                                 prompt for it);
+    ///                                 trust-tier keys `"TsaUrls"` and
+    ///                                 `"TslSources"` prompt for it);
     ///          - `CommunicationError` the write never REACHED the agent
     ///                                 (unreachable, timed out, no reply) —
     ///                                 the one case worth retrying, and the
@@ -314,12 +294,11 @@ public:
     ///
     /// @param key Wire spelling of the setting, exactly as `configSnapshot()`
     ///        above lists it. A key outside that vocabulary answers
-    ///        `UnknownConfigKey` and one outside the six writable ones
+    ///        `UnknownConfigKey` and one outside the five writable ones
     ///        answers `ReadOnlyConfig`; neither writes anything.
     /// @param value Must match the key's type as documented on
     ///        `configSnapshot()` above; a row of the wrong width is dropped
-    ///        from the write (a `"TslSources"` row that is not three entries,
-    ///        a `"CscaSources"` row that is not two).
+    ///        from the write (a `"TslSources"` row that is not three entries).
     [[nodiscard]] std::optional<SyncError> setConfigValue(const QString& key, const QVariant& value);
 
     /// @brief Restore one setting to the agent's built-in default
@@ -335,7 +314,7 @@ public:
     ///        anchor state on success, else the NAMED refusal.
     ///
     ///        The agent needs the trust-tier authorization for this — the same
-    ///        one the `"TsaUrls"` / `"TslSources"` / `"CscaSources"` writes
+    ///        one the `"TsaUrls"` / `"TslSources"` writes
     ///        need, and for a stronger version of the same reason: an import
     ///        does not name a place anchors may come from, it INSTALLS the
     ///        concrete anchors passports will be accepted or refused against.
@@ -346,8 +325,7 @@ public:
     ///        into it: a master list is a complete statement of what its
     ///        publisher vouches for, so merging would keep anchors it has
     ///        withdrawn. Nothing about the file is remembered as a SOURCE to
-    ///        fetch from later — that is what the `"CscaSources"` setting is
-    ///        for; this is a one-shot input.
+    ///        fetch from later; this is a one-shot input.
     ///
     ///        Refusals worth branching on:
     ///          - `MasterListReplayed`   the list is authentic and NOT newer
@@ -461,24 +439,6 @@ Q_SIGNALS:
     /// signal's moc index stable, so an already-compiled consumer keeps
     /// working.
     void configChanged(const QString& key);
-    /// @brief The agent quiesced card access: the holder's session went away
-    ///        (the machine sleeps, the user switched away, the screen locked)
-    ///        or the agent is stopping.
-    ///
-    /// By then the agent has forgotten what @p reason calls for: on
-    /// `SystemSleep`, `SessionInactive` and `Shutdown` every cached CAN/MRZ,
-    /// every card session and every PKCS#11 login; on `ScreenLocked` the
-    /// PKCS#11 logins only. The next operation asks again. A reason this
-    /// build does not name arrives verbatim.
-    ///
-    /// Over the socket the agent also counts as unavailable from here until
-    /// `refreshDiscovery()` finds it answering again (`availabilityChanged`
-    /// follows this signal); over D-Bus the agent stays available. Appended
-    /// after the signals declared before it, like `configChanged()`, to keep
-    /// their indices.
-    ///
-    /// @since 5.0
-    void quiesced(LibreSCRS::AgentClient::QuiesceReason reason);
     /// @brief What the start `requestAgentStartLater()` asked for answered,
     ///        exactly as `requestAgentStart()` would have returned it.
     ///

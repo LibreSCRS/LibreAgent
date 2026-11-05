@@ -131,7 +131,6 @@ TEST_F(DBusContract, TheSignalsTheClientDemarshalsCarryItsTypes)
 {
     expectMember(kOperationIface, Kind::Signal, "Finished", QStringLiteral("uuss"));
     expectMember(kConfigIface, Kind::Signal, "Changed", QStringLiteral("s"));
-    expectMember(kManagerIface, Kind::Signal, "Quiesced", QStringLiteral("u"));
     expectMember(kSignIface, Kind::Signal, "Result", sig<QDBusUnixFileDescriptor>() + sig<QVariantMap>());
     expectMember(kSignBatchIface, Kind::Signal, "Result", sig<SignBatchRowsWire>());
     expectMember(kIdentityIface, Kind::Signal, "Result", sig<IdentityFieldsWire>());
@@ -164,7 +163,7 @@ TEST_F(DBusContract, TheMembersTheClientCallsAndReadsExist)
     expectMember(kReaderIface, Kind::Property, "Interface", QStringLiteral("s"));
     expectMember(kPkcs11Iface, Kind::Method, "CertDer", QStringLiteral("os"));
     expectMember(kOperationIface, Kind::Method, "Cancel", QString());
-    for (const char* property : {"Completed", "Status", "ErrorCode", "Phase", "Progress"}) {
+    for (const char* property : {"Completed", "Status", "ErrorCode", "Phase"}) {
         expectMember(kOperationIface, Kind::Property, property, std::nullopt);
     }
     for (const char* typed :

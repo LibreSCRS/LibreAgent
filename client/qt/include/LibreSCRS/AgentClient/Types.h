@@ -37,18 +37,6 @@ enum class TrustStatus : std::uint8_t {
     Expired,   ///< The certificate is outside its validity window.
 };
 
-/// @brief The family of a certificate's key, as the agent reports it.
-///
-/// `Ec` is a NIST prime curve (P-256, P-384, P-521); any other key is `Other`.
-/// The PKCS#11 module and the macOS token never publish an `Other` key;
-/// document signing through the agent (`signingCapable`) is unaffected.
-/// @since 5.0
-enum class KeyType : std::uint8_t {
-    Rsa,   ///< RSA (rsaEncryption).
-    Ec,    ///< EC on P-256, P-384 or P-521.
-    Other, ///< Anything else, or not reported.
-};
-
 /// @brief One labeled value out of a card-read result (an identity field, a
 ///        certificate subject/issuer/validity field, ...).
 struct Field
@@ -117,55 +105,8 @@ struct CertificateInfo
     ///        `keyUsageBits` for why this is typed rather than an `extra`
     ///        entry.
     QStringList chainSubjectCns;
-    /// @brief Whether the card asks for the PIN before EVERY operation with
-    ///        this certificate's key (PKCS#15 `userConsent`; PKCS#11
-    ///        `CKA_ALWAYS_AUTHENTICATE`).
-    ///
-    /// Read off the card by the agent and forwarded verbatim. The agent
-    /// enforces it itself -- it asks for the PIN again for every raw
-    /// signature or decryption with such a key; document batch signing asks
-    /// once per batch -- so a client uses it to tell the user what to expect,
-    /// never to decide whether to ask. See `keyUsageBits` for why
-    /// this is typed rather than an `extra` entry.
-    ///
-    /// @code
-    /// for (const CertificateInfo& cert : op->certificatesResult()) {
-    ///     if (cert.signingCapable && cert.alwaysAuthenticate)
-    ///         hint = tr("The card may ask for the PIN again for each use of this certificate.");
-    /// }
-    /// @endcode
-    ///
-    /// @since 5.0
-    bool alwaysAuthenticate = false;
-    /// @brief The key's PKCS#11 `CKA_ID`: the card's own PKCS#15 iD, else one
-    ///        the agent computes from the public key. Never empty for a
-    ///        certificate the agent reports. See `keyUsageBits` for why this is
-    ///        typed rather than an `extra` entry.
-    /// @since 5.0
-    QByteArray keyId;
-    /// @brief The key's family. A client shows it, and a client that drives
-    ///        raw cryptography picks its mechanism by it.
-    ///
-    /// @code
-    /// for (const CertificateInfo& cert : op->certificatesResult()) {
-    ///     if (cert.keyType == KeyType::Ec && cert.canDerive)
-    ///         note = tr("This certificate's key can also agree on a shared key with another party.");
-    /// }
-    /// @endcode
-    /// @since 5.0
-    KeyType keyType = KeyType::Other;
-    /// @brief RSA modulus bits, or the curve size (256/384/521); 0 for `Other`.
-    /// @since 5.0
-    quint32 keyBits = 0;
-    /// @brief The agent can run a key agreement (ECDH) with this key.
-    /// @since 5.0
-    bool canDerive = false;
     /// @brief Forward-compatible pass-through, as on every result struct, plus
-    ///        two entries this type always carries.
-    ///
-    /// `extra["trustStatusWire"]` (`uint`) is the raw wire verdict `trust`
-    /// collapsed — several wire causes share one display value, so this is the
-    /// only way back to the cause.
+    ///        one entry this type always carries.
     ///
     /// `extra["fields"]` (`QVariantMap`) is the agent's grouped certificate
     /// field dict, whole and in the agent's own grouping:
@@ -265,9 +206,6 @@ struct CscaAnchorState
     /// epoch-valued stand-in, so an undated list and one signed on 1970-01-01
     /// never read alike.
     QDateTime signedAt;
-    /// Where the anchors came from (`"import"`). Forwarded verbatim; the
-    /// vocabulary is the agent's, not this library's.
-    QString origin;
     /// Forward-compatible pass-through, as on every result struct: any key the
     /// agent's state dict carried that no member above names.
     QVariantMap extra;

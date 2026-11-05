@@ -30,16 +30,6 @@ CredentialState stateFrom(const QString& t)
         return CredentialState::Blocked;
     return CredentialState::Unknown;
 }
-UnblockStyle styleFrom(const QString& t)
-{
-    if (t == QLatin1String("resetOnly"))
-        return UnblockStyle::ResetOnly;
-    if (t == QLatin1String("setsNewPin"))
-        return UnblockStyle::SetsNewPin;
-    if (t == QLatin1String("unblockAndChange"))
-        return UnblockStyle::UnblockAndChange;
-    return UnblockStyle::Unknown;
-}
 RecoveryPath recoveryFrom(const QString& t)
 {
     if (t == QLatin1String("holderViaPuk"))
@@ -85,11 +75,6 @@ std::optional<QString> optStr(const QVariantMap& m, const char* k)
     const auto it = m.constFind(QLatin1String(k));
     return it == m.constEnd() ? std::nullopt : std::optional<QString>(it->toString());
 }
-std::optional<bool> optBool(const QVariantMap& m, const char* k)
-{
-    const auto it = m.constFind(QLatin1String(k));
-    return it == m.constEnd() ? std::nullopt : std::optional<bool>(it->toBool());
-}
 // Every key not in @p consumed goes into the record's `extra` pass-through, so
 // an append-only wire growth reaches the consumer instead of being dropped.
 QVariantMap leftover(const QVariantMap& m, const QSet<QString>& consumed)
@@ -118,15 +103,11 @@ CredentialRecord CredentialRecord::fromVariantMap(const QVariantMap& m)
         QStringLiteral("uses_left"),
         QStringLiteral("uses_max"),
         QStringLiteral("unblocks_left"),
-        QStringLiteral("min_length"),
-        QStringLiteral("max_length"),
         QStringLiteral("can_change"),
         QStringLiteral("unblockable"),
         QStringLiteral("activatable"),
         QStringLiteral("key_activation_pending"),
         QStringLiteral("key_activatable"),
-        QStringLiteral("probe_safe"),
-        QStringLiteral("unblock_style"),
         QStringLiteral("recovery"),
         QStringLiteral("blocked_guidance_key"),
         QStringLiteral("blocked_guidance_fallback"),
@@ -144,15 +125,11 @@ CredentialRecord CredentialRecord::fromVariantMap(const QVariantMap& m)
     r.usesLeft = optInt(m, "uses_left");
     r.usesMax = optInt(m, "uses_max");
     r.unblocksLeft = optInt(m, "unblocks_left");
-    r.minLength = optInt(m, "min_length");
-    r.maxLength = optInt(m, "max_length");
     r.canChange = m.value(QStringLiteral("can_change")).toBool();
     r.unblockable = m.value(QStringLiteral("unblockable")).toBool();
     r.activatable = m.value(QStringLiteral("activatable")).toBool();
     r.keyActivationPending = m.value(QStringLiteral("key_activation_pending")).toBool();
     r.keyActivatable = m.value(QStringLiteral("key_activatable")).toBool();
-    r.probeSafe = m.value(QStringLiteral("probe_safe")).toBool();
-    r.unblockStyle = styleFrom(m.value(QStringLiteral("unblock_style")).toString());
     r.recovery = recoveryFrom(m.value(QStringLiteral("recovery")).toString());
     r.blockedGuidanceKey = optStr(m, "blocked_guidance_key");
     r.blockedGuidanceFallback = optStr(m, "blocked_guidance_fallback");
@@ -165,16 +142,15 @@ CredentialRecord CredentialRecord::fromVariantMap(const QVariantMap& m)
 PinResult PinResult::fromVariantMap(const QVariantMap& m)
 {
     static const QSet<QString> kConsumed{
-        QStringLiteral("outcome"),       QStringLiteral("retries_left"),  QStringLiteral("blocked"),
-        QStringLiteral("pin_activated"), QStringLiteral("key_activated"),
+        QStringLiteral("outcome"),
+        QStringLiteral("retries_left"),
+        QStringLiteral("blocked"),
     };
 
     PinResult r;
     r.outcome = outcomeFrom(m.value(QStringLiteral("outcome")).toString());
     r.retriesLeft = optInt(m, "retries_left");
     r.blocked = m.value(QStringLiteral("blocked")).toBool();
-    r.pinActivated = optBool(m, "pin_activated");
-    r.keyActivated = optBool(m, "key_activated");
     r.extra = leftover(m, kConsumed);
     return r;
 }

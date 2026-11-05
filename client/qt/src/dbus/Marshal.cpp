@@ -5,7 +5,6 @@
 
 #include "../CertFieldsExtra.h"
 #include "../FieldExtraKeys.h"
-#include "../KeyTypeMapping.h"
 
 #include <QDBusMetaType>
 #include <QDBusObjectPath>
@@ -193,24 +192,6 @@ const QDBusArgument& operator>>(const QDBusArgument& arg, TslSourceWire& s)
     return arg;
 }
 
-// (sb) struct marshalling for Config1's `a(sb) CscaSources` property. TWO
-// fields: country signing has no list-of-lists, so there is no isLotl twin to
-// the struct above (see Marshal.h).
-QDBusArgument& operator<<(QDBusArgument& arg, const CscaSourceWire& s)
-{
-    arg.beginStructure();
-    arg << s.uri << s.eager;
-    arg.endStructure();
-    return arg;
-}
-const QDBusArgument& operator>>(const QDBusArgument& arg, CscaSourceWire& s)
-{
-    arg.beginStructure();
-    arg >> s.uri >> s.eager;
-    arg.endStructure();
-    return arg;
-}
-
 void ensureDBusMetatypes()
 {
     static const bool done = [] {
@@ -232,8 +213,6 @@ void ensureDBusMetatypes()
         qDBusRegisterMetaType<SignBatchRowsWire>();
         qDBusRegisterMetaType<TslSourceWire>();
         qDBusRegisterMetaType<TslSourcesWire>();
-        qDBusRegisterMetaType<CscaSourceWire>();
-        qDBusRegisterMetaType<CscaSourcesWire>();
         return true;
     }();
     Q_UNUSED(done)
@@ -313,11 +292,6 @@ QList<CertificateInfo> toCertificateInfos(const CertListWire& certs)
         CertificateInfo info;
         info.id = wire.certId;
         info.signingCapable = wire.signingCapable;
-        info.alwaysAuthenticate = wire.alwaysAuthenticate;
-        info.keyId = wire.keyId;
-        info.keyType = detail::keyTypeFromWireToken(wire.keyType.toStdString());
-        info.keyBits = wire.keyBits;
-        info.canDerive = wire.canDerive;
         info.subject = wire.subjectCn;
         info.issuer = wire.issuerCn;
         info.notBefore = QDateTime::fromString(wire.notBefore, Qt::ISODate);
@@ -357,10 +331,6 @@ QList<CertificateInfo> toCertificateInfos(const CertListWire& certs)
         info.keyUsageBits = wire.keyUsageBits;
         info.extendedKeyUsageOids = wire.extendedKeyUsageOids;
         info.chainSubjectCns = wire.chainSubjectCns;
-        // trustStatusWire has no typed member to land in: `trust` above
-        // collapses several wire verdicts into one display value, so the raw
-        // number is the only way back to the cause. It stays in `extra`.
-        info.extra.insert(QStringLiteral("trustStatusWire"), wire.trustStatus);
         // The grouped fields dict, whole. The typed members above are the four
         // cells a caller needs without knowing the group vocabulary; a viewer
         // needs the rest -- serial, version, DN components, public-key detail,

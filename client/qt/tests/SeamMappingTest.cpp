@@ -341,7 +341,7 @@ TEST(SeamRegistry, DiscoversReadersAndCardsFromTheSnapshot)
 {
     ClientOnFake h;
     ASSERT_TRUE(h.client->isAvailable());
-    EXPECT_TRUE(h.client->agentInstalled());
+    EXPECT_NE(h.client->agentState(), AgentState::Missing);
 
     ASSERT_EQ(h.client->readers().size(), 1);
     AgentReader* reader = h.client->readers().constFirst();
@@ -365,7 +365,7 @@ TEST(SeamRegistry, UnavailableAgentYieldsInertClient)
     owned->installed = false;
     std::unique_ptr<AgentClient> client{ClientTestAccess::create(std::move(owned))};
     EXPECT_FALSE(client->isAvailable());
-    EXPECT_FALSE(client->agentInstalled());
+    EXPECT_EQ(client->agentState(), AgentState::Missing);
     EXPECT_TRUE(client->readers().isEmpty());
 }
 
@@ -380,7 +380,7 @@ TEST(SeamAgentState, ReadingTheStateNeverReachesTheTransport)
     std::unique_ptr<AgentClient> client{ClientTestAccess::create(std::move(owned))};
     const int probesAtConstruction = fake->installedProbes;
     for (int i = 0; i < 5; ++i) {
-        EXPECT_TRUE(client->agentInstalled());
+        EXPECT_NE(client->agentState(), AgentState::Missing);
         EXPECT_EQ(client->agentState(), AgentState::Stopped);
     }
     EXPECT_EQ(fake->installedProbes, probesAtConstruction);
@@ -406,7 +406,7 @@ TEST(SeamAgentState, FollowsTheAgentAppearingAndVanishing)
     fake->available = false;
     fake->registry->onServiceUnregistered();
     EXPECT_EQ(client->agentState(), AgentState::Stopped);
-    EXPECT_TRUE(client->agentInstalled());
+    EXPECT_NE(client->agentState(), AgentState::Missing);
 
     fake->installed = false;
     client->refreshDiscovery();
@@ -999,7 +999,7 @@ TEST(SeamStall, AnAgentThatGoesQuietIsGivenUpAndCancelled)
     ASSERT_NE(listener, nullptr);
     for (int i = 0; i < 3; ++i) {
         QThread::msleep(40);
-        listener->onPhaseChanged(OperationPhase::Reading, 0.1 * i);
+        listener->onPhaseChanged(OperationPhase::Reading);
         QCoreApplication::processEvents();
     }
     EXPECT_EQ(finished, 0);
@@ -1026,14 +1026,14 @@ TEST(SeamStall, APersonAtThePromptStopsTheClock)
     OperationListener* listener = h.fake->soleOperationListener();
     ASSERT_NE(listener, nullptr);
 
-    listener->onPhaseChanged(OperationPhase::AwaitingConsent, 0.0);
+    listener->onPhaseChanged(OperationPhase::AwaitingConsent);
     EXPECT_FALSE(spinUntil([&] { return op->isFinished(); }, 300));
-    listener->onPhaseChanged(OperationPhase::Authenticating, 0.0);
+    listener->onPhaseChanged(OperationPhase::Authenticating);
     EXPECT_FALSE(spinUntil([&] { return op->isFinished(); }, 300));
     EXPECT_TRUE(h.fake->cancelled.empty());
 
     // Back to machine work: bounded again.
-    listener->onPhaseChanged(OperationPhase::Signing, 0.5);
+    listener->onPhaseChanged(OperationPhase::Signing);
     EXPECT_TRUE(spinUntil([&] { return op->isFinished(); }, 2000));
     EXPECT_EQ(op->callError(), CallError::Timeout);
 }
@@ -1156,27 +1156,20 @@ TEST(SeamOperation, PhaseUpdatesAreStoredAndRelayed)
     AgentOperation* op = card->readIdentity();
 
     OperationPhase seenPhase = OperationPhase::Created;
-    double seenProgress = -1.0;
-    QObject::connect(op, &AgentOperation::phaseChanged, op, [&](OperationPhase phase, double progress) {
-        seenPhase = phase;
-        seenProgress = progress;
-    });
+    QObject::connect(op, &AgentOperation::phaseChanged, op, [&](OperationPhase phase) { seenPhase = phase; });
 
-    h.fake->soleOperationListener()->onPhaseChanged(OperationPhase::Reading, 0.5);
+    h.fake->soleOperationListener()->onPhaseChanged(OperationPhase::Reading);
     EXPECT_EQ(seenPhase, OperationPhase::Reading);
-    EXPECT_EQ(seenProgress, 0.5);
-    EXPECT_EQ(op->phase(), OperationPhase::Reading);
-    EXPECT_EQ(op->progress(), 0.5);
 }
 
 // Wire tolerance policy (see ClientCodec.h's file comment): OperationPhase is
 // wire-frozen append-only, so a future agent may report a phase value this
 // build does not name yet. The codec/D-Bus layer carries it through raw with
 // no rejection; AgentOperation is the STATEFUL layer that decides what an
-// unrecognised value means: progress is still delivered (the signal still
-// fires, with the updated fraction), but the held/public phase never
+// unrecognised value means: the signal still fires, but the held/public
+// phase never
 // regresses to the unrecognised value — it holds the last known-good phase.
-TEST(SeamOperation, UnknownPhaseHoldsLastKnownPhaseButStillDeliversProgress)
+TEST(SeamOperation, UnknownPhaseHoldsLastKnownPhaseButStillEmits)
 {
     ClientOnFake h;
     h.fake->nextOperationId = QStringLiteral("/op/1");
@@ -1184,25 +1177,20 @@ TEST(SeamOperation, UnknownPhaseHoldsLastKnownPhaseButStillDeliversProgress)
     AgentOperation* op = card->readIdentity();
 
     OperationPhase seenPhase = OperationPhase::Created;
-    double seenProgress = -1.0;
     int phaseChangedCount = 0;
-    QObject::connect(op, &AgentOperation::phaseChanged, op, [&](OperationPhase phase, double progress) {
+    QObject::connect(op, &AgentOperation::phaseChanged, op, [&](OperationPhase phase) {
         ++phaseChangedCount;
         seenPhase = phase;
-        seenProgress = progress;
     });
 
     // A real, known phase first, to establish a "last known" baseline.
-    h.fake->soleOperationListener()->onPhaseChanged(OperationPhase::Reading, 0.4);
-    EXPECT_EQ(op->phase(), OperationPhase::Reading);
+    h.fake->soleOperationListener()->onPhaseChanged(OperationPhase::Reading);
+    EXPECT_EQ(seenPhase, OperationPhase::Reading);
 
     // A future value this build does not name (past Done=7).
-    h.fake->soleOperationListener()->onPhaseChanged(static_cast<OperationPhase>(99), 0.8);
-    EXPECT_EQ(phaseChangedCount, 2) << "progress must still be delivered on an unrecognised phase";
-    EXPECT_EQ(seenProgress, 0.8);
+    h.fake->soleOperationListener()->onPhaseChanged(static_cast<OperationPhase>(99));
+    EXPECT_EQ(phaseChangedCount, 2) << "the signal must still fire on an unrecognised phase";
     EXPECT_EQ(seenPhase, OperationPhase::Reading) << "the signal's own phase argument must not regress either";
-    EXPECT_EQ(op->phase(), OperationPhase::Reading) << "the public phase() getter must hold the last known value";
-    EXPECT_EQ(op->progress(), 0.8);
 }
 
 // Wire tolerance policy: OperationStatus is wire-frozen append-only too, so a

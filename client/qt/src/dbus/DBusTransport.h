@@ -47,7 +47,7 @@ public Q_SLOTS:
     void onPropertiesChanged(const QString& iface, const QVariantMap& changed, const QStringList& invalidated);
 };
 
-/// One live operation subscription: Finished + Phase/Progress + the typed
+/// One live operation subscription: Finished + Phase + the typed
 /// Result signal of the operation's kind, forwarded scrubbed.
 class DBusOperationWatch : public QObject
 {
@@ -123,9 +123,6 @@ private Q_SLOTS:
     /// `Config1.Changed(key)`. The signal carries ONLY the key, so this
     /// re-reads that one property before forwarding — see refreshConfigKey().
     void onConfigChanged(const QString& key);
-    /// `Manager1.Quiesced(reason)`: handed on verbatim. The agent stays on the
-    /// bus and its objects stay valid, so availability does not change.
-    void onQuiesced(uint reason);
     void onInterfacesAdded(const QDBusObjectPath& path,
                            const LibreSCRS::AgentClient::AgentInterfaceProps& interfacesAndProperties);
     void onInterfacesRemoved(const QDBusObjectPath& path, const QStringList& interfaces);

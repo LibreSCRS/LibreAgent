@@ -3,7 +3,8 @@
 
 #include "FakeSocketAgent.h"
 
-#include <LibreSCRS/AgentClient/ConfigKeys.h>     // the Config1 key vocabulary + the canonical TslSources row shape
+#include <LibreSCRS/AgentClient/ConfigKeys.h>     // the Config1 key vocabulary
+#include "ConfigKeyHelpers.h"                     // which keys are settable + the canonical source-row shapes
 #include <LibreSCRS/AgentClient/CscaAnchorKeys.h> // the CscaAnchorState key vocabulary, shared with the other fake
 #include "dbus/AgentDBus.h"                       // the shared object/interface name spellings (constants only)
 #include "MemfdSource.h"                          // memfd document/artifact source + readFdAll (Linux test helper)
@@ -76,26 +77,6 @@ Wire::CborValue configValueToCbor(const QString& key, const QVariant& value, boo
         }
         return Wire::CborValue(std::move(rows));
     }
-    if (key == kConfigCscaSources) {
-        Wire::CborValue::Array rows;
-        for (const QVariant& row : value.toList()) {
-            const QVariantList cells = row.toList();
-            if (cells.size() != 2) {
-                continue;
-            }
-            const std::string uri = cells.at(0).toString().toStdString();
-            const bool eager = cells.at(1).toBool();
-            if (structuredSourcesAsMaps) {
-                Wire::CborValue::Map entry;
-                entry.emplace("uri", Wire::CborValue(uri));
-                entry.emplace("eager", Wire::CborValue(eager));
-                rows.push_back(Wire::CborValue(std::move(entry)));
-                continue;
-            }
-            rows.push_back(Wire::CborValue(Wire::CborValue::Array{Wire::CborValue(uri), Wire::CborValue(eager)}));
-        }
-        return Wire::CborValue(std::move(rows));
-    }
     if (key == kConfigCscaAnchorState) {
         // The read-only DICTIONARY key. This wire types every config value as
         // bare `any`, so the dict crosses as a plain CBOR map — with each
@@ -152,21 +133,6 @@ QVariant cborConfigValueToVariant(const QString& key, const Wire::CborValue& val
         }
         return rows;
     }
-    if (key == kConfigCscaSources) {
-        QVariantList rows;
-        if (const auto* array = value.asArray()) {
-            for (const Wire::CborValue& row : *array) {
-                const auto* cells = row.asArray();
-                if (cells == nullptr || cells->size() != 2) {
-                    continue;
-                }
-                const std::string* uri = (*cells)[0].asText();
-                rows.append(cscaSourceRow(uri != nullptr ? QString::fromStdString(*uri) : QString(),
-                                          (*cells)[1].asBool().value_or(false)));
-            }
-        }
-        return rows;
-    }
     if (const auto* array = value.asArray()) {
         QStringList items;
         for (const Wire::CborValue& item : *array) {
@@ -206,9 +172,6 @@ Wire::CscaAnchorStateReply cscaAnchorStateReply(const QVariantMap& state)
     }
     if (state.contains(QString(kCscaAnchorSignedAt))) {
         out.signedAt = state.value(QString(kCscaAnchorSignedAt)).toLongLong();
-    }
-    if (state.contains(QString(kCscaAnchorOrigin))) {
-        out.origin = state.value(QString(kCscaAnchorOrigin)).toString().toStdString();
     }
     return out;
 }
@@ -584,11 +547,9 @@ std::vector<Wire::CertInfo> FakeSocketAgent::buildCertList() const
             }
         }
         cert.trustStatus = scripted.trustStatus;
-        cert.alwaysAuthenticate = scripted.alwaysAuthenticate;
-        cert.keyId.assign(scripted.keyId.begin(), scripted.keyId.end());
-        cert.keyType = LibreSCRS::Agent::keyTypeFromToken(scripted.keyType.toStdString());
-        cert.keyBits = scripted.keyBits;
-        cert.canDerive = scripted.canDerive;
+        cert.keyId = {0x01}; // never empty on the wire
+        cert.keyType = LibreSCRS::Agent::KeyType::Rsa;
+        cert.keyBits = 2048;
         for (const QString& token : scripted.securityStatus) {
             cert.fields["security"][token.toStdString()] =
                 Wire::CertField{"cert.security." + token.toStdString(), token.toStdString(), token.toStdString()};
@@ -613,7 +574,6 @@ Wire::CredentialsResult FakeSocketAgent::buildCredentialsResult(bool withRecords
             record.state = scripted.state.toStdString();
             record.retriesLeft = scripted.retriesLeft;
             record.canChange = scripted.canChange;
-            record.unblockStyle = "unknown";
             record.recovery = "unknown";
             result.records.push_back(std::move(record));
         }
@@ -785,7 +745,6 @@ void FakeSocketAgent::fireOperation(quint64 opId)
     Wire::OpProgress progress;
     progress.op = op->id;
     progress.phase = Wire::OperationPhase::Reading;
-    progress.progress = 0.5;
     sendCbor(op->connection, Wire::toCbor(progress));
 
     const bool ok = m_config.finalStatus == 0;

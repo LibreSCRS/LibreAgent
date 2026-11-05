@@ -68,10 +68,6 @@
 //                         (Reader1.Model/Interface vs reader-state.model/
 //                         interface: at discovery, on a relabel, an unknown
 //                         interface token, and no label at all)
-//   quiesce             QuiescedReasonMatchesAcrossTransports (Manager1.Quiesced
-//                         vs AgentQuiesced: a named reason, and one appended
-//                         after this build, reach AgentClient::quiesced
-//                         verbatim)
 //   agent version       AgentVersionMatchesAcrossTransports and
 //                         AgentVersionEmptyWhileUnavailableAcrossTransports
 //                         (the one datum whose two wires share no mechanism at
@@ -85,8 +81,8 @@
 //                         token set surviving a dead agent offers a consumer
 //                         capabilities nothing is behind)
 //   agent config        ConfigSnapshotMatchesAcrossTransports (incl. the
-//                         canonical TslSources and CscaSources rows — typed
-//                         a(sbb)/a(sb) arrays on one wire, a bare `any` on the
+//                         canonical TslSources row — a typed
+//                         a(sbb) array on one wire, a bare `any` on the
 //                         other),
 //                         CscaAnchorStateIsReadableFromTheConfigSnapshotAcrossTransports
 //                         (the READ-ONLY dictionary key a just-started client
@@ -98,8 +94,8 @@
 //                         SetConfigValueRoundTripsAndAnnouncesAcrossTransports
 //                         (the write plus the cache-then-announce ordering
 //                         both change notifications owe),
-//                         CscaSourcesRoundTripAsRowsAcrossTransports (the
-//                         WRITE direction of the second structured value: a
+//                         TslSourcesRoundTripAsRowsAcrossTransports (the
+//                         WRITE direction of the structured value: a
 //                         settable key with no marshal arm does not fail, it
 //                         degrades to a string and reports success), and
 //                         NonSettableConfigKeyRefusesIdenticallyAcrossTransports
@@ -166,8 +162,7 @@
 //       follow-up, not something this corpus already proves converged.
 //     - AgentQuiesced availability semantics — the socket counts a quiesced
 //       agent as unavailable until a re-probe; on D-Bus the agent stays on
-//       the bus. The reason itself is in the corpus
-//       (QuiescedReasonMatchesAcrossTransports).
+//       the bus.
 //     - Non-canonical-frame fail-closed policy, the wedged-GetState bounded
 //       probe, the write-after-peer-close EPIPE/SIGPIPE guard, the stale-
 //       ConnectionLost-after-reconnect race, and the awaited-reply+malformed-
@@ -236,6 +231,8 @@
 
 #include "ClientTestAccess.h"
 #include <LibreSCRS/AgentClient/CscaAnchorKeys.h>
+
+#include "ConfigKeyHelpers.h"
 #include "fakes/ClientOnHarness.h"
 #include "fakes/FakeSocketAgent.h"
 #include "fakes/TestBus.h"
@@ -288,12 +285,7 @@ struct ParityCert
     QString issuerCn;
     QString notBefore;
     QString notAfter;
-    quint32 trustStatus = 0;         // 0 = Trusted, matching both fakes' CertTrustStatus wire numbering
-    bool alwaysAuthenticate = false; // the card asks for the PIN before every use of this key
-    QByteArray keyId = QByteArrayLiteral("\x01");
-    QString keyType = QStringLiteral("RSA");
-    quint32 keyBits = 2048;
-    bool canDerive = false;
+    quint32 trustStatus = 0;    // 0 = Trusted, matching both fakes' CertTrustStatus wire numbering
     QStringList securityStatus; // tokens riding the "security" fields-group, mirroring trustStatus
     // The certificate-metadata trailing members, scripted identically on both
     // fakes so the typed CertificateInfo members they land in can be asserted
@@ -536,11 +528,6 @@ public:
     {
         m_harness.emitReaderRelabelled(model, interfaceToken);
     }
-    /// The agent quiesced card access (Manager1.Quiesced).
-    void triggerQuiesced(uint reason)
-    {
-        m_harness.emitQuiesced(reason);
-    }
 
 private:
     static FakeAgent::Config toConfig(const ParityConfig& cfg)
@@ -570,11 +557,6 @@ private:
             fc.notBefore = c.notBefore;
             fc.notAfter = c.notAfter;
             fc.trustStatus = c.trustStatus;
-            fc.alwaysAuthenticate = c.alwaysAuthenticate;
-            fc.keyId = c.keyId;
-            fc.keyType = c.keyType;
-            fc.keyBits = c.keyBits;
-            fc.canDerive = c.canDerive;
             fc.securityStatus = c.securityStatus;
             fc.keyUsageBits = c.keyUsageBits;
             fc.extendedKeyUsageOids = c.extendedKeyUsageOids;
@@ -804,11 +786,6 @@ public:
         runOnThread(m_context,
                     [this, model, interfaceToken]() { m_agent->emitReaderRelabelled(model, interfaceToken); });
     }
-    /// The agent quiesced card access (AgentQuiesced).
-    void triggerQuiesced(uint reason)
-    {
-        runOnThread(m_context, [this, reason]() { m_agent->sendAgentQuiesced(reason); });
-    }
 
 private:
     static FakeSocketAgent::Config toConfig(const ParityConfig& cfg)
@@ -838,11 +815,6 @@ private:
             fc.notBefore = c.notBefore;
             fc.notAfter = c.notAfter;
             fc.trustStatus = c.trustStatus;
-            fc.alwaysAuthenticate = c.alwaysAuthenticate;
-            fc.keyId = c.keyId;
-            fc.keyType = c.keyType;
-            fc.keyBits = c.keyBits;
-            fc.canDerive = c.canDerive;
             fc.securityStatus = c.securityStatus;
             fc.keyUsageBits = c.keyUsageBits;
             fc.extendedKeyUsageOids = c.extendedKeyUsageOids;
@@ -1230,11 +1202,6 @@ TYPED_TEST(TransportParity, CertificatesEndToEnd)
     pc.notBefore = QStringLiteral("2021-06-01T00:00:00Z");
     pc.notAfter = QStringLiteral("2031-06-01T00:00:00Z");
     pc.trustStatus = 0; // Trusted
-    pc.alwaysAuthenticate = true;
-    pc.keyId = QByteArray::fromHex("F7134B02");
-    pc.keyType = QStringLiteral("EC");
-    pc.keyBits = 384;
-    pc.canDerive = true;
     // Certificate metadata: two KeyUsage bits set (nonRepudiation ordinal 1 +
     // keyEncipherment ordinal 2 -> 0x06), so a marshaller that shipped a
     // constant, a truncated value or a single bit is visibly wrong; a
@@ -1275,68 +1242,12 @@ TYPED_TEST(TransportParity, CertificatesEndToEnd)
         << "EKU OIDs must arrive complete and in the agent-supplied order";
     EXPECT_EQ(c.chainSubjectCns, (QStringList{QStringLiteral("Parity Signer"), QStringLiteral("Parity CA")}))
         << "the leaf..root chain must arrive complete and in order";
-    EXPECT_TRUE(c.alwaysAuthenticate) << "the card's consent rule must reach the client on both wires";
-    EXPECT_EQ(c.keyId, QByteArray::fromHex("F7134B02")) << "the card's key ID must reach the client on both wires";
-    EXPECT_EQ(c.keyType, KeyType::Ec);
-    EXPECT_EQ(c.keyBits, 384u);
-    EXPECT_TRUE(c.canDerive);
 
-    // One source of truth: the three members above no longer ALSO ride the
-    // untyped pass-through map. `trustStatusWire` still does -- no typed
-    // member mirrors it.
+    // One source of truth: the three members above do not ALSO ride the
+    // untyped pass-through map.
     EXPECT_FALSE(c.extra.contains(QStringLiteral("keyUsageBits")));
     EXPECT_FALSE(c.extra.contains(QStringLiteral("extendedKeyUsageOids")));
     EXPECT_FALSE(c.extra.contains(QStringLiteral("chainSubjectCns")));
-    // contains() first, deliberately: this scenario scripts trustStatus 0, and
-    // toUInt() on a MISSING key also yields 0 -- so the value check alone
-    // would pass on a transport that stopped carrying the key at all.
-    EXPECT_TRUE(c.extra.contains(QStringLiteral("trustStatusWire")));
-    EXPECT_EQ(c.extra.value(QStringLiteral("trustStatusWire")).toUInt(), 0u);
-}
-
-// The adjacent booleans (signingCapable, alwaysAuthenticate, canDerive) ride the
-// wire apart from one another; each certificate sets a different combination so
-// that swapping any two of them is caught on both wires.
-TYPED_TEST(TransportParity, CertificateBooleansKeepTheirPlaces)
-{
-    using Env = typename TypeParam::Env;
-    ParityConfig cfg;
-    cfg.capabilities = Cap::Pki;
-    struct Flags
-    {
-        bool signingCapable;
-        bool alwaysAuthenticate;
-        bool canDerive;
-    };
-    const Flags flags[] = {{true, false, false}, {false, true, true}, {true, true, false}, {false, false, true}};
-    for (int i = 0; i < 4; ++i) {
-        ParityCert pc;
-        pc.certId = QStringLiteral("cert-flags-%1").arg(i);
-        pc.subjectCn = QStringLiteral("Flags %1").arg(i);
-        pc.issuerCn = QStringLiteral("Parity CA");
-        pc.notBefore = QStringLiteral("2021-06-01T00:00:00Z");
-        pc.notAfter = QStringLiteral("2031-06-01T00:00:00Z");
-        pc.signingCapable = flags[i].signingCapable;
-        pc.alwaysAuthenticate = flags[i].alwaysAuthenticate;
-        pc.canDerive = flags[i].canDerive;
-        cfg.certScript.push_back(pc);
-    }
-    Env env(cfg);
-
-    AgentCard* card = env.card();
-    ASSERT_NE(card, nullptr);
-    AgentOperation* op = card->readCertificates();
-    ASSERT_NE(op, nullptr);
-    ASSERT_TRUE(waitFor([&]() { return op->isFinished(); }));
-    EXPECT_EQ(op->status(), OperationStatus::Ok);
-
-    const QList<CertificateInfo> certs = op->certificatesResult();
-    ASSERT_EQ(certs.size(), 4);
-    for (int i = 0; i < 4; ++i) {
-        EXPECT_EQ(certs[i].signingCapable, flags[i].signingCapable) << i;
-        EXPECT_EQ(certs[i].alwaysAuthenticate, flags[i].alwaysAuthenticate) << i;
-        EXPECT_EQ(certs[i].canDerive, flags[i].canDerive) << i;
-    }
 }
 
 // The whole cert-info `fields` dict, one body against both wires.
@@ -2322,7 +2233,7 @@ TYPED_TEST(TransportParity, ConfigSnapshotMatchesAcrossTransports)
     EXPECT_EQ(config.value(QStringLiteral("DefaultReason")).toString(), QStringLiteral("Approval"));
     EXPECT_EQ(config.value(QStringLiteral("TsaUrls")).toStringList(),
               QStringList{QStringLiteral("https://tsa.example.invalid/tsr")});
-    EXPECT_EQ(config.value(QStringLiteral("PluginDir")).toString(), QStringLiteral("/usr/lib/librescrs/plugins"));
+    EXPECT_EQ(config.value(QStringLiteral("TslCacheDir")).toString(), QStringLiteral("/var/cache/librescrs/tsl"));
 
     const QVariantList tslSources = config.value(QStringLiteral("TslSources")).toList();
     ASSERT_EQ(tslSources.size(), 1) << "the structured property must survive both decodes";
@@ -2331,14 +2242,6 @@ TYPED_TEST(TransportParity, ConfigSnapshotMatchesAcrossTransports)
     EXPECT_EQ(row.at(0).toString(), QStringLiteral("https://example.invalid/tl.xml"));
     EXPECT_FALSE(row.at(1).toBool());
     EXPECT_TRUE(row.at(2).toBool());
-
-    const QVariantList cscaSources = config.value(QStringLiteral("CscaSources")).toList();
-    ASSERT_EQ(cscaSources.size(), 1) << "the second structured property must survive both decodes too";
-    const QVariantList cscaRow = cscaSources.first().toList();
-    ASSERT_EQ(cscaRow.size(), 2) << "both transports must produce the canonical [uri, eager] row — TWO "
-                                    "cells, not a third copied from the trusted-list row above";
-    EXPECT_EQ(cscaRow.at(0).toString(), QStringLiteral("https://example.invalid/csca.ldif"));
-    EXPECT_TRUE(cscaRow.at(1).toBool());
 }
 
 TYPED_TEST(TransportParity, CscaAnchorStateIsReadableFromTheConfigSnapshotAcrossTransports)
@@ -2378,7 +2281,6 @@ TYPED_TEST(TransportParity, CscaAnchorStateIsReadableFromTheConfigSnapshotAcross
     EXPECT_EQ(state.value(QStringLiteral("acceptedAt")).toLongLong(), 1756000000LL);
     EXPECT_EQ(state.value(QStringLiteral("signedAt")).metaType().id(), QMetaType::LongLong);
     EXPECT_EQ(state.value(QStringLiteral("signedAt")).toLongLong(), 1755000000LL);
-    EXPECT_EQ(state.value(QStringLiteral("origin")).toString(), QStringLiteral("import"));
 }
 
 TYPED_TEST(TransportParity, CscaAnchorStateUndatedListOmitsSignedAtAcrossTransports)
@@ -2448,7 +2350,7 @@ TYPED_TEST(TransportParity, NonSettableConfigKeyRefusesIdenticallyAcrossTranspor
     ASSERT_TRUE(client->isAvailable());
 
     const std::optional<SyncError> refusal =
-        client->setConfigValue(QStringLiteral("PluginDir"), QStringLiteral("/tmp/x"));
+        client->setConfigValue(QStringLiteral("TslCacheDir"), QStringLiteral("/tmp/x"));
     ASSERT_TRUE(refusal.has_value());
     EXPECT_EQ(*refusal, SyncError::ReadOnlyConfig)
         << "an agent-named refusal on one wire and a locally-decided one on the other must be the "
@@ -2474,19 +2376,19 @@ TYPED_TEST(TransportParity, UnknownConfigKeyRefusesIdenticallyAcrossTransports)
     EXPECT_EQ(*resetRefusal, SyncError::UnknownConfigKey);
 }
 
-// `CscaSources` is the SECOND structured Config1 value, and the only other one
-// whose cells are not a string or a list of strings. Its trusted-list twin is
-// covered above by the snapshot scenario; this one covers the direction that
-// scenario cannot — a client WRITE — because a key whose value has no encodable
-// form on a wire does not fail there, it degrades: the row list collapses to a
-// bare string on the way out and the caller is told the write succeeded.
+// `TslSources` is the one structured Config1 value a client may WRITE, and its
+// cells are not a string or a list of strings. The snapshot scenario above
+// covers its READ; this one covers the direction that scenario cannot — a
+// client WRITE — because a key whose value has no encodable form on a wire does
+// not fail there, it degrades: the row list collapses to a bare string on the
+// way out and the caller is told the write succeeded.
 //
 // One scenario for both wires because the two encode it in genuinely different
-// places (a typed `a(sb)` struct array marshaled by D-Bus, a CBOR array of
-// two-element arrays built by hand on the socket) and both owe the caller the
+// places (a typed `a(sbb)` struct array marshaled by D-Bus, a CBOR array of
+// three-element arrays built by hand on the socket) and both owe the caller the
 // same rows back. Two rows, not one: a single row round-trips even through an
 // encoder that only ever keeps the last entry.
-TYPED_TEST(TransportParity, CscaSourcesRoundTripAsRowsAcrossTransports)
+TYPED_TEST(TransportParity, TslSourcesRoundTripAsRowsAcrossTransports)
 {
     using Env = typename TypeParam::Env;
     ParityConfig cfg;
@@ -2500,12 +2402,12 @@ TYPED_TEST(TransportParity, CscaSourcesRoundTripAsRowsAcrossTransports)
     QStringList announced;
     QObject::connect(client, &AgentClient::configChanged, client, [&](const QString& key) { announced.append(key); });
 
-    const QVariantList sources{cscaSourceRow(QStringLiteral("https://pkd.example.invalid/csca.ldif"), true),
-                               cscaSourceRow(QStringLiteral("file:///etc/librescrs/csca-anchors"), false)};
-    EXPECT_EQ(client->setConfigValue(QStringLiteral("CscaSources"), sources), std::nullopt);
-    ASSERT_TRUE(waitFor([&]() { return announced.contains(QStringLiteral("CscaSources")); }));
+    const QVariantList sources{tslSourceRow(QStringLiteral("https://eu.example.invalid/lotl.xml"), true, false),
+                               tslSourceRow(QStringLiteral("https://rs.example.invalid/tl.xml"), false, true)};
+    EXPECT_EQ(client->setConfigValue(QStringLiteral("TslSources"), sources), std::nullopt);
+    ASSERT_TRUE(waitFor([&]() { return announced.contains(QStringLiteral("TslSources")); }));
 
-    const QVariant stored = client->configSnapshot().value(QStringLiteral("CscaSources"));
+    const QVariant stored = client->configSnapshot().value(QStringLiteral("TslSources"));
     ASSERT_EQ(stored.metaType().id(), QMetaType::QVariantList)
         << "the value must come back as ROWS on both wires; a transport with no arm for this key "
            "degrades it to a string instead, and reports the write as a success. Got: "
@@ -2515,15 +2417,16 @@ TYPED_TEST(TransportParity, CscaSourcesRoundTripAsRowsAcrossTransports)
     ASSERT_EQ(rows.size(), 2) << "both rows must survive the encode/decode round trip";
 
     const QVariantList first = rows.at(0).toList();
-    ASSERT_EQ(first.size(), 2) << "the canonical row is [uri, eager] — TWO cells, not the trusted "
-                                  "list's three";
-    EXPECT_EQ(first.at(0).toString(), QStringLiteral("https://pkd.example.invalid/csca.ldif"));
+    ASSERT_EQ(first.size(), 3) << "the canonical row is [url, isLotl, eager]";
+    EXPECT_EQ(first.at(0).toString(), QStringLiteral("https://eu.example.invalid/lotl.xml"));
     EXPECT_TRUE(first.at(1).toBool());
+    EXPECT_FALSE(first.at(2).toBool());
 
     const QVariantList second = rows.at(1).toList();
-    ASSERT_EQ(second.size(), 2);
-    EXPECT_EQ(second.at(0).toString(), QStringLiteral("file:///etc/librescrs/csca-anchors"));
-    EXPECT_FALSE(second.at(1).toBool()) << "the eager flag must survive as a BOOL, per cell, per row";
+    ASSERT_EQ(second.size(), 3);
+    EXPECT_EQ(second.at(0).toString(), QStringLiteral("https://rs.example.invalid/tl.xml"));
+    EXPECT_FALSE(second.at(1).toBool()) << "the flags must survive as BOOLs, per cell, per row";
+    EXPECT_TRUE(second.at(2).toBool());
 }
 
 // ---- Config1.ImportCscaMasterList: the one verb that hands over a FILE -----
@@ -2615,7 +2518,6 @@ TYPED_TEST(TransportParity, CscaAnchorStateFromImportSurfacesIdenticallyAcrossTr
     ASSERT_TRUE(state.signedAt.isValid()) << "this list carried a signing time";
     EXPECT_EQ(state.signedAt, QDateTime::fromSecsSinceEpoch(1755000000));
     EXPECT_TRUE(state.replayRefusalActive);
-    EXPECT_EQ(state.origin, QStringLiteral("import"));
     ::close(fd);
 }
 
@@ -2827,30 +2729,6 @@ TYPED_TEST(TransportParity, ReaderLabelMatchesAcrossTransports)
     env.triggerReaderRelabelled(QStringLiteral("OMNIKEY 5422 (6904)"), QStringLiteral("optical"));
     ASSERT_TRUE(waitFor([&]() { return reader->interface() == ReaderInterface::Unknown; }))
         << "an interface appended after this build reads as Unknown on both transports";
-}
-
-// ---- Quiesce -- the reason the agent quiesced reaches the client identically
-// on both wires, a reason past this build's vocabulary verbatim ------------
-TYPED_TEST(TransportParity, QuiescedReasonMatchesAcrossTransports)
-{
-    using Env = typename TypeParam::Env;
-    ParityConfig cfg;
-    cfg.capabilities = Cap::IdentityData;
-    Env env(cfg);
-    ASSERT_TRUE(env.client()->isAvailable());
-
-    QList<QuiesceReason> reasons;
-    QObject::connect(env.client(), &AgentClient::quiesced, env.client(),
-                     [&reasons](QuiesceReason reason) { reasons.append(reason); });
-
-    env.triggerQuiesced(static_cast<uint>(QuiesceReason::SessionInactive));
-    ASSERT_TRUE(waitFor([&]() { return reasons.size() == 1; }));
-    EXPECT_EQ(reasons.constFirst(), QuiesceReason::SessionInactive);
-
-    env.triggerQuiesced(42);
-    ASSERT_TRUE(waitFor([&]() { return reasons.size() == 2; }));
-    EXPECT_EQ(static_cast<unsigned>(reasons.constLast()), 42u)
-        << "a reason appended after this build arrives verbatim on both transports";
 }
 
 // An agent that sends no label (an older one): the model falls back to the

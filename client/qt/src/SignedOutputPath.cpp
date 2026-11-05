@@ -37,10 +37,9 @@ QString nameFor(const QFileInfo& source, SignatureFormat format, Packaging packa
     return {};
 }
 
-/// Claims a name from @p nextName, then streams @p readChunk (bytes read,
-/// 0 at the end, < 0 on an error) over the claim in one commit.
-template <class ReadChunk>
-std::expected<QString, SignedFileError> writeClaimed(const std::function<QString()>& nextName, ReadChunk readChunk)
+/// Claims a name from @p nextName, then streams @p artifactFd over the claim in
+/// one commit.
+std::expected<QString, SignedFileError> writeClaimed(int artifactFd, const std::function<QString()>& nextName)
 {
     if (!nextName) {
         return std::unexpected(SignedFileError::NoFreeName);
@@ -82,7 +81,10 @@ std::expected<QString, SignedFileError> writeClaimed(const std::function<QString
     QByteArray chunk(kChunkBytes, '\0');
     qint64 total = 0;
     for (;;) {
-        const qint64 taken = readChunk(chunk.data(), kChunkBytes);
+        qint64 taken;
+        do {
+            taken = ::read(artifactFd, chunk.data(), static_cast<std::size_t>(kChunkBytes));
+        } while (taken < 0 && errno == EINTR); // a signal is not a failure
         if (taken < 0) {
             return release(SignedFileError::UnreadableArtifact);
         }
@@ -142,27 +144,7 @@ std::expected<QString, SignedFileError> writeSignedFile(int artifactFd, const st
     if (::lseek(artifactFd, 0, SEEK_SET) == static_cast<off_t>(-1) && errno != ESPIPE) {
         return std::unexpected(SignedFileError::UnreadableArtifact);
     }
-    return writeClaimed(nextName, [artifactFd](char* into, qint64 capacity) -> qint64 {
-        for (;;) {
-            const ssize_t taken = ::read(artifactFd, into, static_cast<std::size_t>(capacity));
-            if (taken < 0 && errno == EINTR) {
-                continue; // a signal is not a failure
-            }
-            return static_cast<qint64>(taken);
-        }
-    });
-}
-
-std::expected<QString, SignedFileError> writeSignedFile(QIODevice& artifact, const std::function<QString()>& nextName)
-{
-    if (!artifact.isReadable()) {
-        return std::unexpected(SignedFileError::UnreadableArtifact);
-    }
-    if (!artifact.isSequential() && !artifact.seek(0)) {
-        return std::unexpected(SignedFileError::UnreadableArtifact);
-    }
-    return writeClaimed(nextName,
-                        [&artifact](char* into, qint64 capacity) -> qint64 { return artifact.read(into, capacity); });
+    return writeClaimed(artifactFd, nextName);
 }
 
 } // namespace LibreSCRS::AgentClient

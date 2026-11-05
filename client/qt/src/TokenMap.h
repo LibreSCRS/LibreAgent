@@ -13,10 +13,8 @@
 //     (include/LibreSCRS/Agent/operations/SignatureParams.h)'s
 //     isKnownFormat/isKnownLevel/isKnownPackaging closed sets -- the SAME
 //     strings SignFlow.cpp passes through unvalidated from the wire's
-//     sign-opts.{format,level,packaging}. Packaging::Enveloping has no
-//     agent-side counterpart yet (see SignOptions.h's own doc comment);
-//     "enveloping" is a forward-declared token in the same lowercase
-//     convention as its two siblings.
+//     sign-opts.{format,level,packaging}. The agent accepts
+//     enveloped and detached only.
 //   - PinVerb: wire/librescrs-agent.cddl's `cred-verb` group
 //     ("change" / "unblock" / "activate_pin").
 //

@@ -8,12 +8,13 @@
 #include "../CertFieldsExtra.h"
 #include <LibreSCRS/AgentClient/ConfigKeys.h>
 #include <LibreSCRS/AgentClient/CscaAnchorKeys.h>
+#include "../ConfigKeyHelpers.h"
+#include "../CscaAnchorMapping.h"
 #include "../FieldExtraKeys.h"
-#include "../KeyTypeMapping.h"
 #include "../dbus/AgentDBus.h"    // shared object/interface name spellings (constants only, no QtDBus)
 #include "../dbus/ErrorNameMap.h" // the short-name half doubles as the socket sync-error map
 
-#include <LibreSCRS/AgentClient/ClientTimeouts.h>
+#include "../ClientTimeouts.h"
 #include <LibreSCRS/AgentClient/CredentialTypes.h>
 
 #if defined(Q_OS_MACOS)
@@ -205,43 +206,12 @@ QVariant normalizeTslSources(const QVariant& raw)
     return rows;
 }
 
-/// `CscaSources` the same way — the country-signing twin of the function
-/// above, admitting the same two lawful encodings (an array of TWO-entry
-/// arrays, which is what this client itself emits on SetConfig, and an array
-/// of maps keyed uri/eager) and dropping anything matching neither. Two cells,
-/// not three: a country-signing source names anchors and never other sources,
-/// so there is no isLotl pivot to carry.
-QVariant normalizeCscaSources(const QVariant& raw)
-{
-    QVariantList rows;
-    for (const QVariant& entry : raw.toList()) {
-        if (entry.metaType().id() == QMetaType::QVariantMap) {
-            const QVariantMap fields = entry.toMap();
-            const QVariant uri = fields.value(QStringLiteral("uri"));
-            if (!uri.isValid()) {
-                continue;
-            }
-            rows.append(cscaSourceRow(uri.toString(), fields.value(QStringLiteral("eager")).toBool()));
-            continue;
-        }
-        const QVariantList cells = entry.toList();
-        if (cells.size() != 2) {
-            continue;
-        }
-        rows.append(cscaSourceRow(cells.at(0).toString(), cells.at(1).toBool()));
-    }
-    return rows;
-}
-
 /// One entry of the `config` reply arm in the canonical client vocabulary.
 QVariant configValueToVariant(const QString& key, const Wire::CborValue& value)
 {
     const QVariant generic = cborToVariant(value);
     if (key == kConfigTslSources) {
         return normalizeTslSources(generic);
-    }
-    if (key == kConfigCscaSources) {
-        return normalizeCscaSources(generic);
     }
     if (key == kConfigCscaAnchorState) {
         // Read-only, and a DICTIONARY rather than a string. The grammar types
@@ -279,18 +249,6 @@ Wire::CborValue configValueToCbor(const QString& key, const QVariant& value)
             rows.push_back(Wire::CborValue(Wire::CborValue::Array{Wire::CborValue(cells.at(0).toString().toStdString()),
                                                                   Wire::CborValue(cells.at(1).toBool()),
                                                                   Wire::CborValue(cells.at(2).toBool())}));
-        }
-        return Wire::CborValue(std::move(rows));
-    }
-    if (key == kConfigCscaSources) {
-        Wire::CborValue::Array rows;
-        for (const QVariant& row : value.toList()) {
-            const QVariantList cells = row.toList();
-            if (cells.size() != 2) {
-                continue; // not a [uri, eager] row — see the API doc
-            }
-            rows.push_back(Wire::CborValue(Wire::CborValue::Array{Wire::CborValue(cells.at(0).toString().toStdString()),
-                                                                  Wire::CborValue(cells.at(1).toBool())}));
         }
         return Wire::CborValue(std::move(rows));
     }
@@ -435,12 +393,6 @@ QList<CertificateInfo> toCertificateInfos(const std::vector<Wire::CertInfo>& cer
         CertificateInfo info;
         info.id = fromStd(cert.certId);
         info.signingCapable = cert.signingCapable;
-        info.alwaysAuthenticate = cert.alwaysAuthenticate;
-        info.keyId =
-            QByteArray(reinterpret_cast<const char*>(cert.keyId.data()), static_cast<qsizetype>(cert.keyId.size()));
-        info.keyType = detail::toClientKeyType(cert.keyType);
-        info.keyBits = cert.keyBits;
-        info.canDerive = cert.canDerive;
         info.subject = certFieldValue(cert, "subject", "cn");
         info.issuer = certFieldValue(cert, "issuer", "cn");
         info.notBefore = QDateTime::fromString(certFieldValue(cert, "validity", "notBefore"), Qt::ISODate);
@@ -480,10 +432,6 @@ QList<CertificateInfo> toCertificateInfos(const std::vector<Wire::CertInfo>& cer
         info.keyUsageBits = cert.keyUsageBits;
         info.extendedKeyUsageOids = toStringList(cert.ekus);
         info.chainSubjectCns = toStringList(cert.chainSubjectCns);
-        // trustStatusWire has no typed member to land in: `trust` above
-        // collapses several wire verdicts into one display value, so the raw
-        // number is the only way back to the cause. It stays in `extra`.
-        info.extra.insert(QStringLiteral("trustStatusWire"), static_cast<uint>(cert.trustStatus));
         // The grouped fields dict, whole -- the same surface Marshal.cpp
         // produces from the D-Bus container, through the same builder, because
         // the consumer renders one shape and does not know which wire it came
@@ -542,12 +490,6 @@ QVariantMap credResultToMap(const Wire::CredentialOpResult& result)
         map.insert(QStringLiteral("retries_left"), *result.retriesLeft);
     }
     map.insert(QStringLiteral("blocked"), result.blocked);
-    if (result.pinActivated) {
-        map.insert(QStringLiteral("pin_activated"), *result.pinActivated);
-    }
-    if (result.keyActivated) {
-        map.insert(QStringLiteral("key_activated"), *result.keyActivated);
-    }
     return map;
 }
 
@@ -556,7 +498,7 @@ QVariantMap credRecordToMap(const Wire::CredentialRecord& record)
     QVariantMap map;
     map.insert(QStringLiteral("id"), fromStd(record.id));
     map.insert(QStringLiteral("label"), fromStd(record.label));
-    // kind/state/unblockStyle/recovery already carry their shared token
+    // kind/state/recovery already carry their shared token
     // strings on the wire struct — forwarded verbatim.
     map.insert(QStringLiteral("kind"), fromStd(record.kind));
     map.insert(QStringLiteral("state"), fromStd(record.state));
@@ -570,16 +512,12 @@ QVariantMap credRecordToMap(const Wire::CredentialRecord& record)
     optInt("uses_left", record.usesLeft);
     optInt("uses_max", record.usesMax);
     optInt("unblocks_left", record.unblocksLeft);
-    optInt("min_length", record.minLength);
-    optInt("max_length", record.maxLength);
     map.insert(QStringLiteral("can_change"), record.canChange);
     map.insert(QStringLiteral("unblockable"), record.unblockable);
-    map.insert(QStringLiteral("unblock_style"), fromStd(record.unblockStyle));
     map.insert(QStringLiteral("activatable"), record.activatable);
     map.insert(QStringLiteral("key_activation_pending"), record.keyActivationPending);
     map.insert(QStringLiteral("key_activatable"), record.keyActivatable);
     map.insert(QStringLiteral("recovery"), fromStd(record.recovery));
-    map.insert(QStringLiteral("probe_safe"), record.probeSafe);
     const auto optStr = [&map](const char* key, const std::optional<std::string>& value) {
         if (value) {
             map.insert(QLatin1String(key), fromStd(*value));
@@ -928,9 +866,6 @@ std::expected<CscaAnchorState, SyncError> SocketTransport::importCscaMasterList(
     }
     if (state->signedAt) {
         dict.insert(QString(kCscaAnchorSignedAt), QVariant::fromValue(*state->signedAt));
-    }
-    if (state->origin) {
-        dict.insert(QString(kCscaAnchorOrigin), fromStd(*state->origin));
     }
     return cscaAnchorStateFromMap(dict);
 }
@@ -1434,7 +1369,6 @@ bool SocketTransport::connectAndHandshake()
     // unregistration for a connection nobody ever saw as available.
     Wire::Hello hello;
     hello.proto = Wire::kProtocolVersion;
-    hello.client = "librescrs-agentclient-qt";
     SyncResult result = callSync(hello, kHandshakeTimeoutMs);
     if (result.failure != CallError::None || !std::holds_alternative<Wire::HelloAck>(result.reply)) {
         qCWarning(lcSocket) << "agent handshake failed on" << m_socketPath;
@@ -1724,7 +1658,7 @@ void SocketTransport::dispatchEvent(Wire::DecodedEvent&& decoded, std::vector<Wi
     }
     if (const auto* progress = std::get_if<Wire::OpProgress>(&event)) {
         if (OperationListener* listener = operationListenerFor(progress->op)) {
-            listener->onPhaseChanged(progress->phase, progress->progress.value_or(0.0));
+            listener->onPhaseChanged(progress->phase);
         }
         return;
     }
@@ -1771,15 +1705,13 @@ void SocketTransport::dispatchEvent(Wire::DecodedEvent&& decoded, std::vector<Wi
         }
         return;
     }
-    if (const auto* quiesced = std::get_if<Wire::AgentQuiesced>(&event)) {
+    if (std::holds_alternative<Wire::AgentQuiesced>(event)) {
         // Availability semantics: card access is quiesced (sleep / lock /
         // user switch), so the agent counts as unavailable — in-flight
         // operations are terminalized by the consumer exactly like an agent
         // death — while the connection itself stays open for the re-probe.
-        // The reason goes first, so a consumer knows why the agent left.
         m_quiesced = true;
         if (m_registry != nullptr) {
-            m_registry->onQuiesced(quiesced->reason);
             m_registry->onServiceUnregistered();
         }
         return;

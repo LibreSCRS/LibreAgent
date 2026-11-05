@@ -166,10 +166,6 @@ struct AgentClient::Private final : public RegistryListener
         // configSnapshot() sees the new value.
         Q_EMIT q->configChanged(key);
     }
-    void onQuiesced(QuiesceReason reason) override
-    {
-        Q_EMIT q->quiesced(reason);
-    }
 };
 
 AgentClient::AgentClient(QObject* parent)
@@ -210,11 +206,6 @@ AgentClient::~AgentClient()
 bool AgentClient::isAvailable() const
 {
     return d->available;
-}
-
-bool AgentClient::agentInstalled() const
-{
-    return d->state != AgentState::Missing;
 }
 
 AgentState AgentClient::agentState() const

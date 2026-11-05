@@ -19,12 +19,10 @@ TEST(CredentialTypes, RecordParsesFullRecord)
     m[QStringLiteral("retries_max")] = 3;
     m[QStringLiteral("can_change")] = true;
     m[QStringLiteral("unblockable")] = true;
-    m[QStringLiteral("unblock_style")] = QStringLiteral("unblockAndChange");
     m[QStringLiteral("activatable")] = false;
     m[QStringLiteral("key_activation_pending")] = false;
     m[QStringLiteral("key_activatable")] = false;
     m[QStringLiteral("recovery")] = QStringLiteral("holderViaPuk");
-    m[QStringLiteral("probe_safe")] = true;
     const CredentialRecord r = CredentialRecord::fromVariantMap(m);
     EXPECT_EQ(r.id, QStringLiteral("user:0x86"));
     EXPECT_EQ(r.kind, CredentialKind::User);
@@ -33,7 +31,6 @@ TEST(CredentialTypes, RecordParsesFullRecord)
     EXPECT_EQ(*r.retriesLeft, 3);
     EXPECT_TRUE(r.canChange);
     EXPECT_TRUE(r.unblockable);
-    EXPECT_EQ(r.unblockStyle, UnblockStyle::UnblockAndChange);
     EXPECT_EQ(r.recovery, RecoveryPath::HolderViaPuk);
     EXPECT_TRUE(r.extra.isEmpty()); // every key above is a consumed, typed key
 }
@@ -49,13 +46,11 @@ TEST(CredentialTypes, OmittedIntsStayNullopt)
     m[QStringLiteral("activatable")] = false;
     m[QStringLiteral("key_activation_pending")] = false;
     m[QStringLiteral("key_activatable")] = false;
-    m[QStringLiteral("probe_safe")] = false;
     const CredentialRecord r = CredentialRecord::fromVariantMap(m);
     EXPECT_FALSE(r.retriesLeft.has_value());
     EXPECT_FALSE(r.usesLeft.has_value());
     EXPECT_FALSE(r.usesMax.has_value());
     EXPECT_EQ(r.kind, CredentialKind::Puk);
-    EXPECT_EQ(r.unblockStyle, UnblockStyle::Unknown); // absent token → Unknown
 }
 
 TEST(CredentialTypes, UnknownTokensAreSafe)
@@ -81,7 +76,6 @@ TEST(CredentialTypes, PinResultParses)
     ASSERT_TRUE(r.retriesLeft.has_value());
     EXPECT_EQ(*r.retriesLeft, 2);
     EXPECT_FALSE(r.blocked);
-    EXPECT_FALSE(r.pinActivated.has_value()); // omitted → nullopt
 }
 
 // Wire-key drift guard: the snake_case key strings below are the VERBATIM
@@ -105,16 +99,12 @@ TEST(CredentialTypes, ContractVerbatimRecordKeySetDemarshalsEveryFieldNonDefault
         {QStringLiteral("uses_left"), 28},
         {QStringLiteral("uses_max"), 40},
         {QStringLiteral("unblocks_left"), 19},
-        {QStringLiteral("min_length"), 4},
-        {QStringLiteral("max_length"), 8},
         {QStringLiteral("can_change"), true},
         {QStringLiteral("unblockable"), true},
-        {QStringLiteral("unblock_style"), QStringLiteral("setsNewPin")},
         {QStringLiteral("activatable"), true},
         {QStringLiteral("key_activation_pending"), true},
         {QStringLiteral("key_activatable"), true},
         {QStringLiteral("recovery"), QStringLiteral("holderViaPuk")},
-        {QStringLiteral("probe_safe"), true},
         {QStringLiteral("blocked_guidance_key"), QStringLiteral("librescrs.pin.blocked.issuer")},
         {QStringLiteral("blocked_guidance_fallback"), QStringLiteral("Contact the issuer.")},
         {QStringLiteral("key_activation_guidance_key"), QStringLiteral("librescrs.pin.keyActivation.issuer")},
@@ -125,23 +115,18 @@ TEST(CredentialTypes, ContractVerbatimRecordKeySetDemarshalsEveryFieldNonDefault
     EXPECT_EQ(r.label, QStringLiteral("User PIN"));
     EXPECT_EQ(r.kind, CredentialKind::User);
     EXPECT_EQ(r.state, CredentialState::Operational);
-    ASSERT_TRUE(r.retriesLeft && r.retriesMax && r.usesLeft && r.usesMax && r.unblocksLeft && r.minLength &&
-                r.maxLength);
+    ASSERT_TRUE(r.retriesLeft && r.retriesMax && r.usesLeft && r.usesMax && r.unblocksLeft);
     EXPECT_EQ(*r.retriesLeft, 3);
     EXPECT_EQ(*r.retriesMax, 5);
     EXPECT_EQ(*r.usesLeft, 28);
     EXPECT_EQ(*r.usesMax, 40);
     EXPECT_EQ(*r.unblocksLeft, 19);
-    EXPECT_EQ(*r.minLength, 4);
-    EXPECT_EQ(*r.maxLength, 8);
     EXPECT_TRUE(r.canChange);
     EXPECT_TRUE(r.unblockable);
-    EXPECT_EQ(r.unblockStyle, UnblockStyle::SetsNewPin);
     EXPECT_TRUE(r.activatable);
     EXPECT_TRUE(r.keyActivationPending);
     EXPECT_TRUE(r.keyActivatable);
     EXPECT_EQ(r.recovery, RecoveryPath::HolderViaPuk);
-    EXPECT_TRUE(r.probeSafe);
     ASSERT_TRUE(r.blockedGuidanceKey && r.blockedGuidanceFallback);
     EXPECT_EQ(*r.blockedGuidanceKey, QStringLiteral("librescrs.pin.blocked.issuer"));
     EXPECT_EQ(*r.blockedGuidanceFallback, QStringLiteral("Contact the issuer."));
@@ -161,40 +146,13 @@ TEST(CredentialTypes, ContractVerbatimResultKeySetDemarshalsEveryFieldNonDefault
         {QStringLiteral("outcome"), QStringLiteral("invalidPin")},
         {QStringLiteral("retries_left"), 2},
         {QStringLiteral("blocked"), true},
-        {QStringLiteral("pin_activated"), true},
-        {QStringLiteral("key_activated"), true},
     };
     const PinResult r = PinResult::fromVariantMap(wire);
     EXPECT_EQ(r.outcome, CredentialOutcome::InvalidPin);
     ASSERT_TRUE(r.retriesLeft.has_value());
     EXPECT_EQ(*r.retriesLeft, 2);
     EXPECT_TRUE(r.blocked);
-    ASSERT_TRUE(r.pinActivated.has_value());
-    EXPECT_TRUE(*r.pinActivated);
-    ASSERT_TRUE(r.keyActivated.has_value());
-    EXPECT_TRUE(*r.keyActivated);
     EXPECT_TRUE(r.extra.isEmpty()); // the full consumed key set leaves no leftovers
-}
-
-// A partial bring-up: the PIN was activated but the signing key behind it was
-// not. The two flags are INDEPENDENT, and the failing one arrives as an
-// explicit false rather than as an absent key — so a demarshaller that only
-// populated an optional bool when the wire says true would report the key
-// activation as "not reported" instead of "reported failed", and this is the
-// case that separates those.
-TEST(CredentialTypes, PinResultBringUpPartial)
-{
-    QVariantMap m;
-    m[QStringLiteral("outcome")] = QStringLiteral("keyActivationFailed");
-    m[QStringLiteral("blocked")] = false;
-    m[QStringLiteral("pin_activated")] = true;
-    m[QStringLiteral("key_activated")] = false;
-    const PinResult r = PinResult::fromVariantMap(m);
-    EXPECT_EQ(r.outcome, CredentialOutcome::KeyActivationFailed);
-    ASSERT_TRUE(r.pinActivated.has_value());
-    EXPECT_TRUE(*r.pinActivated);
-    ASSERT_TRUE(r.keyActivated.has_value());
-    EXPECT_FALSE(*r.keyActivated);
 }
 
 // Append-only wire growth: keys this client build does not know must reach

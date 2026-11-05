@@ -103,18 +103,14 @@ TEST(TokenMap, SignatureLevelUnknownTokenIsNullopt)
 
 TEST(TokenMap, PackagingTokensMatchTheWireVocabulary)
 {
-    // SignatureParams::isKnownPackaging accepts enveloped/detached today;
-    // Enveloping is forward-declared (see SignOptions.h) with no agent-side
-    // acceptance yet, but its token still follows the same lowercase
-    // full-word convention as its two siblings.
+    // SignatureParams::isKnownPackaging accepts exactly these two.
     EXPECT_EQ(toToken(Packaging::Enveloped), "enveloped");
-    EXPECT_EQ(toToken(Packaging::Enveloping), "enveloping");
     EXPECT_EQ(toToken(Packaging::Detached), "detached");
 }
 
-TEST(TokenMap, PackagingRoundTripsEveryValueIncludingEnveloping)
+TEST(TokenMap, PackagingRoundTripsEveryValue)
 {
-    for (const auto value : {Packaging::Enveloped, Packaging::Enveloping, Packaging::Detached}) {
+    for (const auto value : {Packaging::Enveloped, Packaging::Detached}) {
         const std::string_view token = toToken(value);
         ASSERT_FALSE(token.empty());
         const std::optional<Packaging> back = packagingFromToken(token);

@@ -17,10 +17,13 @@
 #include <LibreSCRS/AgentClient/AgentClient.h>
 #include <LibreSCRS/AgentClient/AgentOperation.h>
 #include <LibreSCRS/AgentClient/AgentReader.h>
-#include <LibreSCRS/AgentClient/ClientTimeouts.h>
+
+#include "ClientTimeouts.h"
 #include <LibreSCRS/AgentClient/IdentityRows.h>
 
 #include <LibreSCRS/AgentClient/ConfigKeys.h>
+
+#include "ConfigKeyHelpers.h"
 #include "fakes/ClientOnHarness.h"
 #include "fakes/TestBus.h"
 
@@ -109,53 +112,6 @@ TEST(DBusIntegration, AvailabilityAppearAndVanish)
     EXPECT_NE(client->card(h.cardPath()), nullptr);
 }
 
-// ---- Manager1.Quiesced: the reason reaches the client, the agent stays -------
-
-TEST(DBusIntegration, QuiescedReachesTheClientAndTheAgentStaysAvailable)
-{
-    FakeAgent::Config cfg;
-    cfg.capabilities = Cap::Pki;
-    Harness h(cfg);
-    auto client = makeClient(h);
-    ASSERT_TRUE(client->isAvailable());
-
-    QList<QuiesceReason> reasons;
-    int availabilityChanges = 0;
-    QObject::connect(client.get(), &AgentClient::quiesced, client.get(),
-                     [&](QuiesceReason reason) { reasons.append(reason); });
-    QObject::connect(client.get(), &AgentClient::availabilityChanged, client.get(),
-                     [&](bool) { ++availabilityChanges; });
-
-    h.emitQuiesced(static_cast<uint>(QuiesceReason::SystemSleep));
-    ASSERT_TRUE(waitFor([&]() { return reasons.size() == 1; }));
-    EXPECT_EQ(reasons.constFirst(), QuiesceReason::SystemSleep);
-    EXPECT_TRUE(client->isAvailable()) << "the agent stays on the bus: a quiesce is not an agent loss";
-    EXPECT_EQ(availabilityChanges, 0);
-    EXPECT_EQ(client->readers().size(), 1) << "the agent's objects stay valid";
-}
-
-// A reason past this build's vocabulary arrives verbatim; one too wide for the
-// vocabulary's own width cannot be stored without aliasing another and is
-// dropped, as the socket decoder rejects it.
-TEST(DBusIntegration, QuiescedCarriesAFutureReasonAndDropsOneTooWideToStore)
-{
-    FakeAgent::Config cfg;
-    Harness h(cfg);
-    auto client = makeClient(h);
-    ASSERT_TRUE(client->isAvailable());
-
-    QList<QuiesceReason> reasons;
-    QObject::connect(client.get(), &AgentClient::quiesced, client.get(),
-                     [&](QuiesceReason reason) { reasons.append(reason); });
-
-    h.emitQuiesced(256);
-    h.emitQuiesced(42);
-    ASSERT_TRUE(waitFor([&]() { return !reasons.isEmpty(); }));
-    // Signals on one connection arrive in order: 256 was handled before 42.
-    ASSERT_EQ(reasons.size(), 1) << "256 must not alias onto reason 0";
-    EXPECT_EQ(static_cast<unsigned>(reasons.constFirst()), 42u);
-}
-
 // ---- agent version: Manager1.Version, and empty once the agent is gone ------
 //
 // The version rides the SAME once-per-connect Manager1 property fetch that
@@ -230,7 +186,7 @@ TEST(DBusIntegration, ConfigSnapshotCarriesTypedEntries)
     EXPECT_EQ(config.value(QStringLiteral("DefaultLevel")).toString(), QStringLiteral("b-t"));
     EXPECT_EQ(config.value(QStringLiteral("TsaUrls")).toStringList(),
               QStringList{QStringLiteral("https://tsa.example.invalid/tsr")});
-    EXPECT_EQ(config.value(QStringLiteral("PluginDir")).toString(), QStringLiteral("/usr/lib/librescrs/plugins"));
+    EXPECT_EQ(config.value(QStringLiteral("TslCacheDir")).toString(), QStringLiteral("/var/cache/librescrs/tsl"));
 
     // The one property whose D-Bus type is neither `s` nor `as`: a(sbb),
     // flattened to the canonical three-entry row the socket transport also
@@ -295,13 +251,13 @@ TEST(DBusIntegration, SetConfigValueNamesTheRefusal)
     auto client = makeClient(h);
     ASSERT_TRUE(client->isAvailable());
 
-    // A file-only key: the agent refuses it by name (a wire-settable PluginDir
-    // is a dlopen code-exec vector). Unlike the socket transport, this one has
+    // A file-only key: the agent refuses it by name (a wire-settable cache
+    // path would let a client redirect where the agent writes). Unlike the socket transport, this one has
     // nothing to refuse locally — every key marshals here, so the refusal is
     // the agent's own, and the parity corpus asserts both arrive at the SAME
     // enumerator anyway.
     const std::optional<SyncError> readOnly =
-        client->setConfigValue(QStringLiteral("PluginDir"), QStringLiteral("/tmp/x"));
+        client->setConfigValue(QStringLiteral("TslCacheDir"), QStringLiteral("/tmp/x"));
     ASSERT_TRUE(readOnly.has_value());
     EXPECT_EQ(*readOnly, SyncError::ReadOnlyConfig);
 
@@ -360,7 +316,7 @@ TEST(DBusIntegration, ResetConfigValueRestoresTheDefaultAndSignalsChanged)
     EXPECT_EQ(client->configSnapshot().value(QStringLiteral("DefaultLocation")).toString(), QStringLiteral("Belgrade"));
 
     // Reset honours the same mutability gate SetValue does.
-    const std::optional<SyncError> readOnly = client->resetConfigValue(QStringLiteral("PluginDir"));
+    const std::optional<SyncError> readOnly = client->resetConfigValue(QStringLiteral("TslCacheDir"));
     ASSERT_TRUE(readOnly.has_value());
     EXPECT_EQ(*readOnly, SyncError::ReadOnlyConfig);
 }
@@ -410,7 +366,7 @@ TEST(DBusIntegration, ReaderAndCardDiscovery)
 
     auto client = makeClient(h);
     ASSERT_TRUE(client->isAvailable());
-    EXPECT_TRUE(client->agentInstalled());
+    EXPECT_NE(client->agentState(), AgentState::Missing);
 
     ASSERT_EQ(client->readers().size(), 1);
     AgentReader* reader = client->readers().constFirst();
@@ -519,7 +475,6 @@ TEST(DBusIntegration, CertificatesEndToEnd)
     fc.notBefore = QStringLiteral("2021-06-01T00:00:00Z");
     fc.notAfter = QStringLiteral("2031-06-01T00:00:00Z");
     fc.trustStatus = 0u; // Trusted
-    fc.alwaysAuthenticate = true;
     cfg.certScript = FakeCertList{fc};
     Harness h(cfg);
 
@@ -542,7 +497,6 @@ TEST(DBusIntegration, CertificatesEndToEnd)
     EXPECT_EQ(c.notBefore, QDateTime::fromString(QStringLiteral("2021-06-01T00:00:00Z"), Qt::ISODate));
     EXPECT_EQ(c.notAfter, QDateTime::fromString(QStringLiteral("2031-06-01T00:00:00Z"), Qt::ISODate));
     EXPECT_EQ(c.trust, TrustStatus::Trusted);
-    EXPECT_TRUE(c.alwaysAuthenticate);
 }
 
 // ---- best-effort certificate warm ------------------------------------------

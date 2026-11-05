@@ -3,72 +3,14 @@
 #pragma once
 
 /// @file
-/// @brief Default call-timeout budgets (milliseconds) for the
-///        transport-neutral Qt client.
+/// @brief The default stall bound of an `AgentOperation`, in milliseconds.
 ///
-/// Plain `int`, not `std::chrono::milliseconds`: every Qt timer/socket
-/// timeout API these feed (`QTimer::start`, a bus pending-call watcher, a raw
-/// AF_UNIX poll/recv deadline) takes int msec, and keeping the unit in the
-/// name avoids a duration<->int conversion at every call site.
-///
-/// @note These are CLIENT-side defaults only — nothing on the wire carries a
-///       timeout value (see wire/librescrs-agent.cddl); the agent's own
-///       per-op `WatchdogTimeoutSeconds` (op-progress's `watchdogSecs`) is a
-///       SEPARATE, server-side budget the client just observes. A caller may
-///       override any of these per-call; these are only the library's
-///       out-of-the-box defaults.
-///
-/// @note The transports apply kHandshakeTimeoutMs and kDefaultCallTimeoutMs
-///       to their synchronous round-trips; kLongOperationTimeoutMs is the
-///       default stall bound every AgentOperation enforces on itself between
-///       two signs of life from the agent, phase-aware (see
-///       AgentOperation::setStallBudget()).
+/// Plain `int`, not `std::chrono::milliseconds`: it feeds `QTimer::start()`,
+/// which takes int msec. A CLIENT-side default only — nothing on the wire
+/// carries a timeout value — and a caller may override it per operation with
+/// `AgentOperation::setStallBudget()`.
 
 namespace LibreSCRS::AgentClient {
-
-/// @brief Budget for cheap synchronous round-trips with no card/network work
-///        on the agent side (Hello handshake, GetState, GetConfig): a slow
-///        reply here means the agent is unresponsive, not merely busy with a
-///        card.
-inline constexpr int kHandshakeTimeoutMs = 1000;
-
-/// @brief The ordinary budget for a synchronous request/reply pair that may
-///        touch a smart card (ReadIdentity, ReadCertificates op-started
-///        acknowledgement, ListCredentials, ManagePin, Pkcs11.* method
-///        calls) but does no network I/O.
-inline constexpr int kDefaultCallTimeoutMs = 3000;
-/// @brief Budget for starting an installed agent that is not running
-///        (`AgentClient::requestAgentStart()` and every call that starts the
-///        agent first): the bus launches the service and answers once it has
-///        claimed its name, which covers process start and the agent loading
-///        its card plugins. Well under the bus daemon's own activation limit,
-///        so a start that hangs is reported by this client, not by the bus.
-inline constexpr int kAgentStartTimeoutMs = 15000;
-
-/// @brief Budget for a synchronous call the agent may hold open while a PERSON
-///        authorizes it (a polkit prompt on Linux, the equivalent ceremony on
-///        another host): Config1 SetValue/Reset, whose trust tier is gated, and
-///        ImportCscaMasterList, which is gated outright.
-///
-/// Sized for a human, not for a machine, because a human is what it waits on:
-/// finding a password manager, mistyping once, reading the prompt. Two minutes
-/// is generous for that and still bounded, so an agent that dies mid-ceremony
-/// does not hang the caller forever.
-///
-/// This is its own budget rather than a reach for kDefaultCallTimeoutMs or
-/// kLongOperationTimeoutMs because it measures something neither of those does.
-/// The card budget assumes the only wait is a chip; the long-operation budget
-/// is a CALLER-ENFORCED advisory with no transport enforcement behind it. An
-/// authorization ceremony is enforced here, in the transport, and its length is
-/// set by a person's hands.
-///
-/// The cost is accepted deliberately: a caller cannot know which config keys
-/// the agent gates (the tiers are the agent's, not the client's), so every
-/// SetValue/Reset is budgeted as though it might prompt. An unresponsive agent
-/// is therefore reported slowly rather than quickly — the trade taken because
-/// the opposite error is a false refusal shown to a person who did nothing
-/// wrong, and that one happens on every ordinary use.
-inline constexpr int kAuthorizedCallTimeoutMs = 120000;
 
 /// @brief How long an operation may go without a sign of life from the agent
 ///        while the agent is working — long enough for a network round trip

@@ -94,15 +94,6 @@ public:
     ///        agent's outcome; OperationStatus is wire-frozen append-only) is
     ///        treated as Error rather than surfaced as an unnamed enumerator.
     [[nodiscard]] OperationStatus status() const;
-    /// @brief Last observed phase (Created until the agent reports
-    ///        progress). Holds its last known-good value if the agent
-    ///        reports a phase this build does not recognise (OperationPhase
-    ///        is wire-frozen append-only) — `progress()` still advances on
-    ///        such a report, only the phase itself does not regress to the
-    ///        unrecognised value.
-    [[nodiscard]] OperationPhase phase() const;
-    /// @brief Last observed progress in [0.0, 1.0] (0.0 until reported).
-    [[nodiscard]] double progress() const;
 
     /// @brief The agent's wire-frozen error taxonomy value for a failed
     ///        operation; None on success or when the failure never produced a
@@ -159,7 +150,7 @@ public:
     ///          peer named that error. `sync-error` is a text-token vocabulary
     ///          with no room to carry an unrecognised token forward, so a name
     ///          from a newer agent degrades to that value at decode time on
-    ///          both transports (see `decodeSyncError()`'s own warning). Treat
+    ///          both transports (see `SyncError`'s own warning). Treat
     ///          it as "named, but not usefully" — never as a positive
     ///          identification.
     [[nodiscard]] std::optional<SyncError> syncError() const;
@@ -216,11 +207,11 @@ public:
     [[nodiscard]] QByteArray certificateDerResult() const;
 
 Q_SIGNALS:
-    /// @brief Progress report: the agent moved into @p phase, with @p progress
-    ///        in [0.0, 1.0]. Zero or more emissions between minting and
-    ///        `finished()`; not every operation kind visits every phase, and
-    ///        an operation that fails fast may emit none at all.
-    void phaseChanged(LibreSCRS::AgentClient::OperationPhase phase, double progress);
+    /// @brief Progress report: the agent moved into @p phase. Zero or more
+    ///        emissions between minting and `finished()`; not every operation
+    ///        kind visits every phase, and an operation that fails fast may
+    ///        emit none at all.
+    void phaseChanged(LibreSCRS::AgentClient::OperationPhase phase);
     /// @brief Progressive identity-field delivery: one field group became
     ///        available. Zero or more emissions, in order, strictly before
     ///        `finished()` — see `identityResult()`'s accumulation contract

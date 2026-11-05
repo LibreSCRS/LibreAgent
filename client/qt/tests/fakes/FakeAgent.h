@@ -163,15 +163,15 @@ private:
     int m_appearanceFontCalls = 0;
 };
 
-/// @brief Config1 adaptor (root path): the eleven agent-owned settings, all
+/// @brief Config1 adaptor (root path): the eight agent-owned settings, all
 ///        read-only as PROPERTIES, mutated through SetValue/Reset so each
 ///        change is gated per key — faithful to
 ///        `org.librescrs.Agent.Config1`, including its four documented
 ///        refusals:
 ///          - `UnknownConfigKey`   no such key;
 ///          - `ReadOnlyConfig`     a file-only / agent-internal key
-///                                 (TslCacheDir / AiaCacheDir / PluginDir /
-///                                 LastTsaUrl / CscaAnchorState);
+///                                 (TslCacheDir / LastTsaUrl /
+///                                 CscaAnchorState);
 ///          - `NotAuthorized`      polkit denied;
 ///          - `InvalidConfigValue` wrong variant type for the key.
 ///
@@ -193,17 +193,14 @@ class Config1Adaptor : public QDBusAbstractAdaptor
     Q_PROPERTY(QStringList TsaUrls READ tsaUrls)
     Q_PROPERTY(QString LastTsaUrl READ lastTsaUrl)
     Q_PROPERTY(LibreSCRS::AgentClient::TslSourcesWire TslSources READ tslSources)
-    Q_PROPERTY(LibreSCRS::AgentClient::CscaSourcesWire CscaSources READ cscaSources)
     // `a{sv}` — the one property whose value is a DICTIONARY. QVariantMap is
     // what QtDBus marshals as that signature, and the scripted map's members
     // are typed (quint32 / qint64) so the property carries the interface's
     // real `u` / `x` rather than whatever a bare int would have guessed.
     Q_PROPERTY(QVariantMap CscaAnchorState READ cscaAnchorState)
     Q_PROPERTY(QString TslCacheDir READ tslCacheDir)
-    Q_PROPERTY(QString AiaCacheDir READ aiaCacheDir)
     Q_PROPERTY(QString DefaultReason READ defaultReason)
     Q_PROPERTY(QString DefaultLocation READ defaultLocation)
-    Q_PROPERTY(QString PluginDir READ pluginDir)
 public:
     Config1Adaptor(QObject* parent, FakeAgent* agent);
 
@@ -211,13 +208,10 @@ public:
     [[nodiscard]] QStringList tsaUrls() const;
     [[nodiscard]] QString lastTsaUrl() const;
     [[nodiscard]] LibreSCRS::AgentClient::TslSourcesWire tslSources() const;
-    [[nodiscard]] LibreSCRS::AgentClient::CscaSourcesWire cscaSources() const;
     [[nodiscard]] QVariantMap cscaAnchorState() const;
     [[nodiscard]] QString tslCacheDir() const;
-    [[nodiscard]] QString aiaCacheDir() const;
     [[nodiscard]] QString defaultReason() const;
     [[nodiscard]] QString defaultLocation() const;
-    [[nodiscard]] QString pluginDir() const;
 
 public Q_SLOTS:
     void SetValue(const QString& key, const QDBusVariant& value);
@@ -440,18 +434,13 @@ struct FakeCert
     QString certId;
     bool signingCapable = false;
     QString subjectCn;
-    QString issuerCn = {};                        ///< issuer/cn field group (display only)
-    QString notBefore = {};                       ///< validity/notBefore field group (display only)
-    QString notAfter = {};                        ///< validity/notAfter field group (display only)
-    uint keyUsageBits = 0;                        ///< u keyUsageBits
-    QStringList extendedKeyUsageOids = {};        ///< as EKU OIDs
-    QStringList chainSubjectCns = {};             ///< as ordered leaf..root CN chain
-    uint trustStatus = 255;                       ///< u trustStatus (255 = Unknown; 5 = Revoked, 6 = OfflineUnverified)
-    bool alwaysAuthenticate = false;              ///< b: the card asks for the PIN before every use
-    QByteArray keyId = QByteArrayLiteral("\x01"); ///< ay keyId: never empty on the wire
-    QString keyType = QStringLiteral("RSA");      ///< s keyType token
-    uint keyBits = 2048;                          ///< u keyBits
-    bool canDerive = false;                       ///< b canDerive
+    QString issuerCn = {};                 ///< issuer/cn field group (display only)
+    QString notBefore = {};                ///< validity/notBefore field group (display only)
+    QString notAfter = {};                 ///< validity/notAfter field group (display only)
+    uint keyUsageBits = 0;                 ///< u keyUsageBits
+    QStringList extendedKeyUsageOids = {}; ///< as EKU OIDs
+    QStringList chainSubjectCns = {};      ///< as ordered leaf..root CN chain
+    uint trustStatus = 255;                ///< u trustStatus (255 = Unknown; 5 = Revoked, 6 = OfflineUnverified)
     /// Tokens riding the "security" fields-group (dict-key growth), mirroring
     /// trustStatus -- e.g. {"revoked"} for trustStatus=5, {"offline-unverified"}
     /// for trustStatus=6. Empty by default (matches the wire from before the
@@ -727,7 +716,7 @@ public:
         /// Properties.GetAll("...Manager1") on the root object fails closed,
         /// and features() must degrade to an empty list, never an error.
         bool exportManager1 = true;
-        /// The Config1 property set this fake serves, keyed by the eleven wire
+        /// The Config1 property set this fake serves, keyed by the eight wire
         /// spellings and valued in the canonical client-side shape (see
         /// defaultAgentConfig()). Also the RESET target: the fake snapshots
         /// this map at construction and Reset(key) restores that entry, which
@@ -948,11 +937,6 @@ public:
     ///        beside it) and emit the Reader1 PropertiesChanged carrying the
     ///        new Model and Interface together, as the agent does.
     void emitReaderRelabelled(const QString& model, const QString& interfaceToken);
-
-    /// @brief Emit Manager1.Quiesced(@p reason) on the root object, as the
-    ///        agent does after its core quiesced. A raw uint, so a test can
-    ///        send a reason past this build's vocabulary (or past its width).
-    void emitQuiesced(uint reason);
 
     /// @brief Change the card's Capabilities and emit a Properties.PropertiesChanged
     ///        carrying the FULL new value in the `changed` map (mirrors the
