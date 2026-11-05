@@ -64,10 +64,7 @@ public:
 protected:
     void doWork() override
     {
-        // Card-I/O ops are honest spinners: flag indeterminate at start.
-        setIndeterminate(true);
         setPhase(static_cast<std::uint32_t>(LibreSCRS::Agent::Operations::OperationPhase::Reading));
-        setProgress(0.5);
         finish(OperationStatus::Ok, ErrorCode::None, "op.ok", "Operation completed");
     }
 };
@@ -84,7 +81,6 @@ public:
 protected:
     void doWork() override
     {
-        setIndeterminate(true);
         setPhase(static_cast<std::uint32_t>(LibreSCRS::Agent::Operations::OperationPhase::Reading));
         finish(OperationStatus::Error, ErrorCode::CardRemoved, "op.card_removed", "Card removed");
     }
@@ -125,40 +121,71 @@ TEST(OperationBase, CancelTokenObservesCancelMethod)
     EXPECT_EQ(raw->finishes.size(), 1u);
 }
 
-TEST(OperationBase, PhaseAndProgressVisibleToAdaptorHooks)
+TEST(OperationBase, PhaseVisibleToAdaptorHooks)
 {
     auto adaptor = std::make_unique<FakeOperationChannel>();
     auto* raw = adaptor.get();
     auto state = std::make_shared<LibreSCRS::Agent::Operations::OperationState>();
     NoopOp op(std::move(adaptor), state);
-    EXPECT_EQ(op.phase(), 0u); // Created
-    EXPECT_DOUBLE_EQ(op.progress(), 0.0);
+    EXPECT_EQ(state->phase.load(), 0u); // Created
     op.runOnWorker();
-    EXPECT_EQ(op.phase(), static_cast<std::uint32_t>(LibreSCRS::Agent::Operations::OperationPhase::Done));
-    EXPECT_DOUBLE_EQ(op.progress(), 1.0) << "Done phase implies 100% progress";
+    EXPECT_EQ(state->phase.load(), static_cast<std::uint32_t>(LibreSCRS::Agent::Operations::OperationPhase::Done));
     EXPECT_GE(raw->propertyEmits.load(), 1) << "phase transitions must propagate at least once";
 }
 
-TEST(OperationBase, SetsIndeterminateOnStartAndExposesTerminalPropsAfterFinish)
+namespace {
+// Records how many property emissions had happened when each step ran, so a
+// test can tell "emitted before setPhase returned" from "emitted later".
+class PhaseProbeOp final : public OperationBase
+{
+public:
+    PhaseProbeOp(std::unique_ptr<OperationChannel> channel, std::shared_ptr<OperationState> state,
+                 std::atomic<int>& emits)
+        : OperationBase(std::move(channel), std::move(state)), m_emits(emits)
+    {}
+    int afterFirstPhase = -1;
+    int afterSecondPhase = -1;
+
+protected:
+    void doWork() override
+    {
+        using LibreSCRS::Agent::Operations::OperationPhase;
+        setPhase(static_cast<std::uint32_t>(OperationPhase::Connecting));
+        afterFirstPhase = m_emits.load();
+        setPhase(static_cast<std::uint32_t>(OperationPhase::Reading));
+        afterSecondPhase = m_emits.load();
+        finish(OperationStatus::Ok, ErrorCode::None, "op.ok", "Operation completed");
+    }
+
+private:
+    std::atomic<int>& m_emits;
+};
+} // namespace
+
+TEST(OperationBase, EveryPhaseChangeEmitsBeforeTheSetterReturns)
+{
+    auto channel = std::make_unique<FakeOperationChannel>();
+    auto* raw = channel.get();
+    auto state = std::make_shared<LibreSCRS::Agent::Operations::OperationState>();
+    PhaseProbeOp op(std::move(channel), state, raw->propertyEmits);
+    op.runOnWorker();
+    EXPECT_EQ(op.afterFirstPhase, 1) << "the first phase change emits at once";
+    EXPECT_EQ(op.afterSecondPhase, 2) << "a second change right behind it is not coalesced";
+}
+
+TEST(OperationBase, ExposesTerminalPropsAfterFinish)
 {
     auto adaptor = std::make_unique<FakeOperationChannel>();
     auto* raw = adaptor.get();
     auto state = std::make_shared<LibreSCRS::Agent::Operations::OperationState>();
     NoopOp op(std::move(adaptor), state);
 
-    // Before running: an honest spinner has not been engaged and no
-    // terminal result is published yet.
-    EXPECT_FALSE(op.isIndeterminate());
+    // Before running no terminal result is published yet.
     EXPECT_FALSE(op.completed());
 
     op.runOnWorker();
 
-    // (a) Card-I/O op set IsIndeterminate=true at start; it stays true
-    // through the op (no determinate Progress was reported).
-    EXPECT_TRUE(op.isIndeterminate()) << "card-I/O op must present an honest spinner";
-    EXPECT_TRUE(state->isIndeterminate.load());
-
-    // (b) Terminal-property mirrors are populated after finish() so a
+    // Terminal-property mirrors are populated after finish() so a
     // client that missed Finished can read them race-free.
     EXPECT_TRUE(op.completed()) << "Completed must be true after the op finishes";
     EXPECT_TRUE(state->completed.load());

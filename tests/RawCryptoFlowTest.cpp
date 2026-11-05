@@ -15,8 +15,8 @@
 #include <LibreSCRS/Agent/operations/CardSessionHolder.h>
 #include <LibreSCRS/Agent/operations/OperationBase.h> // Phase enum, OperationPhaseSink
 #include <LibreSCRS/Agent/operations/PromptSerializer.h>
-#include <LibreSCRS/Agent/operations/LmRawCrypto.h> // bindLmRawCrypto
-#include <LibreSCRS/Agent/operations/RawCryptoFlow.h>
+#include "operations/LmRawCrypto.h" // bindLmRawCrypto
+#include "operations/RawCryptoFlow.h"
 
 #include <LibreSCRS/Auth/AuthRequirement.h>
 #include <LibreSCRS/Auth/CredentialResult.h>

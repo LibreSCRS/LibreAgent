@@ -11,7 +11,7 @@
 #include <LibreSCRS/Agent/cache/CredentialCache.h>
 #include <LibreSCRS/Agent/operations/CardSessionHolder.h>
 #include <LibreSCRS/Agent/operations/CertReadFlow.h>
-#include <LibreSCRS/Agent/operations/FlowPrelude.h>
+#include "operations/FlowPrelude.h"
 #include <LibreSCRS/Agent/operations/OperationBase.h> // Phase enum, OperationPhaseSink
 #include <LibreSCRS/Agent/operations/PromptSerializer.h>
 

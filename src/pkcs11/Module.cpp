@@ -23,12 +23,12 @@
 #include <LibreSCRS/Agent/crypto/Mechanism.h>
 #include <LibreSCRS/Agent/pkcs11/AgentClient.h>
 #include <LibreSCRS/Agent/pkcs11/AgentClientFactory.h>
-#include <LibreSCRS/Agent/pkcs11/DerivedKeys.h>
-#include <LibreSCRS/Agent/pkcs11/EcEncoding.h>
+#include "pkcs11/DerivedKeys.h"
+#include "pkcs11/EcEncoding.h"
 #include <LibreSCRS/Agent/pkcs11/ObjectModel.h>
-#include <LibreSCRS/Agent/pkcs11/SessionState.h>
+#include "pkcs11/SessionState.h"
 #include <LibreSCRS/Agent/pkcs11/pkcs11.h>
-#include <LibreSCRS/Agent/util/DerLength.h>
+#include "util/DerLength.h"
 #include <LibreSCRS/Agent/util/DisplayText.h> // utf8PrefixLength
 
 #include <chrono>

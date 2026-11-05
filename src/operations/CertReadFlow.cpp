@@ -5,7 +5,7 @@
 #include <LibreSCRS/Agent/cache/CredentialCache.h>
 #include <LibreSCRS/Logging.h>
 #include <LibreSCRS/Agent/operations/CardPluginRouting.h> // pkiCandidates
-#include <LibreSCRS/Agent/operations/FlowPrelude.h>
+#include "operations/FlowPrelude.h"
 #include <LibreSCRS/Agent/operations/OperationBase.h> // Phase enum
 #include <atomic>
 #include <cstdint>

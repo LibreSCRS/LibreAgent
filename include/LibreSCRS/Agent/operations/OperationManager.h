@@ -234,8 +234,7 @@ public:
     void recordSenderForTest(OperationId id, CallerToken sender, OperationBase* op);
 
     // Cancels every Operation whose recorded sender matches @p client.
-    // Production callers: the AgentTransport client-disconnect watch forwards
-    // here through the handler the backend service registers via onClientDisconnect.
+    // Production callers: the host's client-disconnect watch forwards here.
     // Tests synthesise client-disconnect events by invoking this directly.
     void dispatchClientDisconnect(CallerToken client);
 
@@ -467,8 +466,8 @@ private:
     void sweepFinished(std::chrono::steady_clock::duration grace);
 
     // Sender → ops dispatch table for the client-disconnect auto-cancel. The
-    // client-disconnect watch that feeds this now lives in the AgentTransport
-    // backend; dispatchClientDisconnect is its forwarding target.
+    // client-disconnect watch that feeds this lives in the host;
+    // dispatchClientDisconnect is its forwarding target.
     std::mutex m_sendersMutex;
     std::map<CallerToken, std::set<OperationId>> m_senderToOps;
     std::map<OperationId, CallerToken> m_opToSender;

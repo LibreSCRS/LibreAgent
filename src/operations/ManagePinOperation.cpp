@@ -27,7 +27,6 @@ void ManagePinOperation::doWork()
         finish(OperationStatus::Error, ErrorCode::CommunicationError, "op.internal", "operation has no session holder");
         return;
     }
-    setIndeterminate(true);
     setPhase(static_cast<std::uint32_t>(OperationPhase::Connecting));
 
     PinManageFlowDeps deps{

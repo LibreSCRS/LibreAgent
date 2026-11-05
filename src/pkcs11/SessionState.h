@@ -12,7 +12,7 @@
 #pragma once
 
 #include <LibreSCRS/Agent/KeyType.h>
-#include <LibreSCRS/Agent/pkcs11/DerivedKeys.h>
+#include "pkcs11/DerivedKeys.h"
 #include <LibreSCRS/Agent/pkcs11/ObjectModel.h>
 #include <LibreSCRS/Agent/pkcs11/pkcs11.h>
 

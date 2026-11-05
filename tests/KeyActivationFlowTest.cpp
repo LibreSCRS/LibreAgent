@@ -11,7 +11,7 @@
 #include <LibreSCRS/Agent/cache/CredentialCache.h>
 #include <LibreSCRS/Agent/cache/CredentialSnapshotCache.h>
 #include <LibreSCRS/Agent/operations/CardSessionHolder.h>
-#include <LibreSCRS/Agent/operations/KeyActivationFlow.h>
+#include "operations/KeyActivationFlow.h"
 #include <LibreSCRS/Agent/operations/PromptSerializer.h>
 #include <LibreSCRS/Agent/value/CardReadSnapshot.h> // seed the read cache for residency assertions
 #include <LibreSCRS/Agent/value/CredentialRecord.h>
@@ -94,9 +94,6 @@ struct Harness
 {
     // Set BEFORE run() to drive an acquire failure; the holder is built lazily.
     std::optional<LibreSCRS::SmartCard::OpenError> failWith;
-    // Set BEFORE run() to pre-acquire the held session and mark it dead, so the
-    // flow observes card removal (isDead()) AFTER the activateSigningKey seam.
-    bool deadSession = false;
     // Resolved candidate plugin list the holder hands the flow (empty for the
     // Fake-seam cases; the listing-plugin-first rig seeds stub plugins here).
     CandidateList candidates;
@@ -117,7 +114,6 @@ struct Harness
     std::string cardKey = "card-A";
 
     CredentialRecord record = makeSignRecord(/*keyActivatable=*/true);
-    std::optional<bool> pinActivated; // continuation carry-through (nullopt = standalone run)
 
     Harness()
     {
@@ -145,12 +141,6 @@ struct Harness
     CredentialOpResult run()
     {
         holder = makeHolder(failWith, candidates);
-        if (deadSession) {
-            auto acq = holder->acquire();
-            if (acq) {
-                acq->session->markDead();
-            }
-        }
         return runKeyActivation(KeyActivationFlowDeps{
             .holder = *holder,
             .credentials = seamOverride != nullptr ? *seamOverride : credentials,
@@ -166,7 +156,6 @@ struct Harness
             .requester = "test-client",
             .reader = "FakeReader",
             .artifact = "signing-key",
-            .pinActivated = pinActivated,
             .token = source.token(),
         });
     }
@@ -207,8 +196,6 @@ TEST(KeyActivationFlow, NotActivatableAnswersUnsupportedWithoutPrompting)
     EXPECT_EQ(result.outcome, CredentialOutcome::Unsupported);
     EXPECT_FALSE(promptedForPin(h.prompter)) << "must not prompt when the record is not keyActivatable";
     EXPECT_FALSE(calledSeam(h.credentials)) << "must not reach the seam when the record is not keyActivatable";
-    ASSERT_TRUE(result.keyActivated.has_value());
-    EXPECT_FALSE(*result.keyActivated);
 }
 
 // (2) LM base default (no plugin overrides activateSigningKey): keyActivatable,
@@ -225,13 +212,10 @@ TEST(KeyActivationFlow, SeamUnsupportedPassesThrough)
     EXPECT_EQ(result.outcome, CredentialOutcome::Unsupported);
     EXPECT_TRUE(promptedForPin(h.prompter));
     EXPECT_TRUE(calledSeam(h.credentials));
-    ASSERT_TRUE(result.keyActivated.has_value());
-    EXPECT_FALSE(*result.keyActivated);
 }
 
-// (3) A future plugin that activates: outcome Ok -> keyActivated == true, and
-// the collected SIGN PIN is exactly what reached the seam.
-TEST(KeyActivationFlow, SeamOkSetsKeyActivated)
+// (3) A future plugin that activates: outcome Ok, and the collected SIGN PIN is exactly what reached the seam.
+TEST(KeyActivationFlow, SeamOkPassesThrough)
 {
     Harness h;
     h.credentials.activateSigningKeyResult =
@@ -240,8 +224,6 @@ TEST(KeyActivationFlow, SeamOkSetsKeyActivated)
     const auto result = h.run();
 
     EXPECT_EQ(result.outcome, CredentialOutcome::Ok);
-    ASSERT_TRUE(result.keyActivated.has_value());
-    EXPECT_TRUE(*result.keyActivated);
     EXPECT_EQ(h.credentials.lastSignPin, LibreSCRS::Secure::String{"1234"})
         << "the prompted SIGN PIN must be the exact secret handed to activateSigningKey";
 }
@@ -259,28 +241,19 @@ TEST(KeyActivationFlow, InvalidPinCarriesRetriesForTheSignPin)
     EXPECT_EQ(result.outcome, CredentialOutcome::InvalidPin);
     ASSERT_TRUE(result.retriesLeft.has_value());
     EXPECT_EQ(*result.retriesLeft, 2);
-    ASSERT_TRUE(result.keyActivated.has_value());
-    EXPECT_FALSE(*result.keyActivated);
 }
 
 // (5) VERIFY succeeded but the card-side ACTIVATE failed: the KeyActivationFailed
-// outcome is preserved verbatim (its wire mapping is a later task's job),
-// keyActivated == false, and the pinActivated continuation state (set when this
-// activation chained off a transport-PIN bring-up) is carried through unchanged.
-TEST(KeyActivationFlow, KeyActivationFailedPreservesOutcomeAndCarriesPinActivated)
+// outcome is preserved verbatim (its wire mapping is a later task's job).
+TEST(KeyActivationFlow, KeyActivationFailedPreservesOutcome)
 {
     Harness h;
-    h.pinActivated = true; // this activation continues a just-completed transport-PIN bring-up
     h.credentials.activateSigningKeyResult =
         LibreSCRS::Plugin::PINResult{.outcome = LibreSCRS::Plugin::PINResultOutcome::KeyActivationFailed};
 
     const auto result = h.run();
 
     EXPECT_EQ(result.outcome, CredentialOutcome::KeyActivationFailed);
-    ASSERT_TRUE(result.keyActivated.has_value());
-    EXPECT_FALSE(*result.keyActivated);
-    ASSERT_TRUE(result.pinActivated.has_value());
-    EXPECT_TRUE(*result.pinActivated);
 }
 
 // (6) The user dismissed the SIGN PIN dialog: UserCancelled, and the seam is
@@ -332,14 +305,11 @@ TEST(KeyActivationFlow, NonCardRemovedOpenFailurePreservesCachesAndYieldsUnspeci
     EXPECT_FALSE(calledSeam(h.credentials)) << "the seam was never reached";
 }
 
-// (8) A card pulled mid-activateSigningKey: the seam WAS reached (reachedCard),
-// but the session is dead afterward -> CardRemoved, and the stale snapshot + read
-// caches ARE dropped (a possibly-partial activation must not serve a stale view).
-TEST(KeyActivationFlow, MidOpCardRemovalYieldsCardRemovedAndInvalidatesCaches)
+// (8) Reaching the seam drops the stale snapshot + read caches: an activation
+// moves on-card state, so a cached view of the card must not outlive it.
+TEST(KeyActivationFlow, ReachingTheSeamInvalidatesCaches)
 {
     Harness h;
-    h.deadSession = true;
-    // The seam "returns" Ok, but the dead session must override it to CardRemoved.
     h.credentials.activateSigningKeyResult =
         LibreSCRS::Plugin::PINResult{.outcome = LibreSCRS::Plugin::PINResultOutcome::Ok};
     h.seedCaches();
@@ -348,12 +318,9 @@ TEST(KeyActivationFlow, MidOpCardRemovalYieldsCardRemovedAndInvalidatesCaches)
 
     const auto result = h.run();
 
-    EXPECT_EQ(result.outcome, CredentialOutcome::CardRemoved)
-        << "a card pulled mid-activation is transport loss, not a plugin error";
-    EXPECT_TRUE(calledSeam(h.credentials)) << "the seam was reached before the loss (reachedCard)";
-    ASSERT_TRUE(result.keyActivated.has_value());
-    EXPECT_FALSE(*result.keyActivated) << "a mid-op removal cannot be reported as an activation";
-    EXPECT_FALSE(h.snapshotPresent()) << "a possibly-partial activation drops the stale snapshot";
+    EXPECT_EQ(result.outcome, CredentialOutcome::Ok);
+    EXPECT_TRUE(calledSeam(h.credentials)) << "the seam was reached";
+    EXPECT_FALSE(h.snapshotPresent()) << "an activation drops the stale snapshot";
     EXPECT_FALSE(h.readPresent()) << "reached-card invalidation drops the read cache too";
 }
 
@@ -393,8 +360,6 @@ TEST(KeyActivationFlow, ActivationRoutesToTheSnapshotListingPluginFirst)
     const auto result = h.run();
 
     EXPECT_EQ(result.outcome, CredentialOutcome::Ok);
-    ASSERT_TRUE(result.keyActivated.has_value());
-    EXPECT_TRUE(*result.keyActivated);
     EXPECT_EQ(recListing->signKeyCalls, 1) << "the plugin that produced the listing answers the activation";
     EXPECT_EQ(recFirst->signKeyCalls, 0)
         << "another candidate must not intercept a mutation for a card it listed nothing for";

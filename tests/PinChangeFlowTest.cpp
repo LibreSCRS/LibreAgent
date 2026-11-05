@@ -120,9 +120,6 @@ struct Harness
 {
     // Set BEFORE deps() to drive an acquire failure; the holder is built lazily.
     std::optional<LibreSCRS::SmartCard::OpenError> failWith;
-    // Set BEFORE deps() to pre-acquire the held session and mark it dead, so the
-    // mutation flow observes card removal (isDead()) AFTER the seam returns.
-    bool deadSession = false;
     // Resolved candidate plugin list the holder hands the flow (empty for the
     // Fake-seam cases; the listing-plugin-first rigs seed stub plugins here).
     CandidateList candidates;
@@ -161,12 +158,6 @@ struct Harness
     PinManageFlowDeps deps()
     {
         holder = makeHolder(failWith, candidates);
-        if (deadSession) {
-            auto acq = holder->acquire();
-            if (acq) {
-                acq->session->markDead();
-            }
-        }
         return PinManageFlowDeps{
             .holder = *holder,
             .credentialManager = seamOverride != nullptr ? *seamOverride : credentialManager,
@@ -582,31 +573,6 @@ TEST(RunPinManageChange, NonCardRemovedOpenFailurePreservesCachesAndYieldsUnspec
     EXPECT_TRUE(h.credentialManager.calls.empty()) << "the seam was never reached";
     EXPECT_TRUE(h.prompter.calls.empty()) << "no secret is collected on an open failure";
     EXPECT_TRUE(h.phaseSink.phases.empty()) << "an open failure precedes the AwaitingConsent phase";
-}
-
-// A card pulled mid-changePIN: the seam WAS reached (reachedCard), but the
-// session is dead afterward -> CardRemoved, and because the change may have
-// partially applied the stale snapshot + read caches ARE dropped.
-TEST(RunPinManageChange, MidOpCardRemovalYieldsCardRemovedAndInvalidatesCaches)
-{
-    Harness h;
-    h.deadSession = true;
-    h.prompter.pinChangeResult = PinChangePromptResult{PromptStatus::Ok, LibreSCRS::Secure::String{"1111"},
-                                                       LibreSCRS::Secure::String{"2222"}, ""};
-    // The seam "returns" a value, but the dead session must override it to CardRemoved.
-    h.credentialManager.changePinResult = pinResult(LibreSCRS::Plugin::PINResultOutcome::Ok, 3);
-    h.seedCaches();
-    ASSERT_TRUE(h.snapshotPresent());
-    ASSERT_TRUE(h.readPresent());
-
-    auto d = h.deps();
-    const auto result = runPinManage(d, changeReq());
-
-    EXPECT_EQ(result.outcome, CredentialOutcome::CardRemoved)
-        << "a card pulled mid-changePIN is transport loss, not a plugin error";
-    EXPECT_FALSE(h.credentialManager.calls.empty()) << "the seam was reached before the loss (reachedCard)";
-    EXPECT_FALSE(h.snapshotPresent()) << "a possibly-partial change drops the stale snapshot";
-    EXPECT_FALSE(h.readPresent()) << "reached-card invalidation drops the read cache too";
 }
 
 // Happy path boundary: a completed change reached the card -> both caches drop,

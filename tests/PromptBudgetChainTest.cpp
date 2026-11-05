@@ -17,7 +17,7 @@
 #include <LibreSCRS/Agent/cache/CredentialCache.h>
 #include <LibreSCRS/Agent/operations/BatchSignFlow.h>
 #include <LibreSCRS/Agent/operations/CardSessionHolder.h>
-#include <LibreSCRS/Agent/operations/FlowPrelude.h>
+#include "operations/FlowPrelude.h"
 #include <LibreSCRS/Agent/operations/OperationBase.h> // OperationPhaseSink
 #include <LibreSCRS/Agent/operations/PromptPolicy.h>
 #include <LibreSCRS/Agent/operations/PromptSerializer.h>

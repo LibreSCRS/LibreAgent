@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 // SPDX-FileCopyrightText: 2026 hirashix0
-#include <LibreSCRS/Agent/pkcs11/EcEncoding.h>
+#include "pkcs11/EcEncoding.h"
 
 #include <LibreSCRS/Agent/KeyType.h> // the NIST curve table
 

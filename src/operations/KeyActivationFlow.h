@@ -25,7 +25,7 @@ class CardSessionHolder;
 // acquires the reused held session + resolved candidate plugin list from the
 // holder, prompts the operational SIGN PIN as a single secret, and drives the
 // CredentialManager::activateSigningKey seam. The references must outlive the
-// runKeyActivation() call; the value members (record/cardKey/... /pinActivated)
+// runKeyActivation() call; the value members (record/cardKey/...)
 // are copied in.
 struct KeyActivationFlowDeps
 {
@@ -34,9 +34,8 @@ struct KeyActivationFlowDeps
     PrompterClientBase& prompter;
     PromptSerializer& serializer;
     CredentialCache& cache;
-    // Caches invalidated when the activation reaches the card (see
-    // invalidateForMutationOutcome): the per-card credential snapshot and the
-    // identity/cert read cache. The CAN/MRZ secret cache (`cache`) is never among
+    // Caches invalidated when the activation reaches the card: the per-card
+    // credential snapshot and the identity/cert read cache. The CAN/MRZ secret cache (`cache`) is never among
     // them — an activation must not evict a still-valid pre-read secret.
     CredentialSnapshotCache& snapshotCache;
     CardReadCache& cardReadCache;
@@ -55,9 +54,6 @@ struct KeyActivationFlowDeps
     std::string requester; // resolved, sanitized caller id (audit line only)
     std::string reader;    // human reader name (audit line only)
     std::string artifact;  // trusted, agent-owned operation category
-    // Continuation state from a just-completed transport-PIN bring-up: carried
-    // verbatim into the result's pinActivated (nullopt for a standalone run).
-    std::optional<bool> pinActivated;
     LibreSCRS::CancelToken token;
 };
 
@@ -65,7 +61,7 @@ struct KeyActivationFlowDeps
 // keyActivatable capability -> open the held session + install the channel
 // credential provider -> prompt the SIGN PIN once (single secret, never cached,
 // never an fd) -> activateSigningKey(session, signPin) -> map PINResult onto a
-// wire-facing CredentialOpResult (keyActivated=true only on Ok; the LM outcome —
+// wire-facing CredentialOpResult (the LM outcome —
 // including KeyActivationFailed — is preserved verbatim, its wire ErrorCode
 // mapping being a later task's job). No bus, no threading.
 //

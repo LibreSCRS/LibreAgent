@@ -11,9 +11,9 @@ namespace LibreSCRS::Agent::Operations {
 
 /// @brief Wire-stable progress phase of an in-flight operation; match
 ///        `org.librescrs.Agent.Operation1.xml`. APPEND-ONLY, never renumbered.
-///        Carried alongside a progress fraction on the operation's progress
-///        notification (see `AgentOperation::phaseChanged()` on the Qt
-///        client); not every operation kind visits every phase.
+///        Carried on the operation's progress notification (see
+///        `AgentOperation::phaseChanged()` on the Qt client); not every
+///        operation kind visits every phase.
 enum class OperationPhase : std::uint32_t {
     Created = 0,         ///< Minted, not yet dispatched to the transport.
     Connecting = 1,      ///< Establishing contact with the card/reader.

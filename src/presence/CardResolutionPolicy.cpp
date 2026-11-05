@@ -2,7 +2,7 @@
 // SPDX-FileCopyrightText: 2026 hirashix0
 #include <LibreSCRS/Agent/presence/CardResolutionPolicy.h>
 
-#include <LibreSCRS/Agent/operations/CardTypeArbitration.h>
+#include "operations/CardTypeArbitration.h"
 
 #include <algorithm>
 #include <utility>

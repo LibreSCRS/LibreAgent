@@ -94,9 +94,9 @@ test -f thirdparty/QCBOR/CMakeLists.txt || \
 %cmake -GNinja \
     -DBUILD_TESTING=OFF \
     -DLIBREAGENT_BUILD_CORE=ON \
-    -DLIBREAGENT_BUILD_WIRE=ON \
     -DLIBREAGENT_BUILD_CLIENT_QT=ON \
     -DLIBREAGENT_BUILD_CLIENT_QT_TEST_SUPPORT=OFF \
+    -DLIBREAGENT_BUILD_TEST_SUPPORT=OFF \
     -DLIBREAGENT_BUILD_PKCS11_FACADE=ON \
     -DLIBREAGENT_BUILD_PKCS11_SOCKET_CLIENT=ON \
     -DLIBREAGENT_INSTALL_WIRE_ARCHIVE=ON \
@@ -125,7 +125,6 @@ grep -q '^FETCHCONTENT_SOURCE_DIR_QCBOR:.*/thirdparty/QCBOR$' %{_vpath_builddir}
 %{_libdir}/cmake/LibreAgent/Pkcs11ModuleExport.cmake
 %{_includedir}/LibreSCRS/Agent/
 %dir %{_datadir}/librescrs
-%{_datadir}/librescrs/librescrs-agent.cddl
 %{_datadir}/librescrs/dbus/
 %{_datadir}/librescrs/pkcs11/
 
@@ -134,13 +133,10 @@ grep -q '^FETCHCONTENT_SOURCE_DIR_QCBOR:.*/thirdparty/QCBOR$' %{_vpath_builddir}
 %{_libdir}/libLibreAgentWire.a
 %{_libdir}/libLibreAgentPkcs11Facade.a
 %{_libdir}/libLibreAgentPkcs11SocketClient.a
-%{_libdir}/libSyntheticMasterList.a
 %{_libdir}/cmake/LibreAgent/LibreAgentCoreTargets*.cmake
 %{_libdir}/cmake/LibreAgent/LibreAgentWireTargets*.cmake
 %{_libdir}/cmake/LibreAgent/LibreAgentPkcs11FacadeTargets*.cmake
 %{_libdir}/cmake/LibreAgent/LibreAgentPkcs11SocketClientTargets*.cmake
-%{_libdir}/cmake/LibreAgent/LibreAgentTestSupportTargets*.cmake
-%{_includedir}/LibreSCRS/AgentTestSupport/
 
 %files -n librescrs-agent-client-qt
 %license LICENSE

@@ -34,7 +34,7 @@ include(GNUInstallDirs)
 # Declared here, once, before any target exists, so every target in this project
 # inherits it -- including the compile-only check targets, which is exactly the
 # kind of target a per-target list forgets. LibreAgentWire additionally carries
-# it as a PUBLIC usage requirement (see LIBREAGENT_BUILD_WIRE below) so that
+# it as a PUBLIC usage requirement (see the Wire library below) so that
 # consumers in OTHER directory scopes inherit it too; directory options do not
 # cross that boundary.
 if(CMAKE_CXX_COMPILER_ID STREQUAL "AppleClang")
@@ -49,7 +49,6 @@ endif()
 # not have to pull in LM/OpenSSL, and one that wants neither Qt library
 # doesn't pull in Qt.
 option(LIBREAGENT_BUILD_CORE "Build the platform-neutral LibreAgent::Core library" ON)
-option(LIBREAGENT_BUILD_WIRE "Build the LibreAgent::Wire socket-wire library" ON)
 option(LIBREAGENT_BUILD_CLIENT_QT "Build the LibreAgent::ClientQt Qt client library" OFF)
 # Pkcs11Facade is the transport-free Cryptoki core a browser-loadable module is
 # built from; Pkcs11SocketClient is one transport for it. Two components and not
@@ -86,14 +85,6 @@ if(LIBREAGENT_BUILD_CLIENT_QT_TEST_SUPPORT AND NOT LIBREAGENT_BUILD_CLIENT_QT)
     message(FATAL_ERROR "LIBREAGENT_BUILD_CLIENT_QT_TEST_SUPPORT requires LIBREAGENT_BUILD_CLIENT_QT (the doubles compile against that library's own internals)")
 endif()
 
-if(LIBREAGENT_BUILD_CLIENT_QT AND NOT LIBREAGENT_BUILD_WIRE)
-    message(FATAL_ERROR "LIBREAGENT_BUILD_CLIENT_QT requires LIBREAGENT_BUILD_WIRE (the Qt client library links the wire protocol library)")
-endif()
-
-if(LIBREAGENT_BUILD_PKCS11_SOCKET_CLIENT AND NOT LIBREAGENT_BUILD_WIRE)
-    message(FATAL_ERROR "LIBREAGENT_BUILD_PKCS11_SOCKET_CLIENT requires LIBREAGENT_BUILD_WIRE (the socket backend speaks the framed CBOR wire)")
-endif()
-
 if(LIBREAGENT_BUILD_PKCS11_SOCKET_CLIENT AND NOT LIBREAGENT_BUILD_PKCS11_FACADE)
     message(FATAL_ERROR "LIBREAGENT_BUILD_PKCS11_SOCKET_CLIENT requires LIBREAGENT_BUILD_PKCS11_FACADE (the backend implements that library's AgentClient interface)")
 endif()
@@ -101,7 +92,7 @@ endif()
 # Strict warnings by default; treat as errors only in CI builds. The option
 # carries the name every LibreSCRS repository uses, so one -DLIBRESCRS_WERROR=ON
 # means the same thing in each of them. Declared once, unconditionally, so a
-# LIBREAGENT_BUILD_WIRE-only (Core-less) configuration still gets it.
+# Core-less configuration still gets it.
 option(LIBRESCRS_WERROR "Treat compiler warnings as errors" OFF)
 
 # The one warning set every first-party library here compiles with, plus
@@ -170,7 +161,6 @@ if(LIBREAGENT_BUILD_CORE)
         src/operations/SignFlow.cpp
         src/operations/BatchSignFlow.cpp
         src/operations/RawCryptoFlow.cpp
-        src/operations/PropertyEmissionThrottler.cpp
         src/operations/RateLimiter.cpp
         src/operations/SigningEngineProvider.cpp
         src/operations/CertDerExport.cpp
@@ -196,6 +186,10 @@ if(LIBREAGENT_BUILD_CORE)
     target_include_directories(LibreAgentCore PUBLIC
         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
         $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>)
+    # The headers the core's own sources and the suites share live under src/
+    # and are not installed.
+    target_include_directories(LibreAgentCore PRIVATE
+        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src>)
     target_compile_features(LibreAgentCore PUBLIC cxx_std_23)
 
     # Same reason as LibreAgentWire below: Core's public headers use
@@ -247,7 +241,7 @@ if(LIBREAGENT_BUILD_CORE)
 
     # Compile-time-only lockstep proof between the std-only wire mirrors
     # (include/LibreSCRS/Agent/wire/{PreReadAuth,CredentialWire}.h — LM-free,
-    # reachable from a Core-less LIBREAGENT_BUILD_WIRE-only build) and their
+    # reachable from a Core-less build) and their
     # authoritative sources (LibreMiddleware's PreReadAuthMethod; this repo's
     # own CredentialOutcome/CredentialRecord/CredentialOpResult). It is its
     # own OBJECT target, deliberately NOT folded into LibreAgentWire's
@@ -269,108 +263,106 @@ endif() # LIBREAGENT_BUILD_CORE
 set(LIBREAGENT_DBUS_XML_DIR "${CMAKE_CURRENT_SOURCE_DIR}/wire/dbus" CACHE INTERNAL
     "Directory holding the agent's D-Bus introspection XML")
 
-if(LIBREAGENT_BUILD_WIRE)
-    # Shared canonical-CBOR wire codec plus the socket framing + typed message
-    # model — the CborValue seam over the vendored QCBOR C library, the
-    # length-prefixed + SCM_RIGHTS frame codec, the non-blocking streaming
-    # reassembler, and the CDDL-backed request/reply/event message model. No
-    # LibreMiddleware, no OpenSSL: every wire-capable consumer (the LibreDarwin
-    # agent daemon today, a future Qt client) shares this single library
-    # instead of forking it. PrompterProtocol and the Darwin-only AnonFd stay
-    # host-specific (LibreDarwin), not here. The macOS peer check (who serves or
-    # connects to the socket, by code signature) IS here: every client of the
-    # socket wire needs the same one, and a second copy is a second policy.
-    include(cmake/FetchQCBOR.cmake) # provides the qcbor::qcbor imported target
+# Shared canonical-CBOR wire codec plus the socket framing + typed message
+# model — the CborValue seam over the vendored QCBOR C library, the
+# length-prefixed + SCM_RIGHTS frame codec, the non-blocking streaming
+# reassembler, and the CDDL-backed request/reply/event message model. No
+# LibreMiddleware, no OpenSSL: every wire-capable consumer (the LibreDarwin
+# agent daemon today, a future Qt client) shares this single library
+# instead of forking it. PrompterProtocol and the Darwin-only AnonFd stay
+# host-specific (LibreDarwin), not here. The macOS peer check (who serves or
+# connects to the socket, by code signature) IS here: every client of the
+# socket wire needs the same one, and a second copy is a second policy.
+include(cmake/FetchQCBOR.cmake) # provides the qcbor::qcbor imported target
 
-    # The Apple team the macOS ends of the socket wire are built for: the App
-    # Group container holding the agent's socket is named after it, and the
-    # peer check's designated requirement names it (empty: "group.", no
-    # requirement, a build for CI and tests). A compiled constant, never read
-    # from the environment. One cache variable for every target that needs it,
-    # so a build that pulls in several sets the team once.
-    set(LIBRESCRS_TEAM_ID "" CACHE STRING
-        "Apple Team ID the App Group holding the agent socket is named after (empty: group.)")
-    if(NOT LIBRESCRS_TEAM_ID STREQUAL "" AND NOT LIBRESCRS_TEAM_ID MATCHES "^[A-Z0-9]+$")
-        message(FATAL_ERROR "LIBRESCRS_TEAM_ID must be upper-case letters and digits, got '${LIBRESCRS_TEAM_ID}'")
-    endif()
+# The Apple team the macOS ends of the socket wire are built for: the App
+# Group container holding the agent's socket is named after it, and the
+# peer check's designated requirement names it (empty: "group.", no
+# requirement, a build for CI and tests). A compiled constant, never read
+# from the environment. One cache variable for every target that needs it,
+# so a build that pulls in several sets the team once.
+set(LIBRESCRS_TEAM_ID "" CACHE STRING
+    "Apple Team ID the App Group holding the agent socket is named after (empty: group.)")
+if(NOT LIBRESCRS_TEAM_ID STREQUAL "" AND NOT LIBRESCRS_TEAM_ID MATCHES "^[A-Z0-9]+$")
+    message(FATAL_ERROR "LIBRESCRS_TEAM_ID must be upper-case letters and digits, got '${LIBRESCRS_TEAM_ID}'")
+endif()
 
-    add_library(LibreAgentWire STATIC
-        src/wire/Cbor.cpp
-        src/wire/Framing.cpp
-        src/wire/FrameReassembler.cpp
-        src/wire/Messages.cpp
-        src/wire/ClientCodec.cpp
-        # The sync-error vocabulary's two name-conversion halves, paired with
-        # wire/SyncError.h. Its own TU rather than a corner of Messages.cpp:
-        # the reverse half is on the PUBLIC surface (a Qt client classifies a
-        # wire error name at its own seam), so both halves belong next to the
-        # single-purpose header that declares them.
-        src/wire/SyncError.cpp
-        # Fold qcbor's compiled objects straight into this archive so an
-        # installed libLibreAgentWire.a is self-contained: a consumer linking
-        # only this archive + this repo's headers gets qcbor's symbols too,
-        # with no separate libqcbor.a to also find and link.
-        $<TARGET_OBJECTS:qcbor>)
-    add_library(LibreAgent::Wire ALIAS LibreAgentWire)
-    if(APPLE)
-        find_library(LIBREAGENT_SECURITY_FRAMEWORK Security REQUIRED)
-        find_library(LIBREAGENT_COREFOUNDATION_FRAMEWORK CoreFoundation REQUIRED)
-        find_library(LIBREAGENT_BSM_LIB bsm REQUIRED) # audit_token_to_pid / _pidversion
-        target_sources(LibreAgentWire PRIVATE
-            src/wire/darwin/PeerIdentity.cpp
-            src/wire/darwin/PeerCodeSigning.cpp)
-        target_compile_definitions(LibreAgentWire PRIVATE LIBRESCRS_TEAM_ID="${LIBRESCRS_TEAM_ID}")
-        target_link_libraries(LibreAgentWire PUBLIC
-            ${LIBREAGENT_BSM_LIB}
-            ${LIBREAGENT_SECURITY_FRAMEWORK}
-            ${LIBREAGENT_COREFOUNDATION_FRAMEWORK})
-    endif()
-    target_include_directories(LibreAgentWire PUBLIC
-        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
-        $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>)
-    target_compile_features(LibreAgentWire PUBLIC cxx_std_23)
-    # Hidden, because this archive is folded WHOLE into the shared Qt client
-    # library and visibility is decided when an object is COMPILED — that
-    # target's own preset cannot reach objects arriving from a dependency.
-    # Without this line the client library exported 75 wire names, two of them
-    # API. Linking the archive still resolves everything; what changes is that
-    # a shared library folding it in stops re-exporting them, which is the
-    # point. The two API functions carry LIBRESCRS_AGENTWIRE_EXPORT, and
-    # ci/scripts/check-wire-exports.sh holds both halves on the built artifact.
-    set_target_properties(LibreAgentWire PROPERTIES
-        POSITION_INDEPENDENT_CODE ON
-        CXX_VISIBILITY_PRESET hidden
-        VISIBILITY_INLINES_HIDDEN ON)
-    # $<BUILD_INTERFACE:...>, not a plain PRIVATE: qcbor's headers are consumed
-    # only by Cbor.cpp (no public header of this target includes <qcbor/...>),
-    # and its objects are already folded into the archive above via
-    # TARGET_OBJECTS. A plain PRIVATE link here would still get the include
-    # dirs to that one TU during THIS build, but CMake's export machinery
-    # exports even PRIVATE links of a STATIC library to consumers as an
-    # INTERFACE_LINK_LIBRARIES "$<LINK_ONLY:qcbor::qcbor>" usage requirement —
-    # which would both defeat the point of folding qcbor in (a consumer would
-    # be told to separately find + link qcbor::qcbor too) and break
-    # find_package(LibreAgent COMPONENTS Wire) outright in a fresh consumer
-    # tree where that target was never defined (LibreAgentWireTargets.cmake
-    # fails its "referenced imported targets must exist" check). Wrapping in
-    # BUILD_INTERFACE keeps the include dirs for this project's own build of
-    # Cbor.cpp while making the requirement evaluate to nothing at export
-    # time, so INSTALL_INTERFACE carries no qcbor reference at all.
-    target_link_libraries(LibreAgentWire PRIVATE $<BUILD_INTERFACE:qcbor::qcbor>)
+add_library(LibreAgentWire STATIC
+    src/wire/Cbor.cpp
+    src/wire/Framing.cpp
+    src/wire/FrameReassembler.cpp
+    src/wire/Messages.cpp
+    src/wire/ClientCodec.cpp
+    # The sync-error vocabulary's two name-conversion halves, paired with
+    # wire/SyncError.h. Its own TU so the two halves of the name conversion
+    # read side by side over the same closed set.
+    src/wire/SyncError.cpp
+    # Fold qcbor's compiled objects straight into this archive so an
+    # installed libLibreAgentWire.a is self-contained: a consumer linking
+    # only this archive + this repo's headers gets qcbor's symbols too,
+    # with no separate libqcbor.a to also find and link.
+    $<TARGET_OBJECTS:qcbor>)
+add_library(LibreAgent::Wire ALIAS LibreAgentWire)
+if(APPLE)
+    find_library(LIBREAGENT_SECURITY_FRAMEWORK Security REQUIRED)
+    find_library(LIBREAGENT_COREFOUNDATION_FRAMEWORK CoreFoundation REQUIRED)
+    find_library(LIBREAGENT_BSM_LIB bsm REQUIRED) # audit_token_to_pid / _pidversion
+    target_sources(LibreAgentWire PRIVATE
+        src/wire/darwin/PeerIdentity.cpp
+        src/wire/darwin/PeerCodeSigning.cpp)
+    target_compile_definitions(LibreAgentWire PRIVATE LIBRESCRS_TEAM_ID="${LIBRESCRS_TEAM_ID}")
+    target_link_libraries(LibreAgentWire PUBLIC
+        ${LIBREAGENT_BSM_LIB}
+        ${LIBREAGENT_SECURITY_FRAMEWORK}
+        ${LIBREAGENT_COREFOUNDATION_FRAMEWORK})
+endif()
+target_include_directories(LibreAgentWire PUBLIC
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+    $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>)
+target_include_directories(LibreAgentWire PRIVATE
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src>)
+target_compile_features(LibreAgentWire PUBLIC cxx_std_23)
+# Hidden, because this archive is folded WHOLE into the shared Qt client
+# library and visibility is decided when an object is COMPILED — that
+# target's own preset cannot reach objects arriving from a dependency.
+# Without this line the client library exported 75 wire names.
+# Linking the archive still resolves everything; what changes is that
+# a shared library folding it in stops re-exporting them, which is the
+# point. Nothing of this archive is exported from the client library, and
+# ci/scripts/check-wire-exports.sh holds that on the built artifact.
+set_target_properties(LibreAgentWire PROPERTIES
+    POSITION_INDEPENDENT_CODE ON
+    CXX_VISIBILITY_PRESET hidden
+    VISIBILITY_INLINES_HIDDEN ON)
+# $<BUILD_INTERFACE:...>, not a plain PRIVATE: qcbor's headers are consumed
+# only by Cbor.cpp (no public header of this target includes <qcbor/...>),
+# and its objects are already folded into the archive above via
+# TARGET_OBJECTS. A plain PRIVATE link here would still get the include
+# dirs to that one TU during THIS build, but CMake's export machinery
+# exports even PRIVATE links of a STATIC library to consumers as an
+# INTERFACE_LINK_LIBRARIES "$<LINK_ONLY:qcbor::qcbor>" usage requirement —
+# which would both defeat the point of folding qcbor in (a consumer would
+# be told to separately find + link qcbor::qcbor too) and break
+# find_package(LibreAgent COMPONENTS Wire) outright in a fresh consumer
+# tree where that target was never defined (LibreAgentWireTargets.cmake
+# fails its "referenced imported targets must exist" check). Wrapping in
+# BUILD_INTERFACE keeps the include dirs for this project's own build of
+# Cbor.cpp while making the requirement evaluate to nothing at export
+# time, so INSTALL_INTERFACE carries no qcbor reference at all.
+target_link_libraries(LibreAgentWire PRIVATE $<BUILD_INTERFACE:qcbor::qcbor>)
 
-    libreagent_strict_warnings(LibreAgentWire)
+libreagent_strict_warnings(LibreAgentWire)
 
-    # Compiling this library with the flag is already handled once for the whole
-    # project (the add_compile_options near the top). What this adds is the
-    # PUBLIC half: a directory-scope option does not cross into a consumer's own
-    # directory, so without it a FetchContent consumer's targets would compile
-    # against these headers with a different libc++ than the library was built
-    # with. PUBLIC leaves the consumer nothing to opt into and nothing to forget.
-    if(CMAKE_CXX_COMPILER_ID STREQUAL "AppleClang")
-        target_compile_options(LibreAgentWire PUBLIC -fexperimental-library)
-        target_link_options(LibreAgentWire PUBLIC -fexperimental-library)
-    endif()
-endif() # LIBREAGENT_BUILD_WIRE
+# Compiling this library with the flag is already handled once for the whole
+# project (the add_compile_options near the top). What this adds is the
+# PUBLIC half: a directory-scope option does not cross into a consumer's own
+# directory, so without it a FetchContent consumer's targets would compile
+# against these headers with a different libc++ than the library was built
+# with. PUBLIC leaves the consumer nothing to opt into and nothing to forget.
+if(CMAKE_CXX_COMPILER_ID STREQUAL "AppleClang")
+    target_compile_options(LibreAgentWire PUBLIC -fexperimental-library)
+    target_link_options(LibreAgentWire PUBLIC -fexperimental-library)
+endif()
 
 if(LIBREAGENT_BUILD_PKCS11_FACADE)
     # The Cryptoki core: the C_* ABI, the slot/object/mechanism model, and the
@@ -396,6 +388,8 @@ if(LIBREAGENT_BUILD_PKCS11_FACADE)
     target_include_directories(LibreAgentPkcs11Facade PUBLIC
         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
         $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>)
+    target_include_directories(LibreAgentPkcs11Facade PRIVATE
+        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src>)
     target_compile_features(LibreAgentPkcs11Facade PUBLIC cxx_std_23)
     # Hidden, for the same reason LibreAgentWire is: this archive is folded
     # WHOLE into a shared module, and visibility is decided when an object is
@@ -423,6 +417,8 @@ if(LIBREAGENT_BUILD_PKCS11_SOCKET_CLIENT)
     add_library(LibreAgent::Pkcs11SocketClient ALIAS LibreAgentPkcs11SocketClient)
     target_link_libraries(LibreAgentPkcs11SocketClient
         PUBLIC LibreAgent::Pkcs11Facade LibreAgent::Wire)
+    target_include_directories(LibreAgentPkcs11SocketClient PRIVATE
+        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src>)
     target_compile_features(LibreAgentPkcs11SocketClient PUBLIC cxx_std_23)
     set_target_properties(LibreAgentPkcs11SocketClient PROPERTIES
         POSITION_INDEPENDENT_CODE ON
@@ -546,11 +542,10 @@ if(PROJECT_IS_TOP_LEVEL)
 
 endif()
 
-if((LIBREAGENT_BUILD_CORE OR LIBREAGENT_BUILD_WIRE OR LIBREAGENT_BUILD_PKCS11_FACADE)
-   AND (PROJECT_IS_TOP_LEVEL OR LIBREAGENT_BUILD_TEST_SUPPORT))
+if(PROJECT_IS_TOP_LEVEL OR LIBREAGENT_BUILD_TEST_SUPPORT)
     # Platform-neutral unit tests + the five shared backend fakes (Core only)
-    # plus the dependency-light Wire/spike GTest targets, which stay reachable
-    # in a Core-less (CORE=OFF, WIRE=ON) configuration too — see
+    # plus the dependency-light Wire GTest targets, which stay reachable
+    # in a Core-less (CORE=OFF) configuration too — see
     # tests/CMakeLists.txt for the Core/non-Core split, and for the fixture
     # archive it defines above its own top-level guard.
     add_subdirectory(tests)

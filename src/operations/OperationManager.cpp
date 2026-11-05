@@ -223,7 +223,7 @@ void OperationManager::workerLoop(ReaderWorker& worker, std::stop_token st)
             //
             // quiesce() the op FIRST (as the normal path does at the loop
             // bottom, which the abandon branch used to skip): it stops + joins
-            // the per-op watchdog + throttler on THIS (the zombie worker) thread.
+            // the per-op watchdog on THIS (the zombie worker) thread.
             // Without it a still-armed watchdog could fire finishWatchdogTimeout()
             // -> finish() -> m_channel->emitFinished() after the backend has been
             // torn down; joining it here means it can never touch the channel
@@ -237,13 +237,13 @@ void OperationManager::workerLoop(ReaderWorker& worker, std::stop_token st)
             return;
         }
 
-        // Reclaim the op's per-op auxiliary threads now that it is terminal,
+        // Reclaim the op's per-op auxiliary thread now that it is terminal,
         // BEFORE it enters the 5 s cleanup-grace queue. Otherwise a burst of
         // fast operations parks hundreds of idle jthreads in the grace window
-        // (each finished op holding its throttler + watchdog thread until
+        // (each finished op holding its watchdog thread until
         // destruction), exhausting threads and wedging the single bus event
         // loop. The op object stays exported for the grace; only its now-idle
-        // threads are reclaimed here, on the worker thread.
+        // thread is reclaimed here, on the worker thread.
         op->quiesce();
 
         if (m_production) {

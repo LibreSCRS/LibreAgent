@@ -6,8 +6,7 @@
 #include <LibreSCRS/Agent/backend/OperationChannel.h> // OperationChannel, ResultPayload
 #include <LibreSCRS/Agent/OperationPhase.h>           // OperationPhase, OperationStatus
 #include <LibreSCRS/Agent/OperationState.h>           // OperationState
-#include <LibreSCRS/Agent/operations/PropertyEmissionThrottler.h>
-#include <LibreSCRS/Agent/operations/Seams.h> // OperationPhaseSink
+#include <LibreSCRS/Agent/operations/Seams.h>         // OperationPhaseSink
 #include <LibreSCRS/CancelToken.h>
 #include <atomic>
 #include <chrono>
@@ -72,8 +71,7 @@ public:
     // token is a no-op.
     void bindShutdownToken(LibreSCRS::CancelToken shutdownToken) noexcept;
 
-    // Reclaim this op's per-op auxiliary threads (property-emission
-    // throttler + watchdog) once it is terminal, WITHOUT destroying the op
+    // Reclaim this op's per-op auxiliary thread (the watchdog) once it is terminal, WITHOUT destroying the op
     // (it stays exported for the cleanup grace). Called by the per-reader
     // worker thread immediately after runOnWorker() returns, so it never
     // joins the thread it runs on. Idempotent.
@@ -115,20 +113,6 @@ public:
         return m_finished.load(std::memory_order_acquire);
     }
 
-    // Accessors used by the OperationManager when wiring property reads
-    // through the shared OperationState (also referenced by tests).
-    [[nodiscard]] std::uint32_t phase() const noexcept
-    {
-        return m_state ? m_state->phase.load(std::memory_order_acquire) : 0u;
-    }
-    [[nodiscard]] double progress() const noexcept
-    {
-        return m_state ? m_state->progress.load(std::memory_order_acquire) : 0.0;
-    }
-    [[nodiscard]] bool isIndeterminate() const noexcept
-    {
-        return m_state && m_state->isIndeterminate.load(std::memory_order_acquire);
-    }
     // Terminal property mirrors. Valid (race-free) only AFTER finish() has
     // run; a client reads them within the cleanup grace window to recover a
     // Finished signal it may have missed (see the XML doc block).
@@ -220,22 +204,13 @@ protected:
     // dropped connection rather than a completion into freed memory.
     [[nodiscard]] bool shutdownRequested() const noexcept;
 
-    // Worker-side mutator. setPhase is public (via OperationPhaseSink
-    // override above) so the orchestration flow can drive it too.
-    void setProgress(double progress) noexcept;
-
-    // Marks the operation as an honest spinner (no meaningful percentage).
-    // Card-I/O operations call setIndeterminate(true) at op start; the
-    // determinate Progress property is reserved for a future op that can
-    // report real percentages. Emits PropertiesChanged on change.
-    void setIndeterminate(bool indeterminate) noexcept;
     [[nodiscard]] LibreSCRS::CancelToken token() const noexcept
     {
         return m_token;
     }
 
     // Subclass-driven terminal transition. Idempotent via std::once_flag.
-    // setProgress(1.0) and setPhase(Done) are implicit when status == Ok.
+    // setPhase(Done) is implicit.
     void finish(OperationStatus status, ErrorCode code, std::string msgKey, std::string msgFallback) noexcept;
 
     // Emit the operation's high-level result (Identity1/Certificates1/Photo1/
@@ -298,10 +273,6 @@ private:
     // worker-side token observation share a single cancellation signal.
     LibreSCRS::CancelSource m_cancelSource;
     LibreSCRS::CancelToken m_token;
-    // Coalesces progress-only PropertiesChanged emissions (at most one
-    // per 100 ms). Phase transitions still emit immediately through
-    // setPhase()'s direct path.
-    std::unique_ptr<PropertyEmissionThrottler> m_progressThrottler;
     std::once_flag m_finishOnce;
     // Mirror of the std::once_flag for external observation. Stored AFTER
     // emitFinished completes (i.e. inside the call_once body) so a

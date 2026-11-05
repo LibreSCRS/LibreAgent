@@ -6,7 +6,7 @@
 
 #include "fakes/FakeSocketAgent.h"
 
-#include <LibreSCRS/Agent/wire/ClientCodec.h>
+#include "wire/ClientCodec.h"
 #include <LibreSCRS/Agent/wire/Framing.h>
 #include <LibreSCRS/Agent/wire/Messages.h>
 
@@ -54,7 +54,7 @@ TEST(FakeSocketAgent, AnswersGetStateWithTheReadersItWasGiven)
 
     // Hello first. An agent that answered GetState before a handshake would let
     // a client skip the feature negotiation and never notice it had.
-    const auto ack = roundTrip(fd, W::Hello{W::kProtocolVersion, std::string{"test"}}, 1);
+    const auto ack = roundTrip(fd, W::Hello{W::kProtocolVersion}, 1);
     ASSERT_TRUE(ack.has_value());
     ASSERT_TRUE(std::holds_alternative<W::HelloAck>(ack->reply));
 
@@ -85,13 +85,13 @@ TEST(FakeSocketAgent, HelloCarriesTheEventOptOutAcrossTheSocket)
 
     const int fd = T::connectTo(fake.path());
     ASSERT_GE(fd, 0);
-    ASSERT_TRUE(roundTrip(fd, W::Hello{W::kProtocolVersion, std::string{"test"}}, 1).has_value());
+    ASSERT_TRUE(roundTrip(fd, W::Hello{W::kProtocolVersion}, 1).has_value());
     EXPECT_TRUE(fake.lastHello().wantsEvents) << "a Hello that omits the key asks for events";
     ::close(fd);
 
     const int fd2 = T::connectTo(fake.path());
     ASSERT_GE(fd2, 0);
-    ASSERT_TRUE(roundTrip(fd2, W::Hello{W::kProtocolVersion, std::string{"test"}, false}, 1).has_value());
+    ASSERT_TRUE(roundTrip(fd2, W::Hello{W::kProtocolVersion, false}, 1).has_value());
     EXPECT_FALSE(fake.lastHello().wantsEvents) << "the opt-out survived the frame";
     ::close(fd2);
 }
@@ -105,7 +105,7 @@ TEST(FakeSocketAgent, DeliversAnOperationAsThreeFramesInOrder)
 
     const int fd = T::connectTo(fake.path());
     ASSERT_GE(fd, 0);
-    ASSERT_TRUE(roundTrip(fd, W::Hello{W::kProtocolVersion, std::nullopt}, 1).has_value());
+    ASSERT_TRUE(roundTrip(fd, W::Hello{W::kProtocolVersion}, 1).has_value());
 
     // OpStarted -> OpResultReady(CertList) -> OpFinished. A fake that replied
     // with the list inline would let a client that never drives an operation
@@ -144,7 +144,7 @@ TEST(FakeSocketAgent, CanInterleaveAnUnrelatedEventInsideAnOperation)
 
     const int fd = T::connectTo(fake.path());
     ASSERT_GE(fd, 0);
-    ASSERT_TRUE(roundTrip(fd, W::Hello{W::kProtocolVersion, std::nullopt}, 1).has_value());
+    ASSERT_TRUE(roundTrip(fd, W::Hello{W::kProtocolVersion}, 1).has_value());
     ASSERT_TRUE(roundTrip(fd, W::ReadCertificates{"c1"}, 2).has_value());
 
     // Without this the client's "discard what is not mine" rule is never
@@ -177,7 +177,7 @@ TEST(FakeSocketAgent, CanRefuseACallWithEachNameTheWireHas)
 
         const int fd = T::connectTo(fake.path());
         ASSERT_GE(fd, 0);
-        ASSERT_TRUE(roundTrip(fd, W::Hello{W::kProtocolVersion, std::nullopt}, 1).has_value());
+        ASSERT_TRUE(roundTrip(fd, W::Hello{W::kProtocolVersion}, 1).has_value());
         const auto reply = roundTrip(fd, W::PkLogin{"r1"}, 2);
         ASSERT_TRUE(reply.has_value());
         const auto* err = std::get_if<W::ErrInfo>(&reply->reply);
@@ -208,7 +208,7 @@ TEST(FakeSocketAgent, AnEcKeyWithoutASeatedPointIsRefusedNotAnsweredEmpty)
     // Closed on every exit: a failed assertion that left it open would park
     // the double's stop() on a connection nobody ends.
     const std::unique_ptr<const int, void (*)(const int*)> closer{&fd, [](const int* f) { ::close(*f); }};
-    ASSERT_TRUE(roundTrip(fd, W::Hello{W::kProtocolVersion, std::nullopt}, 1).has_value());
+    ASSERT_TRUE(roundTrip(fd, W::Hello{W::kProtocolVersion}, 1).has_value());
 
     const auto unseated = roundTrip(fd, W::PkPublicKey{"r1", "unseated"}, 2);
     ASSERT_TRUE(unseated.has_value());

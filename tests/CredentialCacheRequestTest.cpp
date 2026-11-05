@@ -15,7 +15,7 @@
 #include <LibreSCRS/Agent/backend/PrompterClientBase.h>
 #include <LibreSCRS/Agent/operations/PromptPolicy.h> // kMaxPaceAttempts
 #include <LibreSCRS/Agent/operations/PromptSerializer.h>
-#include <LibreSCRS/Agent/operations/SerializingPrompter.h>
+#include "operations/SerializingPrompter.h"
 
 #include <LibreSCRS/Auth/AuthRequirement.h>
 #include <LibreSCRS/Auth/CredentialResult.h>

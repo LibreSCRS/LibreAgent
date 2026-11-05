@@ -13,7 +13,7 @@
 #include <LibreSCRS/Agent/cache/CredentialCache.h>
 #include <LibreSCRS/Agent/cache/CredentialSnapshotCache.h>
 #include <LibreSCRS/Agent/operations/CardSessionHolder.h>
-#include <LibreSCRS/Agent/operations/CredentialListFlow.h>
+#include "operations/CredentialListFlow.h"
 #include <LibreSCRS/Agent/operations/OperationBase.h> // OperationPhaseSink
 #include <LibreSCRS/Agent/operations/PromptSerializer.h>
 
@@ -142,9 +142,6 @@ struct Harness
     // Set BEFORE make() to drive an acquire failure (mirrors CertReadFlowTest);
     // the holder is built lazily in make().
     std::optional<LibreSCRS::SmartCard::OpenError> failWith;
-    // Set BEFORE make() to pre-acquire the held session and mark it dead so the
-    // flow observes card removal (isDead()) after the list returns.
-    bool deadSession = false;
     std::unique_ptr<CardSessionHolder> holder;
     FakeCredentialManager credentials;
     // When set, make() binds THIS seam instead of `credentials` (the
@@ -166,12 +163,6 @@ struct Harness
     CredentialListFlow make()
     {
         holder = makeHolder(failWith);
-        if (deadSession) {
-            auto acq = holder->acquire();
-            if (acq) {
-                acq->session->markDead();
-            }
-        }
         return CredentialListFlow{CredentialListFlowDeps{
             .holder = *holder,
             .credentials = seamOverride != nullptr ? *seamOverride : credentials,
@@ -274,36 +265,6 @@ TEST(CredentialListFlow, OpenFailureMapsToErrorLikeCertFlow)
     auto result = h.make().run();
     EXPECT_EQ(result.outcome, CredentialListFlow::Outcome::Error);
     EXPECT_EQ(result.code, ErrorCode::CommunicationError);
-}
-
-TEST(CredentialListFlow, TransportLossDuringListMapsToCardRemoved)
-{
-    // The card is yanked while getPINList runs: the seam swallows the candidate
-    // throw and returns an empty list, but the session is marked dead. The flow
-    // distinguishes this from a genuinely empty card and maps it through the
-    // channel-activation error taxonomy to CardRemoved.
-    Harness h;
-    h.deadSession = true;
-    h.credentials.listResult = {};
-    auto result = h.make().run();
-    EXPECT_EQ(result.outcome, CredentialListFlow::Outcome::Error);
-    EXPECT_EQ(result.code, ErrorCode::CardRemoved);
-}
-
-// The card was pulled mid-list but the seam still handed back entries (its
-// snapshot predates the removal): the flow must NOT report Ok for a removed
-// card and must NOT re-create a snapshot under the dead cardKey (the removal
-// hook already fired for it). Mirrors the mutation flows' unconditional
-// isDead() classification.
-TEST(CredentialListFlow, DeadSessionAfterEntriesMapsToCardRemovedAndCachesNothing)
-{
-    Harness h;
-    h.deadSession = true; // non-empty listResult stays seeded by the harness
-    auto result = h.make().run();
-    EXPECT_EQ(result.outcome, CredentialListFlow::Outcome::Error);
-    EXPECT_EQ(result.code, ErrorCode::CardRemoved);
-    EXPECT_FALSE(h.snapshotCache.get("card-A").has_value())
-        << "a dead session must never re-create a snapshot the removal hook just dropped";
 }
 
 // A user-cancelled CAN prompt inside getPINList: the plugin's channel

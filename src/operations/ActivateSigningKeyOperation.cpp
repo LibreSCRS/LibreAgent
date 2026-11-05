@@ -2,7 +2,7 @@
 // SPDX-FileCopyrightText: 2026 hirashix0
 #include <LibreSCRS/Agent/operations/ActivateSigningKeyOperation.h>
 #include <LibreSCRS/Agent/operations/PromptSerializer.h>
-#include <LibreSCRS/Agent/operations/KeyActivationFlow.h>
+#include "operations/KeyActivationFlow.h"
 #include <LibreSCRS/Agent/value/CredentialRecord.h>
 #include <LibreSCRS/Agent/value/ErrorTaxonomy.h> // errorCodeFor(CredentialOutcome)
 #include <optional>
@@ -51,7 +51,6 @@ void ActivateSigningKeyOperation::doWork()
         finish(OperationStatus::Error, ErrorCode::CommunicationError, "op.internal", "operation has no session holder");
         return;
     }
-    setIndeterminate(true);
     setPhase(static_cast<std::uint32_t>(OperationPhase::Connecting));
 
     // Resolve the addressed record AND the snapshot's listing-plugin binding
@@ -76,7 +75,6 @@ void ActivateSigningKeyOperation::doWork()
         .requester = m_deps.requester,
         .reader = m_deps.readerName,
         .artifact = m_deps.artifact,
-        .pinActivated = std::nullopt,
         .token = token(),
     });
 

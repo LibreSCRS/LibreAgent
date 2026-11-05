@@ -53,16 +53,12 @@ CredentialRecord makeFullCredentialRecord()
     rec.usesLeft = 5;
     rec.usesMax = 20;
     rec.unblocksLeft = 10;
-    rec.minLength = 4;
-    rec.maxLength = 8;
     rec.canChange = true;
     rec.unblockable = true;
-    rec.unblockStyle = "unblockAndChange";
     rec.activatable = true;
     rec.keyActivationPending = true;
     rec.keyActivatable = true;
     rec.recovery = "holderViaPuk";
-    rec.probeSafe = true;
     rec.blockedGuidanceKey = "guidance.blocked.key";
     rec.blockedGuidanceFallback = "Blocked; contact issuer";
     rec.keyActivationGuidanceKey = "guidance.activate.key";
@@ -70,7 +66,7 @@ CredentialRecord makeFullCredentialRecord()
     return rec;
 }
 
-// A credential record with EVERY optional absent (only the 12 required keys).
+// A credential record with EVERY optional absent (only the 10 required keys).
 CredentialRecord makeBareCredentialRecord()
 {
     CredentialRecord rec;
@@ -78,7 +74,6 @@ CredentialRecord makeBareCredentialRecord()
     rec.label = "";
     rec.kind = "unknown";
     rec.state = "unknown";
-    rec.unblockStyle = "unknown";
     rec.recovery = "unknown";
     // all optionals nullopt (default); all bools false (default)
     return rec;
@@ -86,8 +81,7 @@ CredentialRecord makeBareCredentialRecord()
 
 TEST(MessagesRoundTrip, EveryRequestType)
 {
-    expectStable({1, Hello{1, std::nullopt}});
-    expectStable({2, Hello{1, std::string("LibreMac/0.1")}});
+    expectStable({1, Hello{1}});
     expectStable({3, GetState{}});
     expectStable({4, ReadIdentity{"reader/0:card/0"}});
     expectStable({5, GetPhoto{"reader/0:card/0"}});
@@ -126,11 +120,11 @@ TEST(MessagesRoundTrip, EveryRequestType)
 TEST(MessagesRoundTrip, HelloWantsEventsRoundTripsAndDefaultsTrue)
 {
     // An explicit opt-out survives the round trip byte-stably.
-    expectStable({7, Hello{7, std::string("x"), false}});
+    expectStable({7, Hello{7, false}});
 
     // A Hello with no such key means the client wants events: that is what
     // every client sent before the key existed, and what they still send.
-    const std::vector<std::uint8_t> bytes = toCbor(RequestEnvelope{8, Hello{7, std::string("x")}}).encode();
+    const std::vector<std::uint8_t> bytes = toCbor(RequestEnvelope{8, Hello{7}}).encode();
     const auto parsed = parseRequest(bytes);
     ASSERT_TRUE(parsed.has_value());
     const auto* hello = std::get_if<Hello>(&parsed->body);
@@ -139,8 +133,8 @@ TEST(MessagesRoundTrip, HelloWantsEventsRoundTripsAndDefaultsTrue)
 
     // The encoder omits the key in that case, so a client that wants events
     // puts no new bytes on the wire.
-    EXPECT_EQ(bytes, toCbor(RequestEnvelope{8, Hello{7, std::string("x"), true}}).encode());
-    EXPECT_NE(bytes, toCbor(RequestEnvelope{8, Hello{7, std::string("x"), false}}).encode());
+    EXPECT_EQ(bytes, toCbor(RequestEnvelope{8, Hello{7, true}}).encode());
+    EXPECT_NE(bytes, toCbor(RequestEnvelope{8, Hello{7, false}}).encode());
 }
 
 TEST(MessagesRoundTrip, SetConfigCarriesAnyValue)
@@ -219,7 +213,7 @@ TEST(MessagesRoundTrip, SyncErrorNamesForCredentialErrors)
 }
 
 // An Ok listing result: two records, one with every optional present (23 keys)
-// and one with every optional absent (only the 12 required keys). The agent only
+// and one with every optional absent (only the 10 required keys). The agent only
 // ENCODES results, so this inspects the built frame (no decode side).
 TEST(MessagesRoundTrip, CredentialsResultOkListingEncodesEveryRecordKey)
 {
@@ -241,38 +235,32 @@ TEST(MessagesRoundTrip, CredentialsResultOkListingEncodesEveryRecordKey)
     ASSERT_NE(cr->find("blocked"), nullptr);
     EXPECT_EQ(cr->find("blocked")->asBool(), false);
     EXPECT_EQ(cr->find("retriesLeft"), nullptr);
-    EXPECT_EQ(cr->find("pinActivated"), nullptr);
-    EXPECT_EQ(cr->find("keyActivated"), nullptr);
 
     const auto* records = result->find("records");
     ASSERT_NE(records, nullptr);
     ASSERT_NE(records->asArray(), nullptr);
     ASSERT_EQ(records->asArray()->size(), 2u);
 
-    // Record 0: all 23 keys present.
+    // Record 0: every key present.
     const auto& full = (*records->asArray())[0];
     ASSERT_NE(full.asMap(), nullptr);
-    EXPECT_EQ(full.asMap()->size(), 23u);
+    EXPECT_EQ(full.asMap()->size(), 19u);
     EXPECT_EQ(*full.find("id")->asText(), "sign:0x92");
     EXPECT_EQ(*full.find("kind")->asText(), "sign");
     EXPECT_EQ(*full.find("state")->asText(), "operational");
     EXPECT_EQ(full.find("retriesLeft")->asUInt(), 3u);
-    EXPECT_EQ(full.find("minLength")->asUInt(), 4u);
-    EXPECT_EQ(full.find("maxLength")->asUInt(), 8u);
     EXPECT_EQ(full.find("canChange")->asBool(), true);
-    EXPECT_EQ(full.find("probeSafe")->asBool(), true);
-    EXPECT_EQ(*full.find("unblockStyle")->asText(), "unblockAndChange");
     EXPECT_EQ(*full.find("recovery")->asText(), "holderViaPuk");
     EXPECT_EQ(*full.find("blockedGuidanceKey")->asText(), "guidance.blocked.key");
     EXPECT_EQ(*full.find("keyActivationGuidanceFallback")->asText(), "Activate your signing key");
 
-    // Record 1: only the 12 required keys; every optional omitted.
+    // Record 1: only the 10 required keys; every optional omitted.
     const auto& bare = (*records->asArray())[1];
     ASSERT_NE(bare.asMap(), nullptr);
-    EXPECT_EQ(bare.asMap()->size(), 12u);
-    for (const char* omitted : {"retriesLeft", "retriesMax", "usesLeft", "usesMax", "unblocksLeft", "minLength",
-                                "maxLength", "blockedGuidanceKey", "blockedGuidanceFallback",
-                                "keyActivationGuidanceKey", "keyActivationGuidanceFallback"}) {
+    EXPECT_EQ(bare.asMap()->size(), 10u);
+    for (const char* omitted :
+         {"retriesLeft", "retriesMax", "usesLeft", "usesMax", "unblocksLeft", "blockedGuidanceKey",
+          "blockedGuidanceFallback", "keyActivationGuidanceKey", "keyActivationGuidanceFallback"}) {
         EXPECT_EQ(bare.find(omitted), nullptr) << "expected optional key '" << omitted << "' to be omitted";
     }
     // Required keys present even when default-valued.
@@ -302,26 +290,6 @@ TEST(MessagesRoundTrip, CredentialsResultFailedMutationEncoding)
     ASSERT_NE(records, nullptr);
     ASSERT_NE(records->asArray(), nullptr);
     EXPECT_TRUE(records->asArray()->empty());
-}
-
-// Partial signing-key bring-up: keyActivationFailed with pinActivated=true,
-// keyActivated=false (both booleans present because they are engaged).
-TEST(MessagesRoundTrip, CredentialsResultKeyActivationFailedEncoding)
-{
-    CredentialsResult keyFail;
-    keyFail.result.outcome = CredentialOutcome::KeyActivationFailed;
-    keyFail.result.blocked = false;
-    keyFail.result.pinActivated = true;
-    keyFail.result.keyActivated = false;
-
-    const CborValue c = toCbor(OpResultReady{42, keyFail});
-    const auto* cr = c.find("result")->find("result");
-    ASSERT_NE(cr, nullptr);
-    EXPECT_EQ(*cr->find("outcome")->asText(), "keyActivationFailed");
-    ASSERT_NE(cr->find("pinActivated"), nullptr);
-    EXPECT_EQ(cr->find("pinActivated")->asBool(), true);
-    ASSERT_NE(cr->find("keyActivated"), nullptr);
-    EXPECT_EQ(cr->find("keyActivated")->asBool(), false);
 }
 
 TEST(MessagesRoundTrip, RejectsUnknownTag)
@@ -514,10 +482,8 @@ TEST(MessagesRoundTrip, ConfigReplyWithEveryEntryKindEncodes)
         reply.entries.emplace("TslSources", CborValue(std::move(sources)));
     }
     reply.entries.emplace("TslCacheDir", CborValue(std::string("/var/cache/tsl")));
-    reply.entries.emplace("AiaCacheDir", CborValue(std::string("/var/cache/aia")));
     reply.entries.emplace("DefaultReason", CborValue(std::string()));
     reply.entries.emplace("DefaultLocation", CborValue(std::string()));
-    reply.entries.emplace("PluginDir", CborValue(std::string("/usr/lib/librescrs")));
 
     const CborValue msg = makeReply(7, reply);
     const auto bytes = msg.encode();
@@ -526,7 +492,7 @@ TEST(MessagesRoundTrip, ConfigReplyWithEveryEntryKindEncodes)
     const CborValue* entries = msg.find("entries");
     ASSERT_NE(entries, nullptr);
     ASSERT_NE(entries->asMap(), nullptr);
-    EXPECT_EQ(entries->asMap()->size(), 9u);
+    EXPECT_EQ(entries->asMap()->size(), 7u);
 }
 
 TEST(MessagesRoundTrip, EveryEventEncodesWithItsTag)
@@ -536,9 +502,7 @@ TEST(MessagesRoundTrip, EveryEventEncodesWithItsTag)
     EXPECT_EQ(*toCbor(CardAdded{CardState{"c", "r", 0x3, PreReadAuth::Can}}).find("t")->asText(), "CardAdded");
     EXPECT_EQ(*toCbor(CardRemoved{"c"}).find("t")->asText(), "CardRemoved");
     EXPECT_EQ(*toCbor(ConfigChanged{"DefaultLevel"}).find("t")->asText(), "ConfigChanged");
-    EXPECT_EQ(
-        *toCbor(OpProgress{1, OperationPhase::Signing, std::nullopt, std::nullopt, std::nullopt}).find("t")->asText(),
-        "OpProgress");
+    EXPECT_EQ(*toCbor(OpProgress{1, OperationPhase::Signing}).find("t")->asText(), "OpProgress");
     {
         OpIdentityGroup group;
         group.op = 1;
@@ -685,8 +649,7 @@ int dumpFixtures(const std::filesystem::path& dir)
         writeFixture(dir, "PropertyChanged", toCbor(PropertyChanged{"r1", "org.librescrs.Reader1", props}));
     }
     writeFixture(dir, "ConfigChanged", toCbor(ConfigChanged{"DefaultLevel"}));
-    // Fractional progress: 0.5 lands as f16 on the wire via QCBOR preferred serialization.
-    writeFixture(dir, "OpProgress", toCbor(OpProgress{9, OperationPhase::Signing, 0.5, std::nullopt, std::nullopt}));
+    writeFixture(dir, "OpProgress", toCbor(OpProgress{9, OperationPhase::Signing}));
     {
         // Progressive delivery, same op id as OpResultReadyIdentity below (the
         // group that streamed before that op's eventual Result) -- one

@@ -26,8 +26,6 @@ ErrorCode errorCodeFor(LibreSCRS::SecureChannel::ChannelActivationError err) noe
         return ErrorCode::None;
     case ChannelActivationError::Cancelled:
         return ErrorCode::None;
-    case ChannelActivationError::CardRemoved:
-        return ErrorCode::CardRemoved;
     case ChannelActivationError::ReaderError:
         return ErrorCode::CommunicationError;
     case ChannelActivationError::CredentialsRequired:

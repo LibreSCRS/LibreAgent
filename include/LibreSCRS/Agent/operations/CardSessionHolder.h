@@ -152,10 +152,6 @@ private:
     ///        secure channel. The connection itself is kept.
     void demote() noexcept;
 
-    /// @brief Union of all capabilities declared by the held session's candidates.
-    ///        Opens the session if not already open. Returns 0 on open failure.
-    [[nodiscard]] std::uint32_t capabilities() noexcept;
-
     /// @brief Strongest pre-read auth requirement among the held session's
     ///        candidates. Opens the session if not already open, queries each
     ///        candidate's CardPlugin::preReadAuth on the held session and

@@ -29,8 +29,8 @@
 #include <LibreSCRS/Agent/operations/OperationBase.h> // OperationPhaseSink
 #include <LibreSCRS/Agent/operations/OperationManager.h>
 #include <LibreSCRS/Agent/operations/PromptSerializer.h>
-#include <LibreSCRS/Agent/operations/RawCryptoFlow.h>
-#include <LibreSCRS/Agent/operations/SerializingPrompter.h>
+#include "operations/RawCryptoFlow.h"
+#include "operations/SerializingPrompter.h"
 #include <LibreSCRS/Agent/pkcs11/LeaseManager.h>
 #include <LibreSCRS/Agent/pkcs11/Pkcs11Broker.h>
 #include <LibreSCRS/CancelToken.h>

@@ -42,9 +42,8 @@ struct PinManageFlowDeps
     PrompterClientBase& prompter;
     PromptSerializer& serializer;
     CredentialCache& cache;
-    // Caches invalidated when the mutation reaches the card (see
-    // invalidateForMutationOutcome): the per-card credential snapshot and the
-    // identity/cert read cache. The CAN/MRZ secret cache (`cache`) is NOT among
+    // Caches invalidated when the mutation reaches the card: the per-card
+    // credential snapshot and the identity/cert read cache. The CAN/MRZ secret cache (`cache`) is NOT among
     // them — a mutation must not evict a still-valid pre-read secret.
     CredentialSnapshotCache& snapshotCache;
     CardReadCache& cardReadCache;

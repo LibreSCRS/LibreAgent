@@ -2,7 +2,7 @@
 // SPDX-FileCopyrightText: 2026 hirashix0
 #include <LibreSCRS/Agent/backend/PromptTypes.h>
 #include <LibreSCRS/Agent/backend/PrompterWire.h>
-#include <LibreSCRS/Agent/operations/PromptContext.h>
+#include "operations/PromptContext.h"
 #include <gtest/gtest.h>
 
 using LibreSCRS::Agent::PromptOptions;

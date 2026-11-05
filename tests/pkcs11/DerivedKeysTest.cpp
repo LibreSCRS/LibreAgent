@@ -4,8 +4,8 @@
 // The secret keys C_DeriveKey makes: what a template may ask for, which bytes
 // of Z the key holds, and what it serves.
 #include <LibreSCRS/Agent/SecureZero.h>
-#include <LibreSCRS/Agent/pkcs11/DerivedKeys.h>
-#include <LibreSCRS/Agent/pkcs11/SessionState.h>
+#include "pkcs11/DerivedKeys.h"
+#include "pkcs11/SessionState.h"
 
 #include <gtest/gtest.h>
 

@@ -4,7 +4,7 @@
 // Pure-logic exercise of the per-level expired-cert gate. LmSigner computes
 // `expired` from the cert's notAfter on hardware; this pins the policy decision
 // itself (the part that decides block vs proceed vs proceed-allowing-expired).
-#include <LibreSCRS/Agent/operations/SignGate.h>
+#include "operations/SignGate.h"
 #include <LibreSCRS/Agent/operations/SignatureParams.h>
 #include <gtest/gtest.h>
 

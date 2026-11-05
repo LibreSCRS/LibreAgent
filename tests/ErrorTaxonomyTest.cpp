@@ -76,7 +76,6 @@ TEST(ErrorTaxonomy, MapsChannelActivationErrors)
     EXPECT_EQ(errorCodeFor(ChannelActivationError::PaceUnsupported), ErrorCode::UnsupportedCard);
     EXPECT_EQ(errorCodeFor(ChannelActivationError::UserCancelled), ErrorCode::None);
     EXPECT_EQ(errorCodeFor(ChannelActivationError::Cancelled), ErrorCode::None);
-    EXPECT_EQ(errorCodeFor(ChannelActivationError::CardRemoved), ErrorCode::CardRemoved);
     EXPECT_EQ(errorCodeFor(ChannelActivationError::ReaderError), ErrorCode::CommunicationError);
     EXPECT_EQ(errorCodeFor(ChannelActivationError::CredentialsRequired), ErrorCode::AuthFailed);
     EXPECT_EQ(errorCodeFor(ChannelActivationError::Internal), ErrorCode::CommunicationError);

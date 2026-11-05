@@ -46,7 +46,7 @@ if(LIBREAGENT_BUILD_CORE AND (PROJECT_IS_TOP_LEVEL OR LIBREAGENT_BUILD_TEST_SUPP
         install(TARGETS SyntheticMasterList
             EXPORT LibreAgentTestSupportTargets
             ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR})
-        install(FILES SyntheticMasterList.h AllowAllAuthorizer.h
+        install(FILES SyntheticMasterList.h AllowAllAuthorizer.h AgentClientContract.h
             DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/LibreSCRS/AgentTestSupport)
         install(EXPORT LibreAgentTestSupportTargets
             FILE LibreAgentTestSupportTargets.cmake
@@ -72,15 +72,14 @@ endif()
 
 find_package(GTest REQUIRED)
 
+# The suites include the core's private headers (src/) and the test support's
+# own (this directory, which also holds the one header the PKCS#11 suites
+# share with the host that links them).
+include_directories(${PROJECT_SOURCE_DIR}/src ${CMAKE_CURRENT_SOURCE_DIR})
+
 # Dependency-free wire-header compile guard (no LibreAgent::Core link, no LM
 # on its include path) — see tests/wire/CMakeLists.txt.
 add_subdirectory(wire)
-
-# SCM_RIGHTS + memfd fd-passing spike (early de-risk for the macOS client's
-# AF_UNIX transport) — pure POSIX, no LibreAgent::Core, no Qt. Temporary
-# location: adopted by the client transport tests once that work lands. See
-# tests/spike/CMakeLists.txt and tests/spike/ScmRightsSpikeTest.cpp.
-add_subdirectory(spike)
 
 # The PKCS#11 facade's own suites. Above the LIBREAGENT_BUILD_CORE gate below,
 # because the facade has to be testable in the Core-less configuration it ships
@@ -93,8 +92,8 @@ endif()
 # Everything below this point links LibreAgent::Core (directly, or via a flow
 # TU folded into it) and is therefore only reachable in a LIBREAGENT_BUILD_CORE
 # configuration — see the caller (root CMakeLists.txt) which now also
-# add_subdirectory()s here whenever LIBREAGENT_BUILD_WIRE alone is on, purely
-# to reach tests/wire/ and tests/spike/ above.
+# add_subdirectory()s here even with Core off, purely
+# to reach tests/wire/ above.
 if(LIBREAGENT_BUILD_CORE)
 
 # All tests here are platform-neutral: they link only LibreAgent::Core + the
@@ -174,7 +173,6 @@ agent_core_test(PrompterVocabularyTest)
 agent_core_test(PromptSerializerTest)
 agent_core_test(PromptStampTest)
 agent_core_test(PrompterConformanceTest)
-agent_core_test(PropertyEmissionThrottlerTest)
 agent_core_test(RateLimiterTest)
 agent_core_test(RawCryptoFlowTest)
 agent_core_test(ReaderLabelsTest)
@@ -239,8 +237,7 @@ agent_core_test(CredentialRecordTest)
 agent_core_test(CredentialSeamTest)
 
 # Credential list flow: open + install-provider prelude, map/disambiguate into a
-# CredentialSnapshot, empty/CardRemoved classification (markDead drives the
-# transport-loss case).
+# CredentialSnapshot, empty/CardRemoved classification.
 agent_core_test(CredentialListFlowTest)
 
 # Signing-key activation flow (increment #1: Unsupported passthrough). The flow
@@ -329,19 +326,17 @@ endforeach()
 # LM-parity oracle for Manager1.LayoutVisualSignature/GetAppearanceFont —
 # needs BOTH LibreAgent::Core (the LM-linked layout/font seam in LmSeams.h)
 # AND LibreAgent::Wire (Messages.h/ClientCodec.h's codec), so it's the one
-# test in this file with an ADDITIONAL LIBREAGENT_BUILD_WIRE guard (every
+# test in this file that also links Wire (every
 # other agent_core_test() above needs Core alone). Proves the wire-served
 # values decode identically to a direct LM call — see the test file's own
 # header comment.
-if(LIBREAGENT_BUILD_WIRE)
-    add_executable(VisualLayoutServiceTest VisualLayoutServiceTest.cpp)
-    target_link_libraries(VisualLayoutServiceTest PRIVATE
-        LibreAgent::Core
-        LibreAgent::Wire
-        GTest::gtest
-        GTest::gtest_main)
-    target_include_directories(VisualLayoutServiceTest PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
-    gtest_discover_tests(VisualLayoutServiceTest)
-endif()
+add_executable(VisualLayoutServiceTest VisualLayoutServiceTest.cpp)
+target_link_libraries(VisualLayoutServiceTest PRIVATE
+    LibreAgent::Core
+    LibreAgent::Wire
+    GTest::gtest
+    GTest::gtest_main)
+target_include_directories(VisualLayoutServiceTest PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+gtest_discover_tests(VisualLayoutServiceTest)
 
 endif() # LIBREAGENT_BUILD_CORE

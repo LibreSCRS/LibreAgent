@@ -14,8 +14,6 @@ namespace LibreSCRS::Agent::Operations {
 struct OperationState
 {
     std::atomic<std::uint32_t> phase{0};
-    std::atomic<double> progress{0.0};
-    std::atomic<bool> isIndeterminate{false};
     std::atomic<std::uint32_t> watchdogTimeoutSec{60};
     std::atomic<bool> cancelled{false};
     // Terminal-property mirrors of the Finished signal. Populated by

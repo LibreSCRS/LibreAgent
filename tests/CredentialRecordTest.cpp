@@ -31,7 +31,6 @@ using LibreSCRS::Plugin::PinRecovery;
 using LibreSCRS::Plugin::PINResultOutcome;
 using LibreSCRS::Plugin::PinState;
 using LibreSCRS::Plugin::PinStatusEntry;
-using LibreSCRS::Plugin::UnblockStyle;
 
 namespace {
 
@@ -69,19 +68,6 @@ TEST(CredentialRecordMap, StateTokens)
     EXPECT_EQ(stateToken(PinState::Operational), "operational");
     EXPECT_EQ(stateToken(PinState::NeedsChange), "needsChange");
     EXPECT_EQ(stateToken(PinState::Blocked), "blocked");
-}
-
-TEST(CredentialRecordMap, UnblockStyleTokens)
-{
-    auto styleToken = [](UnblockStyle style) {
-        auto e = entryWith(PinKind::UserPin, 0x01);
-        e.unblockStyle = style;
-        return toCredentialRecord(e).unblockStyle;
-    };
-    EXPECT_EQ(styleToken(UnblockStyle::Unknown), "unknown");
-    EXPECT_EQ(styleToken(UnblockStyle::ResetOnly), "resetOnly");
-    EXPECT_EQ(styleToken(UnblockStyle::SetsNewPin), "setsNewPin");
-    EXPECT_EQ(styleToken(UnblockStyle::UnblockAndChange), "unblockAndChange");
 }
 
 TEST(CredentialRecordMap, RecoveryTokens)
@@ -251,12 +237,10 @@ TEST(CredentialRecordMap, FullyPopulatedEntryMapsFieldForField)
     e.maxLength = std::size_t{12};
     e.canChange = true;
     e.unblockable = true;
-    e.unblockStyle = UnblockStyle::SetsNewPin;
     e.activatable = true;
     e.keyActivationPending = true;
     e.keyActivatable = true;
     e.recovery = PinRecovery::HolderViaPuk;
-    e.probeSafe = true;
 
     const auto r = toCredentialRecord(e);
     EXPECT_EQ(r.id, "sign:0x92");
@@ -272,12 +256,10 @@ TEST(CredentialRecordMap, FullyPopulatedEntryMapsFieldForField)
     EXPECT_EQ(r.maxLength, std::optional<int>{12});
     EXPECT_TRUE(r.canChange);
     EXPECT_TRUE(r.unblockable);
-    EXPECT_EQ(r.unblockStyle, "setsNewPin");
     EXPECT_TRUE(r.activatable);
     EXPECT_TRUE(r.keyActivationPending);
     EXPECT_TRUE(r.keyActivatable);
     EXPECT_EQ(r.recovery, "holderViaPuk");
-    EXPECT_TRUE(r.probeSafe);
 }
 
 // --- snapshot / mutation result / entry-error vocabulary --------------------
@@ -295,8 +277,6 @@ TEST(CredentialTypes, OpResultDefaults)
     EXPECT_EQ(result.outcome, CredentialOutcome::Unspecified);
     EXPECT_FALSE(result.retriesLeft.has_value());
     EXPECT_FALSE(result.blocked);
-    EXPECT_FALSE(result.pinActivated.has_value());
-    EXPECT_FALSE(result.keyActivated.has_value());
 }
 
 TEST(CredentialTypes, EntryErrorVocabularyIsClosed)

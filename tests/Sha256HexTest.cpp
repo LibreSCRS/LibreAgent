@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 // SPDX-FileCopyrightText: 2026 hirashix0
-#include <LibreSCRS/Agent/util/Sha256Hex.h>
+#include "util/Sha256Hex.h"
 #include <gtest/gtest.h>
 #include <cstdint>
 #include <string>

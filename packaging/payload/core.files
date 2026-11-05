@@ -26,11 +26,3 @@ lib/cmake/LibreAgent/LibreAgentPkcs11FacadeTargets-relwithdebinfo.cmake
 lib/libLibreAgentPkcs11SocketClient.a
 lib/cmake/LibreAgent/LibreAgentPkcs11SocketClientTargets.cmake
 lib/cmake/LibreAgent/LibreAgentPkcs11SocketClientTargets-relwithdebinfo.cmake
-
-# Test support travels inside this package rather than in a fourth one: it is
-# an archive like the rest, and a separate package would change the split this
-# project decided on.
-lib/libSyntheticMasterList.a
-lib/cmake/LibreAgent/LibreAgentTestSupportTargets.cmake
-lib/cmake/LibreAgent/LibreAgentTestSupportTargets-relwithdebinfo.cmake
-include/LibreSCRS/AgentTestSupport/*.h

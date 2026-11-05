@@ -4,7 +4,6 @@ usr/lib/*/cmake/LibreAgent/LibreAgentGTest.cmake
 usr/lib/*/cmake/LibreAgent/PrivateSessionBusTest.cpp
 usr/lib/*/cmake/LibreAgent/Pkcs11ModuleExport.cmake
 usr/include/LibreSCRS/Agent/
-usr/share/librescrs/librescrs-agent.cddl
 usr/share/librescrs/dbus/
 usr/share/librescrs/pkcs11/exports.map
 usr/share/librescrs/pkcs11/exports.symbols

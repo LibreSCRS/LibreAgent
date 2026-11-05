@@ -24,7 +24,6 @@
 #include <LibreSCRS/Agent/operations/OperationManager.h>
 #include <LibreSCRS/SmartCard/CardSession.h>
 #include <LibreSCRS/SmartCard/testing/CardSessionTesting.h>
-#include "fakes/FakeAgentTransport.h"
 #include "fakes/FakeAuthorizer.h"
 #include "fakes/FakeCredentialDepositor.h"
 #include "fakes/FakeCredentialManager.h"
@@ -149,7 +148,7 @@ protected:
     OperationLauncherTest()
     {
         core.emplace(
-            resolver, transport, authorizer, prompter, dir() / "agent.conf", dir() / "cache",
+            resolver, authorizer, prompter, dir() / "agent.conf", dir() / "cache",
             [](const std::string&) -> std::optional<ReaderCard> { return std::nullopt; },
             [](const std::string&) -> std::optional<ObjectId> { return std::nullopt; });
         core->operationManager().setSessionFactoryForTest(
@@ -270,7 +269,6 @@ protected:
     }
 
     NeutralResolver resolver;
-    FakeAgentTransport transport;
     FakeAuthorizer authorizer;
     std::shared_ptr<FakePrompter> prompter = std::make_shared<FakePrompter>();
     std::shared_ptr<StubReader> reader = std::make_shared<StubReader>();

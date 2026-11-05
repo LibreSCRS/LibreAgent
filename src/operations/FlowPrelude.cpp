@@ -1,13 +1,13 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 // SPDX-FileCopyrightText: 2026 hirashix0
-#include <LibreSCRS/Agent/operations/FlowPrelude.h>
+#include "operations/FlowPrelude.h"
 #include <LibreSCRS/Agent/backend/PrompterWire.h> // shared kind vocabulary (alt_kinds value)
 #include <LibreSCRS/Agent/cache/AttemptContext.h>
 #include <LibreSCRS/Agent/cache/CredentialCache.h>
 #include <LibreSCRS/Agent/operations/CardSessionHolder.h>
-#include <LibreSCRS/Agent/operations/ConsentPhaseScope.h> // consent is a bounded excursion, not a one-way trip
-#include <LibreSCRS/Agent/OperationPhase.h>               // OperationPhase enum
-#include <LibreSCRS/Agent/operations/SerializingPrompter.h>
+#include "operations/ConsentPhaseScope.h"   // consent is a bounded excursion, not a one-way trip
+#include <LibreSCRS/Agent/OperationPhase.h> // OperationPhase enum
+#include "operations/SerializingPrompter.h"
 #include <LibreSCRS/Agent/value/CredentialRecord.h> // CredentialOutcome
 #include <LibreSCRS/Auth/AuthRequirement.h>
 #include <LibreSCRS/Auth/CredentialResult.h>

@@ -72,7 +72,7 @@ struct BatchSignedRow
 using BatchSignResult = std::vector<BatchSignedRow>;
 
 // One credential-management result. `op` carries the uniform outcome payload
-// (outcome token + retriesLeft/blocked/pinActivated/keyActivated) surfaced for
+// (outcome token + retriesLeft/blocked) surfaced for
 // EVERY completed management attempt — including InvalidPin/Blocked, where
 // retriesLeft is meaningful — so it rides the Credentials1.Result signal ahead of
 // Finished(status, code). `records` carries the ListCredentials listing (empty for

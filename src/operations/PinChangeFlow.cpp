@@ -7,12 +7,12 @@
 #include <LibreSCRS/Agent/cache/CredentialSnapshotCache.h>
 #include <LibreSCRS/Agent/operations/CardPluginRouting.h> // filterByCapability, CandidateList
 #include <LibreSCRS/Agent/operations/CardSessionHolder.h>
-#include <LibreSCRS/Agent/operations/FlowPrelude.h>
-#include <LibreSCRS/Agent/operations/LmRawCrypto.h>         // eraseDepositedPin
-#include <LibreSCRS/Agent/operations/SerializingPrompter.h> // gate the change modal through the single prompt slot
-#include <LibreSCRS/Agent/OperationPhase.h>                 // OperationPhase
-#include <LibreSCRS/Plugin/CardPlugin.h>                    // CardCapabilities
-#include <LibreSCRS/Plugin/PluginTypes.h>                   // PINResult
+#include "operations/FlowPrelude.h"
+#include "operations/LmRawCrypto.h"         // eraseDepositedPin
+#include "operations/SerializingPrompter.h" // gate the change modal through the single prompt slot
+#include <LibreSCRS/Agent/OperationPhase.h> // OperationPhase
+#include <LibreSCRS/Plugin/CardPlugin.h>    // CardCapabilities
+#include <LibreSCRS/Plugin/PluginTypes.h>   // PINResult
 
 #include <atomic>
 #include <cstdint>
@@ -233,13 +233,6 @@ CredentialOpResult runPinManage(PinManageFlowDeps& deps, const PinManageRequest&
         reachedCard = true; // ground truth: the card is now being contacted
         const auto lmResult =
             deps.credentialManager.changePIN(*session, pinCandidates, record->label, *prompt.current, *prompt.newPin);
-        // A card pulled mid-changePIN: the seam's return is unreliable. Classify as
-        // transport loss (mirroring CredentialListFlow's post-list isDead check).
-        // reachedCard stays true, so the possibly-partial change still drops the
-        // stale snapshot below.
-        if (session->isDead()) {
-            return resultWith(CredentialOutcome::CardRemoved);
-        }
         if (lmResult.outcome == LibreSCRS::Plugin::PINResultOutcome::Ok) {
             // A signing PIN a plugin keeps deposited for this session is now
             // the old one; presented again it would cost a retry per

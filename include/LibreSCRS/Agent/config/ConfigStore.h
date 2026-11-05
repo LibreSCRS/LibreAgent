@@ -23,23 +23,6 @@ struct TslSource
     bool operator==(const TslSource&) const = default;
 };
 
-// One country-signing trust-anchor source: where a set of CSCA certificates is
-// fetched from, and whether to fetch it at startup.
-//
-// Two fields, NOT three. TslSource carries an isLotl pivot flag because the
-// trusted-list world has a list-of-lists: one URL can name further lists to
-// follow. Country-signing anchors have no such indirection -- a source names
-// anchors, never other sources -- so there is no third field to carry, and
-// inventing one for symmetry with TslSource would describe a structure that
-// does not exist.
-struct CscaSource
-{
-    std::string uri;
-    bool eager{false}; // fetch at startup rather than lazily at first use
-
-    bool operator==(const CscaSource&) const = default;
-};
-
 // What the agent currently holds in country-signing trust anchors: a REPORT
 // it publishes, never a setting a client hands it. Read-only for the reason
 // LastTsaUrl is (it is agent-internal state, not a preference) and for a
@@ -71,7 +54,6 @@ struct CscaAnchorState
     bool signerPinned{false};               // the publisher was ESTABLISHED, not merely observed
     std::optional<std::int64_t> acceptedAt; // epoch seconds; when the AGENT accepted the list
     std::optional<std::int64_t> signedAt;   // epoch seconds from CMS signingTime; ABSENT when undated
-    std::string origin;                     // where the anchors came from ("import")
 
     bool operator==(const CscaAnchorState&) const = default;
 };
@@ -81,7 +63,7 @@ struct CscaAnchorState
 enum class Mutability {
     DbusMutable,      // Config1.SetValue under org.librescrs.agent.configure (default allow)
     DbusMutableTrust, // Config1.SetValue under org.librescrs.agent.configure.trust (auth_self)
-    FileOnly,         // settable only by editing the on-disk config (e.g. PluginDir: dlopen vector)
+    FileOnly,         // settable only by editing the on-disk config (e.g. TslCacheDir)
     ReadOnly,         // agent-internal state, never client-settable (LastTsaUrl, CscaAnchorState)
 };
 
@@ -123,16 +105,13 @@ public:
     [[nodiscard]] std::vector<std::string> tsaUrls() const;
     [[nodiscard]] std::string lastTsaUrl() const; // ReadOnly
     [[nodiscard]] std::vector<TslSource> tslSources() const;
-    [[nodiscard]] std::string tslCacheDir() const; // FileOnly; defaults under cacheRoot
-    [[nodiscard]] std::string aiaCacheDir() const; // FileOnly; defaults under cacheRoot
-    [[nodiscard]] std::vector<CscaSource> cscaSources() const;
+    [[nodiscard]] std::string tslCacheDir() const;  // FileOnly; defaults under cacheRoot
     [[nodiscard]] std::string cscaCacheDir() const; // FileOnly; defaults under cacheRoot
     // ReadOnly. std::nullopt until a master list has been accepted — see
     // CscaAnchorState's own comment for why that is not a zeroed report.
     [[nodiscard]] std::optional<CscaAnchorState> cscaAnchorState() const;
     [[nodiscard]] std::string defaultReason() const;
     [[nodiscard]] std::string defaultLocation() const;
-    [[nodiscard]] std::string pluginDir() const; // FileOnly: dlopen vector
     // PKCS#11 login-lease knobs (FileOnly security policy; not D-Bus mutable).
     // Defaults: idle 600 s, max lifetime 28800 s (8 h).
     [[nodiscard]] std::uint32_t pkcs11IdleTimeoutSecs() const;
@@ -145,7 +124,7 @@ public:
     // Mutability + authorization enforcement happens at the Config1 adaptor
     // (the backend Config1 SetValue / Reset path), NOT here: those check
     // mutability(key) and reject FileOnly/ReadOnly keys, then authorize the
-    // caller before delegating to these setters. The six typed setters below
+    // caller before delegating to these setters. The five typed setters below
     // therefore take no `fromDbus` parameter (they never consult it); only
     // resetKey actually consults it. The file-load path (loadFromFile) bypasses
     // these setters entirely.
@@ -158,7 +137,6 @@ public:
     SetResult setDefaultLevel(std::string level);
     SetResult setTsaUrls(std::vector<std::string> urls);
     SetResult setTslSources(std::vector<TslSource> sources);
-    SetResult setCscaSources(std::vector<CscaSource> sources);
     SetResult setDefaultReason(std::string reason);
     SetResult setDefaultLocation(std::string location);
     // Reset a single key to its built-in default (Config1.Reset). Honors
@@ -257,13 +235,10 @@ private:
     std::string m_lastTsaUrl;
     std::vector<TslSource> m_tslSources;
     std::string m_tslCacheDir;
-    std::string m_aiaCacheDir;
-    std::vector<CscaSource> m_cscaSources;
     std::string m_cscaCacheDir;
     std::optional<CscaAnchorState> m_cscaAnchorState;
     std::string m_defaultReason;
     std::string m_defaultLocation;
-    std::string m_pluginDir;
     std::uint32_t m_pkcs11IdleTimeoutSecs{600};
     std::uint32_t m_pkcs11MaxLifetimeSecs{28800};
 

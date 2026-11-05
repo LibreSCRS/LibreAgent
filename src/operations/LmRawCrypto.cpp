@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 // SPDX-FileCopyrightText: 2026 hirashix0
-#include <LibreSCRS/Agent/operations/LmRawCrypto.h>
+#include "operations/LmRawCrypto.h"
 
 #include <LibreSCRS/Agent/SecureZero.h>
 #include <LibreSCRS/Logging.h>
-#include <LibreSCRS/Agent/operations/LmSeams.h>       // selectSigningCandidate, SigningSelection
-#include <LibreSCRS/Agent/operations/RawCryptoFlow.h> // RawCryptoFlowDeps
-#include <LibreSCRS/Agent/operations/RsaPublicKey.h>  // ecPeerPointOnCertCurve
+#include <LibreSCRS/Agent/operations/LmSeams.h>      // selectSigningCandidate, SigningSelection
+#include "operations/RawCryptoFlow.h"                // RawCryptoFlowDeps
+#include <LibreSCRS/Agent/operations/RsaPublicKey.h> // ecPeerPointOnCertCurve
 
 #include <LibreSCRS/Auth/AuthRequirement.h> // PreReadAuthMethod
 #include <LibreSCRS/Certificate/ParsedCertificate.h>

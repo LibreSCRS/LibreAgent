@@ -9,7 +9,7 @@
 //
 // The expected certId is computed with the production sha256Hex(DER) so each
 // case is a true known-answer test, not a tautology against the same code path.
-#include <LibreSCRS/Agent/util/Sha256Hex.h> // sha256Hex (certId)
+#include "util/Sha256Hex.h" // sha256Hex (certId)
 #include <LibreSCRS/Agent/config/ConfigStore.h>
 #include <LibreSCRS/Agent/operations/LmSeams.h>
 #include <LibreSCRS/Agent/operations/SigningEngineProvider.h>

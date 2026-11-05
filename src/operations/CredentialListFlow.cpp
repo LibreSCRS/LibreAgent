@@ -1,14 +1,13 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 // SPDX-FileCopyrightText: 2026 hirashix0
-#include <LibreSCRS/Agent/operations/CredentialListFlow.h>
+#include "operations/CredentialListFlow.h"
 #include <LibreSCRS/Agent/cache/AttemptContext.h>
 #include <LibreSCRS/Agent/cache/CredentialCache.h>
 #include <LibreSCRS/Agent/cache/CredentialSnapshotCache.h>
 #include <LibreSCRS/Agent/operations/CardPluginRouting.h> // filterByCapability
-#include <LibreSCRS/Agent/operations/FlowPrelude.h>
+#include "operations/FlowPrelude.h"
 #include <LibreSCRS/Agent/operations/OperationBase.h> // OperationPhase enum
 #include <LibreSCRS/Plugin/PluginTypes.h>             // CardCapabilities
-#include <LibreSCRS/SecureChannel/ChannelErrors.h>    // ChannelActivationError
 #include <atomic>
 #include <cstdint>
 #include <memory>
@@ -122,18 +121,9 @@ CredentialListFlow::Result CredentialListFlow::run()
         return makeCancelled();
     }
 
-    // An empty list is ambiguous: a live card that advertises no PIN credentials
-    // (valid empty snapshot) vs. a card removed mid-list (the seam swallowed the
-    // channel-activation throw and returned empty). The dead-session flag and the
-    // prompter-failure flag disambiguate; otherwise the empty result is valid.
-    // The dead-session classification is UNCONDITIONAL (mirrors the mutation
-    // flows): even a non-empty listing from a card pulled mid-list must not be
-    // reported Ok, and must never re-create a snapshot under a cardKey whose
-    // removal hook already dropped it.
-    if (session->isDead()) {
-        return makeError(errorCodeFor(LibreSCRS::SecureChannel::ChannelActivationError::CardRemoved), "op.read_failed",
-                         "Card removed");
-    }
+    // An empty list after a card was removed mid-list cannot be told from a card
+    // that advertises no PIN credentials: both are a valid empty snapshot. Only
+    // a failed or expired prompt makes an empty list an error.
     if (helperTooOld->load(std::memory_order_relaxed)) {
         // Refused before any window was raised; the remedy is actionable.
         return makeError(ErrorCode::CapabilityMissing, FlowPrelude::kHelperTooOldMsgKey,

@@ -17,12 +17,7 @@ OperationBase::OperationBase(std::unique_ptr<OperationChannel> channel, std::sha
                              std::function<void()> prompterCancelCallback)
     : m_prompterCancelCallback(std::move(prompterCancelCallback)), m_state(std::move(state)),
       m_channel(std::move(channel)), m_token(m_cancelSource.token())
-{
-    if (m_channel) {
-        m_progressThrottler = std::make_unique<PropertyEmissionThrottler>(
-            [channel = m_channel.get()] { channel->emitPropertiesChanged(); }, std::chrono::milliseconds{100});
-    }
-}
+{}
 
 OperationBase::~OperationBase()
 {
@@ -38,10 +33,8 @@ OperationBase::~OperationBase()
 
 void OperationBase::quiesce() noexcept
 {
-    // Join the watchdog FIRST (so any in-flight finishWatchdogTimeout() ->
-    // finish() completes while the throttler is still alive), THEN stop the
-    // throttler. Safe only on the worker thread (never the watchdog/throttler
-    // thread itself). The destructor repeats both as no-ops.
+    // Join the watchdog. Safe only on the worker thread (never the watchdog
+    // thread itself). The destructor repeats it as a no-op.
     if (m_watchdog.joinable()) {
         m_watchdog.request_stop();
         {
@@ -49,9 +42,6 @@ void OperationBase::quiesce() noexcept
             m_watchdogCv.notify_all();
         }
         m_watchdog.join();
-    }
-    if (m_progressThrottler) {
-        m_progressThrottler->stop();
     }
 }
 
@@ -150,13 +140,8 @@ void OperationBase::setPhase(std::uint32_t phase) noexcept
     }
     const auto previous = m_state->phase.exchange(phase, std::memory_order_acq_rel);
     if (previous != phase && m_channel) {
-        // Phase transitions ALWAYS emit immediately; the throttler is
-        // only consulted for progress-only updates.
-        if (m_progressThrottler) {
-            m_progressThrottler->flush();
-        } else {
-            m_channel->emitPropertiesChanged();
-        }
+        // Phase transitions emit immediately.
+        m_channel->emitPropertiesChanged();
     }
     // Watchdog production: the timer covers MACHINE time only. Entry into
     // AwaitingConsent (2) stops it -- the holder is not something to time, and
@@ -268,41 +253,6 @@ void OperationBase::disarmWatchdog() noexcept
     }
 }
 
-void OperationBase::setProgress(double progress) noexcept
-{
-    if (progress < 0.0)
-        progress = 0.0;
-    if (progress > 1.0)
-        progress = 1.0;
-    if (m_state) {
-        m_state->progress.store(progress, std::memory_order_release);
-    }
-    // Progress-only updates ride the throttler (at most one
-    // PropertiesChanged per 100 ms outside phase transitions).
-    if (m_progressThrottler) {
-        m_progressThrottler->schedule();
-    }
-}
-
-void OperationBase::setIndeterminate(bool indeterminate) noexcept
-{
-    if (!m_state) {
-        return;
-    }
-    const bool previous = m_state->isIndeterminate.exchange(indeterminate, std::memory_order_acq_rel);
-    if (previous == indeterminate) {
-        return;
-    }
-    // A spinner toggle is a discrete UI-state change, not a high-frequency
-    // progress tick: flush it immediately like a phase transition so a
-    // client racing to read IsIndeterminate sees the new value at once.
-    if (m_progressThrottler) {
-        m_progressThrottler->flush();
-    } else if (m_channel) {
-        m_channel->emitPropertiesChanged();
-    }
-}
-
 void OperationBase::finish(OperationStatus status, ErrorCode code, std::string msgKey, std::string msgFallback) noexcept
 {
     std::call_once(m_finishOnce, [&] {
@@ -319,9 +269,6 @@ void OperationBase::finish(OperationStatus status, ErrorCode code, std::string m
             msgFallback = "Operation exceeded the watchdog timeout";
         }
         try {
-            if (status == OperationStatus::Ok && m_state) {
-                m_state->progress.store(1.0, std::memory_order_release);
-            }
             setPhase(static_cast<std::uint32_t>(OperationPhase::Done));
             // Populate the read-only terminal-property mirrors BEFORE the
             // Finished signal fires. A client that subscribed too late to

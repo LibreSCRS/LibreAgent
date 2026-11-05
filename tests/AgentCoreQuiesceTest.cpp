@@ -13,7 +13,6 @@
 #include <LibreSCRS/Agent/wire/QuiesceReason.h>
 #include <LibreSCRS/SmartCard/CardSession.h>
 #include <LibreSCRS/SmartCard/testing/CardSessionTesting.h>
-#include "fakes/FakeAgentTransport.h"
 #include "fakes/FakeAuthorizer.h"
 #include "fakes/FakePrompter.h"
 #include "fakes/ScratchDir.h"
@@ -55,7 +54,7 @@ protected:
     AgentCoreQuiesce()
     {
         core.emplace(
-            resolver, transport, authorizer, prompter, dir() / "agent.conf", dir() / "cache",
+            resolver, authorizer, prompter, dir() / "agent.conf", dir() / "cache",
             [](const std::string&) -> std::optional<ReaderCard> { return std::nullopt; },
             [](const std::string&) -> std::optional<ObjectId> { return std::nullopt; });
         core->operationManager().setSessionFactoryForTest(
@@ -181,7 +180,6 @@ protected:
     }
 
     NeutralResolver resolver;
-    FakeAgentTransport transport;
     FakeAuthorizer authorizer;
     std::shared_ptr<Operations::FakePrompter> prompter = std::make_shared<Operations::FakePrompter>();
     // Declared before the core: the workers the core joins on teardown write it.
@@ -204,13 +202,6 @@ TEST_F(AgentCoreQuiesce, SwitchingAwayFromTheSessionForgetsSecretsSessionsAndLea
 {
     expectStartingState();
     core->quiesce(QuiesceReason::SessionInactive);
-    expectFullScrub();
-}
-
-TEST_F(AgentCoreQuiesce, StoppingForgetsSecretsSessionsAndLeases)
-{
-    expectStartingState();
-    core->quiesce(QuiesceReason::Shutdown);
     expectFullScrub();
 }
 

@@ -4,7 +4,7 @@
 // The DER the module serves for an EC key with no crypto library of its own:
 // the named curve's OID (CKA_EC_PARAMS) and the point as an OCTET STRING
 // (CKA_EC_POINT), on each of the three curves the agent reports.
-#include <LibreSCRS/Agent/pkcs11/EcEncoding.h>
+#include "pkcs11/EcEncoding.h"
 
 #include <gtest/gtest.h>
 

@@ -2,8 +2,6 @@
 // SPDX-FileCopyrightText: 2026 hirashix0
 #include <LibreSCRS/Agent/cache/CredentialSnapshotCache.h>
 
-#include <LibreSCRS/Agent/cache/CardReadCache.h> // invalidateForMutationOutcome drops the read cache too
-
 #include <LibreSCRS/Agent/SecureZero.h>
 
 #include <optional>
@@ -38,7 +36,6 @@ void cleanseRecord(CredentialRecord& record) noexcept
     cleanse(record.label);
     cleanse(record.kind);
     cleanse(record.state);
-    cleanse(record.unblockStyle);
     cleanse(record.recovery);
     cleanse(record.blockedGuidanceKey);
     cleanse(record.blockedGuidanceFallback);
@@ -122,45 +119,6 @@ void CredentialSnapshotCache::clear()
         scrub(entry);
     }
     m_entries.clear();
-}
-
-// Exhaustive switch, NO default case: a newly appended CredentialOutcome member
-// breaks the build here (the mirror-guard pattern from CredentialRecord.h) and
-// forces the "did this outcome reach the card" decision. The pragma promotes
-// -Wswitch to a hard error regardless of the target's warning flags.
-#pragma GCC diagnostic push
-#pragma GCC diagnostic error "-Wswitch"
-bool mutationReachedCard(CredentialOutcome outcome) noexcept
-{
-    switch (outcome) {
-    case CredentialOutcome::Ok:
-    case CredentialOutcome::InvalidPin:
-    case CredentialOutcome::Blocked:
-    case CredentialOutcome::PluginError:
-    case CredentialOutcome::KeyActivationFailed:
-        return true;
-    case CredentialOutcome::Unspecified:
-    case CredentialOutcome::UserCancelled:
-    case CredentialOutcome::MissingFields:
-    case CredentialOutcome::Unsupported:
-    case CredentialOutcome::CardRemoved:
-    // The window closed on the clock before anything was collected, so nothing
-    // was ever presented to the card and no credential state can have moved.
-    case CredentialOutcome::EntryExpired:
-        return false;
-    }
-    return false;
-}
-#pragma GCC diagnostic pop
-
-void invalidateForMutationOutcome(CredentialOutcome outcome, const std::string& cardKey,
-                                  CredentialSnapshotCache& snapshotCache, CardReadCache& cardReadCache)
-{
-    if (!mutationReachedCard(outcome)) {
-        return;
-    }
-    snapshotCache.invalidate(cardKey);
-    cardReadCache.invalidate(cardKey);
 }
 
 } // namespace LibreSCRS::Agent

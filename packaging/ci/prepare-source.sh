@@ -16,13 +16,8 @@ sha="$(awk '/GIT_TAG/{print $2; exit}' cmake/FetchQCBOR.cmake)"
 mkdir -p thirdparty
 rm -rf thirdparty/QCBOR
 
-cache="${QCBOR_CACHE:-/var/tmp/p4b/cache/QCBOR}"
-if [ -d "$cache/.git" ] && git -C "$cache" rev-parse HEAD | grep -q "^$sha"; then
-  cp -a "$cache" thirdparty/QCBOR
-else
-  git clone --quiet https://github.com/laurencelundblade/QCBOR.git thirdparty/QCBOR
-  git -C thirdparty/QCBOR checkout --quiet "$sha"
-fi
+git clone --quiet https://github.com/laurencelundblade/QCBOR.git thirdparty/QCBOR
+git -C thirdparty/QCBOR checkout --quiet "$sha"
 rm -rf thirdparty/QCBOR/.git
 test -f thirdparty/QCBOR/CMakeLists.txt
 echo "prepare-source: QCBOR staged at $sha"

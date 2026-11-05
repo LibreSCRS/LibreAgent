@@ -20,9 +20,8 @@ namespace LibreSCRS::Agent {
 // Agent-side outcome vocabulary for credential mutations: LM
 // Plugin::PINResultOutcome verbatim (nine members, ending at
 // KeyActivationFailed) plus an appended CardRemoved that only the agent
-// assigns — the mutation flows map the seam signal they classify as
-// ChannelActivationError::CardRemoved onto CredentialOutcome::CardRemoved;
-// LM never produces it. On the wire each member crosses as its camelCase
+// assigns — the mutation flows map a vanished card (ErrorCode::CardRemoved)
+// onto CredentialOutcome::CardRemoved; LM never produces it. On the wire each member crosses as its camelCase
 // STRING token: unspecified|ok|userCancelled|missingFields|invalidPin|
 // blocked|pluginError|unsupported|keyActivationFailed|cardRemoved|entryExpired.
 enum class CredentialOutcome {
@@ -60,10 +59,8 @@ struct CredentialRecord
     std::optional<int> retriesLeft, retriesMax, usesLeft, usesMax, unblocksLeft;
     std::optional<int> minLength, maxLength; // CHECKED narrowing from LM's std::optional<std::size_t>
     bool canChange = false, unblockable = false;
-    std::string unblockStyle; // "unknown"|"resetOnly"|"setsNewPin"|"unblockAndChange"
     bool activatable = false, keyActivationPending = false, keyActivatable = false;
     std::string recovery; // "unknown"|"holderViaPuk"|"issuerProcess"|"none"
-    bool probeSafe = false;
     std::optional<std::string> blockedGuidanceKey, blockedGuidanceFallback;
     std::optional<std::string> keyActivationGuidanceKey, keyActivationGuidanceFallback;
     [[nodiscard]] bool operator==(const CredentialRecord&) const = default;
@@ -100,7 +97,6 @@ struct CredentialOpResult
     CredentialOutcome outcome = CredentialOutcome::Unspecified;
     std::optional<int> retriesLeft;
     bool blocked = false;
-    std::optional<bool> pinActivated, keyActivated;
 };
 
 // The mappings below are exhaustive switches with NO default case, so that
@@ -147,22 +143,6 @@ namespace detail {
         return "needsChange";
     case PinState::Blocked:
         return "blocked";
-    }
-    return "unknown";
-}
-
-[[nodiscard]] inline std::string unblockStyleToken(LibreSCRS::Plugin::UnblockStyle style)
-{
-    using LibreSCRS::Plugin::UnblockStyle;
-    switch (style) {
-    case UnblockStyle::Unknown:
-        return "unknown";
-    case UnblockStyle::ResetOnly:
-        return "resetOnly";
-    case UnblockStyle::SetsNewPin:
-        return "setsNewPin";
-    case UnblockStyle::UnblockAndChange:
-        return "unblockAndChange";
     }
     return "unknown";
 }
@@ -258,12 +238,10 @@ splitGuidance(const std::optional<LocalizedText>& guidance)
     record.maxLength = detail::narrowLengthToInt(e.maxLength);
     record.canChange = e.canChange;
     record.unblockable = e.unblockable;
-    record.unblockStyle = detail::unblockStyleToken(e.unblockStyle);
     record.activatable = e.activatable;
     record.keyActivationPending = e.keyActivationPending;
     record.keyActivatable = e.keyActivatable;
     record.recovery = detail::recoveryToken(e.recovery);
-    record.probeSafe = e.probeSafe;
     auto [blockedKey, blockedFallback] = detail::splitGuidance(e.blockedGuidance);
     record.blockedGuidanceKey = std::move(blockedKey);
     record.blockedGuidanceFallback = std::move(blockedFallback);

@@ -17,7 +17,7 @@
 #include <LibreSCRS/Agent/backend/PromptTypes.h>
 #include <LibreSCRS/Agent/operations/PromptSerializer.h>
 #include <LibreSCRS/Agent/backend/PrompterClientBase.h>
-#include <LibreSCRS/Agent/operations/SerializingPrompter.h>
+#include "operations/SerializingPrompter.h"
 
 #include "fakes/FakePrompter.h"
 

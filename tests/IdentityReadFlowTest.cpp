@@ -15,8 +15,8 @@
 #include <LibreSCRS/Agent/cache/AttemptContext.h>
 #include <LibreSCRS/Agent/cache/MrzPayload.h>
 #include <LibreSCRS/Agent/operations/CardSessionHolder.h>
-#include <LibreSCRS/Agent/operations/ConsentPhaseScope.h>
-#include <LibreSCRS/Agent/operations/FlowPrelude.h>
+#include "operations/ConsentPhaseScope.h"
+#include "operations/FlowPrelude.h"
 #include <LibreSCRS/Agent/operations/IdentityReadFlow.h>
 #include <LibreSCRS/Agent/operations/LmSeams.h>       // LmCredentialDepositor, resolveDepositTargets
 #include <LibreSCRS/Agent/operations/OperationBase.h> // Phase enum, OperationPhaseSink

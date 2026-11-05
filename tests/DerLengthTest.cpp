@@ -3,7 +3,7 @@
 //
 // The one rule the agent reads a DER length by: the PKCS#11 facade cutting a
 // certificate's fields, and the CSCA import recognising a published list.
-#include <LibreSCRS/Agent/util/DerLength.h>
+#include "util/DerLength.h"
 
 #include <gtest/gtest.h>
 

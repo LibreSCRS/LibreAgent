@@ -28,8 +28,6 @@ void ReadTokenInfoOperation::doWork()
         finish(OperationStatus::Error, ErrorCode::CommunicationError, "op.internal", "operation has no session holder");
         return;
     }
-    // Card-I/O has no meaningful completion percentage — honest spinner.
-    setIndeterminate(true);
     setPhase(static_cast<std::uint32_t>(OperationPhase::Connecting));
 
     TokenInfoReadFlow flow(TokenInfoReadFlowDeps{

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 // SPDX-FileCopyrightText: 2026 hirashix0
-#include <LibreSCRS/Agent/pkcs11/DerivedKeys.h>
+#include "pkcs11/DerivedKeys.h"
 
 #include <LibreSCRS/Agent/SecureZero.h>
 

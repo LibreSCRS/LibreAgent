@@ -3,7 +3,7 @@
 #pragma once
 #include <LibreSCRS/Agent/crypto/Mechanism.h>
 #include <LibreSCRS/Agent/operations/CardPluginRouting.h> // CandidateList
-#include <LibreSCRS/Agent/operations/LmRawCrypto.h>       // RawCryptoResult
+#include "operations/LmRawCrypto.h"                       // RawCryptoResult
 #include <LibreSCRS/Agent/operations/Seams.h>
 #include <LibreSCRS/CancelToken.h>
 #include <LibreSCRS/Secure/String.h>

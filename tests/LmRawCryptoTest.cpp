@@ -8,11 +8,11 @@
 // session) and is covered by the HW smoke + the already-tested
 // selectSigningCandidate (LmSeamsRoutingTest); this unit pins the hermetic
 // surface so the host's status->wire mapping cannot drift.
-#include <LibreSCRS/Agent/operations/LmRawCrypto.h>
+#include "operations/LmRawCrypto.h"
 
 #include "TestCertMint.h"
 
-#include <LibreSCRS/Agent/util/Sha256Hex.h>
+#include "util/Sha256Hex.h"
 #include <LibreSCRS/Auth/AuthRequirement.h>
 #include <LibreSCRS/Auth/ErrorKeys.h>
 #include <LibreSCRS/Logging.h>

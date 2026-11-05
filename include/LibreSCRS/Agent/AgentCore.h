@@ -3,7 +3,6 @@
 #pragma once
 #include <LibreSCRS/Agent/CryptoWorkerContext.h>
 #include <LibreSCRS/Agent/Identity.h>
-#include <LibreSCRS/Agent/backend/AgentTransport.h>
 #include <LibreSCRS/Agent/backend/Authorizer.h>
 #include <LibreSCRS/Agent/backend/PrompterClientBase.h>
 #include <LibreSCRS/Agent/cache/CardReadCache.h>
@@ -54,10 +53,12 @@ using ResolveReaderCard = std::function<std::optional<ReaderCard>(const std::str
 // signing engine, rate limiter, lease manager, operation scheduler) as a direct
 // member, declared in a clean internal dependency order so construction proceeds
 // dependency-first and destruction runs strictly borrower-before-borrowee. It
-// BORROWS the four collaborators a platform backend owns — the capability
-// resolver (owned by the process entry point), the transport membrane, the
-// authorization gate, and the prompter client — and exposes each owned/borrowed
-// piece through a reference accessor the backend re-sources from.
+// BORROWS the three collaborators a platform backend owns — the capability
+// resolver (owned by the process entry point), the authorization gate, and the
+// prompter client — and exposes the authorizer, the
+// prompter and each owned piece through a reference accessor the backend
+// re-sources from; the resolver is read by the presence model and the operation
+// scheduler, never handed back out.
 //
 // Everything a crypto worker that outlives this aggregate (an abandoned,
 // still-blocked prompt / acquire / terminal op) may touch on unblock — the
@@ -81,7 +82,7 @@ using ResolveReaderCard = std::function<std::optional<ReaderCard>(const std::str
 class AgentCore
 {
 public:
-    AgentCore(CapabilityResolver& resolver, AgentTransport& transport, Authorizer& authorizer,
+    AgentCore(CapabilityResolver& resolver, Authorizer& authorizer,
               std::shared_ptr<Operations::PrompterClientBase> prompter, std::filesystem::path configFile,
               std::filesystem::path cacheRoot, ResolveReaderCard resolveReaderCard,
               Pkcs11Broker::ResolveCardKeySeam resolveCardKey);
@@ -92,14 +93,6 @@ public:
     AgentCore& operator=(AgentCore&&) = delete;
 
     // --- borrowed collaborators (owned by the backend) ---------------------
-    [[nodiscard]] CapabilityResolver& capabilityResolver() const noexcept
-    {
-        return m_resolver;
-    }
-    [[nodiscard]] AgentTransport& transport() const noexcept
-    {
-        return m_transport;
-    }
     [[nodiscard]] Authorizer& authorizer() const noexcept
     {
         return m_authorizer;
@@ -128,8 +121,8 @@ public:
     }
     // Per-card ListCredentials snapshot store (records + monotonic version).
     // DISTINCT from credentialCache() (the CAN/MRZ secret cache): a credential
-    // mutation that reaches the card invalidates THIS cache + cardReadCache() via
-    // invalidateForMutationOutcome, but never the secret cache.
+    // mutation that reaches the card invalidates THIS cache + cardReadCache(),
+    // but never the secret cache.
     [[nodiscard]] CredentialSnapshotCache& credentialSnapshotCache() noexcept
     {
         return *m_cryptoCtx->snapshotCache;
@@ -201,10 +194,10 @@ public:
     // away, whatever platform reported it. The host maps its own system events
     // to a reason (systemd-logind PrepareForSleep / session Lock / Active on
     // Linux; the workspace sleep, session-resign and screen-lock notifications
-    // on macOS), calls this, then announces the same reason to its clients
-    // (Manager1.Quiesced / AgentQuiesced).
+    // on macOS), calls this, then, where it has a socket to announce on,
+    // announces the same reason to its clients (AgentQuiesced).
     //
-    //   SystemSleep, SessionInactive, Shutdown -> the full scrub: the CAN/MRZ
+    //   SystemSleep, SessionInactive -> the full scrub: the CAN/MRZ
     //     secret cache and the credential snapshots are cleared, every
     //     reader's shared session (and with it any PACE secure channel) is
     //     invalidated, and every PKCS#11 lease is revoked. A reader loses power
@@ -213,7 +206,7 @@ public:
     //   ScreenLocked -> revokeLeases() only: the session stays, the next
     //     PKCS#11 operation asks for the PIN again.
     //
-    // A value past Shutdown (appended later) takes the full scrub: forgetting
+    // A value past SessionInactive (appended later) takes the full scrub: forgetting
     // too much costs a prompt, forgetting too little leaks a secret.
     //
     // Reads the object registry, so the host calls it wherever it serialises
@@ -261,7 +254,6 @@ private:
     // own (the referents are owned elsewhere). The reader/card seam is likewise
     // injected and read by the broker's card-op seams.
     CapabilityResolver& m_resolver;
-    AgentTransport& m_transport;
     Authorizer& m_authorizer;
     ResolveReaderCard m_resolveReaderCard;
 
@@ -290,7 +282,7 @@ private:
     // are owned by the crypto-worker context (m_cryptoCtx->readCache /
     // ->snapshotCache), not as direct members: the credential flows touch BOTH past
     // the flow's post-prompt gate (the list flow's end-of-flow snapshot put, the
-    // mutation flows' invalidateForMutationOutcome), so an abandoned credential
+    // mutation flows' invalidation), so an abandoned credential
     // worker wedged in the on-card mutation seam unblocks into that cache touch —
     // it must co-own them through the same context it already keeps alive, exactly
     // as the CAN/MRZ secret cache is. cardReadCache() / credentialSnapshotCache()

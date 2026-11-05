@@ -14,7 +14,7 @@
 // Dependency-light like WireHeadersTest/WireHeaderPurityCheck alongside it:
 // FeatureTokens.h is std-only, so this target needs neither LibreAgent::Core
 // nor LibreAgent::Wire, and stays reachable from a Core-less
-// (LIBREAGENT_BUILD_CORE=OFF, LIBREAGENT_BUILD_WIRE=ON) configuration.
+// (LIBREAGENT_BUILD_CORE=OFF) configuration.
 #include <LibreSCRS/Agent/FeatureTokens.h>
 
 #include <gtest/gtest.h>

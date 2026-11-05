@@ -20,7 +20,7 @@
 // ones: family driver 100, travel-document and one generic driver 800, the
 // second generic driver 900.
 
-#include <LibreSCRS/Agent/operations/CardTypeArbitration.h>
+#include "operations/CardTypeArbitration.h"
 
 #include <LibreSCRS/Plugin/CardPlugin.h>
 

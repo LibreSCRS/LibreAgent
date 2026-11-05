@@ -10,7 +10,6 @@
 // released its borrowed prompter share on destruction (reverse order, no leak).
 #include <LibreSCRS/Agent/AgentCore.h>
 #include <LibreSCRS/Agent/Identity.h>
-#include "fakes/FakeAgentTransport.h"
 #include "fakes/FakeAuthorizer.h"
 #include "fakes/FakePrompter.h"
 #include "fakes/ScratchDir.h"
@@ -45,13 +44,11 @@ TEST(AgentCoreWiring, AccessorsReturnLiveMembersAndBorrowedCollaborators)
     const auto dir = uniqueDir();
 
     NeutralResolver resolver;
-    FakeAgentTransport transport;
     FakeAuthorizer authorizer;
     auto prompter = std::make_shared<Operations::FakePrompter>();
 
     {
         AgentCore core{resolver,
-                       transport,
                        authorizer,
                        prompter,
                        dir / "agent.conf",
@@ -60,8 +57,6 @@ TEST(AgentCoreWiring, AccessorsReturnLiveMembersAndBorrowedCollaborators)
                        [](const std::string&) -> std::optional<ObjectId> { return std::nullopt; }};
 
         // Borrowed collaborators resolve to the exact injected instances.
-        EXPECT_EQ(&core.capabilityResolver(), &resolver);
-        EXPECT_EQ(&core.transport(), &transport);
         EXPECT_EQ(&core.authorizer(), &authorizer);
         EXPECT_EQ(core.prompter().get(), prompter.get());
         // The aggregate co-owns the prompter for abandoned-worker keep-alive, so

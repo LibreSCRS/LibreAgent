@@ -18,12 +18,13 @@
 // values so a value edited here without touching WireParityChecks.cpp still
 // shows up as a diff in this file's expectations.
 //
-// ClientCodec.h transitively includes Messages.h (and, through it, Cbor.h):
-// with an include path of ONLY this repo's include/ dir and no linked
-// libraries, a passing compile of THIS TU is the isolation proof for the
-// whole request/reply/event model, both server-role (Messages.h) and
-// client-role (ClientCodec.h) — an LM/Qt/OpenSSL include added to any header
-// in that chain fails this target with a file-not-found error.
+// Messages.h pulls in Cbor.h: with an include path of ONLY this repo's
+// include/ dir and no linked libraries, a passing compile of THIS TU is the
+// isolation proof for the whole request/reply/event model. An LM/Qt/OpenSSL
+// include, or an include of a private header under src/, added to any header
+// in that chain fails this target with a file-not-found error. The
+// client-role codec is private and is checked beside it by
+// WireClientCodecPurityCheck.
 #include <LibreSCRS/Agent/FeatureTokens.h>
 #include <LibreSCRS/Agent/KeyType.h>
 #include <LibreSCRS/Agent/SecureZero.h>
@@ -32,8 +33,8 @@
 #include <LibreSCRS/Agent/OperationPhase.h>
 #include <LibreSCRS/Agent/wire/CredentialWire.h>
 #include <LibreSCRS/Agent/wire/PreReadAuth.h>
+#include <LibreSCRS/Agent/wire/Messages.h>
 #include <LibreSCRS/Agent/wire/SyncError.h>
-#include <LibreSCRS/Agent/wire/ClientCodec.h>
 
 using LibreSCRS::Agent::ErrorCode;
 using LibreSCRS::Agent::Operations::OperationStatus;

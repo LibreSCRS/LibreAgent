@@ -11,7 +11,7 @@
 #include "fakes/FakeSocketAgent.h"
 
 #include <LibreSCRS/Agent/pkcs11/SocketAgentClient.h>
-#include <LibreSCRS/Agent/pkcs11/testing/AgentClientContract.h>
+#include "AgentClientContract.h"
 
 #include <gtest/gtest.h>
 

@@ -129,7 +129,7 @@ TEST(CborRoundTrip, EncodesFloatInShortestPreferredForm)
     // RFC 8949 §4.2 preferred float: 1.5 MUST encode as CBOR float16
     // (0xf9 0x3e 0x00), not float32/64. Locks QCBOR v1.6.1 preferred
     // serialization (a regression / QCBOR bump that stops shortening would break
-    // the "§4.2 canonical" guarantee for the only wire float, op-progress).
+    // the "§4.2 canonical" guarantee for the wire floats of the layout reply).
     const std::vector<std::uint8_t> half{0xf9, 0x3e, 0x00};
     EXPECT_EQ(CborValue(1.5).encode(), half);
 }

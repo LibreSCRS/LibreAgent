@@ -34,9 +34,6 @@ void ReadIdentityOperation::doWork()
         finish(OperationStatus::Error, ErrorCode::CommunicationError, "op.internal", "operation has no session holder");
         return;
     }
-    // Card-I/O has no meaningful completion percentage — present an honest
-    // spinner rather than a fabricated 0->100% bar.
-    setIndeterminate(true);
     setPhase(static_cast<std::uint32_t>(OperationPhase::Connecting));
 
     // Serve a still-cached snapshot without re-walking the card: the same

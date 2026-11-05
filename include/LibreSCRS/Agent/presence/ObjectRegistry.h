@@ -6,12 +6,12 @@
 #include <vector>
 namespace LibreSCRS::Agent {
 // Owns the live set of published reader/card objects and notifies observers of
-// typed deltas. Qt-free / transport-free: the AgentTransport backend registers
+// typed deltas. Qt-free / transport-free: the host registers
 // observers to materialize the published objects (it owns the ObjectId->path
 // mapping and all value/interface-name tagging); unit tests inspect the contents
 // directly. Single-threaded, but driven on the LM monitor poll thread
 // (PresenceModel runs the add/remove/update under MonitorBridge's state mutex);
-// the AgentTransport backend observer marshals any event-loop-only work onto the
+// the host observer marshals any event-loop-only work onto the
 // dispatch thread via the loop poster.
 class ObjectRegistry
 {

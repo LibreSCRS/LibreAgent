@@ -3,12 +3,11 @@
 //
 // Compile-and-behaviour lock for the shared backend doubles under
 // tests/fakes/. Each fake is a concrete recording implementation of a frozen
-// backend interface (OperationChannel, Prompter, Authorizer, AgentTransport,
+// backend interface (OperationChannel, Prompter, Authorizer,
 // LogSink, CredentialDepositor); this suite instantiates each through its
 // interface and asserts the recording contract so the doubles cannot silently
 // drift from the interfaces.
 
-#include "fakes/FakeAgentTransport.h"
 #include "fakes/FakeAuthorizer.h"
 #include "fakes/FakeCredentialDepositor.h"
 #include "fakes/FakeLogSink.h"
@@ -158,42 +157,6 @@ TEST(FakeAuthorizer, AllowAllThenScopedAllowList)
 
     ASSERT_EQ(authz.calls.size(), 3u);
     EXPECT_EQ(authz.calls[0].second, caller);
-}
-
-TEST(FakeAgentTransport, RecordsDeltasPostAndDisconnect)
-{
-    FakeAgentTransport tx;
-    AgentTransport& iface = tx;
-
-    iface.publishReader(ReaderState{ObjectId{1}, "reader-0", false, ObjectId{}});
-    iface.publishCard(CardState{ObjectId{2}, ObjectId{1}, 0, {}});
-    iface.updateProperties(ObjectId{1}, PropertyDelta{true, ObjectId{2}});
-    iface.withdraw(ObjectId{2});
-
-    EXPECT_EQ(tx.publishedReaders.size(), 1u);
-    EXPECT_EQ(tx.publishedCards.size(), 1u);
-    EXPECT_EQ(tx.propertyUpdates.size(), 1u);
-    ASSERT_EQ(tx.withdrawn.size(), 1u);
-    EXPECT_EQ(tx.withdrawn[0], ObjectId{2});
-
-    int ran = 0;
-    iface.post([&ran] { ++ran; });
-    EXPECT_EQ(ran, 0); // recorded, not yet run
-    tx.runPosted();
-    EXPECT_EQ(ran, 1);
-
-    // Additive multi-subscriber: EVERY registered handler fires, in registration
-    // order, on each disconnect (production wires op auto-cancel then lease revoke).
-    std::vector<int> order;
-    CallerToken gone;
-    iface.onClientDisconnect([&order, &gone](CallerToken c) {
-        order.push_back(1);
-        gone = std::move(c);
-    });
-    iface.onClientDisconnect([&order](CallerToken) { order.push_back(2); });
-    tx.fireDisconnect(CallerToken{":1.99"});
-    EXPECT_EQ(gone, CallerToken{":1.99"});
-    EXPECT_EQ(order, (std::vector<int>{1, 2}));
 }
 
 TEST(FakeLogSink, CapturesInjectedLines)

@@ -2,13 +2,13 @@
 // SPDX-FileCopyrightText: 2026 hirashix0
 #include <LibreSCRS/Agent/operations/LmSeams.h>
 #include <LibreSCRS/Agent/KeyType.h>          // the NIST curve table
-#include <LibreSCRS/Agent/util/Sha256Hex.h>   // sha256Hex (certId)
+#include "util/Sha256Hex.h"                   // sha256Hex (certId)
 #include <LibreSCRS/Agent/util/DisplayText.h> // isDisplayableUtf8 (text-field display safety)
 #include <LibreSCRS/Agent/util/HexEncode.h>   // toHex (serial / extension presentation)
 #include <LibreSCRS/Logging.h>
 #include "LmSigningRequestBuilder.h" // buildSigningRequest (extracted, unit-testable)
 #include "LmSignResultMapping.h"     // mapSigningResultStatus (extracted, unit-testable)
-#include <LibreSCRS/Agent/operations/SignGate.h>
+#include "operations/SignGate.h"
 #include <LibreSCRS/Agent/operations/SignatureParams.h> // timestampWasApplied (honest tsaUsed)
 #include <LibreSCRS/Agent/operations/RsaPublicKey.h>
 #include <LibreSCRS/Agent/operations/SigningEngineProvider.h>

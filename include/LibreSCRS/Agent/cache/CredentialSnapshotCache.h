@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 // SPDX-FileCopyrightText: 2026 hirashix0
 #pragma once
-#include <LibreSCRS/Agent/value/CredentialRecord.h> // CredentialSnapshot, CredentialOutcome
+#include <LibreSCRS/Agent/value/CredentialRecord.h> // CredentialSnapshot
 #include <chrono>
 #include <cstdint>
 #include <functional>
@@ -11,11 +11,6 @@
 #include <unordered_map>
 
 namespace LibreSCRS::Agent {
-
-// Forward decl: the post-mutation invalidation helper below drops this card's
-// cached identity/cert reads too, but the snapshot cache itself never depends on
-// CardReadCache's definition (only the .cpp includes it).
-class CardReadCache;
 
 // Per-card in-memory cache of the credential SNAPSHOT a ListCredentials produced:
 // the enumerated PIN/PUK/key records (labels, lifecycle state, retry counters)
@@ -66,7 +61,7 @@ public:
     [[nodiscard]] std::optional<CredentialSnapshot> get(const std::string& cardKey) const;
 
     // Drop + scrub this card's snapshot. Invoked by a mutation that reached the
-    // card (see invalidateForMutationOutcome) and by the card-removal hook.
+    // card and by the card-removal hook.
     // Idempotent: a no-op when nothing is cached for @p cardKey.
     void invalidate(const std::string& cardKey);
 
@@ -95,39 +90,5 @@ private:
     // Monotonic version source. Starts at 1; 0 is reserved for "never cached".
     std::uint64_t m_nextVersion = 1;
 };
-
-// True iff a completed credential mutation with this outcome may have changed the
-// card's on-card credential state — so a cached snapshot (and the cached
-// identity/cert reads) for that card are now potentially stale.
-//
-//   * Ok / InvalidPin / Blocked / KeyActivationFailed reached the card and moved
-//     its state (a mutation applied, or a PIN presentation decremented the retry
-//     counter / blocked the credential / stepped the key lifecycle).
-//   * PluginError is treated conservatively as "may have reached the card": a
-//     mid-seam error is ambiguous, and serving a stale snapshot is worse than an
-//     extra re-list.
-//   * The remaining outcomes did NOT change card state — the two this policy calls
-//     out (UserCancelled: prompter-only, no card contact; Unsupported: capability
-//     short-circuit or seam "not supported", nothing applied) plus MissingFields
-//     (required fields never presented), CardRemoved (card gone before the seam;
-//     the removal hook owns that eviction) and Unspecified (a fail-closed / non-
-//     card open failure) — so they return false and leave the caches intact.
-[[nodiscard]] bool mutationReachedCard(CredentialOutcome outcome) noexcept;
-
-// Apply the post-mutation invalidation RULE for one card: when
-// mutationReachedCard(outcome) holds, drop this card's cached credential snapshot
-// AND its cached identity/cert reads, since on-card state may have moved. The
-// CAN/MRZ secret cache (CredentialCache) is deliberately NOT a parameter and is
-// never touched here — a mutation must not evict a still-valid pre-read secret.
-//
-// NOTE: the mutation flows (PinChangeFlow / KeyActivationFlow) now invalidate on
-// GROUND-TRUTH card-reach — a flow-local flag set immediately before the seam
-// call — rather than inferring reach from the returned outcome, so a mid-op
-// CardRemoved still drops the (possibly-partial) snapshot and a pre-seam open
-// failure preserves it. This outcome-classified helper is retained as the
-// documented mapping of "which outcomes imply the card was reached" and is
-// exercised directly by CredentialSnapshotCacheTest.
-void invalidateForMutationOutcome(CredentialOutcome outcome, const std::string& cardKey,
-                                  CredentialSnapshotCache& snapshotCache, CardReadCache& cardReadCache);
 
 } // namespace LibreSCRS::Agent

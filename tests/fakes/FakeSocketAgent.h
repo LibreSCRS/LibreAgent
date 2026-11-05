@@ -23,7 +23,7 @@
 //     never sees an interleaved frame has not been shown to discard one.
 
 #include <LibreSCRS/Agent/KeyType.h>
-#include <LibreSCRS/Agent/wire/ClientCodec.h>
+#include "wire/ClientCodec.h"
 #include <LibreSCRS/Agent/wire/Framing.h>
 #include <LibreSCRS/Agent/wire/Messages.h>
 #include <LibreSCRS/Agent/wire/SyncError.h>

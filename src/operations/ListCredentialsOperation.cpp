@@ -2,7 +2,7 @@
 // SPDX-FileCopyrightText: 2026 hirashix0
 #include <LibreSCRS/Agent/operations/ListCredentialsOperation.h>
 #include <LibreSCRS/Agent/operations/PromptSerializer.h>
-#include <LibreSCRS/Agent/operations/CredentialListFlow.h>
+#include "operations/CredentialListFlow.h"
 #include <utility>
 
 namespace LibreSCRS::Agent::Operations {
@@ -50,7 +50,6 @@ void ListCredentialsOperation::doWork()
         finish(OperationStatus::Error, ErrorCode::CommunicationError, "op.internal", "operation has no session holder");
         return;
     }
-    setIndeterminate(true);
     setPhase(static_cast<std::uint32_t>(OperationPhase::Connecting));
 
     CredentialListFlow flow(CredentialListFlowDeps{

@@ -13,7 +13,6 @@
 #include <LibreSCRS/Agent/AgentCore.h>
 #include <LibreSCRS/Agent/pkcs11/Pkcs11Broker.h>
 #include <LibreSCRS/Agent/pkcs11/LeaseManager.h>
-#include "fakes/FakeAgentTransport.h"
 #include "fakes/FakeAuthorizer.h"
 #include "fakes/FakePrompter.h"
 #include <LibreSCRS/CancelToken.h>
@@ -830,15 +829,14 @@ struct CoreHarness
 {
     fs::path dir;
     NeutralResolver resolver;
-    FakeAgentTransport transport;
     FakeAuthorizer authorizer;
     std::shared_ptr<Operations::FakePrompter> prompter{std::make_shared<Operations::FakePrompter>()};
     AgentCore core;
 
     CoreHarness(const char* tag, ResolveReaderCard resolveReaderCard, Pkcs11Broker::ResolveCardKeySeam resolveCardKey)
         : dir(fs::temp_directory_path() / (std::string{"libreagent-broker-core-"} + tag)),
-          core(resolver, transport, authorizer, prompter, dir / "agent.conf", dir / "cache",
-               std::move(resolveReaderCard), std::move(resolveCardKey))
+          core(resolver, authorizer, prompter, dir / "agent.conf", dir / "cache", std::move(resolveReaderCard),
+               std::move(resolveCardKey))
     {}
     ~CoreHarness()
     {

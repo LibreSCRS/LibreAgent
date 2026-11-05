@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 // SPDX-FileCopyrightText: 2026 hirashix0
-#include <LibreSCRS/Agent/operations/KeyActivationFlow.h>
+#include "operations/KeyActivationFlow.h"
 #include <LibreSCRS/Logging.h>
 #include <LibreSCRS/Agent/backend/PromptTypes.h>
 #include <LibreSCRS/Agent/cache/AttemptContext.h>
@@ -8,9 +8,9 @@
 #include <LibreSCRS/Agent/cache/CredentialCache.h>
 #include <LibreSCRS/Agent/cache/CredentialSnapshotCache.h>
 #include <LibreSCRS/Agent/operations/CardPluginRouting.h> // signingCandidates
-#include <LibreSCRS/Agent/operations/FlowPrelude.h>
+#include "operations/FlowPrelude.h"
 #include <LibreSCRS/Agent/operations/OperationBase.h> // OperationPhase enum
-#include <LibreSCRS/Agent/operations/SerializingPrompter.h>
+#include "operations/SerializingPrompter.h"
 #include <LibreSCRS/Plugin/PluginTypes.h> // PINResult
 #include <atomic>
 #include <cstdint>
@@ -23,31 +23,25 @@ namespace LibreSCRS::Agent::Operations {
 namespace {
 
 // Result for a path that never reached the seam (capability gate, cancel, open
-// failure, or an undelivered prompt): the key was not activated, and any
-// transport-PIN bring-up state that led here is carried through unchanged.
-CredentialOpResult nonSeamResult(CredentialOutcome outcome, std::optional<bool> pinActivated)
+// failure, or an undelivered prompt): the key was not activated.
+CredentialOpResult nonSeamResult(CredentialOutcome outcome)
 {
     CredentialOpResult result;
     result.outcome = outcome;
-    result.keyActivated = false;
-    result.pinActivated = pinActivated;
     return result;
 }
 
-// Map the LM PINResult onto the wire-facing CredentialOpResult. keyActivated is
-// true only on Ok; every other LM outcome — including KeyActivationFailed, where
+// Map the LM PINResult onto the wire-facing CredentialOpResult. Every LM outcome — including KeyActivationFailed, where
 // VERIFY succeeded but the card-side ACTIVATE step failed — is preserved verbatim
 // (its wire ErrorCode mapping is not yet implemented). retriesLeft rides the
 // payload and describes the PIN that was presented — here the SIGN PIN, the only
 // PIN this flow prompts.
-CredentialOpResult mapSeamResult(const LibreSCRS::Plugin::PINResult& pin, std::optional<bool> pinActivated)
+CredentialOpResult mapSeamResult(const LibreSCRS::Plugin::PINResult& pin)
 {
     CredentialOpResult result;
     result.outcome = toCredentialOutcome(pin.outcome);
     result.retriesLeft = pin.retriesLeft;
     result.blocked = pin.blocked;
-    result.keyActivated = (result.outcome == CredentialOutcome::Ok);
-    result.pinActivated = pinActivated;
     return result;
 }
 
@@ -74,11 +68,11 @@ CredentialOpResult runKeyActivation(KeyActivationFlowDeps deps)
         // its signing key answers Unsupported without ever raising a PIN dialog
         // (prompt-before-capability is forbidden).
         if (!deps.record.keyActivatable) {
-            return nonSeamResult(CredentialOutcome::Unsupported, deps.pinActivated);
+            return nonSeamResult(CredentialOutcome::Unsupported);
         }
 
         if (deps.token.isCancelled()) {
-            return nonSeamResult(CredentialOutcome::UserCancelled, deps.pinActivated);
+            return nonSeamResult(CredentialOutcome::UserCancelled);
         }
 
         // Open the held (reused) session and install the channel credential provider,
@@ -88,12 +82,12 @@ CredentialOpResult runKeyActivation(KeyActivationFlowDeps deps)
         // handed to the seam explicitly (the frozen seam takes it as an argument).
         auto opened = FlowPrelude::openSession(deps.holder, deps.token);
         if (opened.status == FlowPrelude::OpenStatus::Cancelled) {
-            return nonSeamResult(CredentialOutcome::UserCancelled, deps.pinActivated);
+            return nonSeamResult(CredentialOutcome::UserCancelled);
         }
         if (opened.status != FlowPrelude::OpenStatus::Ok) {
             // No ErrorCode rides a CredentialOpResult; classify the open failure onto
             // the outcome vocabulary via the helper shared with PinChangeFlow.
-            return nonSeamResult(FlowPrelude::openFailureOutcome(opened.code), deps.pinActivated);
+            return nonSeamResult(FlowPrelude::openFailureOutcome(opened.code));
         }
         auto session = std::move(opened.session);
         // Activation drives the signing key, so route across the signing-capable
@@ -118,7 +112,7 @@ CredentialOpResult runKeyActivation(KeyActivationFlowDeps deps)
                                                              attempts, prompterFailed));
 
         if (deps.token.isCancelled()) {
-            return nonSeamResult(CredentialOutcome::UserCancelled, deps.pinActivated);
+            return nonSeamResult(CredentialOutcome::UserCancelled);
         }
 
         // Prompt the operational SIGN PIN once, through the single agent-wide prompt
@@ -137,38 +131,26 @@ CredentialOpResult runKeyActivation(KeyActivationFlowDeps deps)
         SerializingPrompter gated{deps.serializer, deps.prompter, deps.token, deps.cardKey};
         const auto prompt = gated.requestPin(opts);
         if (prompt.status == PromptStatus::Cancelled) {
-            return nonSeamResult(CredentialOutcome::UserCancelled, deps.pinActivated);
+            return nonSeamResult(CredentialOutcome::UserCancelled);
         }
         if (prompt.status == PromptStatus::Timeout) {
             // The clock closed the window: the holder ran out of time to type.
             // Distinct from MissingFields, which says the prompter answered
             // without the fields -- here it did not answer at all, and nothing
             // was presented to the card.
-            return nonSeamResult(CredentialOutcome::EntryExpired, deps.pinActivated);
+            return nonSeamResult(CredentialOutcome::EntryExpired);
         }
         if (prompt.status != PromptStatus::Ok || !prompt.secret.has_value()) {
             // The prompter did not deliver the required secret (UI broke / absent).
             // On the agent path the provider IS the prompter, so this is MissingFields.
-            return nonSeamResult(CredentialOutcome::MissingFields, deps.pinActivated);
+            return nonSeamResult(CredentialOutcome::MissingFields);
         }
 
         // SIGN PIN collected: arm the watchdog and verify+activate on the card.
         deps.phaseSink.setPhase(static_cast<std::uint32_t>(OperationPhase::Authenticating));
         reachedCard = true; // ground truth: the card is now being contacted
         const auto pin = deps.credentials.activateSigningKey(*session, signCands, *prompt.secret);
-        // A card pulled mid-activation: the seam's return is unreliable. Report
-        // transport loss (mirroring CredentialListFlow's post-list isDead check);
-        // keyActivated stays false and the pinActivated continuation is carried
-        // through unchanged. reachedCard stays true, so the possibly-partial
-        // activation still drops the stale snapshot below.
-        if (session->isDead()) {
-            CredentialOpResult removed;
-            removed.outcome = CredentialOutcome::CardRemoved;
-            removed.keyActivated = false;
-            removed.pinActivated = deps.pinActivated;
-            return removed;
-        }
-        return mapSeamResult(pin, deps.pinActivated);
+        return mapSeamResult(pin);
     }();
 
     // Invalidate on card-reach ground truth, not on the outcome classifier: any

@@ -13,7 +13,6 @@
 
 using LibreSCRS::Agent::Config::ConfigStore;
 using LibreSCRS::Agent::Config::CscaAnchorState;
-using LibreSCRS::Agent::Config::CscaSource;
 using LibreSCRS::Agent::Config::Mutability;
 using LibreSCRS::Agent::Config::TslSource;
 
@@ -79,9 +78,7 @@ TEST_F(ConfigStoreTest, DefaultsWhenNoFile)
     EXPECT_EQ(cfg.tsaUrls(), kSeededTsaUrls);
     EXPECT_EQ(cfg.tslSources(), kSeededTslSources);
     EXPECT_TRUE(cfg.lastTsaUrl().empty());
-    EXPECT_TRUE(cfg.pluginDir().empty());
     EXPECT_EQ(cfg.tslCacheDir(), (m_cacheRoot / "tsl").string()); // TSL = Trusted Service List, not "tls"
-    EXPECT_EQ(cfg.aiaCacheDir(), (m_cacheRoot / "aia").string());
 }
 
 TEST_F(ConfigStoreTest, FirstRunSeedIsWrittenToDiskAndSurvivesReload)
@@ -124,8 +121,6 @@ TEST_F(ConfigStoreTest, SeedWritesOnlyTheKeysItOwns)
 
     const std::string written = readConfig();
     EXPECT_EQ(written.find("TslCacheDir"), std::string::npos) << "the seed froze a derived cache path into the file:\n"
-                                                              << written;
-    EXPECT_EQ(written.find("AiaCacheDir"), std::string::npos) << "the seed froze a derived cache path into the file:\n"
                                                               << written;
     EXPECT_EQ(written.find("DefaultLevel"), std::string::npos)
         << "the seed froze the built-in default level into the file:\n"
@@ -205,7 +200,7 @@ TEST_F(ConfigStoreTest, LoadsScalarsAndLists)
                 "TslSource = https://tl.example/lotl.xml|lotl|eager\n"
                 "TslSource = https://tl.example/leaf.xml\n"
                 "DefaultReason = signed via LibreSCRS\n"
-                "PluginDir = /opt/librescrs/plugins\n");
+                "DefaultLocation = Belgrade\n");
     ConfigStore cfg(m_configFile, m_cacheRoot);
     EXPECT_EQ(cfg.defaultLevel(), "b-lt");
     ASSERT_EQ(cfg.tsaUrls().size(), 2u);
@@ -216,7 +211,7 @@ TEST_F(ConfigStoreTest, LoadsScalarsAndLists)
     EXPECT_TRUE(cfg.tslSources()[0].eager);
     EXPECT_FALSE(cfg.tslSources()[1].isLotl);
     EXPECT_EQ(cfg.defaultReason(), "signed via LibreSCRS");
-    EXPECT_EQ(cfg.pluginDir(), "/opt/librescrs/plugins");
+    EXPECT_EQ(cfg.defaultLocation(), "Belgrade");
 }
 
 TEST_F(ConfigStoreTest, RejectsNonHttpTsaAndBadLevelOnLoad)
@@ -352,10 +347,6 @@ TEST_F(ConfigStoreTest, PlainHttpTslSourceIsRefusedAndTheStoreIsUnchanged)
     EXPECT_FALSE(refused.ok);
     EXPECT_EQ(refused.errorName, "org.librescrs.Agent.Error.InvalidConfigValue");
     EXPECT_EQ(cfg.tslSources(), before) << "the write was refused and applied anyway";
-
-    // The anchor sources share the predicate, so they share the rule.
-    EXPECT_FALSE(cfg.setCscaSources({CscaSource{"http://pkd.example/anchors.ldif", false}}).ok);
-    EXPECT_TRUE(cfg.cscaSources().empty());
 }
 
 TEST_F(ConfigStoreTest, PlainHttpTsaUrlIsDroppedOnLoadAndTheRestOfTheFileSurvives)
@@ -391,40 +382,6 @@ TEST_F(ConfigStoreTest, TslSourcesRoundTrip)
     EXPECT_FALSE(reopened.tslSources()[1].isLotl);
 }
 
-// The country-signing anchor sources follow TslSource's file grammar exactly:
-// a SINGULAR key repeated once per source, fields pipe-delimited. What differs
-// is the field count -- `uri[|eager]`, with no isLotl equivalent, because
-// nothing in the CSCA world nests one source inside another.
-TEST_F(ConfigStoreTest, CscaSourcesLoadFromFile)
-{
-    writeConfig("CscaSource = https://pkd.example.test/anchors.ldif\n"
-                "CscaSource = https://masterlist.example.test/ml.der|eager\n"
-                "CscaSource = ftp://rejected.example.test/ml.der\n");
-    ConfigStore cfg(m_configFile, m_cacheRoot);
-    ASSERT_EQ(cfg.cscaSources().size(), 2u) << "only http(s) sources survive the load";
-    EXPECT_EQ(cfg.cscaSources()[0].uri, "https://pkd.example.test/anchors.ldif");
-    EXPECT_FALSE(cfg.cscaSources()[0].eager) << "eager is opt-in per source, never the default";
-    EXPECT_EQ(cfg.cscaSources()[1].uri, "https://masterlist.example.test/ml.der");
-    EXPECT_TRUE(cfg.cscaSources()[1].eager);
-}
-
-TEST_F(ConfigStoreTest, CscaSourcesRoundTrip)
-{
-    ConfigStore cfg(m_configFile, m_cacheRoot);
-    // Symmetric to TslSources: a non-http(s) entry rejects the whole write.
-    EXPECT_FALSE(cfg.setCscaSources({CscaSource{"ftp://bad", false}}).ok);
-    EXPECT_TRUE(cfg.cscaSources().empty());
-    EXPECT_TRUE(cfg.setCscaSources({CscaSource{"https://a.example.test/ml.der", true},
-                                    CscaSource{"https://b.example.test/anchors.ldif", false}})
-                    .ok);
-    ConfigStore reopened(m_configFile, m_cacheRoot);
-    ASSERT_EQ(reopened.cscaSources().size(), 2u) << "the write did not survive persist + reload";
-    EXPECT_EQ(reopened.cscaSources()[0].uri, "https://a.example.test/ml.der");
-    EXPECT_TRUE(reopened.cscaSources()[0].eager);
-    EXPECT_EQ(reopened.cscaSources()[1].uri, "https://b.example.test/anchors.ldif");
-    EXPECT_FALSE(reopened.cscaSources()[1].eager);
-}
-
 TEST_F(ConfigStoreTest, CscaCacheDirIsFileOnlyAndDerivedFromTheCacheRoot)
 {
     ConfigStore cfg(m_configFile, m_cacheRoot);
@@ -451,12 +408,7 @@ TEST_F(ConfigStoreTest, MutabilityMetadata)
     EXPECT_EQ(ConfigStore::mutability("DefaultReason"), Mutability::DbusMutable);
     EXPECT_EQ(ConfigStore::mutability("TsaUrls"), Mutability::DbusMutableTrust);
     EXPECT_EQ(ConfigStore::mutability("TslSources"), Mutability::DbusMutableTrust);
-    // The country-signing anchor sources are trust-tier settable, exactly like
-    // the trusted lists: both decide what a signature is validated AGAINST.
-    EXPECT_EQ(ConfigStore::mutability("CscaSources"), Mutability::DbusMutableTrust);
-    EXPECT_EQ(ConfigStore::mutability("PluginDir"), Mutability::FileOnly);
     EXPECT_EQ(ConfigStore::mutability("TslCacheDir"), Mutability::FileOnly);
-    EXPECT_EQ(ConfigStore::mutability("AiaCacheDir"), Mutability::FileOnly);
     // The anchor cache is a writable path the agent unpacks downloaded material
     // into: a wire-settable one would let any authorized client redirect those
     // writes, so it may only ever be chosen by editing the config file.
@@ -474,7 +426,7 @@ TEST_F(ConfigStoreTest, MutabilityMetadata)
     // prompter has no confirm-only primitive to back it.
     EXPECT_FALSE(ConfigStore::mutability("Pkcs11DecryptConfirm").has_value());
     EXPECT_FALSE(ConfigStore::mutability("Nope").has_value());
-    EXPECT_EQ(ConfigStore::keys().size(), 14u);
+    EXPECT_EQ(ConfigStore::keys().size(), 11u);
 }
 
 TEST_F(ConfigStoreTest, Pkcs11LeaseKnobsDefaultsAndRoundTrip)
@@ -502,7 +454,7 @@ TEST_F(ConfigStoreTest, ResetHonorsMutabilityFromDbus)
 {
     ConfigStore cfg(m_configFile, m_cacheRoot);
     // FileOnly + ReadOnly keys are not resettable over D-Bus.
-    EXPECT_EQ(cfg.resetKey("PluginDir", /*fromDbus=*/true).errorName, "org.librescrs.Agent.Error.ReadOnlyConfig");
+    EXPECT_EQ(cfg.resetKey("TslCacheDir", /*fromDbus=*/true).errorName, "org.librescrs.Agent.Error.ReadOnlyConfig");
     EXPECT_EQ(cfg.resetKey("LastTsaUrl", /*fromDbus=*/true).errorName, "org.librescrs.Agent.Error.ReadOnlyConfig");
     EXPECT_EQ(cfg.resetKey("Bogus", /*fromDbus=*/true).errorName, "org.librescrs.Agent.Error.UnknownConfigKey");
     // A D-Bus-mutable key resets fine.
@@ -510,7 +462,7 @@ TEST_F(ConfigStoreTest, ResetHonorsMutabilityFromDbus)
     EXPECT_TRUE(cfg.resetKey("DefaultLevel", /*fromDbus=*/true).ok);
     EXPECT_EQ(cfg.defaultLevel(), "b-b");
     // The file-load path (fromDbus=false) may reset any key.
-    EXPECT_TRUE(cfg.resetKey("PluginDir", /*fromDbus=*/false).ok);
+    EXPECT_TRUE(cfg.resetKey("TslCacheDir", /*fromDbus=*/false).ok);
 }
 
 TEST_F(ConfigStoreTest, RecordLastTsaUrlIsReadOnlyButAgentSettable)
@@ -538,7 +490,6 @@ TEST_F(ConfigStoreTest, CscaAnchorStateStartsAbsentAndIsAgentRecorded)
     state.signerPinned = true;
     state.acceptedAt = 1756000000;
     state.signedAt = 1755000000;
-    state.origin = "import";
     cfg.recordCscaAnchorState(state);
     ASSERT_TRUE(cfg.cscaAnchorState().has_value());
     EXPECT_EQ(*cfg.cscaAnchorState(), state);
@@ -561,7 +512,6 @@ TEST_F(ConfigStoreTest, CscaAnchorStateAbsentSignedAtIsNeverPersistedAsZero)
     undated.issuers = 1;
     undated.replayRefusalActive = false;
     undated.acceptedAt = 1756000001;
-    undated.origin = "import";
 
     {
         ConfigStore cfg(m_configFile, m_cacheRoot);

@@ -9,12 +9,10 @@
 // same event, and each transport's own suite stays green throughout. So the
 // claims live here, once, and each transport instantiates them.
 //
-// It sits under include/ and not under tests/ on purpose. The root CMakeLists
-// gates BOTH add_subdirectory(tests) and the install/export rules on
-// PROJECT_IS_TOP_LEVEL, and no install() rule reaches tests/ -- so a header
-// placed there would be neither installed for a find_package consumer nor
-// configured for a FetchContent one, which is exactly the two ways the other
-// host reaches this project.
+// It is part of the LibreAgent::TestSupport component, not of the installed
+// core headers: a host reaches it by linking that target, which puts this
+// directory on the include path for a FetchContent consumer and installs it
+// beside the fixtures for a find_package one.
 //
 // What a transport supplies is a Traits type. The claims below never name a
 // socket, a bus, an error string or a wire enumerator; the traits type is the

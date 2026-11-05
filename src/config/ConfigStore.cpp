@@ -28,18 +28,15 @@ constexpr const char* kTsaUrls = "TsaUrls";
 constexpr const char* kLastTsaUrl = "LastTsaUrl";
 constexpr const char* kTslSources = "TslSources";
 constexpr const char* kTslCacheDir = "TslCacheDir";
-constexpr const char* kAiaCacheDir = "AiaCacheDir";
-constexpr const char* kCscaSources = "CscaSources";
 constexpr const char* kCscaCacheDir = "CscaCacheDir";
 constexpr const char* kCscaAnchorState = "CscaAnchorState";
 constexpr const char* kDefaultReason = "DefaultReason";
 constexpr const char* kDefaultLocation = "DefaultLocation";
-constexpr const char* kPluginDir = "PluginDir";
 constexpr const char* kPkcs11IdleTimeoutSecs = "Pkcs11IdleTimeoutSecs";
 constexpr const char* kPkcs11MaxLifetimeSecs = "Pkcs11MaxLifetimeSecs";
 
 // One table, two readers. keys() and mutability() below used to be two
-// hand-maintained lists of these same fourteen keys -- one a vector of
+// hand-maintained lists of these same keys -- one a vector of
 // spellings, the other a chain of comparisons -- and nothing tied them
 // together. A key added to the chain but not the vector is classified and
 // unenumerable: it drops out of every consumer that walks keys(), including
@@ -63,19 +60,16 @@ struct KeySpec
 };
 
 // Order is the order keys() has always returned; consumers render it.
-constexpr std::array<KeySpec, 14> kKeySpecs{{
+constexpr std::array<KeySpec, 11> kKeySpecs{{
     {kDefaultLevel, Mutability::DbusMutable},
     {kTsaUrls, Mutability::DbusMutableTrust},
     {kLastTsaUrl, Mutability::ReadOnly},
     {kTslSources, Mutability::DbusMutableTrust},
     {kTslCacheDir, Mutability::FileOnly},
-    {kAiaCacheDir, Mutability::FileOnly},
-    {kCscaSources, Mutability::DbusMutableTrust},
     {kCscaCacheDir, Mutability::FileOnly},
     {kCscaAnchorState, Mutability::ReadOnly},
     {kDefaultReason, Mutability::DbusMutable},
     {kDefaultLocation, Mutability::DbusMutable},
-    {kPluginDir, Mutability::FileOnly},
     {kPkcs11IdleTimeoutSecs, Mutability::FileOnly},
     {kPkcs11MaxLifetimeSecs, Mutability::FileOnly},
 }};
@@ -93,11 +87,9 @@ constexpr const char* kErrUnknownKey = "org.librescrs.Agent.Error.UnknownConfigK
 constexpr const char* kErrInvalidValue = "org.librescrs.Agent.Error.InvalidConfigValue";
 
 // Cache subdirectory names under the cache root. "tsl" = ETSI Trusted Service
-// List (NOT "tls" — that would be Transport Layer Security); "aia" = the AIA
-// caIssuers cert cache. Single source of truth so applyDefaults() and
-// resetKey() cannot drift.
+// List (NOT "tls" — that would be Transport Layer Security). Single source of
+// truth so applyDefaults() and resetKey() cannot drift.
 constexpr const char* kTslSubdir = "tsl";
-constexpr const char* kAiaSubdir = "aia";
 // "csca" = the ICAO Country Signing CA anchor cache (passport SOD validation),
 // a different trust world from the ETSI lists above and so a different dir.
 constexpr const char* kCscaSubdir = "csca";
@@ -276,10 +268,9 @@ constexpr const char* kAnchorSigner = "signer";
 constexpr const char* kAnchorSignerPinned = "signerPinned";
 constexpr const char* kAnchorAcceptedAt = "acceptedAt";
 constexpr const char* kAnchorSignedAt = "signedAt";
-constexpr const char* kAnchorOrigin = "origin";
 
 // One CscaAnchorState as a single config-file value: `name=value` subfields
-// joined by '|', the same separator the TslSource/CscaSource list lines use.
+// joined by '|', the same separator the TslSource list lines use.
 //
 // A subfield that is ABSENT is simply not written, and that is load-bearing
 // rather than a size optimisation: `signedAt` has no zero sentinel (see the
@@ -302,9 +293,6 @@ std::string encodeCscaAnchorState(const CscaAnchorState& state)
     }
     if (state.signedAt) {
         out += std::string("|") + kAnchorSignedAt + "=" + std::to_string(*state.signedAt);
-    }
-    if (!state.origin.empty()) {
-        out += std::string("|") + kAnchorOrigin + "=" + state.origin;
     }
     return out;
 }
@@ -356,9 +344,6 @@ std::optional<CscaAnchorState> parseCscaAnchorState(const std::string& value)
                 state.signedAt = *n;
                 sawKnownField = true;
             }
-        } else if (name == kAnchorOrigin) {
-            state.origin = raw;
-            sawKnownField = true;
         }
     }
     if (!sawKnownField) {
@@ -396,13 +381,10 @@ void ConfigStore::applyDefaults()
     m_lastTsaUrl.clear();
     m_tslSources.clear();
     m_tslCacheDir = (m_cacheRoot / kTslSubdir).string();
-    m_aiaCacheDir = (m_cacheRoot / kAiaSubdir).string();
-    m_cscaSources.clear();
     m_cscaCacheDir = (m_cacheRoot / kCscaSubdir).string();
     m_cscaAnchorState.reset();
     m_defaultReason.clear();
     m_defaultLocation.clear();
-    m_pluginDir.clear(); // empty => consumer uses the compiled default plugin dir
     m_pkcs11IdleTimeoutSecs = kPkcs11IdleDefault;
     m_pkcs11MaxLifetimeSecs = kPkcs11MaxLifetimeDefault;
 }
@@ -418,13 +400,12 @@ void ConfigStore::loadFromFile()
         log::warnf("config: cannot open {}; using defaults", m_configFile.string());
         return;
     }
-    // List keys (TsaUrl/TslSource/CscaSource) accumulate across repeated lines.
+    // List keys (TsaUrl/TslSource) accumulate across repeated lines.
     // Clear them here so the file fully REPLACES (never appends to) whatever
     // applyDefaults seeded — correct even if a future default list becomes
     // non-empty.
     m_tsaUrls.clear();
     m_tslSources.clear();
-    m_cscaSources.clear();
     std::string line;
     while (std::getline(in, line)) {
         const std::string trimmed = trim(line);
@@ -468,31 +449,9 @@ void ConfigStore::loadFromFile()
             if (isHttpUrl(src.url, /*allowPlainHttp=*/false)) {
                 m_tslSources.push_back(std::move(src));
             }
-        } else if (key == "CscaSource") { // singular, repeated: uri[|eager]
-            // Two fields, not three: there is no isLotl analogue here, because a
-            // country-signing source names anchors and never other sources.
-            std::stringstream ss(value);
-            std::string field;
-            CscaSource src;
-            bool first = true;
-            while (std::getline(ss, field, '|')) {
-                if (first) {
-                    src.uri = field;
-                    first = false;
-                } else if (field == "eager") {
-                    src.eager = true;
-                }
-            }
-            if (isHttpUrl(src.uri, /*allowPlainHttp=*/false)) {
-                m_cscaSources.push_back(std::move(src));
-            }
         } else if (key == kTslCacheDir) {
             if (!value.empty()) {
                 m_tslCacheDir = value;
-            }
-        } else if (key == kAiaCacheDir) {
-            if (!value.empty()) {
-                m_aiaCacheDir = value;
             }
         } else if (key == kCscaCacheDir) {
             if (!value.empty()) {
@@ -507,8 +466,6 @@ void ConfigStore::loadFromFile()
             m_defaultReason = value;
         } else if (key == kDefaultLocation) {
             m_defaultLocation = value;
-        } else if (key == kPluginDir) {
-            m_pluginDir = value;
         } else if (key == kPkcs11IdleTimeoutSecs) {
             if (const auto n = parseU32(value)) {
                 m_pkcs11IdleTimeoutSecs = *n;
@@ -594,18 +551,8 @@ void ConfigStore::persist()
             }
             out << '\n';
         }
-        for (const auto& s : m_cscaSources) {
-            out << "CscaSource = " << s.uri;
-            if (s.eager) {
-                out << "|eager";
-            }
-            out << '\n';
-        }
         if (m_tslCacheDir != (m_cacheRoot / kTslSubdir).string()) {
             out << kTslCacheDir << " = " << m_tslCacheDir << '\n';
-        }
-        if (m_aiaCacheDir != (m_cacheRoot / kAiaSubdir).string()) {
-            out << kAiaCacheDir << " = " << m_aiaCacheDir << '\n';
         }
         if (m_cscaCacheDir != (m_cacheRoot / kCscaSubdir).string()) {
             out << kCscaCacheDir << " = " << m_cscaCacheDir << '\n';
@@ -618,9 +565,6 @@ void ConfigStore::persist()
         }
         if (!m_defaultLocation.empty()) {
             out << kDefaultLocation << " = " << m_defaultLocation << '\n';
-        }
-        if (!m_pluginDir.empty()) {
-            out << kPluginDir << " = " << m_pluginDir << '\n';
         }
         // PKCS#11 lease knobs: persist only when they differ from the built-in
         // defaults so a fresh config file stays minimal.
@@ -684,16 +628,6 @@ std::string ConfigStore::tslCacheDir() const
     std::lock_guard lk(m_mutex);
     return m_tslCacheDir;
 }
-std::string ConfigStore::aiaCacheDir() const
-{
-    std::lock_guard lk(m_mutex);
-    return m_aiaCacheDir;
-}
-std::vector<CscaSource> ConfigStore::cscaSources() const
-{
-    std::lock_guard lk(m_mutex);
-    return m_cscaSources;
-}
 std::string ConfigStore::cscaCacheDir() const
 {
     std::lock_guard lk(m_mutex);
@@ -713,11 +647,6 @@ std::string ConfigStore::defaultLocation() const
 {
     std::lock_guard lk(m_mutex);
     return m_defaultLocation;
-}
-std::string ConfigStore::pluginDir() const
-{
-    std::lock_guard lk(m_mutex);
-    return m_pluginDir;
 }
 std::uint32_t ConfigStore::pkcs11IdleTimeoutSecs() const
 {
@@ -781,22 +710,6 @@ ConfigStore::SetResult ConfigStore::setTslSources(std::vector<TslSource> sources
     return SetResult{true, {}, {}};
 }
 
-ConfigStore::SetResult ConfigStore::setCscaSources(std::vector<CscaSource> sources)
-{
-    for (const auto& s : sources) {
-        if (!isHttpUrl(s.uri, /*allowPlainHttp=*/false)) {
-            return SetResult{false, kErrInvalidValue, "CscaSources entries must be https URLs"};
-        }
-    }
-    {
-        std::lock_guard lk(m_mutex);
-        m_cscaSources = std::move(sources);
-        persist();
-    }
-    fireChanged(kCscaSources);
-    return SetResult{true, {}, {}};
-}
-
 ConfigStore::SetResult ConfigStore::setDefaultReason(std::string reason)
 {
     {
@@ -847,20 +760,14 @@ ConfigStore::SetResult ConfigStore::resetKey(const std::string& key, bool fromDb
             m_tsaUrls = seededTsaUrls();
         } else if (key == kTslSources) {
             m_tslSources = seededTslSources();
-        } else if (key == kCscaSources) {
-            m_cscaSources.clear();
         } else if (key == kDefaultReason) {
             m_defaultReason.clear();
         } else if (key == kDefaultLocation) {
             m_defaultLocation.clear();
         } else if (key == kTslCacheDir) {
             m_tslCacheDir = (m_cacheRoot / kTslSubdir).string();
-        } else if (key == kAiaCacheDir) {
-            m_aiaCacheDir = (m_cacheRoot / kAiaSubdir).string();
         } else if (key == kCscaCacheDir) {
             m_cscaCacheDir = (m_cacheRoot / kCscaSubdir).string();
-        } else if (key == kPluginDir) {
-            m_pluginDir.clear();
         } else if (key == kPkcs11IdleTimeoutSecs) {
             m_pkcs11IdleTimeoutSecs = kPkcs11IdleDefault;
         } else if (key == kPkcs11MaxLifetimeSecs) {

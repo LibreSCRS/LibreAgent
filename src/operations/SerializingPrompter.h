@@ -3,7 +3,7 @@
 #pragma once
 #include <LibreSCRS/Agent/backend/PromptTypes.h>
 #include <LibreSCRS/Agent/operations/PromptSerializer.h>
-#include <LibreSCRS/Agent/operations/PromptContext.h>
+#include "operations/PromptContext.h"
 #include <LibreSCRS/Agent/backend/PrompterClientBase.h>
 #include <LibreSCRS/CancelToken.h>
 #include <functional>

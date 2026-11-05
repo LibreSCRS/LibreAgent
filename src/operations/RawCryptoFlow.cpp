@@ -1,13 +1,13 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 // SPDX-FileCopyrightText: 2026 hirashix0
-#include <LibreSCRS/Agent/operations/RawCryptoFlow.h>
+#include "operations/RawCryptoFlow.h"
 
 #include <LibreSCRS/Agent/cache/AttemptContext.h>
 #include <LibreSCRS/Agent/cache/CredentialCache.h>
 #include <LibreSCRS/Agent/operations/CardPluginRouting.h> // signingCandidates
-#include <LibreSCRS/Agent/operations/FlowPrelude.h>
+#include "operations/FlowPrelude.h"
 #include <LibreSCRS/Agent/operations/OperationBase.h> // Phase enum
-#include <LibreSCRS/Agent/operations/SerializingPrompter.h>
+#include "operations/SerializingPrompter.h"
 
 #include <LibreSCRS/Auth/AuthRequirement.h>
 #include <LibreSCRS/Auth/CredentialResult.h>

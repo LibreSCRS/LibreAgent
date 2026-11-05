@@ -26,7 +26,7 @@ struct ReaderState
 
 // One published card insertion (Card1: Capabilities / Reader / PreReadAuthMethod /
 // CardType / Atr). Carries the neutral LM enum, NOT the wire string — the
-// AgentTransport backend stringifies it.
+// host stringifies it.
 struct CardState
 {
     ObjectId id;

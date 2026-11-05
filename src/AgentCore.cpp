@@ -2,11 +2,11 @@
 // SPDX-FileCopyrightText: 2026 hirashix0
 #include <LibreSCRS/Agent/AgentCore.h>
 #include <LibreSCRS/Agent/SecureZero.h>
-#include <LibreSCRS/Agent/cache/FullScrubCaches.h>
+#include "cache/FullScrubCaches.h"
 #include <LibreSCRS/Agent/operations/CardSessionHolder.h>
-#include <LibreSCRS/Agent/operations/CertDerExport.h>
-#include <LibreSCRS/Agent/operations/LmRawCrypto.h>
-#include <LibreSCRS/Agent/operations/RawCryptoFlow.h>
+#include "operations/CertDerExport.h"
+#include "operations/LmRawCrypto.h"
+#include "operations/RawCryptoFlow.h"
 #include <LibreSCRS/Agent/operations/RsaPublicKey.h>
 #include <LibreSCRS/Agent/operations/Seams.h>
 #include <LibreSCRS/CancelToken.h>
@@ -112,12 +112,12 @@ Pkcs11Broker::CryptoResult runRawCrypto(Mechanism mechanism, Operations::CardSes
 
 } // namespace
 
-AgentCore::AgentCore(CapabilityResolver& resolver, AgentTransport& transport, Authorizer& authorizer,
+AgentCore::AgentCore(CapabilityResolver& resolver, Authorizer& authorizer,
                      std::shared_ptr<Operations::PrompterClientBase> prompter, std::filesystem::path configFile,
                      std::filesystem::path cacheRoot, ResolveReaderCard resolveReaderCard,
                      Pkcs11Broker::ResolveCardKeySeam resolveCardKey)
-    : m_resolver(resolver), m_transport(transport), m_authorizer(authorizer),
-      m_resolveReaderCard(std::move(resolveReaderCard)), m_model(m_registry, m_resolver),
+    : m_resolver(resolver), m_authorizer(authorizer), m_resolveReaderCard(std::move(resolveReaderCard)),
+      m_model(m_registry, m_resolver),
       m_config(std::make_shared<Config::ConfigStore>(std::move(configFile), std::move(cacheRoot))),
       m_signingEngine(std::make_shared<Operations::SigningEngineProvider>(*m_config)),
       // The single crypto-worker keep-alive context: the injected prompter plus a

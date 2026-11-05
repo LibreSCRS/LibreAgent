@@ -11,7 +11,7 @@
 ///        (`AgentClient::features()` / `hasFeature()`).
 ///
 /// Std-only by design (no LM, no Qt, no sdbus-c++): reachable from a
-/// `LIBREAGENT_BUILD_CORE=OFF, LIBREAGENT_BUILD_WIRE=ON` configuration and from
+/// `LIBREAGENT_BUILD_CORE=OFF` configuration and from
 /// the LibreDarwin socket daemon (a Core consumer, via FetchContent) alike, the
 /// same dependency-light rule `wire/PreReadAuth.h` and `wire/OperationPhase.h`
 /// follow. It sits directly under `include/LibreSCRS/Agent/` (not `wire/`)

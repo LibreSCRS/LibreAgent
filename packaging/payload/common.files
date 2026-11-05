@@ -28,7 +28,6 @@ include/LibreSCRS/Agent/*.h
 include/LibreSCRS/Agent/*/*.h
 include/LibreSCRS/Agent/*/*/*.h
 
-share/librescrs/librescrs-agent.cddl
 share/librescrs/dbus/*.xml
 share/librescrs/pkcs11/exports.map
 share/librescrs/pkcs11/exports.symbols

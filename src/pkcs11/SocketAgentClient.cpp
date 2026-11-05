@@ -7,7 +7,7 @@
 #include <LibreSCRS/Agent/SecureZero.h>
 #include <LibreSCRS/Agent/crypto/Mechanism.h>
 
-#include <LibreSCRS/Agent/wire/ClientCodec.h>
+#include "wire/ClientCodec.h"
 #include <LibreSCRS/Agent/wire/Framing.h>
 #include <LibreSCRS/Agent/wire/Messages.h>
 #include <LibreSCRS/Agent/wire/SyncError.h>
@@ -41,7 +41,7 @@ namespace {
 /// it already did on the bus, rather than as the device error a shared generic
 /// bucket used to make of it. The claims that hold the two tables to one answer
 /// are not in this file -- they are the contract suite both transports
-/// instantiate (pkcs11/testing/AgentClientContract.h).
+/// instantiate (tests/AgentClientContract.h).
 [[nodiscard]] Status mapWireError(W::SyncError e) noexcept
 {
     switch (e) {
@@ -184,8 +184,7 @@ struct SocketAgentClient::Impl
         // The feature tokens are READ, not assumed. Nothing optional is
         // required today, but a handshake that failed must surface as
         // DeviceRemoved rather than as a quiet zero slots.
-        const auto reply =
-            call(W::Hello{W::kProtocolVersion, std::string{"librescrs-pkcs11-agent"}}, budgets.publicDataSecs);
+        const auto reply = call(W::Hello{W::kProtocolVersion}, budgets.publicDataSecs);
         // A refused or failed handshake closes the socket, so the next call
         // connects afresh instead of reading this verdict back for ever.
         if (!reply.has_value() || !std::holds_alternative<W::HelloAck>(*reply)) {

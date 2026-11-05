@@ -13,8 +13,8 @@
 // LM at all -- the client integration/parity suites script FIXED values into
 // their LM-free fakes instead of a real LM call.
 #include <LibreSCRS/Agent/operations/LmSeams.h>
-#include <LibreSCRS/Agent/util/Sha256Hex.h>
-#include <LibreSCRS/Agent/wire/ClientCodec.h>
+#include "util/Sha256Hex.h"
+#include "wire/ClientCodec.h"
 #include <LibreSCRS/Agent/wire/Messages.h>
 #include <LibreSCRS/Signing/VisualSignatureLayout.h>
 

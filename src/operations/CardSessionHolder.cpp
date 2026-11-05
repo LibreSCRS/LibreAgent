@@ -74,22 +74,6 @@ void CardSessionHolder::invalidate() noexcept
     m_hold.reset();
 }
 
-std::uint32_t CardSessionHolder::capabilities() noexcept
-{
-    // acquire() invokes the injected factory/resolver std::functions (which may
-    // throw) and copies a vector (bad_alloc); honour the noexcept contract by
-    // degrading any escape to the documented "0 on failure" result.
-    try {
-        auto a = acquire();
-        if (!a) {
-            return 0;
-        }
-        return unionCapabilities(a->candidates);
-    } catch (...) {
-        return 0;
-    }
-}
-
 LibreSCRS::Auth::PreReadAuthMethod CardSessionHolder::preReadAuth() noexcept
 {
     using LibreSCRS::Auth::PreReadAuthMethod;

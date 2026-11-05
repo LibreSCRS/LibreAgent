@@ -32,9 +32,8 @@
 //   cred outcome     : LibreSCRS/Agent/value/CredentialRecord.h CredentialOutcome
 //                      <-> CDDL `cred-outcome`
 //   cred record vocab: LibreSCRS/Plugin/PinStatusEntry.h PinKind/PinState/
-//                      UnblockStyle/PinRecovery (via CredentialRecord.h detail::
-//                      *Token) <-> CDDL `cred-kind`/`cred-state`/`unblock-style`/
-//                      `cred-recovery`
+//                      PinRecovery (via CredentialRecord.h detail::*Token)
+//                      <-> CDDL `cred-kind`/`cred-state`/`cred-recovery`
 //   cred record keys : CredentialRecord.h field names <-> CDDL `cred-record` keys
 //   cred verbs       : CDDL `cred-verb` string literals (no upstream enum)
 //   sign options     : LibreSCRS/Agent/operations/SignatureParams.h kSignFormats/
@@ -85,7 +84,6 @@ using LibreSCRS::Plugin::CardCapabilities;
 using LibreSCRS::Plugin::PinKind;
 using LibreSCRS::Plugin::PinRecovery;
 using LibreSCRS::Plugin::PinState;
-using LibreSCRS::Plugin::UnblockStyle;
 
 using LibreSCRS::Wire::Tools::cddlMapKeys;
 using LibreSCRS::Wire::Tools::cddlQuotedTokens;
@@ -250,8 +248,6 @@ constexpr const char* quiesceReasonWireName(QuiesceReason r) noexcept
         return "ScreenLocked";
     case QuiesceReason::SessionInactive:
         return "SessionInactive";
-    case QuiesceReason::Shutdown:
-        return "Shutdown";
     }
     return nullptr;
 }
@@ -263,8 +259,8 @@ constexpr std::uint32_t quiesceReasonCount() noexcept
     }
     return count;
 }
-static_assert(quiesceReasonCount() == 4u,
-              "wire contract: quiesce-reason has 4 values; update the CDDL + this switch together");
+static_assert(quiesceReasonCount() == 3u,
+              "wire contract: quiesce-reason has 3 values; update the CDDL + this switch together");
 
 // --- LM CardCapabilities (masks) <-> CDDL `capability-bit` (bit indices) -----
 // CardCapabilities is a BITMASK enum (None=0, PKI=1, IdentityData=2,
@@ -559,20 +555,6 @@ constexpr const char* credStateToken(PinState s) noexcept
     }
     return nullptr;
 }
-constexpr const char* unblockStyleToken(UnblockStyle st) noexcept
-{
-    switch (st) {
-    case UnblockStyle::Unknown:
-        return "unknown";
-    case UnblockStyle::ResetOnly:
-        return "resetOnly";
-    case UnblockStyle::SetsNewPin:
-        return "setsNewPin";
-    case UnblockStyle::UnblockAndChange:
-        return "unblockAndChange";
-    }
-    return nullptr;
-}
 constexpr const char* credRecoveryToken(PinRecovery r) noexcept
 {
     switch (r) {
@@ -603,14 +585,6 @@ constexpr std::uint32_t credStateCount() noexcept
     }
     return count;
 }
-constexpr std::uint32_t unblockStyleCount() noexcept
-{
-    std::uint32_t count = 0;
-    while (unblockStyleToken(static_cast<UnblockStyle>(count)) != nullptr) {
-        ++count;
-    }
-    return count;
-}
 constexpr std::uint32_t credRecoveryCount() noexcept
 {
     std::uint32_t count = 0;
@@ -621,7 +595,6 @@ constexpr std::uint32_t credRecoveryCount() noexcept
 }
 static_assert(credKindCount() == 5u, "wire contract: cred-kind has 5 tokens");
 static_assert(credStateCount() == 5u, "wire contract: cred-state has 5 tokens");
-static_assert(unblockStyleCount() == 4u, "wire contract: unblock-style has 4 tokens");
 static_assert(credRecoveryCount() == 4u, "wire contract: cred-recovery has 4 tokens");
 
 // --- CDDL `cred-verb` string literals (no upstream enum — pinned as a set) ----
@@ -630,9 +603,8 @@ static_assert(kCredVerbs.size() == 3u, "wire contract: cred-verb has 3 tokens");
 
 // --- CDDL `cred-record` map keys (camelCase; == CredentialRecord field names) -
 // The full ordered key set, shared with the codec test's cred-record
-// expectations. NOTE: this is 23 keys — CredentialRecord has 23 fields and the
-// D-Bus a{sv} lists 23 keys.
-constexpr std::array<std::string_view, 23> kCredRecordKeys{"id",
+// expectations. NOTE: this is 19 keys.
+constexpr std::array<std::string_view, 19> kCredRecordKeys{"id",
                                                            "label",
                                                            "kind",
                                                            "state",
@@ -641,21 +613,17 @@ constexpr std::array<std::string_view, 23> kCredRecordKeys{"id",
                                                            "usesLeft",
                                                            "usesMax",
                                                            "unblocksLeft",
-                                                           "minLength",
-                                                           "maxLength",
                                                            "canChange",
                                                            "unblockable",
-                                                           "unblockStyle",
                                                            "activatable",
                                                            "keyActivationPending",
                                                            "keyActivatable",
                                                            "recovery",
-                                                           "probeSafe",
                                                            "blockedGuidanceKey",
                                                            "blockedGuidanceFallback",
                                                            "keyActivationGuidanceKey",
                                                            "keyActivationGuidanceFallback"};
-static_assert(kCredRecordKeys.size() == 23u, "wire contract: cred-record has 23 keys");
+static_assert(kCredRecordKeys.size() == 19u, "wire contract: cred-record has 19 keys");
 
 // Sorted-set equality of two token lists, with a labeled failure. Order-
 // insensitive: for the record vocab groups (and sync-error) the wire carries the
@@ -1001,7 +969,7 @@ TEST(WireContractGuard, CddlMechanismTokensMatchTheAgentTables)
     }
 }
 
-// The four enum-valued record vocabularies (kind/state/unblock-style/recovery)
+// The three enum-valued record vocabularies (kind/state/recovery)
 // match the shipping detail::credential*Token helpers, and the CDDL groups match
 // them as SETS (cred-kind's source order deliberately differs from the enum's).
 TEST(WireContractGuard, CddlCredentialRecordVocabMatchesAgentHelpers)
@@ -1026,15 +994,6 @@ TEST(WireContractGuard, CddlCredentialRecordVocabMatchesAgentHelpers)
         states.emplace_back(credStateToken(s));
     }
     expectSameTokenSet(cddlQuotedTokens(cddlRuleRhs(cddl, "cred-state")), states, "cred-state");
-
-    std::vector<std::string> styles;
-    for (std::uint32_t i = 0; i < unblockStyleCount(); ++i) {
-        const auto st = static_cast<UnblockStyle>(i);
-        EXPECT_EQ(std::string(unblockStyleToken(st)), detail::unblockStyleToken(st))
-            << "unblock-style helper drift at " << i;
-        styles.emplace_back(unblockStyleToken(st));
-    }
-    expectSameTokenSet(cddlQuotedTokens(cddlRuleRhs(cddl, "unblock-style")), styles, "unblock-style");
 
     std::vector<std::string> recoveries;
     for (std::uint32_t i = 0; i < credRecoveryCount(); ++i) {
@@ -1143,11 +1102,11 @@ TEST(WireContractGuard, ClosedVocabulariesAreTheExpectedSet)
     ASSERT_FALSE(cddl.empty()) << "wire CDDL source path not wired";
 
     const std::set<std::string> expected = {
-        "capability-bit", "cred-kind",     "cred-outcome",     "cred-recovery",   "cred-state",
-        "cred-verb",      "error-code",    "op-phase",         "op-status",       "packaging-mode",
-        "pre-read-auth",  "sign-format",   "sign-level",       "quiesce-reason",  "settable-config-key",
-        "sync-error",     "unblock-style", "requested-format", "requested-level", "requested-packaging",
-        "config-key",     "key-type",      "pk-sign-mech",     "pk-decrypt-mech", "reader-interface",
+        "capability-bit", "cred-kind",        "cred-outcome",    "cred-recovery",       "cred-state",
+        "cred-verb",      "error-code",       "op-phase",        "op-status",           "packaging-mode",
+        "pre-read-auth",  "sign-format",      "sign-level",      "quiesce-reason",      "settable-config-key",
+        "sync-error",     "requested-format", "requested-level", "requested-packaging", "config-key",
+        "key-type",       "pk-sign-mech",     "pk-decrypt-mech", "reader-interface",
     };
 
     std::set<std::string> found;

@@ -28,7 +28,7 @@
 //       underlying-type width. Degradation MEANING (hold-last-phase,
 //       status-as-Error, ...) is asserted at the AgentOperation layer
 //       (client/qt/tests/SeamMappingTest.cpp), not here.
-#include <LibreSCRS/Agent/wire/ClientCodec.h>
+#include "wire/ClientCodec.h"
 
 #include <gtest/gtest.h>
 
@@ -117,16 +117,12 @@ CredentialRecord makeFullCredentialRecord()
     rec.usesLeft = 5;
     rec.usesMax = 20;
     rec.unblocksLeft = 10;
-    rec.minLength = 4;
-    rec.maxLength = 8;
     rec.canChange = true;
     rec.unblockable = true;
-    rec.unblockStyle = "unblockAndChange";
     rec.activatable = true;
     rec.keyActivationPending = true;
     rec.keyActivatable = true;
     rec.recovery = "holderViaPuk";
-    rec.probeSafe = true;
     rec.blockedGuidanceKey = "guidance.blocked.key";
     rec.blockedGuidanceFallback = "Blocked; contact issuer";
     rec.keyActivationGuidanceKey = "guidance.activate.key";
@@ -141,7 +137,6 @@ CredentialRecord makeBareCredentialRecord()
     rec.label = "";
     rec.kind = "unknown";
     rec.state = "unknown";
-    rec.unblockStyle = "unknown";
     rec.recovery = "unknown";
     return rec;
 }
@@ -152,8 +147,8 @@ CredentialRecord makeBareCredentialRecord()
 
 TEST(ClientCodec, EncodeRequestEveryTypeRoundTripsThroughServerParse)
 {
-    expectRequestRoundTrip(1, Hello{1, std::nullopt});
-    expectRequestRoundTrip(2, Hello{1, std::string("LibreMac/0.1")});
+    expectRequestRoundTrip(1, Hello{1});
+    expectRequestRoundTrip(2, Hello{1, false});
     expectRequestRoundTrip(3, GetState{});
     expectRequestRoundTrip(4, ReadIdentity{"reader/0:card/0"});
     expectRequestRoundTrip(5, GetPhoto{"reader/0:card/0"});
@@ -415,7 +410,6 @@ TEST(ClientCodec, CscaAnchorStateReplyRoundTrips)
     state.signerPinned = true;
     state.acceptedAt = 1756000000;
     state.signedAt = 1755000000;
-    state.origin = std::string("import");
     expectReplyRoundTrip(30, state, [](std::uint64_t r, const CscaAnchorStateReply& a) { return makeReply(r, a); });
 }
 
@@ -500,7 +494,6 @@ TEST(ClientCodec, TheAnchorStateEntryIsTheReplyWithoutItsEnvelope)
     dated.signerPinned = true;
     dated.acceptedAt = 1756000000;
     dated.signedAt = 1755000000;
-    dated.origin = std::string("import");
     CscaAnchorStateReply undated;
     undated.anchors = 3;
     undated.issuers = 1;
@@ -511,9 +504,9 @@ TEST(ClientCodec, TheAnchorStateEntryIsTheReplyWithoutItsEnvelope)
     firstImport.signerPinned = false;
     const Row rows[] = {
         {"dated", dated,
-         "a8666f726967696e66696d706f7274667369676e657268396331663563376267616e63686f727318d4676973737565"
-         "7273182f687369676e656441741a689b2cc06a616363657074656441741a68aa6f006c7369676e657250696e6e"
-         "6564f5737265706c61795265667573616c416374697665f5"},
+         "a7667369676e657268396331663563376267616e63686f727318d46769737375657273182f687369676e656441"
+         "741a689b2cc06a616363657074656441741a68aa6f006c7369676e657250696e6e6564f5737265706c61795265"
+         "667573616c416374697665f5"},
         {"undated", undated, "a367616e63686f727303676973737565727301737265706c61795265667573616c416374697665f4"},
         {"first import", firstImport,
          "a467616e63686f7273185a67697373756572730c6c7369676e657250696e6e6564f4737265706c61795265667573616c41"
@@ -963,13 +956,10 @@ TEST(ClientCodec, ConfigChangedRoundTrips)
     expectEventRoundTrip(ConfigChanged{"DefaultLevel"});
 }
 
-TEST(ClientCodec, OpProgressRoundTripsWithAllOptionalsPresentAndAbsent)
+TEST(ClientCodec, OpProgressRoundTrips)
 {
-    // Fractional progress lands as f16 on the wire (QCBOR preferred
-    // serialization) -- exercises float decode, not just uint.
-    expectEventRoundTrip(
-        OpProgress{9, OperationPhase::Signing, 0.5, std::optional<bool>{false}, std::optional<std::uint64_t>{30}});
-    expectEventRoundTrip(OpProgress{9, OperationPhase::Created, std::nullopt, std::nullopt, std::nullopt});
+    expectEventRoundTrip(OpProgress{9, OperationPhase::Signing});
+    expectEventRoundTrip(OpProgress{9, OperationPhase::Created});
 }
 
 TEST(ClientCodec, OpFinishedRoundTrips)
@@ -1069,13 +1059,13 @@ TEST(ClientCodec, AgentQuiescedRoundTrips)
     expectEventRoundTrip(AgentQuiesced{QuiesceReason::ScreenLocked});
 }
 
-// (i) QuiesceReason append-tolerance: a reason past Shutdown=3 -- a future
+// (i) QuiesceReason append-tolerance: a reason past SessionInactive=2 -- a future
 // one -- decodes through raw rather than failing the frame closed.
 TEST(ClientCodec, AgentQuiescedToleratesAppendedReasonValue)
 {
     CborValue::Map ev;
     ev.emplace("t", CborValue(std::string("AgentQuiesced")));
-    ev.emplace("reason", CborValue::uint(42)); // past Shutdown=3
+    ev.emplace("reason", CborValue::uint(42)); // past SessionInactive=2
     const auto bytes = CborValue(std::move(ev)).encode();
     const auto decoded = parseEvent(bytes, noFds());
     ASSERT_TRUE(decoded.has_value());
@@ -1257,8 +1247,6 @@ TEST(ClientCodec, OpResultReadyCredentialsKeyActivationFailedRoundTrips)
     CredentialsResult keyFail;
     keyFail.result.outcome = CredentialOutcome::KeyActivationFailed;
     keyFail.result.blocked = false;
-    keyFail.result.pinActivated = true;
-    keyFail.result.keyActivated = false;
     expectEventRoundTrip(OpResultReady{27, keyFail});
 }
 
@@ -1440,15 +1428,14 @@ TEST(ClientCodec, DefaultedOperatorEqualsComparesByValueEvents)
 
     const AgentQuiesced qA{QuiesceReason::ScreenLocked};
     const AgentQuiesced qB{QuiesceReason::ScreenLocked};
-    const AgentQuiesced qC{QuiesceReason::Shutdown};
+    const AgentQuiesced qC{QuiesceReason::SessionInactive};
     EXPECT_EQ(qA, qB);
     EXPECT_NE(qA, qC);
 }
 
 TEST(ClientCodec, DefaultedOperatorEqualsComparesByValueCredentialsAndOpIdentityGroup)
 {
-    const CredentialOpResult credOutcomeA{CredentialOutcome::Ok, std::optional<int>{3}, false, std::nullopt,
-                                          std::nullopt};
+    const CredentialOpResult credOutcomeA{CredentialOutcome::Ok, std::optional<int>{3}, false};
     CredentialsResult credA{credOutcomeA, {}};
     CredentialsResult credB = credA;
     CredentialsResult credC = credA;

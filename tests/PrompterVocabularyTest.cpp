@@ -6,7 +6,7 @@
 // exact words, so the test must not derive them from the code under test.
 #include <LibreSCRS/Agent/backend/PromptTypes.h>
 #include <LibreSCRS/Agent/backend/PrompterWire.h>
-#include <LibreSCRS/Agent/operations/PromptContext.h>
+#include "operations/PromptContext.h"
 
 #include <gtest/gtest.h>
 

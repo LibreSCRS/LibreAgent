@@ -5,7 +5,7 @@
 #include <LibreSCRS/Agent/cache/AttemptContext.h>         // per-operation retry context
 #include <LibreSCRS/Agent/cache/MrzPayload.h>             // parseMrzPayload (the canonical payload contract)
 #include <LibreSCRS/Agent/operations/CardPluginRouting.h> // identityCandidates
-#include <LibreSCRS/Agent/operations/FlowPrelude.h>
+#include "operations/FlowPrelude.h"
 #include <LibreSCRS/Agent/operations/OperationBase.h> // Phase enum
 #include <LibreSCRS/Plugin/PluginTypes.h>             // CardCapabilities, hasCapability
 #include <algorithm>
