@@ -48,7 +48,7 @@ jobs:
           persist-credentials: false
 
       - name: Shared gates
-        uses: LibreSCRS/ci/actions/gates@a6efbfe4072c3ef31aaf928fcfc64e6673658a7a
+        uses: LibreSCRS/ci/actions/gates@2d5d8c63e77bf90a9ca5b0354028b9396093bd79
         with:
           gates: check-workflows check-skip-reasons check-version deps-lock selftests check-recipe check-cleansing-deleters
           recipe-args: --pin _qcbor_commit=cmake/FetchQCBOR.cmake
@@ -172,7 +172,7 @@ jobs:
       # disk first. SHARED + plugins ON to match how LibreLinux acquires it;
       # native signing backend (the CI default) — DSS is only a test oracle.
       - name: Checkout LibreMiddleware at the lock
-        uses: LibreSCRS/ci/actions/checkout-deps@a6efbfe4072c3ef31aaf928fcfc64e6673658a7a
+        uses: LibreSCRS/ci/actions/checkout-deps@2d5d8c63e77bf90a9ca5b0354028b9396093bd79
         with:
           root: LibreAgent
           names: LibreMiddleware
@@ -305,7 +305,7 @@ jobs:
       - name: Every test binary still registers its tests
         # --no-tests=error catches a configuration that registers nothing at
         # all; the floor catches one binary quietly losing its tests.
-        uses: LibreSCRS/ci/actions/gates@a6efbfe4072c3ef31aaf928fcfc64e6673658a7a
+        uses: LibreSCRS/ci/actions/gates@2d5d8c63e77bf90a9ca5b0354028b9396093bd79
         with:
           root: LibreAgent
           gates: test-floor
@@ -439,7 +439,7 @@ jobs:
       - name: Every test binary still registers its tests
         # --no-tests=error catches a configuration that registers nothing at
         # all; the floor catches one binary quietly losing its tests.
-        uses: LibreSCRS/ci/actions/gates@a6efbfe4072c3ef31aaf928fcfc64e6673658a7a
+        uses: LibreSCRS/ci/actions/gates@2d5d8c63e77bf90a9ca5b0354028b9396093bd79
         with:
           root: LibreAgent
           gates: test-floor
@@ -500,7 +500,7 @@ jobs:
       - name: Every test binary still registers its tests
         # --no-tests=error catches a configuration that registers nothing at
         # all; the floor catches one binary quietly losing its tests.
-        uses: LibreSCRS/ci/actions/gates@a6efbfe4072c3ef31aaf928fcfc64e6673658a7a
+        uses: LibreSCRS/ci/actions/gates@2d5d8c63e77bf90a9ca5b0354028b9396093bd79
         with:
           root: LibreAgent
           gates: test-floor
@@ -529,7 +529,7 @@ jobs:
           persist-credentials: false
 
       - name: Select Xcode
-        uses: LibreSCRS/ci/actions/select-xcode@a6efbfe4072c3ef31aaf928fcfc64e6673658a7a
+        uses: LibreSCRS/ci/actions/select-xcode@2d5d8c63e77bf90a9ca5b0354028b9396093bd79
 
       - name: Install build tools
         # bash: the test scripts use bash 4 features and macOS ships 3.2.
@@ -556,7 +556,7 @@ jobs:
         run: ctest --test-dir build --output-on-failure --no-tests=error
 
       - name: Every test binary still registers its tests
-        uses: LibreSCRS/ci/actions/gates@a6efbfe4072c3ef31aaf928fcfc64e6673658a7a
+        uses: LibreSCRS/ci/actions/gates@2d5d8c63e77bf90a9ca5b0354028b9396093bd79
         with:
           gates: test-floor
           build-dir: build
@@ -594,7 +594,7 @@ jobs:
           persist-credentials: false
 
       - name: Select Xcode
-        uses: LibreSCRS/ci/actions/select-xcode@a6efbfe4072c3ef31aaf928fcfc64e6673658a7a
+        uses: LibreSCRS/ci/actions/select-xcode@2d5d8c63e77bf90a9ca5b0354028b9396093bd79
 
       - name: Install build tools
         # googletest as well as ninja: this job builds no LibreMiddleware, which
@@ -619,7 +619,7 @@ jobs:
       - name: Every test binary still registers its tests
         # --no-tests=error catches a configuration that registers nothing at
         # all; the floor catches one binary quietly losing its tests.
-        uses: LibreSCRS/ci/actions/gates@a6efbfe4072c3ef31aaf928fcfc64e6673658a7a
+        uses: LibreSCRS/ci/actions/gates@2d5d8c63e77bf90a9ca5b0354028b9396093bd79
         with:
           gates: test-floor
           build-dir: build-wire-asan
@@ -646,7 +646,7 @@ jobs:
           persist-credentials: false
 
       - name: Select Xcode
-        uses: LibreSCRS/ci/actions/select-xcode@a6efbfe4072c3ef31aaf928fcfc64e6673658a7a
+        uses: LibreSCRS/ci/actions/select-xcode@2d5d8c63e77bf90a9ca5b0354028b9396093bd79
 
       - name: Install build tools
         run: brew install ninja googletest
@@ -681,7 +681,7 @@ jobs:
       - name: Every test binary still registers its tests
         # --no-tests=error catches a configuration that registers nothing at
         # all; the floor catches one binary quietly losing its tests.
-        uses: LibreSCRS/ci/actions/gates@a6efbfe4072c3ef31aaf928fcfc64e6673658a7a
+        uses: LibreSCRS/ci/actions/gates@2d5d8c63e77bf90a9ca5b0354028b9396093bd79
         with:
           gates: test-floor
           build-dir: build
