@@ -129,8 +129,7 @@
 #
 # The test roots are deliberately outside rule 2: tests build msghdr/cmsghdr
 # pairs by hand on purpose -- FdHarvestTest hand-forges the truncated control
-# message Linux cannot produce, and tests/spike/ScmRightsSpikeTest.cpp
-# reproduces the raw kernel behaviour -- and a rule that banned that would ban
+# message Linux cannot produce -- and a rule that banned that would ban
 # the falsification of the clamp itself. The roots are NAMED here rather than
 # matched by directory name anywhere in the tree: a directory called tests/ in
 # the middle of src/ used to inherit the exemption, which made

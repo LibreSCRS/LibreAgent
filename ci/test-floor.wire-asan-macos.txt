@@ -9,6 +9,6 @@ FdHarvestTest 5
 FeatureTokensGuardTest 3
 FrameReassemblerTest 8
 FramingTest 11
-MessagesRoundTripTest 26
+MessagesRoundTripTest 25
 PropertyChangedVocabGuardTest 2
 WireHeadersTest 1

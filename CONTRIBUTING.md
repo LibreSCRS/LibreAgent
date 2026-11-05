@@ -60,7 +60,7 @@ cmake --build build -j4
 
 The tests run against the five backend fakes and need no reader, D-Bus session
 or live card; there are no PIN or live-card suites in the neutral core. CI also
-runs the concurrency core (scheduler + throttler and the abandoned-worker
+runs the concurrency core (scheduler and the abandoned-worker
 drain proofs) under ThreadSanitizer — keep that surface race-free.
 
 ## Commit conventions

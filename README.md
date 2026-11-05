@@ -52,8 +52,7 @@ platform host needs, regardless of its IPC or desktop stack:
   LibreMiddleware's `MonitorService`, with card-key tracking and a plugin
   capability resolver that classifies each seated card.
 - **Operation scheduling** — a bounded worker pool that runs card read/sign
-  operations, with rate limiting, watchdog-driven cancellation, and a
-  property-emission throttler for downstream status updates.
+  operations, with rate limiting and watchdog-driven cancellation.
 - **Caches** — a card-read cache and a credential cache, both scrubbed on card
   removal so secrets never outlive the card.
 - **PKCS#11 lease/broker** — the lease manager and broker that arbitrate
@@ -66,15 +65,13 @@ platform host needs, regardless of its IPC or desktop stack:
 ## Backend interfaces
 
 The core stays free of any IPC, desktop or OS integration by talking to its
-host through five small interfaces. The platform host implements them; the
+host through four small interfaces. The platform host implements them; the
 core never links D-Bus, systemd, polkit or Qt:
 
 - **Prompter** (`Operations::PrompterClientBase`) — collects PIN / CAN / MRZ
   secrets; the secret returns as a cleansing `Secure::String`, never a raw fd.
 - **Authorizer** (`Authorizer`) — gates each client operation (the Linux host
   backs this with polkit; a fail-closed default gate ships in-tree).
-- **AgentTransport** (`AgentTransport`) — the outbound channel back to the
-  requesting client.
 - **OperationChannel** (`Operations::OperationChannel`) — per-operation
   progress, result and error emission.
 - **LogSink** (`LibreSCRS::log::LogSink`, LibreMiddleware's
@@ -102,10 +99,9 @@ cmake --build build
 (cd build && ctest --output-on-failure)
 ```
 
-`LIBREAGENT_BUILD_CORE` and `LIBREAGENT_BUILD_WIRE` default to `ON`;
+The wire library is always built. `LIBREAGENT_BUILD_CORE` defaults to `ON`;
 `LIBREAGENT_BUILD_CLIENT_QT` defaults to `OFF`, so the Qt client library and
-its test suite are opt-in via `-DLIBREAGENT_BUILD_CLIENT_QT=ON` (which
-requires `LIBREAGENT_BUILD_WIRE`, since the client links the wire library).
+its test suite are opt-in via `-DLIBREAGENT_BUILD_CLIENT_QT=ON`.
 Turning `LIBREAGENT_BUILD_CORE=OFF` alongside it gives a client-only build
 that needs neither LibreMiddleware nor OpenSSL present.
 
@@ -160,7 +156,7 @@ client/qt/                 LibreAgent::ClientQt — public headers under
                              include/LibreSCRS/AgentClient/, the transport
                              seam and both transports under src/, its own
                              test suite under tests/
-tests/                     Core/Wire unit tests + the five backend fakes,
+tests/                     Core/Wire unit tests + the backend fakes,
                              pkgsmoke consumer
 cmake/                     CONFIG package template + install/export rules
 ci/                        the checks only this repository has, and the test floors

@@ -17,8 +17,7 @@ Notable user-visible changes per release. Format follows
   for the next numbered name when another signer took it meanwhile), then
   commits the artifact over the claim in one step, so the name never holds
   half a signature, and a failure leaves nothing behind. It reads a
-  descriptor or a `QIODevice` from its start; an empty artifact is an error,
-  never a file.
+  descriptor from its start; an empty artifact is an error, never a file.
 
 - **`OperationLauncher`: one place a host starts a card operation.** The host
   gives where the operation runs and who asked, how to build its result
@@ -32,11 +31,10 @@ Notable user-visible changes per release. Format follows
 - **One quiesce policy for sleep, user switch and screen lock.**
   `AgentCore::quiesce(reason)` is where a host reports that the holder's
   session went away; the agent then forgets the same things on every
-  platform: on sleep, a user switch or a stop every cached CAN/MRZ, every card
+  platform: on sleep or a user switch every cached CAN/MRZ, every card
   session (secure channel included) and every PKCS#11 login, on a screen lock
-  the PKCS#11 logins only. The reason goes to clients as D-Bus
-  `Manager1.Quiesced` (new) and socket `AgentQuiesced`, and reaches
-  `AgentClient::quiesced()` from both.
+  the PKCS#11 logins only. The reason goes to clients over the socket as
+  `AgentQuiesced`.
 
 - **Every reader carries its label: model and interface.** The agent reads
   the PC/SC name once and publishes a short model ("OMNIKEY 5422") and which
@@ -59,9 +57,8 @@ Notable user-visible changes per release. Format follows
   same way.
 
 - **The agent's settings keys are public to clients.** `ConfigKeys.h`
-  carries the agent's settings vocabulary (which keys exist, which a client
-  may write, the canonical `TslSources`/`CscaSources` row shapes) and
-  `CscaAnchorKeys.h` the CSCA anchor state keys, so a desktop client stops
+  names the agent's settings keys (the settable ones and the read-only ones)
+  and `CscaAnchorKeys.h` the CSCA anchor state keys, so a desktop client stops
   spelling them itself.
 
 - **The agent's D-Bus introspection XML ships with LibreAgent.** The 14
@@ -81,9 +78,7 @@ Notable user-visible changes per release. Format follows
 - **`AgentClient::agentState()` and `installHelpUrl()`.** One answer to "is
   there an agent, and does it run" (`Ready`, `Stopped`, `Missing`) for every
   client, read without touching the bus, plus the address of the install
-  guide for the platform and language. `agentInstalled()` no longer asks the
-  bus on every call: it ran a nested event loop inside the very signal
-  handlers that read it.
+  guide for the platform and language.
 
 - **`Authorizer::authorizeAsync`: authorization without a waiting dispatcher.**
   An authority that holds its answer while a person decides (a polkit
@@ -101,14 +96,12 @@ Notable user-visible changes per release. Format follows
   caller's login on the card in a reader still holds, asked without extending
   it (`AgentClient::loginActive` in the PKCS#11 facade).
 
-- **`CertificateInfo::alwaysAuthenticate` and the `cert-info` wire key
-  `alwaysAuthenticate`:** whether the card asks for the PIN before every
+- **The `cert-info` wire key `alwaysAuthenticate`:** whether the card asks for the PIN before every
   operation with a certificate's key.
 
 - **EC keys end to end.** Every certificate reports its key's `keyId` (the
   card's own PKCS#11 `CKA_ID`), `keyType`, `keyBits` and `canDerive`
-  (`cert-info`, `CertificateInfo`, whose key type is the new public enum
-  `LibreSCRS::AgentClient::KeyType`); the `public-key` reply serves EC points;
+  (`cert-info`); the `public-key` reply serves EC points;
   the `Pkcs11.Derive` request runs ECDH with the card's key (the raw secret at
   the curve's field width, CKD_NULL); the `ec-keys` feature token. The PKCS#11
   module offers EC keys with `CKA_EC_PARAMS`/`CKA_EC_POINT`, `CKM_ECDSA` and
@@ -210,10 +203,10 @@ Three targets ship, each independently usable:
   model, and the LibreMiddleware-backed card flows (identity, photo and
   certificate reads plus AdES / raw-crypto signing). The core links no
   D-Bus, systemd, polkit or Qt.
-- **Five backend interfaces** through which a host plugs in its IPC and
+- **Four backend interfaces** through which a host plugs in its IPC and
   desktop stack: `Prompter` (PIN / CAN / MRZ collection, returning a
   cleansing secret rather than a raw fd), `Authorizer` (per-operation
-  gate, with a fail-closed default shipped in-tree), `AgentTransport`,
+  gate, with a fail-closed default shipped in-tree),
   `OperationChannel`, and `LogSink` (LibreMiddleware's
   `LibreSCRS::log` facade, which the agent core logs through).
 - **Stable error taxonomy** carried on each finished operation. Codes
@@ -426,37 +419,6 @@ Three targets ship, each independently usable:
   the login's own idle limit; that on-card state is visible to any other local
   shared PC/SC client while the card stays powered.
 
-### Removed
-
-- **`CardSessionHolder` no longer carries a `SmartCard::CardMap`.** Nothing
-  read the map it handed out with every acquired card. The constructor takes
-  the reader, the session factory, the candidate resolver and an optional
-  clock; `AcquiredCard` holds the session and its candidates.
-
-- **The credential listing no longer checks guidance for placeholders.** No
-  card plugin puts `LocalizedText` placeholders into PIN guidance, and the
-  wire record never carried them; the guidance's key and default text are
-  copied as they are.
-
-- **`errorCodeFor(Plugin::ReadResult::Status)`.** No operation mapped a
-  plugin's read status through it; the overloads for a secure-channel error
-  and a credential outcome stay.
-
-- **`SeamStatus::ParseError`.** Its one source was LibreMiddleware's parse-error
-  read status, which no plugin returned and which is gone; a read that fails
-  still ends with the error the plugin reported.
-
-- **The `Mechanism` values nothing runs.** `RsaPssSign`, `RsaOaepDecrypt`,
-  `RsaPkcs1Encrypt`, `RsaOaepEncrypt` and `MechParamsRsaOaep` had no wire
-  token, no seam and no caller; every path refused them. The enumerators
-  that remain are the five the agent runs.
-
-- **The `trust-status` and `identity-stream` feature tokens.** No client
-  checks either: a certificate's trust verdict is a field every agent
-  sends, and the per-group identity events are handled whenever they
-  arrive. The agent advertises nine tokens; the events and the field are
-  unchanged.
-
 ### Fixed
 
 - **A second "start the agent" while one is starting asks for nothing.**
@@ -609,28 +571,7 @@ Three targets ship, each independently usable:
   supported spelling; a componentless `find_package` still resolves, but
   it probes for every component that happens to be installed and so
   drags in dependencies the caller may not want.
-- **Public-ABI snapshot gate** in CI freezing the exported surface;
-  minor-version additions are tracked, while removals or signature drift
-  are rejected. It gates the exported symbols of **the three components
-  whose ABI is snapshotted** (`Core`, `Wire` and `ClientQt`), AND the
-  memory layout of the Qt client's public value
-  types — size, alignment, member count and per-member offsets —
-  because those types are copied by value into consumers, so a member
-  added, removed or reordered breaks an already-built consumer without
-  moving a single symbol name.
-
-  Two limits are worth knowing rather than discovering. Demangling
-  collapses the constructor/destructor ABI variants, so the symbol
-  sections record fewer lines than the linker emits and a change
-  affecting only one variant would not move them.
-
-  And the Qt client's shared library exports a good deal that is not
-  its API. Of 279 exported symbols, 113 are the API; the remaining
-  **166 are not API**, and of those **164 are not gated** — the two
-  that are, are the error-vocabulary functions a public header
-  re-exports. The ungated 164 are the statically folded wire library
-  (47) and its vendored CBOR dependency (117), left out because gating
-  them would be pure churn. The vendored 117 are the ones to know
-  about: they are unversioned C symbols, so a consumer that also links
-  that CBOR library can end up with symbols bound across two copies of
-  it. Giving them hidden visibility is tracked as follow-up work.
+- **Export gates.** `check-clientqt-exports.sh`, `check-wire-exports.sh` and
+  `check-vendored-exports.sh` hold that the Qt client library exports only its
+  API: no symbol of the wire library and none of the vendored CBOR library it
+  folds in.

@@ -10,7 +10,7 @@ OUTPUT_DIRECTORY        = build/doc/publicapi
 # types they re-export under LibreSCRS::AgentClient (ErrorCode.h,
 # OperationPhase.h, SyncError.h — see those headers' own "why a re-export"
 # doc comments) and the wire/ subtree those re-exports pull in transitively
-# (PreReadAuth.h, QuiesceReason.h, ReaderInterface.h; the rest of wire/ is CBOR/framing plumbing
+# (PreReadAuth.h, ReaderInterface.h; the rest of wire/ is CBOR/framing plumbing
 # the Qt client never includes, so it is not part of this reference).
 #
 # A re-exported type must be listed here or its members never reach this
@@ -23,7 +23,6 @@ INPUT                   = client/qt/include/LibreSCRS/AgentClient \
                            include/LibreSCRS/Agent/OperationPhase.h \
                            include/LibreSCRS/Agent/wire/ErrorCode.h \
                            include/LibreSCRS/Agent/wire/PreReadAuth.h \
-                           include/LibreSCRS/Agent/wire/QuiesceReason.h \
                            include/LibreSCRS/Agent/wire/ReaderInterface.h \
                            include/LibreSCRS/Agent/wire/SyncError.h
 RECURSIVE                = YES
@@ -68,14 +67,9 @@ ENABLE_PREPROCESSING     = YES
 MACRO_EXPANSION          = YES
 EXPAND_ONLY_PREDEF       = YES
 # Export macros expand to nothing: they are build details, not things a
-# consumer writes. Leaving one out publishes it — measured, the wire macro
+# consumer writes. Leaving one out publishes it — measured, a wire macro
 # reached globals.html, the search index and every signature carrying it.
-# client/qt/CMakeLists.txt fails the configure when an entry here is missing.
-PREDEFINED               = LIBRESCRS_AGENTCLIENT_EXPORT= \
-                           LIBRESCRS_AGENTWIRE_EXPORT=
-
-# ...and the #define itself is still collected as a member of the header it
-# sits in, where neither answer works: documented it is published, undocumented
-# it fails WARN_IF_UNDOCUMENTED. Excluding it by name is the way out. The
-# client-side macro needs no entry — its generated header is outside INPUT.
-EXCLUDE_SYMBOLS          = LIBRESCRS_AGENTWIRE_EXPORT
+# client/qt/CMakeLists.txt fails the configure when a re-exported header
+# defines one that is missing here. The client-side macro needs no #define
+# entry: its generated header is outside INPUT.
+PREDEFINED               = LIBRESCRS_AGENTCLIENT_EXPORT=

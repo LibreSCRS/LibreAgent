@@ -48,7 +48,7 @@ jobs:
           persist-credentials: false
 
       - name: Shared gates
-        uses: LibreSCRS/ci/actions/gates@d68f5d781a665759eaba63c67ef0e6eb1f738063
+        uses: LibreSCRS/ci/actions/gates@a6efbfe4072c3ef31aaf928fcfc64e6673658a7a
         with:
           gates: check-workflows check-skip-reasons check-version deps-lock selftests check-recipe check-cleansing-deleters
           recipe-args: --pin _qcbor_commit=cmake/FetchQCBOR.cmake
@@ -172,7 +172,7 @@ jobs:
       # disk first. SHARED + plugins ON to match how LibreLinux acquires it;
       # native signing backend (the CI default) — DSS is only a test oracle.
       - name: Checkout LibreMiddleware at the lock
-        uses: LibreSCRS/ci/actions/checkout-deps@d68f5d781a665759eaba63c67ef0e6eb1f738063
+        uses: LibreSCRS/ci/actions/checkout-deps@a6efbfe4072c3ef31aaf928fcfc64e6673658a7a
         with:
           root: LibreAgent
           names: LibreMiddleware
@@ -185,8 +185,7 @@ jobs:
         run: |
           cmake -B build -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
-            -DCMAKE_INSTALL_PREFIX="$LM_PREFIX" \
-            -DLIBREMIDDLEWARE_BUILD_SHARED=ON
+            -DCMAKE_INSTALL_PREFIX="$LM_PREFIX"
           cmake --build build -j4
           cmake --install build
 
@@ -242,9 +241,9 @@ jobs:
             -DCMAKE_PREFIX_PATH="$LM_PREFIX" \
             -DBUILD_TESTING=OFF \
             -DLIBREAGENT_BUILD_CORE=ON \
-            -DLIBREAGENT_BUILD_WIRE=ON \
             -DLIBREAGENT_BUILD_CLIENT_QT=ON \
             -DLIBREAGENT_BUILD_CLIENT_QT_TEST_SUPPORT=OFF \
+            -DLIBREAGENT_BUILD_TEST_SUPPORT=OFF \
             -DLIBREAGENT_BUILD_PKCS11_FACADE=ON \
             -DLIBREAGENT_BUILD_PKCS11_SOCKET_CLIENT=ON \
             -DLIBREAGENT_INSTALL_WIRE_ARCHIVE=ON
@@ -273,9 +272,8 @@ jobs:
           cmake --build build-pkgsmoke -j4
 
       # --- Thread-sanitizer gate for the core concurrency invariants --------
-      # OperationManager owns the worker pool / bounded queue / zombie-drain and
-      # PropertyEmissionThrottler coalesces on a timer; both are plain C++
-      # jthread/mutex/condition_variable. A regression that drops a lock still
+      # OperationManager owns the worker pool / bounded queue / zombie-drain,
+      # plain C++ jthread/mutex/condition_variable. A regression that drops a lock still
       # passes the plain Test step but races under TSan. The installed LM is
       # uninstrumented, which is fine — the guarded state is core-owned.
       - name: TSan (core concurrency)
@@ -290,8 +288,8 @@ jobs:
             -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=thread"
           # One spelling of the selection, used by the build, by the run and by
           # the count below. Three copies is how one of them stops matching.
-          SUITES="OperationManager|ZombieWorkerDrain|PropertyEmissionThrottler|AgentShutdownUnderLoad|PrompterKeepAliveDrain|SignSeamKeepAliveDrain|RawCryptoCaptureGuard|Watchdog"
-          cmake --build build-tsan --target OperationManagerTest ZombieWorkerDrainTest PropertyEmissionThrottlerTest AgentShutdownUnderLoadTest PrompterKeepAliveDrainTest SignSeamKeepAliveDrainTest RawCryptoCaptureGuardTest WatchdogTest -j4
+          SUITES="OperationManager|ZombieWorkerDrain|AgentShutdownUnderLoad|PrompterKeepAliveDrain|SignSeamKeepAliveDrain|RawCryptoCaptureGuard|Watchdog"
+          cmake --build build-tsan --target OperationManagerTest ZombieWorkerDrainTest AgentShutdownUnderLoadTest PrompterKeepAliveDrainTest SignSeamKeepAliveDrainTest RawCryptoCaptureGuardTest WatchdogTest -j4
           ctest --test-dir build-tsan -R "$SUITES" --output-on-failure --no-tests=error
           # --no-tests=error fails only when the selection matches NOTHING, so the
           # denominator of a -R leg is the expression, not the build directory:
@@ -307,7 +305,7 @@ jobs:
       - name: Every test binary still registers its tests
         # --no-tests=error catches a configuration that registers nothing at
         # all; the floor catches one binary quietly losing its tests.
-        uses: LibreSCRS/ci/actions/gates@d68f5d781a665759eaba63c67ef0e6eb1f738063
+        uses: LibreSCRS/ci/actions/gates@a6efbfe4072c3ef31aaf928fcfc64e6673658a7a
         with:
           root: LibreAgent
           gates: test-floor
@@ -371,7 +369,6 @@ jobs:
           cmake -B build -G Ninja \
             -DCMAKE_BUILD_TYPE=RelWithDebInfo \
             -DLIBREAGENT_BUILD_CORE=OFF \
-            -DLIBREAGENT_BUILD_WIRE=ON \
             -DLIBREAGENT_BUILD_CLIENT_QT=ON \
             -DLIBREAGENT_BUILD_CLIENT_QT_TEST_SUPPORT=OFF \
             -DLIBREAGENT_INSTALL_WIRE_ARCHIVE=OFF \
@@ -442,7 +439,7 @@ jobs:
       - name: Every test binary still registers its tests
         # --no-tests=error catches a configuration that registers nothing at
         # all; the floor catches one binary quietly losing its tests.
-        uses: LibreSCRS/ci/actions/gates@d68f5d781a665759eaba63c67ef0e6eb1f738063
+        uses: LibreSCRS/ci/actions/gates@a6efbfe4072c3ef31aaf928fcfc64e6673658a7a
         with:
           root: LibreAgent
           gates: test-floor
@@ -483,7 +480,6 @@ jobs:
           cmake -B build -G Ninja \
             -DCMAKE_BUILD_TYPE=RelWithDebInfo \
             -DLIBREAGENT_BUILD_CORE=OFF \
-            -DLIBREAGENT_BUILD_WIRE=ON \
             -DLIBREAGENT_BUILD_PKCS11_FACADE=ON \
             -DLIBREAGENT_BUILD_PKCS11_SOCKET_CLIENT=ON \
             -DCMAKE_DISABLE_FIND_PACKAGE_LibreMiddleware=ON \
@@ -504,7 +500,7 @@ jobs:
       - name: Every test binary still registers its tests
         # --no-tests=error catches a configuration that registers nothing at
         # all; the floor catches one binary quietly losing its tests.
-        uses: LibreSCRS/ci/actions/gates@d68f5d781a665759eaba63c67ef0e6eb1f738063
+        uses: LibreSCRS/ci/actions/gates@a6efbfe4072c3ef31aaf928fcfc64e6673658a7a
         with:
           root: LibreAgent
           gates: test-floor
@@ -533,7 +529,7 @@ jobs:
           persist-credentials: false
 
       - name: Select Xcode
-        uses: LibreSCRS/ci/actions/select-xcode@d68f5d781a665759eaba63c67ef0e6eb1f738063
+        uses: LibreSCRS/ci/actions/select-xcode@a6efbfe4072c3ef31aaf928fcfc64e6673658a7a
 
       - name: Install build tools
         # bash: the test scripts use bash 4 features and macOS ships 3.2.
@@ -547,7 +543,6 @@ jobs:
           cmake -B build -G Ninja \
             -DCMAKE_BUILD_TYPE=RelWithDebInfo \
             -DLIBREAGENT_BUILD_CORE=OFF \
-            -DLIBREAGENT_BUILD_WIRE=ON \
             -DLIBREAGENT_BUILD_PKCS11_FACADE=ON \
             -DLIBREAGENT_BUILD_PKCS11_SOCKET_CLIENT=ON \
             -DCMAKE_DISABLE_FIND_PACKAGE_LibreMiddleware=ON \
@@ -561,7 +556,7 @@ jobs:
         run: ctest --test-dir build --output-on-failure --no-tests=error
 
       - name: Every test binary still registers its tests
-        uses: LibreSCRS/ci/actions/gates@d68f5d781a665759eaba63c67ef0e6eb1f738063
+        uses: LibreSCRS/ci/actions/gates@a6efbfe4072c3ef31aaf928fcfc64e6673658a7a
         with:
           gates: test-floor
           build-dir: build
@@ -599,7 +594,7 @@ jobs:
           persist-credentials: false
 
       - name: Select Xcode
-        uses: LibreSCRS/ci/actions/select-xcode@d68f5d781a665759eaba63c67ef0e6eb1f738063
+        uses: LibreSCRS/ci/actions/select-xcode@a6efbfe4072c3ef31aaf928fcfc64e6673658a7a
 
       - name: Install build tools
         # googletest as well as ninja: this job builds no LibreMiddleware, which
@@ -611,7 +606,6 @@ jobs:
           cmake -B build-wire-asan -G Ninja \
             -DCMAKE_BUILD_TYPE=RelWithDebInfo \
             -DLIBREAGENT_BUILD_CORE=OFF \
-            -DLIBREAGENT_BUILD_WIRE=ON \
             -DLIBREAGENT_BUILD_CLIENT_QT=OFF \
             -DCMAKE_CXX_FLAGS="-fsanitize=address -fno-omit-frame-pointer -g" \
             -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=address"
@@ -625,7 +619,7 @@ jobs:
       - name: Every test binary still registers its tests
         # --no-tests=error catches a configuration that registers nothing at
         # all; the floor catches one binary quietly losing its tests.
-        uses: LibreSCRS/ci/actions/gates@d68f5d781a665759eaba63c67ef0e6eb1f738063
+        uses: LibreSCRS/ci/actions/gates@a6efbfe4072c3ef31aaf928fcfc64e6673658a7a
         with:
           gates: test-floor
           build-dir: build-wire-asan
@@ -652,7 +646,7 @@ jobs:
           persist-credentials: false
 
       - name: Select Xcode
-        uses: LibreSCRS/ci/actions/select-xcode@d68f5d781a665759eaba63c67ef0e6eb1f738063
+        uses: LibreSCRS/ci/actions/select-xcode@a6efbfe4072c3ef31aaf928fcfc64e6673658a7a
 
       - name: Install build tools
         run: brew install ninja googletest
@@ -673,7 +667,6 @@ jobs:
           cmake -B build -G Ninja \
             -DCMAKE_BUILD_TYPE=RelWithDebInfo \
             -DLIBREAGENT_BUILD_CORE=OFF \
-            -DLIBREAGENT_BUILD_WIRE=ON \
             -DLIBREAGENT_BUILD_CLIENT_QT=ON \
             -DLIBRESCRS_WERROR=ON
 
@@ -688,7 +681,7 @@ jobs:
       - name: Every test binary still registers its tests
         # --no-tests=error catches a configuration that registers nothing at
         # all; the floor catches one binary quietly losing its tests.
-        uses: LibreSCRS/ci/actions/gates@d68f5d781a665759eaba63c67ef0e6eb1f738063
+        uses: LibreSCRS/ci/actions/gates@a6efbfe4072c3ef31aaf928fcfc64e6673658a7a
         with:
           gates: test-floor
           build-dir: build

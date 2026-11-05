@@ -8,7 +8,7 @@ ClientCodecTest 88
 ClientQtCapabilitiesTest 15
 ClientQtCardDateTest 5
 ClientQtConfigKeyMirrorTest 2
-ClientQtCredentialTypesTest 8
+ClientQtCredentialTypesTest 7
 ClientQtDerListenerRegistryTest 6
 ClientQtErrorNameMapTest 11
 ClientQtFieldOrderTest 5
@@ -18,15 +18,15 @@ ClientQtSealedPayloadTest 9
 ClientQtSeamTest 45
 ClientQtSecurityChecksTest 14
 ClientQtSecurityVocabularyTest 5
-ClientQtSocketIntegrationTest 52
+ClientQtSocketIntegrationTest 51
 ClientQtSyncErrorTest 10
 ClientQtTokenMapTest 14
-ClientQtTypesTest 17
+ClientQtTypesTest 16
 FdHarvestTest 5
 FeatureTokensGuardTest 3
 FrameReassemblerTest 8
 FramingTest 11
-MessagesRoundTripTest 26
+MessagesRoundTripTest 25
 PropertyChangedVocabGuardTest 2
 RunHeaderAcceptance.cmake 1
 TestSupportHeaderClosure.cmake 1
