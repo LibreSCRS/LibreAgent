@@ -56,12 +56,9 @@ struct CredentialRecord
     std::string kind;
     std::string state;
     std::optional<int> retriesLeft, retriesMax, usesLeft, usesMax, unblocksLeft;
-    std::optional<int> minLength, maxLength;
     bool canChange = false, unblockable = false;
-    std::string unblockStyle;
     bool activatable = false, keyActivationPending = false, keyActivatable = false;
     std::string recovery;
-    bool probeSafe = false;
     std::optional<std::string> blockedGuidanceKey, blockedGuidanceFallback;
     std::optional<std::string> keyActivationGuidanceKey, keyActivationGuidanceFallback;
     [[nodiscard]] bool operator==(const CredentialRecord&) const = default;
@@ -69,13 +66,12 @@ struct CredentialRecord
 
 // Mirror of LibreSCRS::Agent::CredentialOpResult. Wire shape (see
 // Messages.cpp's encodeCredResult()):
-// cred-result = { outcome, ? retriesLeft, blocked, ? pinActivated, ? keyActivated }.
+// cred-result = { outcome, ? retriesLeft, blocked }.
 struct CredentialOpResult
 {
     CredentialOutcome outcome = CredentialOutcome::Unspecified;
     std::optional<int> retriesLeft;
     bool blocked = false;
-    std::optional<bool> pinActivated, keyActivated;
     [[nodiscard]] bool operator==(const CredentialOpResult&) const = default;
 };
 

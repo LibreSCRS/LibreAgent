@@ -368,7 +368,7 @@ const char* credOutcomeToken(CredentialOutcome o) noexcept
     return "unspecified"; // unreachable (all enumerators handled)
 }
 
-// cred-result = { outcome, ? retriesLeft, blocked, ? pinActivated, ? keyActivated }.
+// cred-result = { outcome, ? retriesLeft, blocked }.
 // Optional numeric/bool keys are OMITTED when nullopt; `blocked` is always written.
 CborValue encodeCredResult(const CredentialOpResult& r)
 {
@@ -378,17 +378,11 @@ CborValue encodeCredResult(const CredentialOpResult& r)
         m.emplace("retriesLeft", CborValue::uint(static_cast<std::uint64_t>(*r.retriesLeft)));
     }
     m.emplace("blocked", CborValue(r.blocked));
-    if (r.pinActivated) {
-        m.emplace("pinActivated", CborValue(*r.pinActivated));
-    }
-    if (r.keyActivated) {
-        m.emplace("keyActivated", CborValue(*r.keyActivated));
-    }
     return CborValue(std::move(m));
 }
 
-// cred-record: 23 camelCase keys mirroring CredentialRecord. The four enum-valued
-// fields (kind/state/unblockStyle/recovery) are already token STRINGS on the
+// cred-record: 19 camelCase keys mirroring CredentialRecord. The three enum-valued
+// fields (kind/state/recovery) are already token STRINGS on the
 // record (produced upstream via detail::*Token), written verbatim. Optional
 // numeric + guidance keys are OMITTED when nullopt; booleans are always written.
 CborValue encodeCredRecord(const CredentialRecord& rec)
@@ -413,20 +407,12 @@ CborValue encodeCredRecord(const CredentialRecord& rec)
     if (rec.unblocksLeft) {
         m.emplace("unblocksLeft", CborValue::uint(static_cast<std::uint64_t>(*rec.unblocksLeft)));
     }
-    if (rec.minLength) {
-        m.emplace("minLength", CborValue::uint(static_cast<std::uint64_t>(*rec.minLength)));
-    }
-    if (rec.maxLength) {
-        m.emplace("maxLength", CborValue::uint(static_cast<std::uint64_t>(*rec.maxLength)));
-    }
     m.emplace("canChange", CborValue(rec.canChange));
     m.emplace("unblockable", CborValue(rec.unblockable));
-    m.emplace("unblockStyle", CborValue(rec.unblockStyle));
     m.emplace("activatable", CborValue(rec.activatable));
     m.emplace("keyActivationPending", CborValue(rec.keyActivationPending));
     m.emplace("keyActivatable", CborValue(rec.keyActivatable));
     m.emplace("recovery", CborValue(rec.recovery));
-    m.emplace("probeSafe", CborValue(rec.probeSafe));
     if (rec.blockedGuidanceKey) {
         m.emplace("blockedGuidanceKey", CborValue(*rec.blockedGuidanceKey));
     }
@@ -532,9 +518,6 @@ CborValue encodeRequestBody(const Request& body)
             if constexpr (std::is_same_v<T, Hello>) {
                 m.emplace("t", CborValue("Hello"));
                 m.emplace("proto", CborValue::uint(r.proto));
-                if (r.client) {
-                    m.emplace("client", CborValue(*r.client));
-                }
                 // Emitted only to opt OUT: the default puts no new bytes on
                 // the wire, so a client that wants events encodes as before.
                 if (!r.wantsEvents) {
@@ -643,11 +626,9 @@ CborValue encodeRequestBody(const Request& body)
                 m.emplace("height", CborValue(r.height));
             } else if constexpr (std::is_same_v<T, GetAppearanceFont>) {
                 m.emplace("t", CborValue("GetAppearanceFont"));
-            } else if constexpr (std::is_same_v<T, ImportCscaMasterList>) {
+            } else { // ImportCscaMasterList
                 m.emplace("t", CborValue("ImportCscaMasterList"));
                 m.emplace("list", CborValue::uint(r.list));
-            } else { // ForgetCscaAnchors -- carries nothing but its tag
-                m.emplace("t", CborValue("ForgetCscaAnchors"));
             }
             return CborValue(std::move(m));
         },
@@ -702,15 +683,11 @@ std::expected<RequestEnvelope, WireError> parseRequest(std::span<const std::uint
         if (!proto) {
             return std::unexpected(proto.error());
         }
-        auto client = fOptText(*m, "client");
-        if (!client) {
-            return std::unexpected(client.error());
-        }
         auto wantsEvents = fOptBool(*m, "wantsEvents");
         if (!wantsEvents) {
             return std::unexpected(wantsEvents.error());
         }
-        env.body = Hello{*proto, std::move(*client), wantsEvents->value_or(true)};
+        env.body = Hello{*proto, wantsEvents->value_or(true)};
     } else if (t == "GetState") {
         env.body = GetState{};
     } else if (t == "ReadIdentity") {
@@ -956,8 +933,6 @@ std::expected<RequestEnvelope, WireError> parseRequest(std::span<const std::uint
             return std::unexpected(list.error());
         }
         env.body = ImportCscaMasterList{*list};
-    } else if (t == "ForgetCscaAnchors") {
-        env.body = ForgetCscaAnchors{};
     } else {
         return std::unexpected(WireError::UnknownMessage);
     }
@@ -1161,9 +1136,6 @@ CborValue encodeCscaAnchorState(const CscaAnchorStateReply& a)
     if (a.signedAt) {
         state.emplace("signedAt", CborValue(*a.signedAt));
     }
-    if (a.origin) {
-        state.emplace("origin", CborValue(*a.origin));
-    }
     return CborValue(std::move(state));
 }
 
@@ -1172,21 +1144,6 @@ CborValue makeReply(std::uint64_t req, const CscaAnchorStateReply& a)
     CborValue reply = makeReplyBase(req);
     Map arm = *encodeCscaAnchorState(a).asMap();
     arm.emplace("kind", CborValue("CscaAnchorState"));
-    mergeInto(reply, std::move(arm));
-    return reply;
-}
-
-CborValue makeReply(std::uint64_t req, const ForgetCscaAnchorsReply& a)
-{
-    CborValue reply = makeReplyBase(req);
-    Map arm;
-    arm.emplace("kind", CborValue("ForgottenAnchors"));
-    // Both REQUIRED, neither optional: this reply exists to say what was
-    // destroyed, and a member a decoder may find missing would let "nothing was
-    // there" and "the field was dropped" read alike. Zero is a real answer here
-    // -- an agent holding nothing forgets nothing and says so.
-    arm.emplace("anchorsForgotten", CborValue::uint(a.anchorsForgotten));
-    arm.emplace("hadPinnedSigner", CborValue(a.hadPinnedSigner));
     mergeInto(reply, std::move(arm));
     return reply;
 }
@@ -1276,15 +1233,6 @@ CborValue toCbor(const OpProgress& e)
     m.emplace("t", CborValue("OpProgress"));
     m.emplace("op", CborValue::uint(e.op));
     m.emplace("phase", CborValue::uint(static_cast<std::uint64_t>(e.phase)));
-    if (e.progress) {
-        m.emplace("progress", CborValue(*e.progress));
-    }
-    if (e.indeterminate) {
-        m.emplace("indeterminate", CborValue(*e.indeterminate));
-    }
-    if (e.watchdogSecs) {
-        m.emplace("watchdogSecs", CborValue::uint(*e.watchdogSecs));
-    }
     return CborValue(std::move(m));
 }
 CborValue toCbor(const OpIdentityGroup& e)

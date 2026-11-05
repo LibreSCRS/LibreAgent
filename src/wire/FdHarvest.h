@@ -43,6 +43,19 @@ inline constexpr int kSendNoSigPipe = MSG_NOSIGNAL;
 inline constexpr int kSendNoSigPipe = 0;
 #endif
 
+// True when a failed read or write only means "no data ready yet" on a
+// non-blocking descriptor. POSIX lets EAGAIN and EWOULDBLOCK be the same value
+// (they are on Linux and Darwin), in which case comparing against both is a
+// duplicated operand, so the second comparison exists only where they differ.
+inline bool isWouldBlock(int err) noexcept
+{
+#if EAGAIN != EWOULDBLOCK
+    return err == EAGAIN || err == EWOULDBLOCK;
+#else
+    return err == EAGAIN;
+#endif
+}
+
 // How many SCM_RIGHTS payload BYTES of `c` actually arrived, given what recvmsg
 // reported in `msg`.
 //

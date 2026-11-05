@@ -6,7 +6,7 @@
 // agent could be a newer/older build); encodeRequest is the trusted
 // outbound path, and reuses Messages.h's existing toCbor(RequestEnvelope)
 // rather than re-implementing canonical encoding.
-#include <LibreSCRS/Agent/wire/ClientCodec.h>
+#include "wire/ClientCodec.h"
 
 #include <LibreSCRS/Agent/KeyType.h> // the NIST curve table
 
@@ -160,23 +160,8 @@ public:
         }
         return *v;
     }
-    std::optional<double> optDouble(std::string_view k)
-    {
-        const auto it = m_m.find(k);
-        if (it == m_m.end()) {
-            return std::nullopt;
-        }
-        const auto v = it->second.asDouble();
-        if (!v) {
-            m_ok = false;
-            return std::nullopt;
-        }
-        return *v;
-    }
-    // A REQUIRED double field (unlike optDouble above): absent marks the
-    // reader malformed too. First needed by LayoutReply's fontSize/lineHeight
-    // (op-progress's `progress` is the only other wire double, and it is
-    // genuinely optional).
+    // A REQUIRED double field: absent marks the reader malformed too.
+    // Needed by LayoutReply's fontSize/lineHeight.
     double doubleField(std::string_view k)
     {
         const auto it = m_m.find(k);
@@ -606,8 +591,6 @@ std::optional<CredentialOpResult> decodeCredOpResult(const Map& m)
     auto outcomeStr = r.text("outcome");
     const auto retriesLeft = r.optInt("retriesLeft");
     const auto blocked = r.boolean("blocked");
-    const auto pinActivated = r.optBool("pinActivated");
-    const auto keyActivated = r.optBool("keyActivated");
     if (!r.ok()) {
         return std::nullopt;
     }
@@ -615,18 +598,16 @@ std::optional<CredentialOpResult> decodeCredOpResult(const Map& m)
     cr.outcome = decodeCredOutcome(outcomeStr);
     cr.retriesLeft = retriesLeft;
     cr.blocked = blocked;
-    cr.pinActivated = pinActivated;
-    cr.keyActivated = keyActivated;
     return cr;
 }
 
-// cred-record: 12 required + 11 optional keys (CDDL:220-228). The four
-// enum-shaped fields (kind/state/unblockStyle/recovery) stay plain strings on
+// cred-record: the keys of the CDDL `cred-record` group. The three
+// enum-shaped fields (kind/state/recovery) stay plain strings on
 // this mirror type (Messages.h's CredentialRecord, see CredentialWire.h), so
 // the codec copies the wire token through unvalidated against the closed
 // CDDL set — exactly mirroring how the agent's own encodeCredRecord() writes
 // them verbatim without an enum either. This keeps the client tolerant of a
-// future cred-kind/-state/-unblockStyle/-recovery token it doesn't render.
+// future cred-kind/-state/-recovery token it doesn't render.
 std::optional<CredentialRecord> decodeCredentialRecord(const Map& m)
 {
     FieldReader r(m);
@@ -640,16 +621,12 @@ std::optional<CredentialRecord> decodeCredentialRecord(const Map& m)
     rec.usesLeft = r.optInt("usesLeft");
     rec.usesMax = r.optInt("usesMax");
     rec.unblocksLeft = r.optInt("unblocksLeft");
-    rec.minLength = r.optInt("minLength");
-    rec.maxLength = r.optInt("maxLength");
     rec.canChange = r.boolean("canChange");
     rec.unblockable = r.boolean("unblockable");
-    rec.unblockStyle = r.text("unblockStyle");
     rec.activatable = r.boolean("activatable");
     rec.keyActivationPending = r.boolean("keyActivationPending");
     rec.keyActivatable = r.boolean("keyActivatable");
     rec.recovery = r.text("recovery");
-    rec.probeSafe = r.boolean("probeSafe");
     rec.blockedGuidanceKey = r.optText("blockedGuidanceKey");
     rec.blockedGuidanceFallback = r.optText("blockedGuidanceFallback");
     rec.keyActivationGuidanceKey = r.optText("keyActivationGuidanceKey");
@@ -892,9 +869,9 @@ std::optional<AppearanceFontReply> decodeAppearanceFontReply(const Map& m, std::
 
 // csca-anchor-state = ( kind: "CscaAnchorState", anchors, issuers,
 //                       replayRefusalActive, ? signer, ? signerPinned,
-//                       ? acceptedAt, ? signedAt, ? origin )
+//                       ? acceptedAt, ? signedAt )
 //
-// Three required, five optional — see the CDDL arm's own comment for why the
+// Three required, four optional — see the CDDL arm's own comment for why the
 // split falls exactly there. `signedAt` absent stays absent: this decoder
 // never substitutes a zero, because a list signed at the epoch and a list
 // carrying no signingTime at all must not decode alike.
@@ -909,7 +886,6 @@ std::optional<CscaAnchorStateReply> decodeCscaAnchorStateReply(const Map& m)
     out.signerPinned = r.optBool("signerPinned");
     out.acceptedAt = r.optInt64("acceptedAt");
     out.signedAt = r.optInt64("signedAt");
-    out.origin = r.optText("origin");
     if (!r.ok()) {
         return std::nullopt;
     }
@@ -1185,9 +1161,6 @@ std::optional<OpProgress> decodeOpProgress(const Map& m)
     FieldReader r(m);
     const auto op = r.uint("op");
     const auto phaseRaw = r.uint("phase");
-    const auto progress = r.optDouble("progress");
-    const auto indeterminate = r.optBool("indeterminate");
-    const auto watchdogSecs = r.optUint("watchdogSecs");
     if (!r.ok()) {
         return std::nullopt;
     }
@@ -1198,9 +1171,6 @@ std::optional<OpProgress> decodeOpProgress(const Map& m)
     OpProgress out;
     out.op = op;
     out.phase = *phase;
-    out.progress = progress;
-    out.indeterminate = indeterminate;
-    out.watchdogSecs = watchdogSecs;
     return out;
 }
 std::optional<OpIdentityGroup> decodeOpIdentityGroup(const Map& m)

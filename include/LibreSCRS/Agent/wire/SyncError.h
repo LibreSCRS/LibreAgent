@@ -7,19 +7,10 @@
 /// @file
 /// @brief The named synchronous-method error vocabulary shared by both agent
 ///        wires, plus BOTH halves of its name conversion.
-
-// Keeps a function exported from a shared library this archive is folded into.
-// The library compiles hidden; the two below are the exception, because a
-// public client header re-exports their declarations and the definitions must
-// stay reachable. ci/scripts/check-wire-exports.sh proves both halves.
-//
-// Defined here, not in an export header: this is one of the leaf headers the
-// client's public surface re-exports, and client/qt/CMakeLists.txt fails the
-// configure if one of them includes another first-party header.
-//
-// Plain `//`, not `///`: a DOCUMENTED #define is published as public API even
-// when Doxyfile.publicapi predefines it away.
-#define LIBRESCRS_AGENTWIRE_EXPORT __attribute__((visibility("default")))
+///
+/// Part of the wire library, which compiles hidden: the two conversion
+/// functions are not exported from the client's shared library, and a host
+/// branches on the enumerator.
 
 namespace LibreSCRS::Agent::Wire {
 
@@ -32,7 +23,7 @@ namespace LibreSCRS::Agent::Wire {
 /// The underlying integers are NOT wire-significant: the wire carries the
 /// NAME, so this enum may be reordered without breaking a peer (unlike
 /// `ErrorCode`, whose integers are frozen). What must stay in lockstep is the
-/// SET of names — see `syncErrorName()`.
+/// SET of names (the CDDL `sync-error` group).
 /// Each enumerator below notes, after its meaning, which coarse bucket the Qt
 /// client's classification collapses it onto — the whole reason this axis is
 /// carried separately is that several distinct names share one bucket, so the
@@ -72,9 +63,10 @@ enum class SyncError : std::uint8_t {
     /// The exchange broke in a way the peer could only describe generically.
     ///
     /// @warning This value is ALSO where an unrecognised name lands, because
-    ///          the vocabulary has no room to carry one forward — see
-    ///          `decodeSyncError()`'s own warning. Reading it as a positive
-    ///          identification of this specific failure is therefore unsound.
+    ///          the vocabulary has no room to carry one forward, so a name
+    ///          this build does not know decodes to it. Reading it as a
+    ///          positive identification of this specific failure is therefore
+    ///          unsound.
     ///          (Bucket: communication error.)
     CommunicationError,
     /// The request names something this agent build does not implement at all,
@@ -142,6 +134,7 @@ enum class SyncError : std::uint8_t {
     Cancelled,
 };
 
+/// @cond LIBRESCRS_WIRE_INTERNAL
 /// @brief The wire name for a `SyncError` (== the literal enumerated by the
 ///        CDDL `sync-error` group). Never empty.
 ///
@@ -149,7 +142,7 @@ enum class SyncError : std::uint8_t {
 /// `-Wswitch` build failure here until it is named — and a stale CDDL is a
 /// separate test failure (tests/wire/WireContractGuardTest.cpp compares the
 /// two as sets).
-[[nodiscard]] LIBRESCRS_AGENTWIRE_EXPORT std::string_view syncErrorName(SyncError e) noexcept;
+[[nodiscard]] std::string_view syncErrorName(SyncError e) noexcept;
 
 /// @brief The inverse of `syncErrorName()`: a wire name back to its enumerator.
 ///
@@ -169,6 +162,7 @@ enum class SyncError : std::uint8_t {
 /// Round-trip: `decodeSyncError(syncErrorName(e)) == e` for every enumerator
 /// (pinned by tests/wire/WireContractGuardTest.cpp). The reverse does not hold
 /// for an unrecognised token, per the degrade above.
-[[nodiscard]] LIBRESCRS_AGENTWIRE_EXPORT SyncError decodeSyncError(std::string_view name) noexcept;
+[[nodiscard]] SyncError decodeSyncError(std::string_view name) noexcept;
+/// @endcond
 
 } // namespace LibreSCRS::Agent::Wire

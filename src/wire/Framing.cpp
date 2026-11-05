@@ -42,7 +42,7 @@ bool recvExact(int fd, std::uint8_t* dst, std::size_t n, std::vector<UniqueFd>& 
             // A non-blocking socket with no data ready: not an I/O failure. This
             // API is for BLOCKING sockets (see Framing.h); the signal lets a
             // misused non-blocking caller distinguish rather than tear down.
-            err = (errno == EAGAIN || errno == EWOULDBLOCK) ? FrameError::WouldBlock : FrameError::Io;
+            err = isWouldBlock(errno) ? FrameError::WouldBlock : FrameError::Io;
             return false;
         }
 

@@ -52,20 +52,5 @@
     <method name="GetAppearanceFont">
       <arg name="fd" type="h" direction="out"/>
     </method>
-
-    <!-- The agent quiesced card access: the holder's session went away (the
-         machine sleeps, the user switched away, the screen locked) or the
-         agent is stopping. Emitted AFTER the agent forgot what the reason
-         calls for (LibreAgent AgentCore::quiesce): on SystemSleep (0),
-         SessionInactive (2) and Shutdown (3) every cached CAN/MRZ, every card
-         session and every PKCS#11 lease; on ScreenLocked (1) the PKCS#11
-         leases only. `reason` is the wire-frozen, append-only quiesce-reason
-         vocabulary (wire-vocabulary.json), the same values the socket
-         transport sends in AgentQuiesced; a client hands a value it does not
-         name on verbatim. The agent stays on the bus and every object stays
-         valid. -->
-    <signal name="Quiesced">
-      <arg name="reason" type="u"/>
-    </signal>
   </interface>
 </node>

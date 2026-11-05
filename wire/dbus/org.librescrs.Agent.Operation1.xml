@@ -71,25 +71,10 @@
     and Status / ErrorCode use the same enumerations as Finished's status
     and errorCode arguments.
 
-  Linux-realization-only properties:
-    IsIndeterminate and WatchdogTimeoutSeconds describe this agent's
-    Linux/PC-SC realization and have no macOS-CryptoTokenKit analogue. A
-    cross-platform parity binding need not mirror them; the wire-stable
-    contract for parity purposes is Phase, the Finished signal, and the
-    Completed / Status / ErrorCode terminal triple.
 -->
 <node>
   <interface name="org.librescrs.Agent.Operation1">
     <property name="Phase"                  type="u" access="read"/>
-    <property name="Progress"               type="d" access="read"/>
-    <!-- IsIndeterminate: honest spinner flag — true for card-I/O ops that
-         have no meaningful completion percentage. Linux-realization-only
-         (see the doc block above); not part of the macOS parity surface.
-         No client reader yet; reserved for a progress-UI consumer. -->
-    <property name="IsIndeterminate"        type="b" access="read"/>
-    <!-- WatchdogTimeoutSeconds: Linux-realization-only (see doc block).
-         No client reader yet; reserved for diagnostics. -->
-    <property name="WatchdogTimeoutSeconds" type="u" access="read"/>
     <!-- Terminal triple for lost-Finished recovery (see doc block). Only
          meaningful while Completed == true. -->
     <property name="Completed"              type="b" access="read"/>

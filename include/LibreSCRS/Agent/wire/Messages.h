@@ -43,8 +43,6 @@ enum class WireError : std::uint8_t {
     WrongType,      // a field has the wrong CBOR type
     NoTag,          // no `t` discriminator
     UnknownMessage, // `t` is not a known request tag
-    BadEnum,        // an enum-valued field is out of range
-    BadConfigKey,   // a config key outside the settable / known set
 };
 
 // SyncError (the named synchronous-method error vocabulary) plus BOTH halves of
@@ -168,7 +166,6 @@ struct SignMeta
 struct Hello
 {
     std::uint64_t proto{0};
-    std::optional<std::string> client;
     // Whether this client wants presence events pushed to it. Absent on the
     // wire means true -- what every client sent before the key existed. LAST
     // member on purpose: existing positional initialisation keeps compiling.
@@ -266,35 +263,6 @@ struct ImportCscaMasterList
 {
     std::uint64_t list{0}; // fd-index into the frame's SCM_RIGHTS vector
     bool operator==(const ImportCscaMasterList&) const = default;
-};
-// Config1.ForgetCscaAnchors: discard every country signing anchor the agent
-// holds, and the publisher it follows with them.
-//
-// Carries nothing: there is one anchor store and this empties it. A key naming
-// which publisher to forget would describe an operation that does not exist --
-// the rotation rule is applied against the whole set, so forgetting part of it
-// leaves a store that refuses lists for reasons no surface can explain.
-//
-// WHY IT IS A VERB OF ITS OWN, since ResetConfig already exists and would have
-// cost nothing on this wire: the anchors and the pin live in the CACHE, not in
-// the configuration, so a config reset does not reach them. It would clear the
-// REPORT and leave the anchors -- a surface saying nothing is installed while
-// every later list is still refused, which is this operation's own reason for
-// existing, reintroduced silently.
-//
-// Same authorization as the import (`org.librescrs.agent.configure.trust`): it
-// changes what the machine will believe about a passport.
-//
-// NO per-caller flood bound, unlike the import: that bound exists because the
-// import READS a descriptor the caller hands over. This takes no input and is
-// idempotent, so both hosts authorize and act, by agreement.
-//
-// Rejections (err-info's `name`): NotAuthorized, AnchorCacheNotWritable.
-// Holding nothing is NOT a rejection -- it answers zeros, because an agent that
-// has imported nothing has already forgotten everything.
-struct ForgetCscaAnchors
-{
-    bool operator==(const ForgetCscaAnchors&) const = default;
 };
 struct CancelOp
 {
@@ -400,11 +368,10 @@ struct GetAppearanceFont
     bool operator==(const GetAppearanceFont&) const = default;
 };
 
-using Request =
-    std::variant<Hello, GetState, ReadIdentity, GetPhoto, ReadCertificates, ReadTokenInfo, Sign, SignBatch, GetCertDer,
-                 GetConfig, SetConfig, ResetConfig, CancelOp, GetSignResult, PkLogin, PkLogout, PkPublicKey, PkSignRaw,
-                 PkDecrypt, ListCredentials, ManagePin, ActivateSigningKey, LayoutVisual, GetAppearanceFont,
-                 ImportCscaMasterList, ForgetCscaAnchors, PkDerive, PkLoginState>;
+using Request = std::variant<Hello, GetState, ReadIdentity, GetPhoto, ReadCertificates, ReadTokenInfo, Sign, SignBatch,
+                             GetCertDer, GetConfig, SetConfig, ResetConfig, CancelOp, GetSignResult, PkLogin, PkLogout,
+                             PkPublicKey, PkSignRaw, PkDecrypt, ListCredentials, ManagePin, ActivateSigningKey,
+                             LayoutVisual, GetAppearanceFont, ImportCscaMasterList, PkDerive, PkLoginState>;
 
 struct RequestEnvelope
 {
@@ -518,7 +485,7 @@ struct AppearanceFontReply
 // the reply exists to report, and `replayRefusalActive` is the one whose FALSE
 // a surface must not swallow (it means the accepted list carried no signing
 // time, so "is this older than what I already have" cannot be answered at
-// all). The five `std::optional` members are optional because the twin D-Bus
+// all). The four `std::optional` members are optional because the twin D-Bus
 // property is an untyped `a{sv}` with no schema to enforce them, and failing a
 // whole frame closed over a display-only field would make this half strictly
 // less robust than that one for no gain. `signedAt` is genuinely absent-able
@@ -534,27 +501,7 @@ struct CscaAnchorStateReply
     std::optional<bool> signerPinned;
     std::optional<std::int64_t> acceptedAt; // seconds since the epoch
     std::optional<std::int64_t> signedAt;   // seconds since the epoch; absent == the list carried none
-    std::optional<std::string> origin;
     bool operator==(const CscaAnchorStateReply&) const = default;
-};
-
-// ForgetCscaAnchors' reply: what was DESTROYED, not what remains.
-//
-// Deliberately not CscaAnchorStateReply, and the difference is the whole point.
-// After a forget the state is ABSENT, and that reply cannot say so: its
-// `anchors`/`issuers` are required, so it would have to carry zeros -- and a
-// zeroed report means "a list was accepted and it vouched for nobody", which is
-// a different claim and a false one. The same distinction the agent keeps when
-// it discards a stale report by clearing it rather than zeroing it.
-//
-// Reporting what went is also what the caller actually needs: a surface that
-// asked a person to confirm this has to be able to tell them what happened, and
-// after the fact there is nothing left on disk to read it from.
-struct ForgetCscaAnchorsReply
-{
-    std::uint64_t anchorsForgotten{0}; ///< anchors held before this call, INCLUDING link certificates
-    bool hadPinnedSigner{false};       ///< a publisher was being followed, and now none is
-    bool operator==(const ForgetCscaAnchorsReply&) const = default;
 };
 
 struct ErrInfo
@@ -651,7 +598,6 @@ using OpResult =
 [[nodiscard]] CborValue makeReply(std::uint64_t req, const LayoutReply&);
 [[nodiscard]] CborValue makeReply(std::uint64_t req, const AppearanceFontReply&);
 [[nodiscard]] CborValue makeReply(std::uint64_t req, const CscaAnchorStateReply&);
-[[nodiscard]] CborValue makeReply(std::uint64_t req, const ForgetCscaAnchorsReply&);
 
 // The anchor state on its own, as a map of exactly the fields makeReply()
 // puts in a CscaAnchorState reply (the same names, the same absent optionals),
@@ -699,9 +645,6 @@ struct OpProgress
 {
     std::uint64_t op{0};
     OperationPhase phase{OperationPhase::Created};
-    std::optional<double> progress;
-    std::optional<bool> indeterminate;
-    std::optional<std::uint64_t> watchdogSecs;
     bool operator==(const OpProgress&) const = default;
 };
 // Progressive per-group delivery, strictly ahead of the eventual

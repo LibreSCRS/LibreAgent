@@ -49,7 +49,7 @@ PumpResult FrameReassembler::pump(int fd)
             if (errno == EINTR) {
                 continue;
             }
-            if (errno == EAGAIN || errno == EWOULDBLOCK) {
+            if (isWouldBlock(errno)) {
                 break; // drained for now
             }
             out.status = PumpStatus::Error;

@@ -14,7 +14,7 @@
 // CMakeLists.txt — an OBJECT target linked against LibreAgent::Core, which
 // is what makes LibreMiddleware's headers resolvable here), while the
 // mirrors it checks stay reachable from a Core-less, LM-free
-// LIBREAGENT_BUILD_WIRE-only build. It emits no runtime code: every check
+// Core-less build. It emits no runtime code: every check
 // below is a static_assert, so a passing compile IS the test — there is
 // nothing to run and therefore no ctest entry, mirroring
 // tests/wire/WireHeaderPurity.cpp's compiled-guard pattern.
@@ -84,13 +84,11 @@ static_assert(std::is_same_v<decltype(Wire::CredentialOpResult::outcome), Wire::
 static_assert(std::is_same_v<decltype(AgentOpResult::outcome), AgentOutcome>);
 static_assert(std::is_same_v<decltype(Wire::CredentialOpResult::retriesLeft), decltype(AgentOpResult::retriesLeft)>);
 static_assert(std::is_same_v<decltype(Wire::CredentialOpResult::blocked), decltype(AgentOpResult::blocked)>);
-static_assert(std::is_same_v<decltype(Wire::CredentialOpResult::pinActivated), decltype(AgentOpResult::pinActivated)>);
-static_assert(std::is_same_v<decltype(Wire::CredentialOpResult::keyActivated), decltype(AgentOpResult::keyActivated)>);
 
 // ---- Wire::CredentialRecord <-> LibreSCRS::Agent::CredentialRecord --------
-// All 23 wire keys Messages.cpp's encodeCredRecord() writes; every field is
+// The wire keys Messages.cpp's encodeCredRecord() writes; every field is
 // std-only on both sides (no enum-valued members here — kind/state/
-// unblockStyle/recovery cross as pre-tokenized strings), so a straight
+// recovery cross as pre-tokenized strings), so a straight
 // same-type check is the right (and sufficient) parity proof per field.
 static_assert(std::is_same_v<decltype(Wire::CredentialRecord::id), decltype(AgentRecord::id)>);
 static_assert(std::is_same_v<decltype(Wire::CredentialRecord::label), decltype(AgentRecord::label)>);
@@ -101,17 +99,13 @@ static_assert(std::is_same_v<decltype(Wire::CredentialRecord::retriesMax), declt
 static_assert(std::is_same_v<decltype(Wire::CredentialRecord::usesLeft), decltype(AgentRecord::usesLeft)>);
 static_assert(std::is_same_v<decltype(Wire::CredentialRecord::usesMax), decltype(AgentRecord::usesMax)>);
 static_assert(std::is_same_v<decltype(Wire::CredentialRecord::unblocksLeft), decltype(AgentRecord::unblocksLeft)>);
-static_assert(std::is_same_v<decltype(Wire::CredentialRecord::minLength), decltype(AgentRecord::minLength)>);
-static_assert(std::is_same_v<decltype(Wire::CredentialRecord::maxLength), decltype(AgentRecord::maxLength)>);
 static_assert(std::is_same_v<decltype(Wire::CredentialRecord::canChange), decltype(AgentRecord::canChange)>);
 static_assert(std::is_same_v<decltype(Wire::CredentialRecord::unblockable), decltype(AgentRecord::unblockable)>);
-static_assert(std::is_same_v<decltype(Wire::CredentialRecord::unblockStyle), decltype(AgentRecord::unblockStyle)>);
 static_assert(std::is_same_v<decltype(Wire::CredentialRecord::activatable), decltype(AgentRecord::activatable)>);
 static_assert(std::is_same_v<decltype(Wire::CredentialRecord::keyActivationPending),
                              decltype(AgentRecord::keyActivationPending)>);
 static_assert(std::is_same_v<decltype(Wire::CredentialRecord::keyActivatable), decltype(AgentRecord::keyActivatable)>);
 static_assert(std::is_same_v<decltype(Wire::CredentialRecord::recovery), decltype(AgentRecord::recovery)>);
-static_assert(std::is_same_v<decltype(Wire::CredentialRecord::probeSafe), decltype(AgentRecord::probeSafe)>);
 static_assert(
     std::is_same_v<decltype(Wire::CredentialRecord::blockedGuidanceKey), decltype(AgentRecord::blockedGuidanceKey)>);
 static_assert(std::is_same_v<decltype(Wire::CredentialRecord::blockedGuidanceFallback),

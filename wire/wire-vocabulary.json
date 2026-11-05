@@ -2,7 +2,7 @@
   "schema": 1,
   "vocabularies": {
     "capability-bit": { "kind": "numeric", "entries": [ { "value": 0, "name": "Pki" }, { "value": 1, "name": "IdentityData" }, { "value": 2, "name": "EmrtdCrypto" }, { "value": 3, "name": "PinManagement" } ] },
-    "config-key": { "kind": "token", "union-of": "settable-config-key", "cddlOnly": true, "entries": [ "DefaultLevel", "DefaultReason", "DefaultLocation", "TsaUrls", "TslSources", "CscaSources", "LastTsaUrl", "CscaAnchorState", "TslCacheDir", "AiaCacheDir", "PluginDir" ] },
+    "config-key": { "kind": "token", "union-of": "settable-config-key", "cddlOnly": true, "entries": [ "DefaultLevel", "DefaultReason", "DefaultLocation", "TsaUrls", "TslSources", "LastTsaUrl", "CscaAnchorState", "TslCacheDir" ] },
     "cred-kind": { "kind": "token", "entries": [ "user", "sign", "puk", "can", "unknown" ] },
     "cred-outcome": { "kind": "token", "entries": [ "unspecified", "ok", "userCancelled", "missingFields", "invalidPin", "blocked", "pluginError", "unsupported", "keyActivationFailed", "cardRemoved", "entryExpired" ] },
     "cred-recovery": { "kind": "token", "entries": [ "unknown", "holderViaPuk", "issuerProcess", "none" ] },
@@ -16,16 +16,15 @@
     "pk-decrypt-mech": { "kind": "token", "cddlOnly": true, "entries": [ "rsa-pkcs" ] },
     "pk-sign-mech": { "kind": "token", "cddlOnly": true, "entries": [ "rsa-pkcs", "sha256-rsa-pkcs", "ecdsa" ] },
     "pre-read-auth": { "kind": "numeric", "entries": [ { "value": 0, "name": "None" }, { "value": 1, "name": "Mrz" }, { "value": 2, "name": "Can" } ] },
-    "quiesce-reason": { "kind": "numeric", "entries": [ { "value": 0, "name": "SystemSleep" }, { "value": 1, "name": "ScreenLocked" }, { "value": 2, "name": "SessionInactive" }, { "value": 3, "name": "Shutdown" } ] },
+    "quiesce-reason": { "kind": "numeric", "entries": [ { "value": 0, "name": "SystemSleep" }, { "value": 1, "name": "ScreenLocked" }, { "value": 2, "name": "SessionInactive" } ] },
     "reader-interface": { "kind": "token", "entries": [ "unknown", "contact", "contactless" ] },
     "requested-format": { "kind": "token", "union-of": "sign-format", "entries": [ "pades", "cades", "xades", "jades", "asice", "auto" ] },
     "requested-level": { "kind": "token", "union-of": "sign-level", "entries": [ "b-b", "b-t", "b-lt", "b-lta", "auto" ] },
     "requested-packaging": { "kind": "token", "union-of": "packaging-mode", "entries": [ "enveloped", "detached", "auto" ] },
-    "settable-config-key": { "kind": "token", "cddlOnly": true, "entries": [ "DefaultLevel", "DefaultReason", "DefaultLocation", "TsaUrls", "TslSources", "CscaSources" ] },
+    "settable-config-key": { "kind": "token", "cddlOnly": true, "entries": [ "DefaultLevel", "DefaultReason", "DefaultLocation", "TsaUrls", "TslSources" ] },
     "sign-format": { "kind": "token", "entries": [ "pades", "cades", "xades", "jades", "asice" ] },
     "sign-level": { "kind": "token", "entries": [ "b-b", "b-t", "b-lt", "b-lta" ] },
-    "sync-error": { "kind": "token", "entries": [ "UnknownCard", "KeyNotFound", "NotAuthorized", "UserNotLoggedIn", "UnknownConfigKey", "ReadOnlyConfig", "InvalidConfigValue", "UnsupportedProtocol", "AuthFailed", "CommunicationError", "NotSupported", "UnsupportedOnThisCard", "UnsupportedSignatureParameter", "InputTooLarge", "RateLimited", "UnknownCredential", "InvalidRequest", "NoResult", "MasterListReplayed", "Cancelled" ] },
-    "unblock-style": { "kind": "token", "entries": [ "unknown", "resetOnly", "setsNewPin", "unblockAndChange" ] }
+    "sync-error": { "kind": "token", "entries": [ "UnknownCard", "KeyNotFound", "NotAuthorized", "UserNotLoggedIn", "UnknownConfigKey", "ReadOnlyConfig", "InvalidConfigValue", "UnsupportedProtocol", "AuthFailed", "CommunicationError", "NotSupported", "UnsupportedOnThisCard", "UnsupportedSignatureParameter", "InputTooLarge", "RateLimited", "UnknownCredential", "InvalidRequest", "NoResult", "MasterListReplayed", "Cancelled" ] }
   },
   "socket-location": { "noTeamPrefix": "group", "appGroupSuffix": ".org.librescrs.LibreMac", "socketName": "agent.sock" }
 }

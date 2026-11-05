@@ -9,15 +9,9 @@
   Properties are read-only over org.freedesktop.DBus.Properties; mutation goes
   through SetValue so each change is gated per-key:
     DefaultLevel / DefaultReason / DefaultLocation  -> polkit org.librescrs.agent.configure (default allow)
-    TsaUrls / TslSources / CscaSources              -> polkit org.librescrs.agent.configure.trust (auth_self)
-    TslCacheDir / AiaCacheDir / PluginDir           -> config-file-only (NOT settable over D-Bus; a
-                                                       D-Bus-settable PluginDir is a dlopen code-exec vector)
+    TsaUrls / TslSources                            -> polkit org.librescrs.agent.configure.trust (auth_self)
+    TslCacheDir                                     -> config-file-only (NOT settable over D-Bus)
     LastTsaUrl / CscaAnchorState                    -> read-only agent-internal state
-
-  CscaSources rides the trust action rather than gaining one of its own: which
-  country-signing anchors a passport is checked against is a trust decision of
-  the same class as which trusted lists or timestamping authorities are used,
-  and a fourth action would split one authorisation regime across two tables.
 
   ImportCscaMasterList rides that same action, and for a stronger version of the
   same reason: an import does not name a place anchors may come from, it INSTALLS
@@ -43,11 +37,6 @@
     <property name="LastTsaUrl"      type="s"      access="read"/>
     <property name="TslSources"      type="a(sbb)" access="read"/>
     <property name="TslCacheDir"     type="s"      access="read"/>
-    <property name="AiaCacheDir"     type="s"      access="read"/>
-    <!-- (uri, eager) per source. Two fields, not three: a country-signing
-         source names anchors, never further sources, so there is no
-         list-of-lists pivot flag as TslSources' a(sbb) carries. -->
-    <property name="CscaSources"     type="a(sb)"  access="read"/>
     <!-- What the agent currently believes about its country-signing anchors, for
          a client that has to have something to say. An EMPTY dict means nothing
          has been imported; there is no "unconfigured" sentinel to misread.
@@ -119,7 +108,6 @@
                            rolled back freely. A surface that stays silent leaves
                            a person unable to tell "this is safe" from "this
                            cannot be checked".
-           origin       s  where the anchors came from ("import").
 
          WHAT THIS DICT DOES NOT SAY, so a client does not go looking for it:
          HOW MANY publishers were taken in, and how many of those were
@@ -138,7 +126,6 @@
     <property name="CscaAnchorState" type="a{sv}"  access="read"/>
     <property name="DefaultReason"   type="s"      access="read"/>
     <property name="DefaultLocation" type="s"      access="read"/>
-    <property name="PluginDir"       type="s"      access="read"/>
 
     <method name="SetValue">
       <annotation name="org.freedesktop.DBus.Method.Async" value="server"/>
@@ -263,58 +250,6 @@
       <annotation name="org.freedesktop.DBus.Method.Async" value="server"/>
       <arg name="masterList" type="h"     direction="in"/>
       <arg name="state"      type="a{sv}" direction="out"/>
-    </method>
-
-    <!-- Discard every country signing anchor this agent holds, and the publisher
-         it follows with them.
-
-         WHY THIS EXISTS. The rotation rule refuses a master list signed by a
-         publisher the agent does not follow unless it chains to an anchor a
-         previous import carried. That is right, and it has a consequence nobody
-         chose: an installation that imported one country's list and is then
-         offered the ICAO collection has every one of those lists refused,
-         because none of those publishers leads back to the anchors already
-         held. Without this the protection against rotation is also a trap, and
-         the only way out was knowing about a cache directory and deleting it by
-         hand — outside the authorisation that covers every other change here.
-
-         NOT Reset("CscaAnchorState"), which would have needed no new method.
-         The anchors and the pin live in the CACHE; Reset reaches only the
-         configuration, so it would clear the REPORT and leave the pin standing
-         — a surface saying nothing is installed while every later list is still
-         refused. That is this method's own reason for existing, reintroduced
-         with no trace of it anywhere.
-
-         Takes no argument: there is one anchor store and this empties it.
-         Naming a single publisher would describe an operation that does not
-         exist, since the rotation rule is applied against the whole set.
-
-         Answers what was DESTROYED rather than what remains — after the fact
-         there is nothing left on disk to read it from, and a surface that asked
-         a person to confirm this has to be able to tell them what happened.
-         anchorsForgotten is what the agent BELIEVED it held (its cache record),
-         not a count of files.
-
-         Rides org.librescrs.agent.configure.trust, like the import and for the
-         stronger version of the same reason.
-
-         NO per-caller flood bound, unlike ImportCscaMasterList: that bound
-         exists because the import reads a descriptor the caller hands over.
-         This takes no input and is idempotent.
-
-         Rejections:
-           org.librescrs.Agent.Error.NotAuthorized           caller not permitted
-           org.librescrs.Agent.Error.AnchorCacheNotWritable  the anchors could not
-                                                             be removed — said out
-                                                             loud, and NOTHING was
-                                                             changed, the recorded
-                                                             report included
-
-         Holding nothing is NOT a rejection: it answers zeros. -->
-    <method name="ForgetCscaAnchors">
-      <annotation name="org.freedesktop.DBus.Method.Async" value="server"/>
-      <arg name="anchorsForgotten" type="t" direction="out"/>
-      <arg name="hadPinnedSigner"  type="b" direction="out"/>
     </method>
 
     <signal name="Changed">

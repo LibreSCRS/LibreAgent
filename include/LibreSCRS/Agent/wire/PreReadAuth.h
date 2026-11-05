@@ -14,7 +14,7 @@ namespace LibreSCRS::Agent::Wire {
 ///        vocabulary on the wire without pulling in LM's auth/plugin/
 ///        smartcard headers just for a 3-value enum — this header has no
 ///        include beyond `<cstdint>`, so it stays reachable from a
-///        `LIBREAGENT_BUILD_CORE=OFF, LIBREAGENT_BUILD_WIRE=ON` configuration.
+///        `LIBREAGENT_BUILD_CORE=OFF` configuration.
 ///
 /// This mirror is NOT self-certifying: `src/wire/WireParityChecks.cpp`
 /// (core-gated, so it sees both this header and the LM original) statically

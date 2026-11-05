@@ -42,18 +42,17 @@
 //     future values silently aliasing onto one stored value). What an
 //     unrecognised value MEANS is decided entirely by the STATEFUL layer
 //     that consumes the decoded struct, never here:
-//       * OperationPhase: AgentOperation (client/qt) still delivers the
-//         progress fraction, but its public phase() HOLDS the last
+//       * OperationPhase: AgentOperation (client/qt) still emits the
+//         notification, but the phase it reports HOLDS the last
 //         known-good phase rather than regressing to the unrecognised one.
 //       * OperationStatus: AgentOperation treats an unrecognised terminal
 //         status as Error.
 //       * PreReadAuth: the transport's card-property mapping (e.g.
 //         SocketTransport's preAuthToken()) treats an unrecognised value the
 //         same as the default, None.
-//       * QuiesceReason: the client hands it on verbatim
-//         (AgentClient::quiesced) and branches on nothing, so an
-//         unrecognised reason is a quiesce for a reason it cannot name -- no
-//         separate mapping is needed.
+//       * QuiesceReason: the client branches on nothing:
+//         any reason counts the agent as gone until it answers again, so an
+//         unrecognised one needs no separate mapping.
 //       * ErrorCode: unchanged from before this policy existed -- opaque
 //         display/log data the client never branches on.
 //   - TEXT-TOKEN enums -- CredentialOutcome, and err-info's named SyncError

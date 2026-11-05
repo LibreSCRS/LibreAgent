@@ -276,7 +276,7 @@ inline std::vector<std::string> unionTokens(const std::string& cddl, const Disco
 //
 // What this catches: an erosion where the absorbed neighbour shares at
 // least one token with the group it merged into. Every adjacent token
-// vocabulary in the current grammar (cred-kind, cred-state, unblock-style,
+// vocabulary in the current grammar (cred-kind, cred-state,
 // cred-recovery) shares the sentinel "unknown", so this fires today.
 //
 // What this does NOT catch: two adjacent token rules with no overlapping

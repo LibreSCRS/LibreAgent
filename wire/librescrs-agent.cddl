@@ -44,10 +44,10 @@ pre-read-auth  = &( None: 0, Mrz: 1, Can: 2 )
 ; append-only; a value past this build's last named one is a FUTURE value,
 ; not a malformed one -- decode it through raw. Degradation is decided by the
 ; STATEFUL client layer that consumes the decoded value, never the codec: an
-; unrecognised op-phase still delivers the progress fraction but the public
+; unrecognised op-phase is still delivered but the public
 ; "current phase" holds the last known-good one instead of regressing to the
-; unrecognised value (AgentOperation on the Qt client; the Swift mirror's
-; OperationDriver); an unrecognised op-status is treated as Error.
+; unrecognised value (AgentOperation on the Qt client, and the Swift
+; mirror's operation object); an unrecognised op-status is treated as Error.
 op-phase  = &( Created: 0, Connecting: 1, AwaitingConsent: 2, Authenticating: 3,
                Reading: 4, Signing: 5, Timestamping: 6, Done: 7 )
 op-status = &( Ok: 0, Cancelled: 1, Error: 2 )
@@ -71,7 +71,7 @@ req-body = ( hello // get-state // read-identity // get-photo //
   read-certificates // read-token-info // sign // sign-batch // get-cert-der // get-config // set-config // reset-config //
   cancel-op // get-sign-result // pk-login // pk-logout // pk-login-state // pk-public-key // pk-sign-raw // pk-decrypt // pk-derive //
   list-credentials // manage-pin // activate-signing-key // layout-visual // get-appearance-font //
-  import-csca-master-list // forget-csca-anchors )
+  import-csca-master-list )
 
 ; wantsEvents: absent means true, which is what every client sent before the
 ; key existed. A client that only reads on demand would rather not accumulate
@@ -81,7 +81,7 @@ req-body = ( hello // get-state // read-identity // get-photo //
 ; events (it still receives every reply and every event of an operation it
 ; started). proto must equal the agent's own wire protocol version; any other
 ; value is answered with the UnsupportedProtocol sync-error and nothing more.
-hello             = ( t: "Hello", proto: uint, ? client: tstr, ? wantsEvents: bool )
+hello             = ( t: "Hello", proto: uint, ? wantsEvents: bool )
 get-state         = ( t: "GetState" )
 read-identity     = ( t: "ReadIdentity", card: handle )
 get-photo         = ( t: "GetPhoto", card: handle )
@@ -154,37 +154,6 @@ get-config        = ( t: "GetConfig" )                                  ; -> con
 ; names a client build that does not know them degrades to CommunicationError,
 ; under the same tolerance rule.
 import-csca-master-list = ( t: "ImportCscaMasterList", list: fd-index )
-; Config1.ForgetCscaAnchors: discard every country signing anchor this agent
-; holds, and the publisher it follows with them. Answers `forgotten-anchors`.
-;
-; Carries NOTHING, and that is a contract statement rather than a simplification:
-; there is one anchor store and this empties it. A key naming which publisher to
-; forget would describe an operation that does not exist, because the rotation
-; rule is applied against the whole set -- forgetting part of it leaves a store
-; that refuses lists for a reason no surface could explain.
-;
-; WHY A VERB OF ITS OWN when reset-config already exists and would have added
-; nothing to this vocabulary: the anchors and the pin live in the CACHE, not in
-; the configuration, so a config reset does not reach them. It would clear the
-; recorded REPORT and leave the anchors and the pin in place -- a surface saying
-; nothing is installed while every later master list is still refused, which is
-; the exact trap this verb exists to open, reintroduced with no trace.
-;
-; Same authorization as the import (org.librescrs.agent.configure.trust): it
-; changes what this machine will believe about a travel document. Part of the
-; Config1 family, so it carries NO hello-ack feature gate, for the reason spelled
-; out under import-csca-master-list above.
-;
-; NO per-caller flood bound, unlike import-csca-master-list, and the asymmetry
-; is deliberate: that bound exists because the import READS a descriptor the
-; caller hands over, and a refused caller must not be able to make the agent
-; read to the cap. This takes no input, unlinks three paths and is idempotent.
-; Both hosts answer alike here, by agreement rather than by coincidence.
-;
-; Rejections (err-info's `name`): NotAuthorized, AnchorCacheNotWritable.
-; Holding nothing is NOT a rejection: an agent that has imported nothing has
-; already forgotten everything, and it answers zeros.
-forget-csca-anchors = ( t: "ForgetCscaAnchors" )
 set-config        = ( t: "SetConfig", key: settable-config-key, value: any )  ; Config1.SetValue; low vs trust tier
 reset-config      = ( t: "ResetConfig", key: config-key )               ; Config1.Reset(key)
 cancel-op         = ( t: "CancelOp", op: uint )
@@ -298,8 +267,7 @@ sign-opts     = { format: requested-format, level: requested-level, packaging: r
 visual-sig-opts = { page: uint, x: float64, y: float64, width: float64, height: float64, text: tstr }
 
 ; Config1 is a TYPED property set. Only a SUBSET is settable over the wire;
-; TslCacheDir/AiaCacheDir/PluginDir are file-only (a wire-settable PluginDir is a
-; dlopen code-exec vector) and LastTsaUrl/CscaAnchorState are read-only agent
+; TslCacheDir is file-only and LastTsaUrl/CscaAnchorState are read-only agent
 ; state.
 ;
 ; CscaAnchorState is read-only for a stronger reason than LastTsaUrl's: it
@@ -326,9 +294,8 @@ visual-sig-opts = { page: uint, x: float64, y: float64, width: float64, height: 
 ; against the contract. Both are marked cddlOnly: their members are string
 ; constants agent-side, not an enum.
 settable-config-key = "DefaultLevel" / "DefaultReason" / "DefaultLocation" /   ; low tier (configure)
-                      "TsaUrls" / "TslSources" / "CscaSources"                 ; trust tier (configure.trust)
-config-key = settable-config-key / "LastTsaUrl" / "CscaAnchorState" /
-             "TslCacheDir" / "AiaCacheDir" / "PluginDir"
+                      "TsaUrls" / "TslSources"                                  ; trust tier (configure.trust)
+config-key = settable-config-key / "LastTsaUrl" / "CscaAnchorState" / "TslCacheDir"
 
 ; ---- reply (agent -> client, correlated by req) ----
 ; A map member value must be a TYPE, not a group (RFC 8610 §3.5); the success
@@ -382,7 +349,7 @@ sync-error = "UnknownCard" / "KeyNotFound" / "NotAuthorized" / "UserNotLoggedIn"
              "MasterListReplayed" / "Cancelled"
 reply-ok = ( hello-ack // op-started // state // cert-list // cert-der // public-key //
              config // ack // login-state // raw-signature // derived-secret // sign-recovery // layout // appearance-font //
-             csca-anchor-state // forgotten-anchors )
+             csca-anchor-state )
 ; `features` advertises optional request families this agent understands; the
 ; client MUST gate the credential requests (ListCredentials / ManagePin /
 ; ActivateSigningKey) on the "credentials" token and fall back to read-only when
@@ -473,32 +440,15 @@ appearance-font = ( fd: fd-index )
 ;                        carries none, which CMS permits; there is no zero
 ;                        sentinel, because a list signed at the epoch and a
 ;                        list with no date must not read alike.
-;   origin               where the anchors came from ("import").
 ;
-; The five optional members are optional HERE, not merely on the bus: the twin
+; The four optional members are optional HERE, not merely on the bus: the twin
 ; property is an untyped `a{sv}` with no schema to enforce them, and a client
 ; that failed a whole frame closed over a display-only field would be strictly
 ; less robust than its own D-Bus half, for no gain.
 csca-anchor-state = ( kind: "CscaAnchorState", anchors: uint, issuers: uint,
                       replayRefusalActive: bool,
                       ? signer: tstr, ? signerPinned: bool,
-                      ? acceptedAt: int, ? signedAt: int, ? origin: tstr )
-
-; ForgetCscaAnchors' reply: what was DESTROYED, not what remains.
-;
-; Deliberately NOT csca-anchor-state, and the difference is the point. After a
-; forget the state is ABSENT, and that arm cannot say so -- its `anchors` and
-; `issuers` are required, so it would carry zeros, and a zeroed report means "a
-; list was accepted and it vouched for nobody". That is a different claim and a
-; false one, and it is the same distinction the agent keeps when it CLEARS a
-; stale report instead of zeroing it.
-;
-; BOTH members required. This arm exists to state what went, so a member a
-; decoder may find missing would make "nothing was there" and "the field was
-; dropped" read alike. Zero is a real answer: an agent holding nothing forgets
-; nothing and says so.
-forgotten-anchors = ( kind: "ForgottenAnchors", anchorsForgotten: uint,
-                      hadPinnedSigner: bool )
+                      ? acceptedAt: int, ? signedAt: int )
 
 ; model/interface are the reader's label, the agent's one reading of the PC/SC
 ; name: model is the short model ("OMNIKEY 5422", never empty, never any
@@ -640,9 +590,8 @@ card-removed     = ( t: "CardRemoved",   handle: handle )
 ;     HasCard is true; Model and Interface travel together)
 property-changed = ( t: "PropertyChanged", handle: handle, iface: tstr, props: { * tstr => any } )
 config-changed   = ( t: "ConfigChanged", key: config-key )   ; Config1.Changed(key) — client re-reads via GetConfig
-; Operation1 progress properties: Phase + Progress/IsIndeterminate/WatchdogTimeoutSeconds.
-op-progress = ( t: "OpProgress", op: uint, phase: op-phase,
-                ? progress: float, ? indeterminate: bool, ? watchdogSecs: uint )
+; Operation1 progress property: Phase.
+op-progress = ( t: "OpProgress", op: uint, phase: op-phase )
 ; The typed Result fires BEFORE Finished (canonical Operation1 ordering); a
 ; distinct op-result-ready event carries the payload, op-finished carries no result.
 ; Delivery invariant — a result cannot be missed by subscribing late, which is
@@ -682,15 +631,14 @@ op-identity-group = ( t: "OpIdentityGroup", op: uint, groupKey: tstr,
 op-result-ready = ( t: "OpResultReady", op: uint, result: op-result )
 op-finished = ( t: "OpFinished", op: uint, status: op-status, code: error-code,
                 msgKey: tstr, msgFallback: tstr )
-; system-lifecycle: the agent quiesced card access (sleep / lock / user-switch /
-; stop). The D-Bus twin is Manager1.Quiesced(u reason), same values; the core's
-; quiesce(reason) decides what is forgotten, the event only announces it.
+; system-lifecycle: the agent quiesced card access (sleep / lock / user-switch).
+; Socket only: the D-Bus agent announces nothing. The core's quiesce(reason)
+; decides what is forgotten, the event only announces it.
 agent-quiesced = ( t: "AgentQuiesced", reason: quiesce-reason )
 ; Tolerance (client decode): quiesce-reason is wire-frozen append-only, like
-; pre-read-auth; an unrecognised reason decodes through raw and reaches the
-; client's quiesced signal verbatim -- the event still degrades agent
-; availability the same way regardless of which reason it names.
-quiesce-reason = &( SystemSleep: 0, ScreenLocked: 1, SessionInactive: 2, Shutdown: 3 )
+; pre-read-auth; an unrecognised reason decodes through raw -- the event still
+; degrades agent availability the same way regardless of which reason it names.
+quiesce-reason = &( SystemSleep: 0, ScreenLocked: 1, SessionInactive: 2 )
 
 ; ---- op result payloads (Sign also served by GetSignResult within the grace window) ----
 op-result = identity-result / photo-result / cert-list-result / sign-result / sign-batch-result / credentials-result
@@ -727,13 +675,9 @@ sign-batch-row    = { displayName: tstr, artifact: fd-index, meta: sign-meta, er
 ; Ordering holds modulo channel allocation failure, which fails the op
 ; closed. No GetResult analog: the unicast-FIFO delivery invariant
 ; above removes the D-Bus late-subscribe race that justifies it.
-; pinActivated/keyActivated presence: populated for the activate_pin
-; bring-up continuation AND for activateSigningKey (partial bring-up =
-; pinActivated=true, keyActivated=false, outcome keyActivationFailed).
 credentials-result = { kind: "Credentials", result: cred-result,
                        records: [* cred-record] }
-cred-result = { outcome: cred-outcome, ? retriesLeft: uint, blocked: bool,
-                ? pinActivated: bool, ? keyActivated: bool }
+cred-result = { outcome: cred-outcome, ? retriesLeft: uint, blocked: bool }
 ; Tolerance (client decode): cred-outcome is a TEXT-token enum, exactly like
 ; sync-error above -- an unrecognised token DEGRADES AT DECODE to
 ; "unspecified" instead of failing the cred-result (and thus the whole
@@ -743,14 +687,13 @@ cred-outcome = "unspecified" / "ok" / "userCancelled" / "missingFields" /
                "keyActivationFailed" / "cardRemoved" / "entryExpired"
 cred-record = { id: tstr, label: tstr, kind: cred-kind, state: cred-state,
                 ? retriesLeft: uint, ? retriesMax: uint, ? usesLeft: uint,
-                ? usesMax: uint, ? unblocksLeft: uint, ? minLength: uint, ? maxLength: uint,
-                canChange: bool, unblockable: bool, unblockStyle: unblock-style,
+                ? usesMax: uint, ? unblocksLeft: uint,
+                canChange: bool, unblockable: bool,
                 activatable: bool, keyActivationPending: bool,
-                keyActivatable: bool, recovery: cred-recovery, probeSafe: bool,
+                keyActivatable: bool, recovery: cred-recovery,
                 ? blockedGuidanceKey: tstr, ? blockedGuidanceFallback: tstr,
                 ? keyActivationGuidanceKey: tstr,
                 ? keyActivationGuidanceFallback: tstr }
 cred-kind      = "user" / "sign" / "puk" / "can" / "unknown"
 cred-state     = "unknown" / "transport" / "operational" / "needsChange" / "blocked"
-unblock-style  = "unknown" / "resetOnly" / "setsNewPin" / "unblockAndChange"
 cred-recovery  = "unknown" / "holderViaPuk" / "issuerProcess" / "none"
