@@ -3,7 +3,8 @@
 # ships static archives (the agent core and the wire codec) that other packages
 # link, and LTO objects in an archive tie those packages to the compiler that
 # wrote them.
-# Debian does not enable LTO by default, so that recipe has no counterpart line.
+# The deb recipe says the same with optimize=-lto: Debian leaves LTO off by
+# default, but Ubuntu turns it on.
 %global _lto_cflags %{nil}
 
 Name:           libreagent
