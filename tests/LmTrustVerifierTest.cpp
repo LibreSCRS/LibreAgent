@@ -53,10 +53,13 @@ std::vector<std::uint8_t> mintKatCertDer()
     X509_gmtime_adj(X509_getm_notAfter(x), 60L * 60 * 24 * 365);
     X509_set_pubkey(x, pkey);
 
-    X509_NAME* name = X509_get_subject_name(x);
+    // Built, then set: OpenSSL 4 hands out the certificate's own name as const.
+    X509_NAME* name = X509_NAME_new();
     X509_NAME_add_entry_by_txt(name, "CN", MBSTRING_ASC, reinterpret_cast<const unsigned char*>("LmTrustVerifier KAT"),
                                -1, -1, 0);
     X509_set_issuer_name(x, name); // self-signed
+    X509_set_subject_name(x, name);
+    X509_NAME_free(name);
 
     EXPECT_GT(X509_sign(x, pkey, EVP_sha256()), 0);
 

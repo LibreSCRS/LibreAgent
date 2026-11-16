@@ -192,9 +192,13 @@ std::vector<std::uint8_t> sha1KeyIdOf(std::span<const std::uint8_t> der)
     if (const auto ec = ecPublicKeyFromCertDer(der)) {
         return sha1(ec->x);
     }
-    const ASN1_BIT_STRING* bits = X509_get0_pubkey_bitstr(cert.get());
-    if (bits != nullptr && bits->length > 0) {
-        return sha1(std::span<const std::uint8_t>{bits->data, static_cast<std::size_t>(bits->length)});
+    // The subjectPublicKey BIT STRING's contents, through the accessor both
+    // OpenSSL 3 and 4 offer: 4 makes ASN1_STRING opaque.
+    const unsigned char* keyBytes = nullptr;
+    int keyLength = 0;
+    if (X509_PUBKEY_get0_param(nullptr, &keyBytes, &keyLength, nullptr, X509_get_X509_PUBKEY(cert.get())) == 1 &&
+        keyBytes != nullptr && keyLength > 0) {
+        return sha1(std::span<const std::uint8_t>{keyBytes, static_cast<std::size_t>(keyLength)});
     }
     return sha1(der);
 }

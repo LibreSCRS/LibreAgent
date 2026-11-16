@@ -314,11 +314,17 @@ Cert makeCert(const CertRequest& req)
             fail("X509_set_subject_name failed");
         }
     } else {
-        X509_NAME* subject = X509_get_subject_name(out.x.get());
-        X509_NAME_add_entry_by_txt(subject, "C", MBSTRING_ASC,
-                                   reinterpret_cast<const unsigned char*>(req.country.c_str()), -1, -1, 0);
-        X509_NAME_add_entry_by_txt(subject, "CN", MBSTRING_ASC,
-                                   reinterpret_cast<const unsigned char*>(req.commonName.c_str()), -1, -1, 0);
+        // Built, then set: OpenSSL 4 hands out the certificate's own name as const.
+        const std::unique_ptr<X509_NAME, decltype(&X509_NAME_free)> subject{X509_NAME_new(), &X509_NAME_free};
+        if (!subject ||
+            X509_NAME_add_entry_by_txt(subject.get(), "C", MBSTRING_ASC,
+                                       reinterpret_cast<const unsigned char*>(req.country.c_str()), -1, -1, 0) != 1 ||
+            X509_NAME_add_entry_by_txt(subject.get(), "CN", MBSTRING_ASC,
+                                       reinterpret_cast<const unsigned char*>(req.commonName.c_str()), -1, -1,
+                                       0) != 1 ||
+            X509_set_subject_name(out.x.get(), subject.get()) != 1) {
+            fail("building the subject name failed");
+        }
     }
 
     X509* issuerCert = req.issuer != nullptr ? req.issuer->x.get() : out.x.get();

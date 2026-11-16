@@ -53,10 +53,13 @@ MintedRsa mintRsaCert()
     X509_gmtime_adj(X509_getm_notBefore(x), 0);
     X509_gmtime_adj(X509_getm_notAfter(x), 60L * 60 * 24 * 365);
     X509_set_pubkey(x, pkey);
-    X509_NAME* name = X509_get_subject_name(x);
+    // Built, then set: OpenSSL 4 hands out the certificate's own name as const.
+    X509_NAME* name = X509_NAME_new();
     X509_NAME_add_entry_by_txt(name, "CN", MBSTRING_ASC, reinterpret_cast<const unsigned char*>("rsa-pub-kat"), -1, -1,
                                0);
     X509_set_issuer_name(x, name);
+    X509_set_subject_name(x, name);
+    X509_NAME_free(name);
     EXPECT_GT(X509_sign(x, pkey, EVP_sha256()), 0);
 
     MintedRsa out;
@@ -90,9 +93,12 @@ std::vector<std::uint8_t> mintEcCert()
     X509_gmtime_adj(X509_getm_notBefore(x), 0);
     X509_gmtime_adj(X509_getm_notAfter(x), 60L * 60 * 24 * 365);
     X509_set_pubkey(x, pkey);
-    X509_NAME* name = X509_get_subject_name(x);
+    // Built, then set: OpenSSL 4 hands out the certificate's own name as const.
+    X509_NAME* name = X509_NAME_new();
     X509_NAME_add_entry_by_txt(name, "CN", MBSTRING_ASC, reinterpret_cast<const unsigned char*>("ec-kat"), -1, -1, 0);
     X509_set_issuer_name(x, name);
+    X509_set_subject_name(x, name);
+    X509_NAME_free(name);
     EXPECT_GT(X509_sign(x, pkey, EVP_sha256()), 0);
     unsigned char* der = nullptr;
     const int len = i2d_X509(x, &der);
@@ -222,13 +228,13 @@ TEST(RsaPublicKey, FallbackKeyIdFollowsTheKeyFamily)
 
     auto ed = T::namedKey("ED25519");
     const auto edDer = T::selfSignedCert(ed.get(), "ed");
-    const unsigned char* p = edDer.data();
-    std::unique_ptr<X509, decltype(&X509_free)> cert{d2i_X509(nullptr, &p, static_cast<long>(edDer.size())),
-                                                     &X509_free};
-    ASSERT_NE(cert, nullptr);
-    const ASN1_BIT_STRING* bits = X509_get0_pubkey_bitstr(cert.get());
-    EXPECT_EQ(fallbackKeyIdFromCertDer(edDer),
-              sha1Of(std::span<const std::uint8_t>{bits->data, static_cast<std::size_t>(bits->length)}));
+    // For Ed25519 the subjectPublicKey bits ARE the raw public key, so the
+    // expected value comes from the key, not from the certificate's encoding.
+    std::vector<std::uint8_t> raw(32);
+    std::size_t rawLength = raw.size();
+    ASSERT_EQ(EVP_PKEY_get_raw_public_key(ed.get(), raw.data(), &rawLength), 1);
+    ASSERT_EQ(rawLength, raw.size());
+    EXPECT_EQ(fallbackKeyIdFromCertDer(edDer), sha1Of(raw));
 
     const std::vector<std::uint8_t> garbage{0x30, 0x03, 0x02, 0x01, 0x00};
     EXPECT_EQ(fallbackKeyIdFromCertDer(garbage), sha1Of(garbage));

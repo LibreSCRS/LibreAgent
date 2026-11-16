@@ -44,11 +44,14 @@ std::vector<std::uint8_t> makeSelfSignedV3Der(const char* commonName, const char
     X509_gmtime_adj(X509_getm_notAfter(x), 60L * 60 * 24 * 365);
     X509_set_pubkey(x, pkey);
 
-    X509_NAME* name = X509_get_subject_name(x);
+    // Built, then set: OpenSSL 4 hands out the certificate's own name as const.
+    X509_NAME* name = X509_NAME_new();
     X509_NAME_add_entry_by_txt(name, "CN", MBSTRING_ASC, reinterpret_cast<const unsigned char*>(commonName), -1, -1, 0);
     X509_NAME_add_entry_by_txt(name, "O", MBSTRING_ASC, reinterpret_cast<const unsigned char*>("LibreSCRS Test"), -1,
                                -1, 0);
     X509_set_issuer_name(x, name); // self-signed: issuer == subject
+    X509_set_subject_name(x, name);
+    X509_NAME_free(name);
 
     X509V3_CTX ctx;
     X509V3_set_ctx_nodb(&ctx);
@@ -91,9 +94,12 @@ std::vector<std::uint8_t> makeRichV3Der(const char* commonName)
     X509_gmtime_adj(X509_getm_notAfter(x), 60L * 60 * 24 * 365);
     X509_set_pubkey(x, pkey);
 
-    X509_NAME* name = X509_get_subject_name(x);
+    // Built, then set: OpenSSL 4 hands out the certificate's own name as const.
+    X509_NAME* name = X509_NAME_new();
     X509_NAME_add_entry_by_txt(name, "CN", MBSTRING_ASC, reinterpret_cast<const unsigned char*>(commonName), -1, -1, 0);
     X509_set_issuer_name(x, name); // self-signed: issuer == subject
+    X509_set_subject_name(x, name);
+    X509_NAME_free(name);
 
     X509V3_CTX ctx;
     X509V3_set_ctx_nodb(&ctx);

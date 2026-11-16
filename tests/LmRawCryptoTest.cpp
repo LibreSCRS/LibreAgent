@@ -53,10 +53,13 @@ std::vector<std::uint8_t> makeV3DerWithKeyUsage(const char* keyUsageValue)
     X509_gmtime_adj(X509_getm_notBefore(x), 0);
     X509_gmtime_adj(X509_getm_notAfter(x), 60L * 60 * 24 * 365);
     X509_set_pubkey(x, pkey);
-    X509_NAME* name = X509_get_subject_name(x);
+    // Built, then set: OpenSSL 4 hands out the certificate's own name as const.
+    X509_NAME* name = X509_NAME_new();
     X509_NAME_add_entry_by_txt(name, "CN", MBSTRING_ASC, reinterpret_cast<const unsigned char*>("rawcrypto-kat"), -1,
                                -1, 0);
     X509_set_issuer_name(x, name);
+    X509_set_subject_name(x, name);
+    X509_NAME_free(name);
     if (keyUsageValue != nullptr) {
         X509V3_CTX ctx;
         X509V3_set_ctx_nodb(&ctx);
@@ -145,10 +148,13 @@ std::vector<std::uint8_t> makeEcDer(const char* curve)
     X509_gmtime_adj(X509_getm_notBefore(x), 0);
     X509_gmtime_adj(X509_getm_notAfter(x), 60L * 60 * 24 * 365);
     X509_set_pubkey(x, pkey);
-    X509_NAME* name = X509_get_subject_name(x);
+    // Built, then set: OpenSSL 4 hands out the certificate's own name as const.
+    X509_NAME* name = X509_NAME_new();
     X509_NAME_add_entry_by_txt(name, "CN", MBSTRING_ASC, reinterpret_cast<const unsigned char*>("rawcrypto-ec-kat"), -1,
                                -1, 0);
     X509_set_issuer_name(x, name);
+    X509_set_subject_name(x, name);
+    X509_NAME_free(name);
     EXPECT_GT(X509_sign(x, pkey, EVP_sha384()), 0);
     unsigned char* der = nullptr;
     const int len = i2d_X509(x, &der);
