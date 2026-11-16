@@ -22,7 +22,7 @@ CborRoundTripTest 14
 CddlVocabularyTest 17
 CertDerExportTest 1
 CertReadFlowTest 24
-ClientCodecTest 88
+ClientCodecTest 89
 ClientQtAgentActivationTest 11
 ClientQtAgentCardTest 52
 ClientQtAgentDiscoveryTest 17

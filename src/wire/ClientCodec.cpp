@@ -367,6 +367,9 @@ CredentialOutcome decodeCredOutcome(const std::string& s)
     if (s == "cardRemoved") {
         return CredentialOutcome::CardRemoved;
     }
+    if (s == "entryExpired") {
+        return CredentialOutcome::EntryExpired;
+    }
     return CredentialOutcome::Unspecified; // unrecognised token -> generic/uninitialized outcome
 }
 

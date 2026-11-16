@@ -1250,6 +1250,24 @@ TEST(ClientCodec, OpResultReadyCredentialsKeyActivationFailedRoundTrips)
     expectEventRoundTrip(OpResultReady{27, keyFail});
 }
 
+// Every enumerator must survive encode -> decode: an outcome the decoder does
+// not know would fall back to Unspecified and the client would show a generic
+// failure instead of the real reason (EntryExpired: the credential prompt timed out).
+TEST(ClientCodec, OpResultReadyCredentialsEveryOutcomeRoundTrips)
+{
+    for (const auto outcome :
+         {CredentialOutcome::Unspecified, CredentialOutcome::Ok, CredentialOutcome::UserCancelled,
+          CredentialOutcome::MissingFields, CredentialOutcome::InvalidPin, CredentialOutcome::Blocked,
+          CredentialOutcome::PluginError, CredentialOutcome::Unsupported, CredentialOutcome::KeyActivationFailed,
+          CredentialOutcome::CardRemoved, CredentialOutcome::EntryExpired}) {
+        SCOPED_TRACE(static_cast<int>(outcome));
+        CredentialsResult r;
+        r.result.outcome = outcome;
+        r.result.blocked = false;
+        expectEventRoundTrip(OpResultReady{28, r});
+    }
+}
+
 // (i) cred-outcome is a TEXT-token enum: an unrecognised token has no
 // numeric width to bound, so it DEGRADES AT DECODE to Unspecified instead of
 // failing the cred-result (and the whole op-result-ready event) closed.

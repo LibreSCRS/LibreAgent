@@ -4,7 +4,7 @@
 CborRelocationTest 3
 CborRoundTripTest 14
 CddlVocabularyTest 17
-ClientCodecTest 88
+ClientCodecTest 89
 ClientQtCapabilitiesTest 15
 ClientQtCardDateTest 5
 ClientQtConfigKeyMirrorTest 2
