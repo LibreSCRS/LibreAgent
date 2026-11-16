@@ -73,4 +73,22 @@ SyncError toSyncError(EntryError error) noexcept
     return SyncError::InvalidRequest;
 }
 
+SyncError toSyncError(Trust::ImportRefusal refusal) noexcept
+{
+    using IR = Trust::ImportRefusal;
+    switch (refusal) {
+    case IR::Replayed:
+        return SyncError::MasterListReplayed;
+    case IR::CacheNotWritable:
+        return SyncError::CommunicationError;
+    case IR::NotAMasterList:
+    case IR::Empty:
+    case IR::Malformed:
+    case IR::BadSignature:
+    case IR::SignerChanged:
+        break;
+    }
+    return SyncError::InvalidRequest;
+}
+
 } // namespace LibreSCRS::Agent

@@ -12,6 +12,15 @@ Notable user-visible changes per release. Format follows
   that reports the state elsewhere (a configuration read) writes it with the
   same names and the same absent fields.
 
+- **One answer to a refused master-list import, for both hosts.**
+  `toSyncError(Trust::ImportRefusal)` names the wire error a refusal goes out
+  as, and `Trust::recordedStateFor()` folds an accepted import into the
+  `CscaAnchorState` both hosts remember and reply with. Every refusal now
+  travels as a name in the closed vocabulary: a file that will not do is
+  `InvalidRequest`, a list no newer than the installed one is
+  `MasterListReplayed`, and anchors that verified but could not be stored are
+  `CommunicationError`.
+
 - **`writeSignedFile()`: one way to save a signed document.** Beside
   `signedOutputPath()`, it claims the name with an exclusive create (asking
   for the next numbered name when another signer took it meanwhile), then

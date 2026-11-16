@@ -2,6 +2,7 @@
 // SPDX-FileCopyrightText: 2026 hirashix0
 #pragma once
 #include <LibreSCRS/Agent/pkcs11/Pkcs11Broker.h>    // CryptoOutcome, LoginOutcome
+#include <LibreSCRS/Agent/trust/CscaAnchorImport.h> // Trust::ImportRefusal
 #include <LibreSCRS/Agent/value/CredentialRecord.h> // EntryError
 #include <LibreSCRS/Agent/wire/SyncError.h>         // SyncError: std-only, no link needed for the enum
 
@@ -30,5 +31,14 @@ namespace LibreSCRS::Agent {
 /// -- list again and retry, rather than fix the request -- and every other
 /// refusal is the caller's malformed request.
 [[nodiscard]] Wire::SyncError toSyncError(EntryError error) noexcept;
+
+/// A refused master-list import as the wire error the caller receives.
+/// `Replayed` keeps its own name, because it is the one a person can act on
+/// ("you already have this list"). A list that will not do for any other
+/// reason is `InvalidRequest`; which reason it was is in the agent's log, and
+/// in the error's message where the wire carries one. Storage that failed after
+/// the list verified is `CommunicationError`: the file was fine and nothing was
+/// decided about it.
+[[nodiscard]] Wire::SyncError toSyncError(Trust::ImportRefusal refusal) noexcept;
 
 } // namespace LibreSCRS::Agent

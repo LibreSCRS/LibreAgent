@@ -1405,3 +1405,61 @@ TEST(CscaAnchorAggregate, NoPublisherAtAllIsNotEveryPublisherEstablished)
     EXPECT_FALSE(Trust::AnchorState{}.everyPublisherEstablished());
     EXPECT_FALSE(stateWithSigners({}).everyPublisherEstablished()) << "an empty set was folded to true";
 }
+
+// --- the record an accepted import leaves -----------------------------------
+//
+// The record and the import reply built from it speak a single-publisher
+// vocabulary; an import may take in a collection. Which fields that leaves
+// unfillable is what these measure, through real signed files where the
+// fixture can make them and through hand-built states for the aggregate.
+
+TEST(CscaRecordedState, OnePublisherFillsEverythingTheRecordCanSay)
+{
+    const CacheDir dir("recorded-one");
+    Trust::AnchorCache cache(dir.path());
+    const auto list = signMasterListDated({makeCsca("CSCA A", "AA"), makeCsca("CSCA B", "BB")}, makeIndependentSigner(),
+                                          kSignedEarlier);
+    const auto accepted = Trust::importMasterList(list.der, cache, kNow);
+    ASSERT_TRUE(accepted.has_value());
+
+    const Config::CscaAnchorState out = Trust::recordedStateFor(*accepted);
+    EXPECT_EQ(out.signer, Trust::toHex(list.signerSpkiSha256));
+    EXPECT_FALSE(out.signerPinned) << "a first import observes the publisher; it does not establish it";
+    EXPECT_EQ(out.anchors, 2u);
+    EXPECT_EQ(out.issuers, 2u);
+    EXPECT_TRUE(out.replayRefusalActive) << "a dated list makes a rollback refusable";
+    EXPECT_EQ(out.acceptedAt, std::optional<std::int64_t>{kNow});
+    EXPECT_EQ(out.signedAt, std::optional<std::int64_t>{kSignedEarlier});
+}
+
+TEST(CscaRecordedState, ACollectionNamesNoPublisherAndNoDate)
+{
+    const CacheDir dir("recorded-collection");
+    Trust::AnchorCache cache(dir.path());
+    const auto one = signMasterListDated({makeCsca("CSCA A", "AA")}, makeIndependentSigner(), kSignedEarlier);
+    const auto two = signMasterListDated({makeCsca("CSCA B", "BB")}, makeIndependentSigner(), kSignedLater);
+    const auto accepted = Trust::importMasterList(makeLdifCollection({one.der, two.der}, false), cache, kNow);
+    ASSERT_TRUE(accepted.has_value());
+    ASSERT_EQ(accepted->signers.size(), 2u);
+
+    const Config::CscaAnchorState out = Trust::recordedStateFor(*accepted);
+    EXPECT_TRUE(out.signer.empty()) << "one publisher out of several was named as THE publisher";
+    EXPECT_FALSE(out.signedAt.has_value()) << "one publisher's signing time was served as the collection's";
+    EXPECT_EQ(out.anchors, 2u) << "the counts are the union and stay fillable";
+    EXPECT_EQ(out.acceptedAt, std::optional<std::int64_t>{kNow});
+}
+
+TEST(CscaRecordedState, ThePinnedFlagIsTheWeakestPublisher)
+{
+    EXPECT_TRUE(Trust::recordedStateFor(stateWithSigners({true})).signerPinned);
+    EXPECT_TRUE(Trust::recordedStateFor(stateWithSigners({true, true})).signerPinned);
+    EXPECT_FALSE(Trust::recordedStateFor(stateWithSigners({true, false})).signerPinned)
+        << "the record claimed more than every publisher had";
+}
+
+TEST(CscaRecordedState, NoPublisherAtAllIsNotPinned)
+{
+    const Config::CscaAnchorState out = Trust::recordedStateFor(stateWithSigners({}));
+    EXPECT_FALSE(out.signerPinned);
+    EXPECT_TRUE(out.signer.empty());
+}

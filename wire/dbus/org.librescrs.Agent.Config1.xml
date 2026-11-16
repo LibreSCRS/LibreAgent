@@ -215,25 +215,28 @@
          Rejections:
            org.librescrs.Agent.Error.NotAuthorized              polkit denied
            org.librescrs.Agent.Error.RateLimited                caller over budget
-           org.librescrs.Agent.Error.InvalidRequest             not a regular file, or
-                                                                unreadable
-           org.librescrs.Agent.Error.InputTooLarge              past the size bound
-           org.librescrs.Agent.Error.NotAMasterList             not a master list at all
-           org.librescrs.Agent.Error.EmptyMasterList            signed, and carries no anchor
-           org.librescrs.Agent.Error.MalformedMasterList        content unreadable
-           org.librescrs.Agent.Error.BadMasterListSignature     signature does not hold
-           org.librescrs.Agent.Error.MasterListSignerChanged    a publisher the agent does
-                                                                not follow. For a single
-                                                                list the message carries
-                                                                BOTH fingerprints, because
+           org.librescrs.Agent.Error.InvalidRequest             not a regular file,
+                                                                unreadable, or a file that
+                                                                will not do: not a master
+                                                                list, empty, unreadable
+                                                                content, a signature that
+                                                                does not hold, or a
+                                                                publisher the agent does
+                                                                not follow. The message
+                                                                says which; for a single
+                                                                list signed by a publisher
+                                                                the agent does not follow
+                                                                it carries BOTH
+                                                                fingerprints, because
                                                                 deciding between a rotation
                                                                 and an attack is a person's
-                                                                job, not the agent's; for a
-                                                                collection it names
+                                                                job, not the agent's; for
+                                                                a collection it names
                                                                 neither, since one
                                                                 fingerprint out of dozens
                                                                 would say something the
                                                                 reason does not
+           org.librescrs.Agent.Error.InputTooLarge              past the size bound
            org.librescrs.Agent.Error.MasterListReplayed         authentic, and not newer
                                                                 than the list already
                                                                 installed — older, dated
@@ -241,11 +244,15 @@
                                                                 signing time while the
                                                                 installed one does. The
                                                                 message carries both dates
-           org.librescrs.Agent.Error.AnchorCacheNotWritable     verified, and could not be
+           org.librescrs.Agent.Error.CommunicationError         verified, and could not be
                                                                 stored — said out loud
                                                                 rather than reported as a
                                                                 successful import that kept
-                                                                nothing -->
+                                                                nothing
+
+         Every name above is in the closed sync-error vocabulary
+         (wire/librescrs-agent.cddl), so a client decodes each one; a name
+         outside it would reach every client as CommunicationError. -->
     <method name="ImportCscaMasterList">
       <annotation name="org.freedesktop.DBus.Method.Async" value="server"/>
       <arg name="masterList" type="h"     direction="in"/>

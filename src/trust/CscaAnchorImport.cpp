@@ -986,4 +986,19 @@ void discardStaleAnchorReport(Config::ConfigStore& config)
     (void)config.resetKey("CscaAnchorState", /*fromDbus=*/false);
 }
 
+Config::CscaAnchorState recordedStateFor(const AnchorState& imported)
+{
+    const AcceptedSigner* only = imported.signers.size() == 1 ? &imported.signers.front() : nullptr;
+
+    Config::CscaAnchorState out;
+    out.anchors = imported.anchorCount;
+    out.issuers = imported.issuerCount;
+    out.replayRefusalActive = imported.replayRefusalActive();
+    out.signer = only != nullptr ? toHex(only->fingerprint) : std::string{};
+    out.signerPinned = imported.everyPublisherEstablished();
+    out.acceptedAt = imported.acceptedAt;
+    out.signedAt = only != nullptr ? only->signedAt : std::nullopt;
+    return out;
+}
+
 } // namespace LibreSCRS::Agent::Trust

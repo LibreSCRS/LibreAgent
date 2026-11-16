@@ -65,17 +65,18 @@
 #include <string>
 #include <vector>
 
-// Forward decls — only references appear below, in publishAnchorDirectory and
-// discardStaleAnchorReport. The configuration store is deliberately not
-// INCLUDED here: this header describes what the agent believes about anchors,
-// and a consumer that only imports has no business compiling the whole
-// configuration surface to do it.
+// Forward decls — only references and a returned type appear below, in
+// publishAnchorDirectory, discardStaleAnchorReport and recordedStateFor. The
+// configuration store is deliberately not INCLUDED here: this header describes
+// what the agent believes about anchors, and a consumer that only imports has
+// no business compiling the whole configuration surface to do it.
 namespace LibreSCRS::Plugin {
 class CardPluginService;
 }
 namespace LibreSCRS::Agent::Config {
 class ConfigStore;
-}
+struct CscaAnchorState;
+} // namespace LibreSCRS::Agent::Config
 
 namespace LibreSCRS::Agent::Trust {
 
@@ -450,6 +451,19 @@ private:
 
 // Lowercase hex, for showing a fingerprint to a person or putting one on the wire.
 [[nodiscard]] std::string toHex(const SignerFingerprint& fingerprint);
+
+// What an accepted import leaves in the configuration store: the record a
+// client that has only just connected reads, and the import reply both hosts
+// build from it. Defined here, once, because each host had written it for
+// itself.
+//
+// The record speaks a single-publisher vocabulary and an import may take in a
+// collection, so `signer` and `signedAt` are ABSENT when more than one
+// publisher was accepted: one fingerprint out of twenty-eight, under a label a
+// dialog renders as "the publisher", is an untruth, and absence is a shape the
+// record has always had. `signerPinned` is AnchorState::everyPublisherEstablished,
+// so it is false when there is no publisher at all.
+[[nodiscard]] Config::CscaAnchorState recordedStateFor(const AnchorState& imported);
 
 // Tell every card plugin @p plugins loaded where this agent keeps the country
 // signing certificates it has imported, and answer with the directory that was

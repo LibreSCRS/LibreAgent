@@ -145,14 +145,13 @@ get-config        = ( t: "GetConfig" )                                  ; -> con
 ; is the same forward-compatibility cost every request family here carries and
 ; the reason a client and its socket host ship from one pin.
 ;
-; Rejections (all named, err-info's `name`): NotAuthorized, RateLimited,
-; InvalidRequest (not a regular file, or unreadable), InputTooLarge,
-; NotAMasterList, EmptyMasterList, MalformedMasterList, BadMasterListSignature,
-; MasterListSignerChanged, MasterListReplayed, AnchorCacheNotWritable. Only
-; MasterListReplayed is in this wire's own `sync-error` group today (see its
-; comment for why that one and not the rest); the others are agent-namespace
-; names a client build that does not know them degrades to CommunicationError,
-; under the same tolerance rule.
+; Rejections (all named, err-info's `name`, all in the `sync-error` group):
+; NotAuthorized, RateLimited, InputTooLarge, InvalidRequest (not a regular file,
+; unreadable, or a file that will not do: not a master list, empty, unreadable
+; content, a signature that does not hold, a publisher the agent does not follow;
+; the agent's log says which), MasterListReplayed (see its comment for why that
+; one is named), and CommunicationError when the list verified and could not be
+; stored.
 import-csca-master-list = ( t: "ImportCscaMasterList", list: fd-index )
 set-config        = ( t: "SetConfig", key: settable-config-key, value: any )  ; Config1.SetValue; low vs trust tier
 reset-config      = ( t: "ResetConfig", key: config-key )               ; Config1.Reset(key)

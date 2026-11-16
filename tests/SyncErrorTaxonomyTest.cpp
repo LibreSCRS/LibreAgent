@@ -75,4 +75,23 @@ TEST(SyncErrorTaxonomy, OnlyAnUnknownCredentialIsNotAMalformedRequest)
     expectEveryEnumeratorInOrder(table, EntryError::AmbiguousCredential);
 }
 
+// Both hosts used to keep this table for themselves, and the bus host's names
+// for the five refusals below were outside the vocabulary: every client read
+// them as CommunicationError, and a person who picked the wrong file was told
+// the agent had not answered.
+TEST(SyncErrorTaxonomy, OnlyAReplayedListIsNamedAmongTheImportRefusals)
+{
+    using IR = LibreSCRS::Agent::Trust::ImportRefusal;
+    constexpr std::array table{
+        std::pair{IR::NotAMasterList, SyncError::InvalidRequest},
+        std::pair{IR::Empty, SyncError::InvalidRequest},
+        std::pair{IR::Malformed, SyncError::InvalidRequest},
+        std::pair{IR::BadSignature, SyncError::InvalidRequest},
+        std::pair{IR::SignerChanged, SyncError::InvalidRequest},
+        std::pair{IR::Replayed, SyncError::MasterListReplayed},
+        std::pair{IR::CacheNotWritable, SyncError::CommunicationError}, // the file was fine
+    };
+    expectEveryEnumeratorInOrder(table, IR::CacheNotWritable);
+}
+
 } // namespace
