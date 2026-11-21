@@ -4,11 +4,13 @@
 
 #include <LibreSCRS/Agent/util/TempDir.h>
 
-#include <cstdlib>
 #include <filesystem>
 #include <stdexcept>
 #include <string_view>
 #include <vector>
+
+#include <stdlib.h> // mkdtemp (POSIX.1-2008)
+#include <unistd.h> // mkdtemp (macOS declares it here)
 
 namespace LibreSCRS::Agent::Testing {
 
