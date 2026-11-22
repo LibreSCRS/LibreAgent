@@ -12,6 +12,7 @@
 #include <cstdint>
 #include <functional>
 #include <optional>
+#include <string_view>
 #include <string>
 
 namespace LibreSCRS::Agent {
@@ -70,7 +71,10 @@ struct ResolveAttempts
 /// Which cards a host keeps powered while they are idle (the power hold), so
 /// that the contactless twin of a dual-interface reader does not see the card
 /// in the contact slot as a contactless one each time it is let go. The host
-/// picks, because only the host knows what its reader names say.
+/// picks, because only the host knows what its reader names say. Neither rule
+/// ever holds a card seen through an antenna (a PC/SC Part 3 pseudo-ATR): the
+/// hold exists to keep a contact chip powered, and an RF session kept open can
+/// lock a dual-interface card's contact side out after the reader loses power.
 ///
 /// @since 5.0
 enum class HoldRule : std::uint8_t {
@@ -78,11 +82,12 @@ enum class HoldRule : std::uint8_t {
     /// interface pcsc-lite writes into the reader name. Holds as little as
     /// possible; needs names that carry the interface.
     DualInterfaceContactSlot,
-    /// Every card a plugin serves, on any reader. For a platform whose reader
-    /// names do not say which interface a slot is (CryptoTokenKit appends
-    /// " 01" to the second slot of a name, in enumeration order), at the cost
-    /// of keeping every served card connected while it is idle.
-    EveryServedCard,
+    /// Every contact card a plugin serves, on any reader. For a platform whose
+    /// reader names do not say which interface a slot is (CryptoTokenKit
+    /// appends " 01" to the second slot of a name, in enumeration order), at
+    /// the cost of keeping every served contact card connected while it is
+    /// idle.
+    EveryServedContactCard,
 };
 
 /// The one rule for a freshly inserted card: probe it on its reader's worker,
@@ -141,13 +146,14 @@ public:
     [[nodiscard]] std::optional<std::chrono::milliseconds> retryAfter(const CardProbe& probe,
                                                                       ResolveAttempts& attempts) const;
 
-    /// Whether publishing the card keyed @p cardKey in @p roster takes its
-    /// reader's power hold under @p rule. Either rule holds only a card a
-    /// plugin serves and that is still in the roster: a card no plugin serves
-    /// has just been let go by the probe, and holding it would take the reader
-    /// back for a card the agent cannot use.
+    /// Whether publishing the card keyed @p cardKey in @p roster, whose ATR is
+    /// @p atrHex, takes its reader's power hold under @p rule. Either rule holds
+    /// only a contact card a plugin serves and that is still in the roster: a
+    /// card no plugin serves has just been let go by the probe, and holding it
+    /// would take the reader back for a card the agent cannot use; a card seen
+    /// through an antenna is never held (see HoldRule).
     [[nodiscard]] static bool holdsReader(const CardProbe& probe, const PresenceRoster& roster,
-                                          const std::string& cardKey, HoldRule rule);
+                                          const std::string& cardKey, std::string_view atrHex, HoldRule rule);
 
 private:
     ResolveRetryBudget m_budget;

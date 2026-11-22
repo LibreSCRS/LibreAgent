@@ -14,6 +14,8 @@
 #include <LibreSCRS/Agent/operations/OperationManager.h>
 #include <LibreSCRS/Agent/presence/CapabilityResolver.h>
 #include <LibreSCRS/Agent/presence/CardResolutionPolicy.h>
+
+#include "presence/ContactlessAtr.h"
 #include "fakes/PinStubPlugin.h" // BasePinPlugin
 #include <LibreSCRS/Auth/ErrorKeys.h>
 #include <LibreSCRS/SmartCard/CardSession.h>
@@ -60,6 +62,12 @@ const std::array<BenchReader, 3> kBench{{
      "HID Global OMNIKEY 5422 Smartcard Reader [OMNIKEY 5422CL Smartcard Reader] (IM0O2C00NF10456904) 00 00"},
 }};
 const BenchReader& kContactSlot = kBench[1];
+
+// ATRs measured on the OMNIKEY 5422 with one dual-interface card: what the
+// contact slot reports, and the PC/SC Part 3 pseudo-ATR the reader builds for
+// the same chip seen through its antenna.
+constexpr std::string_view kContactAtr = "3BDE97008031FE4553434520382E302D433256300D0A2D";
+constexpr std::string_view kContactlessAtr = "3B8D80015352422D6549442D56322E30306D";
 
 // The bench with one card, in @p at; every other reader is empty.
 PresenceRoster rosterWithCardIn(const BenchReader& at)
@@ -244,7 +252,7 @@ TEST(CardResolutionPolicy, AnUnservedCardIsOpenedOnceAndNotHeld)
     EXPECT_TRUE(out.waits.empty());
     EXPECT_EQ(bench.opens(), 1) << "an unserved card was opened again after the probe said no plugin serves it";
     EXPECT_FALSE(CardResolutionPolicy::holdsReader(out.probe, rosterWithCardIn(kContactSlot), kContactSlot.cardKey,
-                                                   HoldRule::DualInterfaceContactSlot))
+                                                   kContactAtr, HoldRule::DualInterfaceContactSlot))
         << "the contact slot holds a card no plugin serves";
 }
 
@@ -260,7 +268,7 @@ TEST(CardResolutionPolicy, AServedContactSlotCardIsHeldOnTheProbesSession)
     EXPECT_EQ(out.probe.capabilities, kPki);
     EXPECT_EQ(out.probe.cardType, "serving-stub");
     ASSERT_TRUE(CardResolutionPolicy::holdsReader(out.probe, rosterWithCardIn(kContactSlot), kContactSlot.cardKey,
-                                                  HoldRule::DualInterfaceContactSlot));
+                                                  kContactAtr, HoldRule::DualInterfaceContactSlot));
 
     bench.operations().setReaderHold(kContactSlot.reader, true);
     ASSERT_NO_FATAL_FAILURE(bench.drain(kContactSlot));
@@ -280,17 +288,19 @@ TEST(CardResolutionPolicy, OnlyTheContactSlotOfADualInterfaceUnitIsHeld)
         all.readerNames.emplace_back(b.name);
         all.cardKeys.emplace_back(b.cardKey);
     }
-    EXPECT_FALSE(CardResolutionPolicy::holdsReader(served, all, "11", HoldRule::DualInterfaceContactSlot))
+    EXPECT_FALSE(CardResolutionPolicy::holdsReader(served, all, "11", kContactAtr, HoldRule::DualInterfaceContactSlot))
         << "a single-interface reader is never held";
-    EXPECT_TRUE(CardResolutionPolicy::holdsReader(served, all, "12", HoldRule::DualInterfaceContactSlot))
+    EXPECT_TRUE(CardResolutionPolicy::holdsReader(served, all, "12", kContactAtr, HoldRule::DualInterfaceContactSlot))
         << "the OMNIKEY contact slot is held";
-    EXPECT_FALSE(CardResolutionPolicy::holdsReader(served, all, "13", HoldRule::DualInterfaceContactSlot))
+    EXPECT_FALSE(CardResolutionPolicy::holdsReader(served, all, "13", kContactAtr, HoldRule::DualInterfaceContactSlot))
         << "the OMNIKEY CL slot is never held";
-    EXPECT_FALSE(CardResolutionPolicy::holdsReader(unserved, all, "12", HoldRule::DualInterfaceContactSlot));
-    EXPECT_FALSE(CardResolutionPolicy::holdsReader(refusedProbe, all, "12", HoldRule::DualInterfaceContactSlot));
-    EXPECT_FALSE(CardResolutionPolicy::holdsReader(served, all, "99", HoldRule::DualInterfaceContactSlot))
+    EXPECT_FALSE(
+        CardResolutionPolicy::holdsReader(unserved, all, "12", kContactAtr, HoldRule::DualInterfaceContactSlot));
+    EXPECT_FALSE(
+        CardResolutionPolicy::holdsReader(refusedProbe, all, "12", kContactAtr, HoldRule::DualInterfaceContactSlot));
+    EXPECT_FALSE(CardResolutionPolicy::holdsReader(served, all, "99", kContactAtr, HoldRule::DualInterfaceContactSlot))
         << "a card that is gone holds nothing";
-    EXPECT_FALSE(CardResolutionPolicy::holdsReader(served, all, "", HoldRule::DualInterfaceContactSlot));
+    EXPECT_FALSE(CardResolutionPolicy::holdsReader(served, all, "", kContactAtr, HoldRule::DualInterfaceContactSlot));
 }
 
 // The rule a host picks when its reader names do not say which interface a slot
@@ -311,19 +321,68 @@ TEST(CardResolutionPolicy, EveryServedCardIsHeldWhateverTheReaderName)
     const PresenceRoster ctk{{"Gemalto PC Twin Reader", "HID Global OMNIKEY 5422 Smartcard Reader",
                               "HID Global OMNIKEY 5422 Smartcard Reader 01"},
                              {"21", "22", "23"}};
-    constexpr auto every = HoldRule::EveryServedCard;
+    constexpr auto every = HoldRule::EveryServedContactCard;
     for (const char* key : {"11", "12", "13"}) {
-        EXPECT_TRUE(CardResolutionPolicy::holdsReader(served, pcsc, key, every)) << "pcsc-lite card " << key;
+        EXPECT_TRUE(CardResolutionPolicy::holdsReader(served, pcsc, key, kContactAtr, every))
+            << "pcsc-lite card " << key;
     }
     for (const char* key : {"21", "22", "23"}) {
-        EXPECT_TRUE(CardResolutionPolicy::holdsReader(served, ctk, key, every)) << "CryptoTokenKit card " << key;
-        EXPECT_FALSE(CardResolutionPolicy::holdsReader(served, ctk, key, HoldRule::DualInterfaceContactSlot))
+        EXPECT_TRUE(CardResolutionPolicy::holdsReader(served, ctk, key, kContactAtr, every))
+            << "CryptoTokenKit card " << key;
+        EXPECT_FALSE(
+            CardResolutionPolicy::holdsReader(served, ctk, key, kContactAtr, HoldRule::DualInterfaceContactSlot))
             << "a CryptoTokenKit name was classified as a contact slot: " << key;
     }
-    EXPECT_FALSE(CardResolutionPolicy::holdsReader(unserved, ctk, "22", every));
-    EXPECT_FALSE(CardResolutionPolicy::holdsReader(refusedProbe, ctk, "22", every));
-    EXPECT_FALSE(CardResolutionPolicy::holdsReader(served, ctk, "99", every)) << "a card that is gone holds nothing";
-    EXPECT_FALSE(CardResolutionPolicy::holdsReader(served, ctk, "", every));
+    EXPECT_FALSE(CardResolutionPolicy::holdsReader(unserved, ctk, "22", kContactAtr, every));
+    EXPECT_FALSE(CardResolutionPolicy::holdsReader(refusedProbe, ctk, "22", kContactAtr, every));
+    EXPECT_FALSE(CardResolutionPolicy::holdsReader(served, ctk, "99", kContactAtr, every))
+        << "a card that is gone holds nothing";
+    EXPECT_FALSE(CardResolutionPolicy::holdsReader(served, ctk, "", kContactAtr, every));
+}
+
+// The contactless pseudo-ATR as PC/SC Part 3 builds it: 3B 8n 80 01, n
+// historical bytes, TCK -- exactly 5 + n bytes. Anything else is a contact ATR
+// or not an ATR this rule is about.
+TEST(ContactlessAtr, OnlyAPcscPart3PseudoAtrIsContactless)
+{
+    EXPECT_TRUE(isContactlessPseudoAtr(kContactlessAtr)) << "the pseudo-ATR measured on the 5422";
+    EXPECT_TRUE(isContactlessPseudoAtr("3b8d80015352422d6549442d56322e30306d")) << "lower-case hex";
+    EXPECT_TRUE(isContactlessPseudoAtr("3B80800101")) << "no historical bytes: 3B 80 80 01 + TCK";
+    EXPECT_TRUE(isContactlessPseudoAtr("3B8480010102030405")) << "n = 4";
+
+    EXPECT_FALSE(isContactlessPseudoAtr(kContactAtr)) << "the contact ATR of the same card";
+    EXPECT_FALSE(isContactlessPseudoAtr("3BF91300008131FE454A434F5076323431B7")) << "a contact ATR with TA..TD";
+    EXPECT_FALSE(isContactlessPseudoAtr("3F8D80015352422D6549442D56322E30306D")) << "inverse convention";
+    EXPECT_FALSE(isContactlessPseudoAtr("3B8D81015352422D6549442D56322E30306D")) << "TD1 81, not 80";
+    EXPECT_FALSE(isContactlessPseudoAtr("3B8D80025352422D6549442D56322E30306D")) << "TD2 02, not 01";
+    EXPECT_FALSE(isContactlessPseudoAtr("3B8D80015352422D6549442D56322E3030")) << "one byte short for n = 13";
+    EXPECT_FALSE(isContactlessPseudoAtr("3B8D80015352422D6549442D56322E30306D00")) << "one byte long for n = 13";
+    EXPECT_FALSE(isContactlessPseudoAtr("3B8080")) << "too short";
+    EXPECT_FALSE(isContactlessPseudoAtr("")) << "empty";
+    EXPECT_FALSE(isContactlessPseudoAtr("3B8G800101")) << "not hex";
+    EXPECT_FALSE(isContactlessPseudoAtr("3B808001010")) << "odd length";
+}
+
+// A card seen through the antenna is never held, under either rule, even when
+// a plugin serves it: the hold exists to keep a contact chip powered, and an RF
+// session kept open can lock a dual-interface card's contact side out.
+TEST(CardResolutionPolicy, AContactlessCardIsNeverHeld)
+{
+    const CardProbe served = openedProbe(kPki);
+    const PresenceRoster ctk{
+        {"HID Global OMNIKEY 5422 Smartcard Reader", "HID Global OMNIKEY 5422 Smartcard Reader 01"}, {"22", "23"}};
+    PresenceRoster pcsc;
+    for (const auto& b : kBench) {
+        pcsc.readerNames.emplace_back(b.name);
+        pcsc.cardKeys.emplace_back(b.cardKey);
+    }
+    for (const auto rule : {HoldRule::EveryServedContactCard, HoldRule::DualInterfaceContactSlot}) {
+        EXPECT_FALSE(CardResolutionPolicy::holdsReader(served, ctk, "22", kContactlessAtr, rule));
+        EXPECT_FALSE(CardResolutionPolicy::holdsReader(served, pcsc, "12", kContactlessAtr, rule))
+            << "not even in the slot the name calls contact";
+    }
+    EXPECT_TRUE(CardResolutionPolicy::holdsReader(served, ctk, "23", kContactAtr, HoldRule::EveryServedContactCard))
+        << "the same reader's contact card is held";
 }
 
 // A probe that could not open the card says nothing about it, so it is asked
@@ -355,7 +414,7 @@ TEST(CardResolutionPolicy, TheDefaultBudgetIsThreeQuickRepeats)
     EXPECT_EQ(out.attempts.retries, 3);
     EXPECT_EQ(out.attempts.waited, 150ms);
     EXPECT_FALSE(CardResolutionPolicy::holdsReader(out.probe, rosterWithCardIn(kContactSlot), kContactSlot.cardKey,
-                                                   HoldRule::DualInterfaceContactSlot));
+                                                   kContactAtr, HoldRule::DualInterfaceContactSlot));
 }
 
 // Another prober holding the card at insertion may keep it for longer than a

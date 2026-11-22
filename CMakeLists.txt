@@ -142,6 +142,7 @@ if(LIBREAGENT_BUILD_CORE)
         src/presence/MonitorBridge.cpp
         src/presence/CardKeyTracker.cpp
         src/presence/CardResolutionPolicy.cpp
+        src/presence/ContactlessAtr.cpp
         # config/
         src/config/ConfigStore.cpp
         # pkcs11/

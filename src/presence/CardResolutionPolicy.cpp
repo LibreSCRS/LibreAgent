@@ -3,6 +3,7 @@
 #include <LibreSCRS/Agent/presence/CardResolutionPolicy.h>
 
 #include "operations/CardTypeArbitration.h"
+#include "presence/ContactlessAtr.h"
 
 #include <algorithm>
 #include <utility>
@@ -65,15 +66,15 @@ std::optional<std::chrono::milliseconds> CardResolutionPolicy::retryAfter(const 
 }
 
 bool CardResolutionPolicy::holdsReader(const CardProbe& probe, const PresenceRoster& roster, const std::string& cardKey,
-                                       HoldRule rule)
+                                       std::string_view atrHex, HoldRule rule)
 {
-    if (probe.capabilities == 0 || cardKey.empty()) {
+    if (probe.capabilities == 0 || cardKey.empty() || isContactlessPseudoAtr(atrHex)) {
         return false;
     }
     switch (rule) {
     case HoldRule::DualInterfaceContactSlot:
         return isContactSlotOfDualInterfaceUnit(roster, cardKey);
-    case HoldRule::EveryServedCard:
+    case HoldRule::EveryServedContactCard:
         return std::ranges::find(roster.cardKeys, cardKey) != roster.cardKeys.end();
     }
     return false;
