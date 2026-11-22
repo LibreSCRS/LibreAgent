@@ -327,7 +327,7 @@ for target in "${TARGETS[@]}"; do
     "$CLANGXX" -std=c++23 -g -O1 -fsanitize=fuzzer,address \
         -ffunction-sections -fdata-sections -fuse-ld=lld -Wl,--gc-sections \
         -D"${MACRO[$target]}"=1 \
-        -I"${REPO_ROOT}/include" -I"$LM_INCLUDE" -I"$SOURCE_DIR" \
+        -I"${REPO_ROOT}/include" -I"${REPO_ROOT}/src" -I"$LM_INCLUDE" -I"$SOURCE_DIR" \
         "$DRIVER" -o "${SCRATCH}/csca-ldif-fuzz-${target}"
 done
 
