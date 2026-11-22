@@ -68,8 +68,10 @@ public:
 
     [[nodiscard]] CredentialListing list(LibreSCRS::SmartCard::CardSession& session, const CandidateList&) override
     {
-        const LibreSCRS::SmartCard::SmProtocolRequest req =
-            LibreSCRS::SmartCard::PaceRequest{LibreSCRS::Auth::PaceSecretKind::Can};
+        // BAC, not PACE: the session asks for the BAC secret before any card
+        // I/O, while a PACE activation reads EF.CardAccess first and stops on
+        // this detached session's reader error without ever prompting.
+        const LibreSCRS::SmartCard::SmProtocolRequest req = LibreSCRS::SmartCard::BacRequest{};
         auto holder = session.activateChannelWithSm(LibreSCRS::SmartCard::AppletAid{0xA0, 0x00, 0x00, 0x02, 0x47}, req,
                                                     LibreSCRS::CancelToken{});
         if (!holder) {
@@ -267,24 +269,24 @@ TEST(CredentialListFlow, OpenFailureMapsToErrorLikeCertFlow)
     EXPECT_EQ(result.code, ErrorCode::CommunicationError);
 }
 
-// A user-cancelled CAN prompt inside getPINList: the plugin's channel
+// A user-cancelled channel prompt inside getPINList: the plugin's channel
 // activation aborts, the seam hands back an empty list, and the ONLY signal is
 // the cancel flag the flow-installed provider raised. The flow must finish
 // Cancelled — never Ok-with-empty-snapshot — and must not cache the snapshot.
 // This drives the REAL provider the flow installed (the seam double activates
 // the channel on the held session, which resolves the secret via the provider
 // before any card I/O).
-TEST(CredentialListFlow, CanPromptCancelDuringListFinishesCancelledAndCachesNothing)
+TEST(CredentialListFlow, ChannelPromptCancelDuringListFinishesCancelledAndCachesNothing)
 {
     Harness h;
     ChannelActivatingCredentialManager seam;
     seam.entries = makeDualAppletEntries();
     h.seamOverride = &seam;
-    h.prompter.canResult = PromptResult{PromptStatus::Cancelled, std::nullopt, ""};
+    h.prompter.mrzResult = PromptResult{PromptStatus::Cancelled, std::nullopt, ""};
 
     auto result = h.make().run();
     EXPECT_EQ(result.outcome, CredentialListFlow::Outcome::Cancelled)
-        << "a user-dismissed CAN prompt is a cancellation, not a valid empty listing";
+        << "a user-dismissed channel prompt is a cancellation, not a valid empty listing";
     EXPECT_EQ(result.code, ErrorCode::None);
     EXPECT_TRUE(result.snapshot.records.empty());
     EXPECT_FALSE(h.snapshotCache.get("card-A").has_value()) << "a cancelled list must never be cached";
@@ -293,13 +295,13 @@ TEST(CredentialListFlow, CanPromptCancelDuringListFinishesCancelledAndCachesNoth
 // Control for the same rig: a BROKEN prompter (Error, not cancel) during the
 // in-list channel activation keeps mapping to PrompterError — proving the two
 // provider signals stay distinct end-to-end.
-TEST(CredentialListFlow, CanPromptFailureDuringListMapsToPrompterError)
+TEST(CredentialListFlow, ChannelPromptFailureDuringListMapsToPrompterError)
 {
     Harness h;
     ChannelActivatingCredentialManager seam;
     seam.entries = makeDualAppletEntries();
     h.seamOverride = &seam;
-    h.prompter.canResult = PromptResult{PromptStatus::Error, std::nullopt, "prompter gone"};
+    h.prompter.mrzResult = PromptResult{PromptStatus::Error, std::nullopt, "prompter gone"};
 
     auto result = h.make().run();
     EXPECT_EQ(result.outcome, CredentialListFlow::Outcome::Error);
