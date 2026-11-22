@@ -59,9 +59,12 @@ Notable user-visible changes per release. Format follows
 
 - **`CardResolutionPolicy`: one rule for a freshly inserted card.** Probe it
   on its reader's worker, ask again only when the probe could not open it,
-  within a retry budget and for the failures the host chooses, and hold the
-  reader only for a served card on the contact slot of a dual-interface unit.
-  With `PresenceRoster`, `identityForCardIn()` and
+  within a retry budget and for the failures the host chooses, and keep a
+  served card powered while it is idle under the `HoldRule` the host picks:
+  only on the contact slot of a dual-interface unit, when the reader names say
+  which slot that is (pcsc-lite), or every served card, when they do not
+  (CryptoTokenKit). Either way the contactless twin of a dual-interface reader
+  stops seeing the card in the contact slot. With `PresenceRoster`, `identityForCardIn()` and
   `releaseReaderOnCardRemoved()`, every host retries and holds a card the
   same way.
 

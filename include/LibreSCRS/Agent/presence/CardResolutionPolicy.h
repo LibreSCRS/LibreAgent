@@ -67,6 +67,24 @@ struct ResolveAttempts
     std::chrono::milliseconds waited{0};
 };
 
+/// Which cards a host keeps powered while they are idle (the power hold), so
+/// that the contactless twin of a dual-interface reader does not see the card
+/// in the contact slot as a contactless one each time it is let go. The host
+/// picks, because only the host knows what its reader names say.
+///
+/// @since 5.0
+enum class HoldRule : std::uint8_t {
+    /// Only the contact slot of a dual-interface unit, told apart by the
+    /// interface pcsc-lite writes into the reader name. Holds as little as
+    /// possible; needs names that carry the interface.
+    DualInterfaceContactSlot,
+    /// Every card a plugin serves, on any reader. For a platform whose reader
+    /// names do not say which interface a slot is (CryptoTokenKit appends
+    /// " 01" to the second slot of a name, in enumeration order), at the cost
+    /// of keeping every served card connected while it is idle.
+    EveryServedCard,
+};
+
 /// The one rule for a freshly inserted card: probe it on its reader's worker,
 /// ask again only when the probe could not open it, and once it is answered
 /// decide whether publishing it takes the reader's power hold.
@@ -124,12 +142,12 @@ public:
                                                                       ResolveAttempts& attempts) const;
 
     /// Whether publishing the card keyed @p cardKey in @p roster takes its
-    /// reader's power hold: only a card a plugin serves, and only on the
-    /// contact slot of a dual-interface unit. A card no plugin serves has just
-    /// been let go by the probe; holding it would take the reader back for a
-    /// card the agent cannot use.
+    /// reader's power hold under @p rule. Either rule holds only a card a
+    /// plugin serves and that is still in the roster: a card no plugin serves
+    /// has just been let go by the probe, and holding it would take the reader
+    /// back for a card the agent cannot use.
     [[nodiscard]] static bool holdsReader(const CardProbe& probe, const PresenceRoster& roster,
-                                          const std::string& cardKey);
+                                          const std::string& cardKey, HoldRule rule);
 
 private:
     ResolveRetryBudget m_budget;

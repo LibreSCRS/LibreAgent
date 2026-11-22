@@ -64,9 +64,19 @@ std::optional<std::chrono::milliseconds> CardResolutionPolicy::retryAfter(const 
     return delay;
 }
 
-bool CardResolutionPolicy::holdsReader(const CardProbe& probe, const PresenceRoster& roster, const std::string& cardKey)
+bool CardResolutionPolicy::holdsReader(const CardProbe& probe, const PresenceRoster& roster, const std::string& cardKey,
+                                       HoldRule rule)
 {
-    return probe.capabilities != 0 && isContactSlotOfDualInterfaceUnit(roster, cardKey);
+    if (probe.capabilities == 0 || cardKey.empty()) {
+        return false;
+    }
+    switch (rule) {
+    case HoldRule::DualInterfaceContactSlot:
+        return isContactSlotOfDualInterfaceUnit(roster, cardKey);
+    case HoldRule::EveryServedCard:
+        return std::ranges::find(roster.cardKeys, cardKey) != roster.cardKeys.end();
+    }
+    return false;
 }
 
 } // namespace LibreSCRS::Agent
