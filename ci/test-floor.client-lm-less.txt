@@ -26,7 +26,7 @@ ClientQtPrivateBusServiceDirTest 4
 ClientQtSealedPayloadInternalTest 8
 ClientQtSealedPayloadTest 14
 ClientQtSeamTest 55
-ClientQtSecurityChecksTest 14
+ClientQtSecurityChecksTest 17
 ClientQtSecurityVocabularyTest 5
 ClientQtSharedAgentClientTest 2
 ClientQtSignedOutputPathTest 13

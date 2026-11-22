@@ -16,7 +16,7 @@ ClientQtIdentityRowsTest 5
 ClientQtSealedPayloadInternalTest 8
 ClientQtSealedPayloadTest 9
 ClientQtSeamTest 45
-ClientQtSecurityChecksTest 14
+ClientQtSecurityChecksTest 17
 ClientQtSecurityVocabularyTest 5
 ClientQtSocketIntegrationTest 51
 ClientQtSyncErrorTest 10

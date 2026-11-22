@@ -6,6 +6,7 @@
 
 #include <QList>
 #include <QString>
+#include <QStringList>
 #include <QStringView>
 
 #include <cstdint>
@@ -104,6 +105,22 @@ struct SecurityCheckEntry
     QString reason;
 };
 
+/// @brief A read that stopped before the end, as the eMRTD plugin reports it:
+///        the data groups read before the break are in the result and were
+///        checked, the rest were not read at all.
+struct ReadInterruption
+{
+    /// @brief Why the read stopped, as a KEY ("read.card-removed",
+    ///        "read.channel-failed", "read.reader-lost"), never a sentence.
+    ///        Resolving it is the caller's job, next to its catalogue.
+    QString reason;
+    /// @brief The data groups that were not read ("DG11", "DG12"), in the
+    ///        producer's order.
+    QStringList unreadGroups;
+    /// @brief Whether a national annex the document carries was skipped too.
+    bool annexSkipped = false;
+};
+
 /// @brief A verdict group, separated: its checks, and everything else untouched.
 struct SecurityVerdict
 {
@@ -118,6 +135,10 @@ struct SecurityVerdict
     ///        the annex reader's `annex_*` pair, and any key this build does
     ///        not know. Carried, never reinterpreted.
     QList<Field> aggregates;
+    /// @brief Set when the read stopped before the end (the producer's
+    ///        `read_interrupted` is exactly "true"). Its four fields are
+    ///        consumed into this and do not appear in @ref aggregates.
+    std::optional<ReadInterruption> interruption;
 };
 
 /// @brief Whether @p groupKey names a group whose values are verdicts rather
@@ -154,7 +175,7 @@ struct SecurityVerdict
 /// The shape is decided ONCE PER GROUP, not per field: a group holding any
 /// `check_<N>_<suffix>` field is structured, and every other key in it is then
 /// an aggregate. Otherwise the group may be joined, and every key outside the
-/// `overall_` / `annex_` aggregate prefixes is one check. Deciding per field
+/// `overall_` / `annex_` / `read_interrupted` aggregate prefixes is one check. Deciding per field
 /// would let a single unfamiliar key in a modern group be rendered as a
 /// security check nobody ran.
 ///

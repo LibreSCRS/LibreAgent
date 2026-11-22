@@ -24,6 +24,8 @@ constexpr QLatin1StringView kCheckPrefix{"check_"};
 /// joined shape, whose key is the check id itself.
 constexpr QLatin1StringView kAggregateOverallPrefix{"overall_"};
 constexpr QLatin1StringView kAggregateAnnexPrefix{"annex_"};
+// An interrupted read's own fields: facts about the read, never checks.
+constexpr QLatin1StringView kAggregateReadInterruptedPrefix{"read_interrupted"};
 
 /// One `check_<N>_<suffix>` field key, split.
 struct CheckFieldKey
@@ -66,7 +68,8 @@ std::optional<CheckFieldKey> parseCheckFieldKey(const QString& fieldKey)
 
 bool isAggregateKey(const QString& fieldKey)
 {
-    return fieldKey.startsWith(kAggregateOverallPrefix) || fieldKey.startsWith(kAggregateAnnexPrefix);
+    return fieldKey.startsWith(kAggregateOverallPrefix) || fieldKey.startsWith(kAggregateAnnexPrefix) ||
+           fieldKey.startsWith(kAggregateReadInterruptedPrefix);
 }
 
 /// Writes @p value onto the member @p suffix names. Returns false for a suffix
@@ -128,6 +131,36 @@ struct CheckSlot
     qulonglong order = 0;
     SecurityCheckEntry entry;
 };
+
+/// Folds the four fields an interrupted read carries into one
+/// ReadInterruption and takes them out of the aggregates, so no host renders
+/// the same fact twice. Only when the producer said exactly "true".
+void takeReadInterruption(SecurityVerdict& verdict)
+{
+    const auto valueOf = [&verdict](QLatin1StringView key) -> std::optional<QString> {
+        for (const Field& field : verdict.aggregates) {
+            if (field.key == key) {
+                return field.value;
+            }
+        }
+        return std::nullopt;
+    };
+    if (valueOf(QLatin1StringView("read_interrupted")) != QStringLiteral("true")) {
+        return;
+    }
+    ReadInterruption interruption;
+    interruption.reason = valueOf(QLatin1StringView("read_interrupted_reason")).value_or(QString{});
+    const QString groups = valueOf(QLatin1StringView("read_interrupted_groups")).value_or(QString{});
+    interruption.unreadGroups = groups.split(QStringLiteral(", "), Qt::SkipEmptyParts);
+    interruption.annexSkipped = valueOf(QLatin1StringView("annex_skipped")) == QStringLiteral("true");
+    verdict.aggregates.removeIf([](const Field& field) {
+        return field.key == QLatin1StringView("read_interrupted") ||
+               field.key == QLatin1StringView("read_interrupted_reason") ||
+               field.key == QLatin1StringView("read_interrupted_groups") ||
+               field.key == QLatin1StringView("annex_skipped");
+    });
+    verdict.interruption = std::move(interruption);
+}
 
 } // namespace
 
@@ -207,6 +240,7 @@ SecurityVerdict separateSecurityChecks(const FieldGroup& group)
     for (CheckSlot& slot : checkSlots) {
         verdict.checks.append(std::move(slot.entry));
     }
+    takeReadInterruption(verdict);
     return verdict;
 }
 

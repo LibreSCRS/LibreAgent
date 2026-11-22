@@ -7,6 +7,13 @@ Notable user-visible changes per release. Format follows
 
 ### Added
 
+- **`ReadInterruption`: an interrupted eMRTD read, read once for every
+  client.** `separateSecurityChecks()` folds the four fields an interrupted
+  read carries in `security_status` (`read_interrupted`, its reason key, the
+  data groups not read and `annex_skipped`) into
+  `SecurityVerdict::interruption`, and takes them out of the aggregates, so a
+  host shows the break once, with the reason resolved from its own catalogue.
+
 - **`encodeCscaAnchorState()`: the country-signing anchor state as a value.**
   The fields of the import's reply without the reply around it, so a host
   that reports the state elsewhere (a configuration read) writes it with the

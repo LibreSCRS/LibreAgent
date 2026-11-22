@@ -322,3 +322,62 @@ TEST(SecurityChecks, EmptyGroupYieldsNothing)
     EXPECT_TRUE(verdict.checks.isEmpty());
     EXPECT_TRUE(verdict.aggregates.isEmpty());
 }
+
+// An interrupted eMRTD read says so in four fields of `security_status`. They
+// are one fact, read here once: the reason travels as a KEY for the host's
+// catalogue, the unread groups as a list, and none of the four is left behind
+// in the aggregates for a host to render a second time.
+TEST(SecurityChecks, AnInterruptedReadIsOneFactNotFourFields)
+{
+    QList<Field> fields = structuredCheck();
+    fields.append(field(QStringLiteral("read_interrupted"), QStringLiteral("true")));
+    fields.append(field(QStringLiteral("read_interrupted_reason"), QStringLiteral("read.card-removed")));
+    fields.append(field(QStringLiteral("read_interrupted_groups"), QStringLiteral("DG11, DG12")));
+    fields.append(field(QStringLiteral("annex_skipped"), QStringLiteral("true")));
+
+    const SecurityVerdict verdict = separateSecurityChecks(group(QStringLiteral("security_status"), fields));
+
+    ASSERT_TRUE(verdict.interruption.has_value());
+    EXPECT_EQ(verdict.interruption->reason, QStringLiteral("read.card-removed"));
+    EXPECT_EQ(verdict.interruption->unreadGroups, (QStringList{QStringLiteral("DG11"), QStringLiteral("DG12")}));
+    EXPECT_TRUE(verdict.interruption->annexSkipped);
+    ASSERT_EQ(verdict.aggregates.size(), 2) << "only the fixture's two overall_* verdicts are left to render";
+    EXPECT_EQ(verdict.aggregates.at(0).key, QStringLiteral("overall_integrity"));
+    EXPECT_EQ(verdict.aggregates.at(1).key, QStringLiteral("overall_authenticity"));
+    EXPECT_EQ(verdict.checks.size(), 1);
+}
+
+// No interruption unless the producer said exactly "true": a read that ran to
+// the end carries none of the fields, and any other value is not a claim this
+// build can make on the producer's behalf.
+TEST(SecurityChecks, NoInterruptionUnlessTheReadSaysSo)
+{
+    const SecurityVerdict complete =
+        separateSecurityChecks(group(QStringLiteral("security_status"), structuredCheck()));
+    EXPECT_FALSE(complete.interruption.has_value());
+
+    QList<Field> fields = structuredCheck();
+    fields.append(field(QStringLiteral("read_interrupted"), QStringLiteral("false")));
+    const SecurityVerdict notTrue = separateSecurityChecks(group(QStringLiteral("security_status"), fields));
+    EXPECT_FALSE(notTrue.interruption.has_value());
+}
+
+// A group in the joined shape turns every key outside the aggregate prefixes
+// into a check. The interruption's fields are never checks, in either shape:
+// a reader must not see "read_interrupted" listed as a security check.
+TEST(SecurityChecks, AnInterruptionIsNeverReadAsAJoinedCheck)
+{
+    const QList<Field> fields{
+        field(QStringLiteral("pa_sod_signature"), QStringLiteral("PASSED (signature verified)"),
+              QStringLiteral("SOD Signature")),
+        field(QStringLiteral("read_interrupted"), QStringLiteral("true")),
+        field(QStringLiteral("read_interrupted_reason"), QStringLiteral("read.reader-lost")),
+        field(QStringLiteral("read_interrupted_groups"), QStringLiteral("DG11")),
+    };
+    const SecurityVerdict verdict = separateSecurityChecks(group(QStringLiteral("security_status"), fields));
+    ASSERT_EQ(verdict.checks.size(), 1);
+    EXPECT_EQ(verdict.checks.front().id, QStringLiteral("pa_sod_signature"));
+    ASSERT_TRUE(verdict.interruption.has_value());
+    EXPECT_EQ(verdict.interruption->reason, QStringLiteral("read.reader-lost"));
+    EXPECT_TRUE(verdict.aggregates.isEmpty());
+}
