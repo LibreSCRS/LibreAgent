@@ -541,3 +541,25 @@ TEST(CardRemoval, ReleasesTheHoldOfItsReaderOnly)
     EXPECT_TRUE(ops.isReaderHeldForTest(kBench[0].reader)) << "an unrelated reader is untouched";
     EXPECT_TRUE(ops.isReaderHeldForTest(kBench[2].reader)) << "an unrelated reader is untouched";
 }
+
+// Which probed cards the host asks the agent to read in the background: opened,
+// a plugin that serves them declares identity data, and nothing secret is needed
+// first. A filter, not a lock -- the read itself never obtains a secret.
+TEST(CardResolutionPolicy, PrefetchesIdentityOnlyForAnOpenedSecretFreeIdentityCard)
+{
+    constexpr auto kIdentity = static_cast<std::uint32_t>(LibreSCRS::Plugin::CardCapabilities::IdentityData);
+    using Auth = LibreSCRS::Auth::PreReadAuthMethod;
+
+    CardProbe probe = openedProbe(kIdentity | kPki);
+    EXPECT_TRUE(CardResolutionPolicy::prefetchesIdentity(probe)) << "opened + IdentityData + no pre-read auth";
+
+    EXPECT_FALSE(CardResolutionPolicy::prefetchesIdentity(failedProbe(Kind::SessionRefused))) << "not opened";
+    EXPECT_FALSE(CardResolutionPolicy::prefetchesIdentity(openedProbe(kPki))) << "no IdentityData";
+
+    probe.preReadAuth = Auth::Can;
+    EXPECT_FALSE(CardResolutionPolicy::prefetchesIdentity(probe)) << "a CAN is needed first";
+    probe.preReadAuth = Auth::Mrz;
+    EXPECT_FALSE(CardResolutionPolicy::prefetchesIdentity(probe)) << "an MRZ is needed first";
+
+    EXPECT_FALSE(CardResolutionPolicy::prefetchesIdentity(openedProbe(0))) << "no plugin serves the card";
+}

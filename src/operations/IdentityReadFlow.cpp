@@ -79,23 +79,6 @@ private:
     std::shared_ptr<LibreSCRS::Agent::MrzChoiceSink> m_sink;
 };
 
-ErrorCode mapReadStatus(ReadOutcome::Status s) noexcept
-{
-    switch (s) {
-    case ReadOutcome::Status::Ok:
-        return ErrorCode::None;
-    case ReadOutcome::Status::AuthFailed:
-        return ErrorCode::AuthFailed;
-    case ReadOutcome::Status::UnsupportedCard:
-        return ErrorCode::UnsupportedCard;
-    case ReadOutcome::Status::CommunicationError:
-        return ErrorCode::CommunicationError;
-    case ReadOutcome::Status::Cancelled:
-        return ErrorCode::None;
-    }
-    return ErrorCode::CommunicationError;
-}
-
 } // namespace
 
 IdentityReadFlow::IdentityReadFlow(IdentityReadFlowDeps deps) : m_deps(std::move(deps)) {}
@@ -112,8 +95,7 @@ IdentityReadFlow::Result IdentityReadFlow::run()
     // line, reading personal data off such a card leaves no journald trace at
     // all (mirrors TokenInfoReadFlow's own audit line for the same reason).
     // Logs ONLY this request's metadata: never a field from the snapshot.
-    log::infof("identity read requested: requester={} reader=\"{}\" card={}",
-               m_deps.requester.empty() ? "unknown" : m_deps.requester, m_deps.readerName, m_deps.cardKey);
+    FlowPrelude::logIdentityRequest(m_deps.requester, m_deps.readerName, m_deps.cardKey, false);
 
     // -- Steps 1-2: open the held session + install the read credential provider
     // -- (shared with CertReadFlow/SignFlow via FlowPrelude; the read tail below
@@ -228,7 +210,7 @@ IdentityReadFlow::Result IdentityReadFlow::run()
                 // honest one; a walk that unwound as this renegotiation's
                 // cancellation carries none, and a payload the agent cannot
                 // parse is the prompter's contract broken, so say so.
-                const ErrorCode mapped = mapReadStatus(readOutcome.status);
+                const ErrorCode mapped = FlowPrelude::mapReadStatus(readOutcome.status);
                 return makeError(mapped != ErrorCode::None ? mapped : ErrorCode::PrompterError, "op.read_failed",
                                  std::move(readOutcome.msgFallback));
             }
@@ -330,8 +312,9 @@ IdentityReadFlow::Result IdentityReadFlow::run()
             return makeError(ErrorCode::EntryExpired, FlowPrelude::kEntryExpiredMsgKey,
                              FlowPrelude::kEntryExpiredMsgFallback);
         }
-        const ErrorCode code = prompterFailed->load(std::memory_order_relaxed) ? ErrorCode::PrompterError
-                                                                               : mapReadStatus(readOutcome.status);
+        const ErrorCode code = prompterFailed->load(std::memory_order_relaxed)
+                                   ? ErrorCode::PrompterError
+                                   : FlowPrelude::mapReadStatus(readOutcome.status);
         return makeError(code, "op.read_failed", std::move(readOutcome.msgFallback));
     }
 

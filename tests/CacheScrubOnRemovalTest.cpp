@@ -17,6 +17,8 @@
 
 #include <LibreSCRS/Agent/presence/CardKeyTracker.h>
 #include <LibreSCRS/Agent/cache/CardReadCache.h>
+#include <LibreSCRS/Agent/cache/CardRemovalCaches.h>
+#include <LibreSCRS/Agent/cache/CredentialSnapshotCache.h>
 #include <LibreSCRS/Agent/value/CardReadSnapshot.h>
 #include <LibreSCRS/Agent/presence/CapabilityResolver.h>
 #include <LibreSCRS/Agent/cache/CredentialCache.h>
@@ -154,4 +156,19 @@ TEST(CacheScrubOnRemoval, ReinsertScrubsPreviousCardPathCache)
     // The new card's cache (under its own path) is independent and untouched.
     h.cache.putCan(secondPath, Secret{"222222"});
     EXPECT_TRUE(h.cache.getCan(secondPath).has_value());
+}
+
+// A read that completes after the card was removed must not leave identity data
+// under the dead key (the removal hook ran first, the late put arrives after).
+TEST(CacheScrubOnRemoval, RemovalRetiresTheReadCacheKey)
+{
+    CredentialCache credentials;
+    CardReadCache readCache;
+    CredentialSnapshotCache snapshots;
+    const std::string cardPath = "/org/librescrs/Agent/card/7";
+
+    invalidateCardRemovalCaches(credentials, readCache, snapshots, cardPath);
+    readCache.put(cardPath, makeSnapshot());
+
+    EXPECT_FALSE(readCache.get(cardPath).has_value()) << "a put after the removal hook must be dropped";
 }

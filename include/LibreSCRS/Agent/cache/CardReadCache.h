@@ -4,11 +4,14 @@
 #include <LibreSCRS/Agent/value/CardReadSnapshot.h>
 #include <LibreSCRS/Agent/value/CertSnapshot.h>
 #include <chrono>
+#include <cstddef>
+#include <deque>
 #include <functional>
 #include <mutex>
 #include <optional>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace LibreSCRS::Agent {
@@ -60,7 +63,17 @@ public:
 
     void invalidate(const std::string& cardKey);
 
+    // Card removal: like invalidate(), and afterwards put()/putCertificates()
+    // under this key are dropped. Keys are minted per insertion and never reused,
+    // so a read that finishes after the card was pulled (or a slot started for an
+    // already-removed card) must not leave card data under the dead key. Only the
+    // newest kRetiredCapacity keys are remembered, oldest forgotten first.
+    void retire(const std::string& cardKey);
+
+    // Drops every entry and forgets the retired keys.
     void clear();
+
+    static constexpr std::size_t kRetiredCapacity = 256;
 
 private:
     struct Entry
@@ -85,6 +98,10 @@ private:
     mutable std::mutex m_mutex;
     // mutable: a const get() self-cleans expired PII (erase + scrub).
     mutable std::unordered_map<std::string, Entry> m_entries;
+    // Retired keys: the set answers membership, the deque keeps insertion order
+    // for the bound. Both under m_mutex.
+    std::deque<std::string> m_retiredOrder;
+    std::unordered_set<std::string> m_retired;
 };
 
 } // namespace LibreSCRS::Agent

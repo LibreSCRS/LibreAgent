@@ -4,6 +4,7 @@
 #include <LibreSCRS/Agent/operations/LmSeams.h>
 #include <LibreSCRS/Agent/operations/OperationArtifact.h>
 #include <LibreSCRS/Agent/operations/OperationManager.h> // QueueFull
+#include "operations/PrefetchIdentityOperation.h"
 #include <stdexcept>
 #include <utility>
 
@@ -140,6 +141,31 @@ OperationLauncher::Launched OperationLauncher::launch(const OperationTarget& tar
                                                       ActivateSigningKey args)
 {
     return launchOperation(target, channel, args);
+}
+
+void OperationLauncher::prefetch(const ReaderCard& card, PrefetchIdentity args,
+                                 std::chrono::steady_clock::duration settle)
+{
+    m_core.operationManager().setBackground(
+        card.readerId,
+        [this, card, args = std::move(args)](CardSessionHolder* holder) -> std::unique_ptr<OperationBase> {
+            auto op = std::make_unique<PrefetchIdentityOperation>(PrefetchIdentityOperation::Deps{
+                .holder = holder,
+                .reader = *m_seams->reader,
+                .readCache = m_core.cardReadCache(),
+                .cardKey = card.cardKey,
+                .readerName = card.readerName,
+                .onCardType = args.onCardType,
+            });
+            // The same co-ownership and shutdown binding as a launched
+            // operation: a prefetch abandoned mid-read outlives the host.
+            op->keepAlive(m_core.sharedCryptoContext());
+            op->keepAlive(m_seams);
+            op->keepAlive(m_transportKeepAlive);
+            op->bindShutdownToken(m_core.shutdownToken());
+            return op;
+        },
+        settle);
 }
 
 ReadIdentityOperation::Deps OperationLauncher::depsFor(CardSessionHolder* holder, const OperationTarget& target,

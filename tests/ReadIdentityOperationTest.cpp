@@ -10,6 +10,7 @@
 
 #include <LibreSCRS/SmartCard/CardSession.h>
 #include <LibreSCRS/SmartCard/testing/CardSessionTesting.h>
+#include "fakes/FakeLogSink.h"
 #include <gtest/gtest.h>
 #include <expected>
 #include <memory>
@@ -242,6 +243,52 @@ TEST(ReadIdentityOperation, SecondReadOfSameCardServesFromCacheWithoutReWalking)
         EXPECT_EQ(raw->identityEmits[0].cardType, "rs-eid");
     }
     EXPECT_EQ(reader.reads, 1) << "a second ReadIdentity on the same seated card must NOT re-walk it";
+}
+
+// A cache hit is where a client's read of personal data now lands (the
+// background read fills the cache first), so it must leave the same audit line
+// the card walk does -- and never a field value.
+TEST(ReadIdentityOperation, CacheHitLogsTheRequest)
+{
+    FakeLogSink sink;
+    sink.install();
+    CardReadSnapshot snap = snapshotWithPhoto();
+    snap.groups[0].fields[0].textValue = "ZORAN-DISTINCT-VALUE";
+    CardReadCache readCache;
+    readCache.put("card-A", snap);
+    auto holder = makeHolder();
+    FakeReader reader;
+    FakePrompter prompter;
+    PromptSerializer serializer;
+    CredentialCache credCache;
+
+    auto state = std::make_shared<OperationState>();
+    ReadIdentityOperation op(std::make_unique<FakeOperationChannel>(),
+                             ReadIdentityOperation::Deps{
+                                 .holder = holder.get(),
+                                 .reader = reader,
+                                 .depositor = depositor,
+                                 .prompter = prompter,
+                                 .serializer = serializer,
+                                 .credentials = credCache,
+                                 .readCache = readCache,
+                                 .cardKey = "card-A",
+                                 .readerName = "FakeReader",
+                                 .requester = "firefox",
+                             },
+                             state);
+    op.runOnWorker();
+
+    ASSERT_EQ(reader.reads, 0) << "the cache must have served the read";
+    std::string all;
+    for (const auto& [level, line] : sink.lines) {
+        all += line;
+    }
+    EXPECT_NE(all.find("identity read requested"), std::string::npos) << all;
+    EXPECT_NE(all.find("requester=firefox"), std::string::npos) << all;
+    EXPECT_NE(all.find("card=card-A"), std::string::npos) << all;
+    EXPECT_NE(all.find("(cache)"), std::string::npos) << all;
+    EXPECT_EQ(all.find("ZORAN-DISTINCT-VALUE"), std::string::npos) << "a field value reached the log";
 }
 
 TEST(ReadIdentityOperation, FlowErrorMapsToFinishedError)

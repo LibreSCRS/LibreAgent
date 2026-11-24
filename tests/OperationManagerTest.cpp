@@ -15,6 +15,7 @@
 #include <LibreSCRS/SmartCard/CardSession.h>
 #include <LibreSCRS/SmartCard/testing/CardSessionTesting.h>
 #include <gtest/gtest.h>
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
@@ -1136,4 +1137,226 @@ TEST(OperationManager, ReaderBIsNotDelayedByReaderA)
         std::this_thread::sleep_for(5ms);
     }
     ASSERT_TRUE(aDone.load());
+}
+
+// ---- Background slot -------------------------------------------------------
+
+namespace {
+
+// Ordered record of what ran and what was destroyed, shared with the fake ops.
+struct Journal
+{
+    std::mutex mutex;
+    std::condition_variable cv;
+    std::vector<std::string> events;
+    bool gateOpen{false};
+
+    void add(std::string e)
+    {
+        {
+            const std::lock_guard lock(mutex);
+            events.push_back(std::move(e));
+        }
+        cv.notify_all();
+    }
+    [[nodiscard]] bool waitFor(const std::string& e, std::chrono::milliseconds limit = 5s)
+    {
+        std::unique_lock lock(mutex);
+        return cv.wait_for(lock, limit, [&] { return std::find(events.begin(), events.end(), e) != events.end(); });
+    }
+    [[nodiscard]] bool has(const std::string& e)
+    {
+        const std::lock_guard lock(mutex);
+        return std::find(events.begin(), events.end(), e) != events.end();
+    }
+    [[nodiscard]] std::vector<std::string> snapshot()
+    {
+        const std::lock_guard lock(mutex);
+        return events;
+    }
+    void openGate()
+    {
+        {
+            const std::lock_guard lock(mutex);
+            gateOpen = true;
+        }
+        cv.notify_all();
+    }
+    void waitGate()
+    {
+        std::unique_lock lock(mutex);
+        cv.wait_for(lock, 10s, [&] { return gateOpen; });
+    }
+};
+
+// Records "<name>" when run and "~<name>" when destroyed; optionally blocks
+// in doWork until the journal's gate opens ("<name>:start" marks the entry).
+class JournalOp final : public OperationBase
+{
+public:
+    JournalOp(std::shared_ptr<Journal> journal, std::string name, bool gated = false)
+        : OperationBase(std::make_unique<CountingChannel>(), std::make_shared<OperationState>()),
+          m_journal(std::move(journal)), m_name(std::move(name)), m_gated(gated)
+    {}
+    ~JournalOp() override
+    {
+        m_journal->add("~" + m_name);
+    }
+
+protected:
+    void doWork() override
+    {
+        m_journal->add(m_name + ":start");
+        if (m_gated) {
+            m_journal->waitGate();
+        }
+        m_journal->add(m_name);
+        finish(OperationStatus::Ok, ErrorCode::None, "ok", "ok");
+    }
+
+private:
+    std::shared_ptr<Journal> m_journal;
+    std::string m_name;
+    bool m_gated;
+};
+
+std::unique_ptr<OperationBase> journalOp(const std::shared_ptr<Journal>& j, std::string name, bool gated = false)
+{
+    return std::make_unique<JournalOp>(j, std::move(name), gated);
+}
+
+} // namespace
+
+TEST(OperationManagerBackground, BackgroundWaitsForTheQueue)
+{
+    auto j = std::make_shared<Journal>();
+    OperationManager mgr;
+    const ObjectId reader{1};
+    mgr.enqueueForTest(reader, journalOp(j, "A", true));
+    ASSERT_TRUE(j->waitFor("A:start"));
+    mgr.setBackgroundForTest(reader, journalOp(j, "slot"), 0ms);
+    mgr.enqueueForTest(reader, journalOp(j, "B"));
+    j->openGate();
+    ASSERT_TRUE(j->waitFor("slot"));
+    const auto ev = j->snapshot();
+    const auto pos = [&](const std::string& e) { return std::find(ev.begin(), ev.end(), e) - ev.begin(); };
+    EXPECT_LT(pos("A"), pos("B"));
+    EXPECT_LT(pos("B"), pos("slot")) << "the slot must wait for the queued op";
+}
+
+TEST(OperationManagerBackground, BackgroundWaitsForItsSettle)
+{
+    auto j = std::make_shared<Journal>();
+    OperationManager mgr;
+    mgr.setBackgroundForTest(ObjectId{1}, journalOp(j, "late"), 30s);
+    mgr.setBackgroundForTest(ObjectId{2}, journalOp(j, "now"), 0ms);
+    ASSERT_TRUE(j->waitFor("now"));
+    std::this_thread::sleep_for(300ms);
+    EXPECT_FALSE(j->has("late"));
+    EXPECT_TRUE(mgr.hasBackgroundForTest(ObjectId{1}));
+    EXPECT_FALSE(mgr.hasBackgroundForTest(ObjectId{2}));
+}
+
+TEST(OperationManagerBackground, BackgroundReplacedIsDestroyedUnrun)
+{
+    auto j = std::make_shared<Journal>();
+    OperationManager mgr;
+    const ObjectId reader{1};
+    mgr.setBackgroundForTest(reader, journalOp(j, "first"), 30s);
+    mgr.setBackgroundForTest(reader, journalOp(j, "second"), 30s);
+    EXPECT_TRUE(j->has("~first"));
+    EXPECT_FALSE(j->has("first:start"));
+    EXPECT_FALSE(j->has("~second"));
+    EXPECT_TRUE(mgr.hasBackgroundForTest(reader));
+    EXPECT_EQ(mgr.backgroundRequestsForTest(reader), 2U);
+}
+
+TEST(OperationManagerBackground, InvalidateDropsTheBackground)
+{
+    auto j = std::make_shared<Journal>();
+    OperationManager mgr;
+    const ObjectId reader{1};
+    mgr.setBackgroundForTest(reader, journalOp(j, "slot"), 30s);
+    mgr.invalidateReaderSession(reader);
+    ASSERT_TRUE(j->waitFor("~slot"));
+    EXPECT_FALSE(mgr.hasBackgroundForTest(reader));
+    EXPECT_FALSE(j->has("slot:start"));
+}
+
+TEST(OperationManagerBackground, RemoveReaderDropsTheBackground)
+{
+    auto j = std::make_shared<Journal>();
+    OperationManager mgr;
+    const ObjectId reader{1};
+    mgr.setBackgroundForTest(reader, journalOp(j, "slot"), 30s);
+    mgr.removeReader(reader);
+    EXPECT_TRUE(j->has("~slot"));
+    EXPECT_FALSE(j->has("slot:start"));
+    EXPECT_FALSE(mgr.hasBackgroundForTest(reader));
+}
+
+TEST(OperationManagerBackground, BackgroundOnAStoppedWorkerIsDestroyedUnrun)
+{
+    auto j = std::make_shared<Journal>();
+    OperationManager mgr;
+    EXPECT_TRUE(mgr.backgroundOnStoppedWorkerRefusedForTest(ObjectId{1}, journalOp(j, "slot")));
+    EXPECT_TRUE(j->has("~slot"));
+    EXPECT_FALSE(j->has("slot:start"));
+}
+
+TEST(OperationManagerBackground, OpArrivingDuringBackgroundRunsAfterIt)
+{
+    auto j = std::make_shared<Journal>();
+    OperationManager mgr;
+    const ObjectId reader{1};
+    mgr.setBackgroundForTest(reader, journalOp(j, "slot", true), 0ms);
+    ASSERT_TRUE(j->waitFor("slot:start"));
+    mgr.enqueueForTest(reader, journalOp(j, "B"));
+    std::this_thread::sleep_for(100ms);
+    EXPECT_FALSE(j->has("B:start")) << "the queued op must wait for the running slot";
+    j->openGate();
+    ASSERT_TRUE(j->waitFor("B"));
+    const auto ev = j->snapshot();
+    EXPECT_LT(std::find(ev.begin(), ev.end(), "slot") - ev.begin(), std::find(ev.begin(), ev.end(), "B") - ev.begin());
+}
+
+TEST(OperationManagerBackground, BackgroundIsOutsideTheQueueCap)
+{
+    auto j = std::make_shared<Journal>();
+    OperationManager mgr(nullptr); // production ctor: the cap lives in enqueueOnReaderWorker
+    const ObjectId reader{1};
+    ASSERT_TRUE(mgr.enqueueOnReaderWorker(reader, "r", [j](CardSessionHolder&) {
+        j->add("A:start");
+        j->waitGate();
+    }));
+    ASSERT_TRUE(j->waitFor("A:start"));
+    for (std::size_t i = 0; i < kMaxQueuedOpsPerReader; ++i) {
+        ASSERT_TRUE(mgr.enqueueOnReaderWorker(reader, "r", [](CardSessionHolder&) {}));
+    }
+    EXPECT_FALSE(mgr.enqueueOnReaderWorker(reader, "r", [](CardSessionHolder&) {})) << "the queue is at its cap";
+    mgr.setBackground(reader, [j](CardSessionHolder*) { return journalOp(j, "slot"); }, 0ms);
+    EXPECT_TRUE(mgr.hasBackgroundForTest(reader));
+    j->openGate();
+    EXPECT_TRUE(j->waitFor("slot"));
+}
+
+TEST(OperationManagerBackground, SetBackgroundWithoutAWorkerCreatesNone)
+{
+    OperationManager mgr(nullptr);
+    int factoryCalls = 0;
+    mgr.setBackground(
+        ObjectId{9},
+        [&](CardSessionHolder*) {
+            ++factoryCalls;
+            return std::unique_ptr<OperationBase>{};
+        },
+        0ms);
+    EXPECT_EQ(factoryCalls, 0) << "no worker: the factory must not even run";
+    EXPECT_FALSE(mgr.hasBackgroundForTest(ObjectId{9}));
+    EXPECT_EQ(mgr.backgroundRequestsForTest(ObjectId{9}), 0U);
+
+    OperationManager bare; // not the production ctor
+    EXPECT_THROW(bare.setBackground(
+                     ObjectId{9}, [](CardSessionHolder*) { return std::unique_ptr<OperationBase>{}; }, 0ms),
+                 std::logic_error);
 }

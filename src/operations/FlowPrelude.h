@@ -5,6 +5,8 @@
 #include <LibreSCRS/Agent/operations/CardPluginRouting.h>
 #include <LibreSCRS/Agent/operations/Seams.h>
 #include <LibreSCRS/Auth/CredentialProvider.h>
+#include <LibreSCRS/Auth/AuthRequirement.h>
+#include <LibreSCRS/Auth/CredentialResult.h>
 #include <LibreSCRS/CancelToken.h>
 #include <LibreSCRS/SmartCard/CardSession.h>
 #include <atomic>
@@ -62,6 +64,22 @@ struct OpenOutcome
 // open failure never reached the card, so nothing on it moved and the caches
 // stay intact. Cancellation is handled by the caller before this is consulted.
 [[nodiscard]] CredentialOutcome openFailureOutcome(ErrorCode code) noexcept;
+
+// The wire error a read seam's non-Ok status stands for. Shared by the
+// interactive identity flow and the background one, so a status gains its code
+// in one place. Cancelled maps to None: a cancelled read is not an error.
+[[nodiscard]] ErrorCode mapReadStatus(ReadOutcome::Status status) noexcept;
+
+// The per-request audit line of an identity read: one per request, written by
+// IdentityReadFlow on a card walk and by ReadIdentityOperation and
+// GetPhotoOperation on a read-cache hit (@p cached adds " (cache)"). A cache
+// hit is where a client's read of personal data lands once the card has been
+// read in the background, and a card with no pre-read secret never reaches a
+// consent prompt, so without this line that read leaves no trace. One format,
+// so a grep for "identity read requested" finds all three. Logs request
+// metadata only, never a field of a snapshot.
+void logIdentityRequest(const std::string& requester, const std::string& readerName, const std::string& cardKey,
+                        bool cached);
 
 // The READ credential provider, shared by IdentityReadFlow + CertReadFlow:
 // routes the cacheable CAN/MRZ through the cache (PIN is never reached here) and
@@ -209,6 +227,11 @@ inline constexpr const char* kHelperTooOldMsgFallback =
 // this on the card's re-prompt-after-rejection signal, never on invocation
 // counting.
 void noteRejectedSecret(CredentialCache& cache, const std::string& cardKey, AttemptContext& attempts);
+
+// Stateless provider that always answers "credentials required". Installed when
+// a flow's own provider leaves scope, and usable by a flow that must never
+// obtain a secret.
+LibreSCRS::Auth::CredentialResult noCredentialsProvider(const LibreSCRS::Auth::AuthRequirement& req);
 
 // Install @p provider on @p session and return a scope guard that, on
 // destruction, replaces it with a stateless no-op provider. Use in EVERY flow

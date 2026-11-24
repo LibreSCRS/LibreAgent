@@ -280,6 +280,7 @@ gtest_discover_tests(CscaAnchorImportTest PROPERTIES TIMEOUT 120)
 # trip and a result-recovery store stayed with the backend that can seal one.
 agent_core_test(ReadIdentityOperationTest)
 agent_core_test(GetPhotoOperationTest)
+agent_core_test(IdentityPrefetchTest)
 agent_core_test(ReadCertificatesOperationTest)
 agent_core_test(ReadTokenInfoOperationTest)
 agent_core_test(SignBatchOperationTest)
@@ -302,6 +303,7 @@ foreach(_detached IN ITEMS
         FakeBackendsTest
         FieldKeyParityTest
         GetPhotoOperationTest
+        IdentityPrefetchTest
         IdentityReadFlowTest
         KeyActivationFlowTest
         LmRawCryptoTest

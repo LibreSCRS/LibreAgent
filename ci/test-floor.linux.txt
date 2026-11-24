@@ -8,13 +8,13 @@ AgentShutdownUnderLoadTest 1
 AttemptContextTest 7
 AuthorizerTest 3
 BatchSignFlowTest 18
-CacheScrubOnRemovalTest 3
+CacheScrubOnRemovalTest 4
 CallerLabelTest 12
 CardKeyTrackerTest 9
 CardPluginRoutingTest 5
-CardReadCacheTest 19
+CardReadCacheTest 25
 CardReadSnapshotTest 4
-CardResolutionPolicyTest 16
+CardResolutionPolicyTest 17
 CardSessionHolderTest 20
 CardTypeArbitrationTest 8
 CborRelocationTest 3
@@ -73,7 +73,8 @@ FeatureTokensGuardTest 3
 FieldKeyParityTest 4
 FrameReassemblerTest 8
 FramingTest 11
-GetPhotoOperationTest 4
+GetPhotoOperationTest 5
+IdentityPrefetchTest 10
 IdentityReadFlowTest 48
 IdentityTest 3
 KeyActivationFlowTest 10
@@ -88,8 +89,8 @@ MessagesRoundTripTest 25
 MrzPayloadTest 18
 ObjectRegistryTest 16
 OperationBaseTest 8
-OperationLauncherTest 17
-OperationManagerTest 20
+OperationLauncherTest 19
+OperationManagerTest 29
 OperationPhaseTest 2
 PinChangeFlowTest 30
 Pkcs11BrokerTest 44
@@ -111,7 +112,7 @@ RateLimiterTest 4
 RawCryptoCaptureGuardTest 11
 RawCryptoFlowTest 34
 ReadCertificatesOperationTest 3
-ReadIdentityOperationTest 4
+ReadIdentityOperationTest 5
 ReadTokenInfoOperationTest 6
 ReaderLabelsTest 19
 RsaPublicKeyTest 9

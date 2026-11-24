@@ -221,6 +221,47 @@ public:
         return it->second->hold;
     }
 
+    // Background identity read: factory for the one low-priority slot a reader
+    // may hold. It gets the worker's holder, like publish's makeOp.
+    using BackgroundFactory = std::function<std::unique_ptr<OperationBase>(CardSessionHolder*)>;
+
+    // Park one background operation on @p reader's EXISTING worker (production
+    // ctor only; std::logic_error otherwise). It runs only once the reader's
+    // queue is empty and @p settle has passed, replaces any earlier slot (which
+    // is destroyed unrun), and is dropped unrun on card removal, reader removal
+    // and worker exit. It never creates a worker: with none (reader already
+    // removed) this is a no-op, so no orphan thread can appear. The slot has no
+    // client, no id and does not count against kMaxQueuedOpsPerReader.
+    void setBackground(ObjectId reader, BackgroundFactory make, std::chrono::steady_clock::duration settle);
+
+    // Test seam: park @p op as the reader's slot, creating the worker like
+    // enqueueForTest. Production never calls this.
+    void setBackgroundForTest(ObjectId reader, std::unique_ptr<OperationBase> op,
+                              std::chrono::steady_clock::duration settle);
+
+    // Test seams: how many slots were accepted for the reader, and whether one is
+    // parked now (0 / false when no worker exists). Inline -- emit no ABI symbol.
+    [[nodiscard]] std::uint32_t backgroundRequestsForTest(ObjectId reader)
+    {
+        std::lock_guard wl(m_workersMutex);
+        auto it = m_workers.find(reader);
+        if (it == m_workers.end() || !it->second) {
+            return 0;
+        }
+        std::lock_guard l(it->second->mutex);
+        return it->second->backgroundRequests;
+    }
+    [[nodiscard]] bool hasBackgroundForTest(ObjectId reader)
+    {
+        std::lock_guard wl(m_workersMutex);
+        auto it = m_workers.find(reader);
+        if (it == m_workers.end() || !it->second) {
+            return false;
+        }
+        std::lock_guard l(it->second->mutex);
+        return it->second->background != nullptr;
+    }
+
     // Trip the cancel on the live Operation @p id. No-op if absent.
     void cancel(OperationId id);
 
@@ -281,6 +322,17 @@ public:
         }
         static_cast<void>(handle->holder.get());
         return handle.use_count() >= 1;
+    }
+    // A slot offered to a worker removeReader has already stopped must be refused
+    // and destroyed unrun. Takes the worker handle first (as publish would), stops
+    // the reader, then installs. True iff the slot did not land.
+    [[nodiscard]] bool backgroundOnStoppedWorkerRefusedForTest(ObjectId reader, std::unique_ptr<OperationBase> op)
+    {
+        auto handle = workerFor(reader, std::string{});
+        removeReader(reader);
+        installBackground(handle, std::move(op), std::chrono::steady_clock::duration::zero());
+        std::lock_guard lk(handle->mutex);
+        return handle->background == nullptr;
     }
     // Run ONE synchronous cleanup-grace sweep aging out EVERY finished op (grace 0),
     // exercising the exact scrub the 5 s cleanup worker runs — so a test can assert
@@ -343,6 +395,17 @@ private:
         std::chrono::milliseconds idleSweep{CardSessionHolder::kIdleClose};
         std::mutex mutex;
         std::condition_variable_any cv;
+        // Background slot (one per reader, lowest priority). All four are guarded
+        // by `mutex` and declared BEFORE `worker`, like `holder`: the worker's
+        // exit drain reads `background`, so the thread must be joined before
+        // it is destroyed (members die in reverse order). `stopping` is set by
+        // abandonOrJoin so a slot offered after the drain is refused (the host
+        // never reads the jthread's own stop state: abandonOrJoin may detach
+        // it).
+        std::unique_ptr<OperationBase> background;
+        std::chrono::steady_clock::time_point backgroundDue{};
+        std::uint32_t backgroundRequests{0};
+        bool stopping{false};
         std::jthread worker;
     };
 
@@ -361,6 +424,15 @@ private:
     // completion latch would never be signalled (bus-thread hang).
     [[nodiscard]] std::shared_ptr<ReaderWorker> workerFor(ObjectId reader, const std::string& readerName);
     void workerLoop(ReaderWorker& worker, std::stop_token st);
+    // Run @p op (already marked in flight) and hand it to the cleanup-grace queue
+    // (or drop it in test mode). Shared by the queue and the background slot so
+    // there is one copy. Returns true when the worker was abandoned meanwhile
+    // and must exit without touching the manager.
+    [[nodiscard]] bool runAndHandOff(ReaderWorker& worker, std::unique_ptr<OperationBase> op);
+    // Land @p op in @p worker's slot unless the worker is stopping; whichever op
+    // is refused or replaced is destroyed after every lock is released.
+    void installBackground(std::shared_ptr<ReaderWorker> worker, std::unique_ptr<OperationBase> op,
+                           std::chrono::steady_clock::duration settle);
     [[nodiscard]] OperationId nextOperationId();
 
     // Tear a worker down without ever blocking the caller. If the worker

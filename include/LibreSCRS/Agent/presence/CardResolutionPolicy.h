@@ -155,6 +155,14 @@ public:
     [[nodiscard]] static bool holdsReader(const CardProbe& probe, const PresenceRoster& roster,
                                           const std::string& cardKey, std::string_view atrHex, HoldRule rule);
 
+    /// Whether the host asks the agent to read the card's identity data in the
+    /// background once it is published: the probe opened it, a plugin that serves
+    /// it declares CardCapabilities::IdentityData, and no pre-read secret is
+    /// needed. A filter, not a lock: the probe reports PreReadAuthMethod::None
+    /// also when it could not tell, so the read itself must never obtain a
+    /// secret or prompt.
+    [[nodiscard]] static bool prefetchesIdentity(const CardProbe& probe) noexcept;
+
 private:
     ResolveRetryBudget m_budget;
     RetryPredicate m_retryOn;

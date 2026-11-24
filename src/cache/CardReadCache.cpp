@@ -108,6 +108,12 @@ CardReadCache::Entry* CardReadCache::liveEntry(const std::string& cardKey) const
 void CardReadCache::put(const std::string& cardKey, CardReadSnapshot snapshot)
 {
     std::lock_guard lock(m_mutex);
+    if (m_retired.contains(cardKey)) {
+        Entry dropped;
+        dropped.identity = std::move(snapshot);
+        cleanseIdentity(dropped); // the card is gone: zero what the late read produced
+        return;
+    }
     Entry& entry = m_entries[cardKey]; // default-constructs an empty entry if absent
     cleanseIdentity(entry);            // zeroize the identity half we are overwriting; certs survive
     entry.identity = std::move(snapshot);
@@ -128,6 +134,12 @@ std::optional<CardReadSnapshot> CardReadCache::get(const std::string& cardKey) c
 void CardReadCache::putCertificates(const std::string& cardKey, std::vector<CertSnapshot> certs)
 {
     std::lock_guard lock(m_mutex);
+    if (m_retired.contains(cardKey)) {
+        Entry dropped;
+        dropped.certs = std::move(certs);
+        cleanseCerts(dropped);
+        return;
+    }
     Entry& entry = m_entries[cardKey];
     cleanseCerts(entry); // zeroize the cert half we are overwriting; identity survives
     entry.certs = std::move(certs);
@@ -156,6 +168,24 @@ void CardReadCache::invalidate(const std::string& cardKey)
     m_entries.erase(it);
 }
 
+void CardReadCache::retire(const std::string& cardKey)
+{
+    std::lock_guard lock(m_mutex);
+    auto it = m_entries.find(cardKey);
+    if (it != m_entries.end()) {
+        scrub(it->second);
+        m_entries.erase(it);
+    }
+    if (!m_retired.insert(cardKey).second) {
+        return; // already remembered; keep its original place in the order
+    }
+    m_retiredOrder.push_back(cardKey);
+    if (m_retiredOrder.size() > kRetiredCapacity) {
+        m_retired.erase(m_retiredOrder.front());
+        m_retiredOrder.pop_front();
+    }
+}
+
 void CardReadCache::clear()
 {
     std::lock_guard lock(m_mutex);
@@ -163,6 +193,8 @@ void CardReadCache::clear()
         scrub(entry);
     }
     m_entries.clear();
+    m_retired.clear();
+    m_retiredOrder.clear();
 }
 
 } // namespace LibreSCRS::Agent

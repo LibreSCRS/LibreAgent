@@ -62,13 +62,17 @@ public:
     ReadOutcome read(LibreSCRS::SmartCard::CardSession&, const CandidateList&, LibreSCRS::CancelToken,
                      GroupReadCallback = {}) override
     {
-        return {};
+        ++reads;
+        return outcome;
     }
     GroupSnapshot readTokenInfo(LibreSCRS::SmartCard::CardSession&, const CandidateList&,
                                 LibreSCRS::CancelToken) override
     {
         return {};
     }
+    // Set by a case before it launches anything; read on the reader's worker.
+    ReadOutcome outcome;
+    std::atomic<int> reads{0};
 };
 
 class StubCertReader final : public CertificateReader
@@ -534,6 +538,59 @@ TEST_F(OperationLauncherTest, ALaunchedReadAnswersThroughTheHostsChannelUnderThe
     std::lock_guard lk(record->mutex);
     EXPECT_EQ(record->results, 1);
     EXPECT_EQ(record->finishes[0], OperationStatus::Ok);
+}
+
+// --- prefetch ------------------------------------------------------------------
+
+TEST_F(OperationLauncherTest, PrefetchQueuesOneBackgroundOnTheCardsReader)
+{
+    reader->outcome =
+        ReadOutcome{ReadOutcome::Status::Ok, CardReadSnapshot{.cardType = "rs-eid", .groups = {GroupSnapshot{}}}, ""};
+    blockWorker(); // the slot waits behind it, so the count below is not a race
+    std::string cardType;
+
+    launcher->prefetch(target.card,
+                       OperationLauncher::PrefetchIdentity{.onCardType = [&](const std::string& t) { cardType = t; }},
+                       0ms);
+
+    auto& manager = core->operationManager();
+    EXPECT_EQ(manager.backgroundRequestsForTest(target.card.readerId), 1u);
+    EXPECT_TRUE(manager.hasBackgroundForTest(target.card.readerId));
+    EXPECT_EQ(reader->reads.load(), 0) << "the slot must not run ahead of a busy worker";
+
+    releaseWorker();
+    ASSERT_TRUE(waitFor([&] { return core->cardReadCache().get(kCardKey).has_value(); }))
+        << "the operation from the slot never filled the read cache";
+    EXPECT_EQ(reader->reads.load(), 1);
+    EXPECT_EQ(core->operationManager().backgroundRequestsForTest(target.card.readerId), 1u);
+}
+
+// The proof is the store: a read that comes back AuthFailed on a card whose CAN
+// is cached must leave the CAN, the refusal count and the read cache as they
+// were. The interactive identity flow would evict the CAN on that input, so
+// this tells the two paths apart.
+TEST_F(OperationLauncherTest, PrefetchTouchesNoSecret)
+{
+    using Secret = CredentialCache::Secret;
+    auto& store = core->credentialCache();
+    store.putCan(kCardKey, Secret{"555555"});
+    const auto generationBefore = store.refusalGenerationFor(kCardKey);
+    reader->outcome = ReadOutcome{ReadOutcome::Status::AuthFailed, std::nullopt, "wrong secret"};
+    drainWorker(); // the reader's worker exists before a slot can be parked on it
+
+    launcher->prefetch(target.card, OperationLauncher::PrefetchIdentity{}, 0ms);
+
+    ASSERT_TRUE(waitFor([&] { return reader->reads.load() == 1; })) << "the prefetch never read";
+    // The slot is taken when it starts; a probe queued now runs after it ends.
+    ASSERT_TRUE(waitFor([&] { return !core->operationManager().hasBackgroundForTest(target.card.readerId); }));
+    drainWorker();
+
+    const auto can = store.getCan(kCardKey);
+    ASSERT_TRUE(can.has_value()) << "the prefetch evicted the card's cached CAN";
+    EXPECT_EQ(*can, Secret{"555555"});
+    EXPECT_EQ(store.refusalGenerationFor(kCardKey), generationBefore) << "the prefetch recorded a refusal";
+    EXPECT_FALSE(core->cardReadCache().get(kCardKey).has_value()) << "a failed read must leave the cache empty";
+    EXPECT_TRUE(prompter->calls.empty()) << "a prefetch must never reach the prompter";
 }
 
 TEST_F(OperationLauncherTest, ALaunchedOperationRunsWithItsWorkersSessionHolder)

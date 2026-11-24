@@ -7,6 +7,18 @@ Notable user-visible changes per release. Format follows
 
 ### Added
 
+- **The identity is read once in the background after a card is inserted.**
+  When a host publishes a card that holds personal data and needs no secret
+  before reading (no CAN, no MRZ), the agent reads that data, photo included,
+  on the reader's own worker and keeps it in the read cache, so the first
+  client that opens it is served without waiting for the card. The read
+  starts only when the reader has nothing queued and a second has passed, so
+  it never goes ahead of a client's operation; an operation that arrives
+  while it runs waits for at most that one read. It never asks for a secret
+  and never touches the secret cache; a failed or cancelled read leaves
+  nothing behind. The data lives exactly as long as the read cache already
+  keeps it: until the card is removed.
+
 - **`ReadInterruption`: an interrupted eMRTD read, read once for every
   client.** `separateSecurityChecks()` folds the four fields an interrupted
   read carries in `security_status` (`read_interrupted`, its reason key, the
@@ -443,6 +455,16 @@ Three targets ship, each independently usable:
   shared PC/SC client while the card stays powered.
 
 ### Fixed
+
+- **Nothing is cached for a card after it has been removed.** A read that
+  finished just after its card was taken out could still store the card's
+  identity or certificates. Removal now retires the card's key in the read
+  cache, and a later write under it is dropped and wiped.
+
+- **A read served from the cache is logged like a read of the card.** The
+  identity and photo requests answered from the read cache now write the same
+  audit line as a card read (requester, reader, card), marked `(cache)`, so
+  the log still tells who read the personal data.
 
 - **A second "start the agent" while one is starting asks for nothing.**
   Starting the agent waits in a local event loop, so a second click, a timer

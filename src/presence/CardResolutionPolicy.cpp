@@ -4,6 +4,7 @@
 
 #include "operations/CardTypeArbitration.h"
 #include "presence/ContactlessAtr.h"
+#include <LibreSCRS/Plugin/PluginTypes.h> // CardCapabilities, hasCapability
 
 #include <algorithm>
 #include <utility>
@@ -78,6 +79,14 @@ bool CardResolutionPolicy::holdsReader(const CardProbe& probe, const PresenceRos
         return std::ranges::find(roster.cardKeys, cardKey) != roster.cardKeys.end();
     }
     return false;
+}
+
+bool CardResolutionPolicy::prefetchesIdentity(const CardProbe& probe) noexcept
+{
+    return probe.opened() &&
+           LibreSCRS::Plugin::hasCapability(static_cast<LibreSCRS::Plugin::CardCapabilities>(probe.capabilities),
+                                            LibreSCRS::Plugin::CardCapabilities::IdentityData) &&
+           probe.preReadAuth == LibreSCRS::Auth::PreReadAuthMethod::None;
 }
 
 } // namespace LibreSCRS::Agent

@@ -171,6 +171,8 @@ if(LIBREAGENT_BUILD_CORE)
         src/operations/OperationManager.cpp
         src/operations/ReadIdentityOperation.cpp
         src/operations/GetPhotoOperation.cpp
+        src/operations/IdentityPrefetchFlow.cpp
+        src/operations/PrefetchIdentityOperation.cpp
         src/operations/ReadCertificatesOperation.cpp
         src/operations/ReadTokenInfoOperation.cpp
         src/operations/SignOperation.cpp

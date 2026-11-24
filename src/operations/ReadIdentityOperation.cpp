@@ -2,6 +2,7 @@
 // SPDX-FileCopyrightText: 2026 hirashix0
 #include <LibreSCRS/Agent/operations/ReadIdentityOperation.h>
 #include <LibreSCRS/Agent/operations/PromptSerializer.h>
+#include "operations/FlowPrelude.h"
 #include <utility>
 
 namespace LibreSCRS::Agent::Operations {
@@ -48,6 +49,7 @@ void ReadIdentityOperation::doWork()
         if (shutdownRequested()) {
             return;
         }
+        FlowPrelude::logIdentityRequest(m_deps.requester, m_deps.readerName, m_deps.cardKey, true);
         if (!emitResult(ResultPayload{*cached})) {
             finish(OperationStatus::Error, ErrorCode::CommunicationError, "op.result_failed",
                    "Failed to deliver the operation result");

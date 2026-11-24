@@ -13,6 +13,7 @@
 #include <LibreSCRS/Auth/CredentialResult.h>
 #include <LibreSCRS/Auth/ErrorKeys.h> // ErrorKeys::preReadAuthFailed (the re-key signal)
 #include <LibreSCRS/Auth/PaceSecretKind.h>
+#include <LibreSCRS/Logging.h>
 #include <atomic>
 #include <cstdint>
 #include <optional>
@@ -84,6 +85,30 @@ OpenOutcome openSession(CardSessionHolder& holder, const LibreSCRS::CancelToken&
 CredentialOutcome openFailureOutcome(ErrorCode code) noexcept
 {
     return code == ErrorCode::CardRemoved ? CredentialOutcome::CardRemoved : CredentialOutcome::Unspecified;
+}
+
+ErrorCode mapReadStatus(ReadOutcome::Status status) noexcept
+{
+    switch (status) {
+    case ReadOutcome::Status::Ok:
+        return ErrorCode::None;
+    case ReadOutcome::Status::AuthFailed:
+        return ErrorCode::AuthFailed;
+    case ReadOutcome::Status::UnsupportedCard:
+        return ErrorCode::UnsupportedCard;
+    case ReadOutcome::Status::CommunicationError:
+        return ErrorCode::CommunicationError;
+    case ReadOutcome::Status::Cancelled:
+        return ErrorCode::None;
+    }
+    return ErrorCode::CommunicationError;
+}
+
+void logIdentityRequest(const std::string& requester, const std::string& readerName, const std::string& cardKey,
+                        bool cached)
+{
+    log::infof("identity read requested: requester={} reader=\"{}\" card={}{}",
+               requester.empty() ? "unknown" : requester, readerName, cardKey, cached ? " (cache)" : "");
 }
 
 LibreSCRS::Auth::CredentialProvider makeReadCredentialProvider(
@@ -214,9 +239,7 @@ void noteRejectedSecret(CredentialCache& cache, const std::string& cardKey, Atte
     attempts.recordRejection(LibreSCRS::Auth::ErrorKeys::preReadAuthFailed().key);
 }
 
-namespace {
-
-// Stateless no-op provider. A FREE FUNCTION (not a lambda) so converting it to
+// A FREE FUNCTION (not a lambda) so converting it to
 // LibreSCRS::Auth::CredentialProvider (std::function) inside the guard's deleter
 // cannot allocate — and therefore cannot throw — during shared_ptr teardown.
 // Returns "credentials required" so a stale channel re-establishment fails closed.
@@ -224,8 +247,6 @@ LibreSCRS::Auth::CredentialResult noCredentialsProvider(const LibreSCRS::Auth::A
 {
     return LibreSCRS::Auth::CredentialResult::error(LibreSCRS::LocalizedText{});
 }
-
-} // namespace
 
 std::shared_ptr<void> installScopedReadProvider(std::shared_ptr<LibreSCRS::SmartCard::CardSession> session,
                                                 LibreSCRS::Auth::CredentialProvider provider)

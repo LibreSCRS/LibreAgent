@@ -23,7 +23,9 @@ inline void invalidateCardRemovalCaches(CredentialCache& credentialCache, CardRe
 {
     // CAN/MRZ secret cache + the identity/certificate read cache.
     credentialCache.invalidate(cardPath);
-    cardReadCache.invalidate(cardPath);
+    // retire, not invalidate: a read still running on the reader's worker (or a
+    // slot queued for this card) writes after this hook, and the key is dead.
+    cardReadCache.retire(cardPath);
     // The per-card ListCredentials snapshot: its id namespace is void once the
     // card is gone (a re-insert re-lists afresh).
     snapshotCache.invalidate(cardPath);

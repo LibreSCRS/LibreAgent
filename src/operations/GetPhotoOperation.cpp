@@ -2,6 +2,7 @@
 // SPDX-FileCopyrightText: 2026 hirashix0
 #include <LibreSCRS/Agent/operations/GetPhotoOperation.h>
 #include <LibreSCRS/Agent/operations/PromptSerializer.h>
+#include "operations/FlowPrelude.h"
 #include <utility>
 
 namespace LibreSCRS::Agent::Operations {
@@ -25,6 +26,7 @@ GetPhotoOperation::GetPhotoOperation(std::unique_ptr<OperationChannel> channel, 
 std::optional<CardReadSnapshot> GetPhotoOperation::obtainSnapshot()
 {
     if (auto cached = m_deps.readCache.get(m_deps.cardKey)) {
+        FlowPrelude::logIdentityRequest(m_deps.requester, m_deps.readerName, m_deps.cardKey, true);
         return cached;
     }
     // This op's cache-miss read reuses IdentityReadFlow, but the Operation

@@ -300,3 +300,77 @@ TEST(CardReadCache, NoIdleExpiryKeepsEntryForTheCardLifetime)
     EXPECT_FALSE(cache.get("card-A").has_value()) << "invalidate still drops a no-expiry entry";
     EXPECT_FALSE(cache.getCertificates("card-A").has_value());
 }
+
+// A read that finishes after the card was pulled must not repopulate the cache
+// under the dead key: keys are minted per insertion and never reused.
+TEST(CardReadCache, RetireDropsTheEntry)
+{
+    CardReadCache cache;
+    cache.put("card-A", makeSnap("rs-eid"));
+    cache.putCertificates("card-A", makeCerts("abc123"));
+
+    cache.retire("card-A");
+
+    EXPECT_FALSE(cache.get("card-A").has_value());
+    EXPECT_FALSE(cache.getCertificates("card-A").has_value());
+}
+
+TEST(CardReadCache, PutAfterRetireIsDropped)
+{
+    CardReadCache cache;
+    cache.retire("card-A");
+
+    cache.put("card-A", makeSnap("rs-eid"));
+
+    EXPECT_FALSE(cache.get("card-A").has_value());
+    cache.put("card-B", makeSnap("rs-eid"));
+    EXPECT_TRUE(cache.get("card-B").has_value()) << "other keys are unaffected";
+}
+
+TEST(CardReadCache, PutCertificatesAfterRetireIsDropped)
+{
+    CardReadCache cache;
+    cache.retire("card-A");
+
+    cache.putCertificates("card-A", makeCerts("abc123"));
+
+    EXPECT_FALSE(cache.getCertificates("card-A").has_value());
+}
+
+TEST(CardReadCache, InvalidateDoesNotRetire)
+{
+    CardReadCache cache;
+    cache.put("card-A", makeSnap("rs-eid"));
+    cache.invalidate("card-A");
+
+    cache.put("card-A", makeSnap("rs-eid"));
+
+    EXPECT_TRUE(cache.get("card-A").has_value()) << "the card is still seated after invalidate; the cache refills";
+}
+
+TEST(CardReadCache, RetiredSetIsBoundedOldestFirst)
+{
+    CardReadCache cache;
+    const auto key = [](int i) { return "card-" + std::to_string(i); };
+    constexpr int capacity = static_cast<int>(CardReadCache::kRetiredCapacity);
+    for (int i = 0; i <= capacity; ++i) {
+        cache.retire(key(i));
+    }
+
+    cache.put(key(0), makeSnap("rs-eid"));
+    cache.put(key(capacity), makeSnap("rs-eid"));
+
+    EXPECT_TRUE(cache.get(key(0)).has_value()) << "the oldest retired key fell off the bounded set";
+    EXPECT_FALSE(cache.get(key(capacity)).has_value()) << "the newest retired key is still refused";
+}
+
+TEST(CardReadCache, ClearForgetsRetiredKeys)
+{
+    CardReadCache cache;
+    cache.retire("card-A");
+
+    cache.clear();
+    cache.put("card-A", makeSnap("rs-eid"));
+
+    EXPECT_TRUE(cache.get("card-A").has_value());
+}

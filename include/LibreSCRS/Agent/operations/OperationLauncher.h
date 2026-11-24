@@ -16,6 +16,7 @@
 #include <LibreSCRS/Agent/operations/SignBatchOperation.h>
 #include <LibreSCRS/Agent/operations/SignOperation.h>
 #include <LibreSCRS/Agent/wire/SyncError.h>
+#include <chrono>
 #include <expected>
 #include <functional>
 #include <memory>
@@ -78,6 +79,10 @@ struct OperationTarget
     std::string requester;
 };
 
+/// How long after it is parked a prefetch may start at the earliest: requests
+/// that arrive right after a card appears are queued, and so run, first.
+inline constexpr std::chrono::seconds kPrefetchSettle{1};
+
 class OperationLauncher
 {
 public:
@@ -139,6 +144,12 @@ public:
     {
         using Operation = ActivateSigningKeyOperation;
     };
+    /// A background identity read of a freshly published card (see prefetch()).
+    /// Not an `Operation` of launch(): nobody asks for it and nobody waits.
+    struct PrefetchIdentity
+    {
+        CardTypeSink onCardType;
+    };
 
     /// @p core outlives the launcher. @p seams must engage every seam but the
     /// depositor (std::invalid_argument otherwise). @p transportKeepAlive, when
@@ -162,6 +173,16 @@ public:
     [[nodiscard]] Launched launch(const OperationTarget& target, const ChannelFactory& channel, ManagePin args);
     [[nodiscard]] Launched launch(const OperationTarget& target, const ChannelFactory& channel,
                                   ActivateSigningKey args);
+
+    /// Park one background read of @p card's identity on its reader's worker. It
+    /// starts only once the worker's queue is empty and @p settle has passed, so
+    /// it never goes ahead of a queued request; one that arrives while it runs
+    /// waits for at most that one read (a card read cannot be interrupted). It
+    /// fills the card's read cache and nothing else -- it never prompts and never
+    /// touches the secret cache. No client, id or channel. A reader without a
+    /// worker (already removed) is a no-op.
+    void prefetch(const ReaderCard& card, PrefetchIdentity args,
+                  std::chrono::steady_clock::duration settle = kPrefetchSettle);
 
     /// The dependencies launch() gives each operation, for the worker's
     /// @p holder. The one place they are assembled.

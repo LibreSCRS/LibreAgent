@@ -3,7 +3,9 @@
 #include <LibreSCRS/Agent/operations/OperationManager.h>
 #include <LibreSCRS/Agent/presence/CapabilityResolver.h>
 #include <LibreSCRS/Agent/operations/CardPluginRouting.h>
+#include "operations/SilentOperationChannel.h"
 #include <LibreSCRS/SmartCard/CardSession.h>
+#include <algorithm>
 #include <chrono>
 #include <condition_variable>
 #include <cstdint>
@@ -143,32 +145,100 @@ std::shared_ptr<OperationManager::ReaderWorker> OperationManager::workerFor(Obje
     return it->second;
 }
 
+bool OperationManager::runAndHandOff(ReaderWorker& worker, std::unique_ptr<OperationBase> op)
+{
+    op->runOnWorker();
+
+    {
+        std::lock_guard inflightLock(worker.mutex);
+        worker.inFlight = nullptr;
+    }
+
+    if (worker.abandoned.load(std::memory_order_acquire)) {
+        // This worker was detached + parked on the zombie list while it
+        // was wedged in this op's doWork(). The op has already been
+        // driven to a terminal state by the per-op watchdog. The owning
+        // OperationManager may have been destroyed in the meantime, so
+        // do NOT touch m_finished / m_production (cleanup-grace re-export is
+        // moot for an abandoned reader).
+        //
+        // quiesce() the op FIRST (as the normal path does at the loop
+        // bottom, which the abandon branch used to skip): it stops + joins
+        // the per-op watchdog on THIS (the zombie worker) thread.
+        // Without it a still-armed watchdog could fire finishWatchdogTimeout()
+        // -> finish() -> m_channel->emitFinished() after the backend has been
+        // torn down; joining it here means it can never touch the channel
+        // post-teardown (the emit is additionally shutdown-gated in finish()).
+        // quiesce() joins a DIFFERENT thread (the watchdog), never self-joins,
+        // and touches only the op's own members, so it is safe even though the
+        // manager may be gone. Then drop the op and exit the loop without
+        // running the drain over (an already-empty) queue.
+        op->quiesce();
+        op.reset();
+        return true;
+    }
+
+    // Reclaim the op's per-op auxiliary thread now that it is terminal,
+    // BEFORE it enters the 5 s cleanup-grace queue. Otherwise a burst of
+    // fast operations parks hundreds of idle jthreads in the grace window
+    // (each finished op holding its watchdog thread until
+    // destruction), exhausting threads and wedging the single bus event
+    // loop. The op object stays exported for the grace; only its now-idle
+    // thread is reclaimed here, on the worker thread.
+    op->quiesce();
+
+    if (m_production) {
+        // Production: hand to cleanup-grace queue. The op + its adaptor
+        // stay exported on the bus for 5 s so late client reads still
+        // see the terminal phase/progress before unexport.
+        std::lock_guard finLock(m_finishedMutex);
+        m_finished.push_back({std::move(op), std::chrono::steady_clock::now()});
+    }
+    // Test mode (no bus, no cleanup thread): the op's destructor fires
+    // here as the unique_ptr leaves scope; the test's adaptor capture
+    // has already recorded the finish.
+    return false;
+}
+
 void OperationManager::workerLoop(ReaderWorker& worker, std::stop_token st)
 {
     while (!st.stop_requested()) {
         std::unique_lock lock(worker.mutex);
         // Wake on a queued op, a pending session-invalidate, a hold change, stop,
-        // or the idle sweep deadline. The invalidate is honoured BETWEEN ops
-        // (here, with no op in flight) so a live AcquiredCard is never pulled out
-        // from under a running doWork(). The bounded wait caps a quiescent
-        // reader's sleep at idleSweep (kIdleClose in production) so an idle held
-        // session is proactively closed even with no queue traffic and no
-        // events. wait_for returns false only on timeout.
-        const bool ready = worker.cv.wait_for(lock, st, worker.idleSweep, [&] {
-            return !worker.queue.empty() || worker.pendingInvalidate || worker.holdDirty || st.stop_requested();
+        // a background slot coming due or changing, or the idle sweep deadline.
+        // The invalidate is honoured BETWEEN ops (here, with no op in flight)
+        // so a live AcquiredCard is never pulled out from under a running
+        // doWork(). The bounded wait caps a quiescent reader's sleep at
+        // idleSweep (kIdleClose in production) so an idle held session is
+        // proactively closed even with no queue traffic and no events. A slot
+        // due earlier than that shortens the wait. A slot installed or replaced
+        // while waiting has a different due time than the one this wait was
+        // timed for, so it wakes the loop to re-time it.
+        auto deadline = std::chrono::steady_clock::now() + worker.idleSweep;
+        if (worker.background) {
+            deadline = std::min(deadline, worker.backgroundDue);
+        }
+        const auto timedFor = worker.background ? worker.backgroundDue : std::chrono::steady_clock::time_point{};
+        const bool ready = worker.cv.wait_until(lock, st, deadline, [&] {
+            return !worker.queue.empty() || worker.pendingInvalidate || worker.holdDirty || st.stop_requested() ||
+                   (worker.background &&
+                    (worker.backgroundDue != timedFor || std::chrono::steady_clock::now() >= worker.backgroundDue));
         });
         if (st.stop_requested()) {
             break;
         }
         // 1. Card removed: close the shared CardSession and drop the power hold
         //    (nothing left to keep powered), on this (the only) thread allowed
-        //    to touch the holder; then re-loop so the next op re-opens.
+        //    to touch the holder; then re-loop so the next op re-opens. The
+        //    background read belongs to the removed card: drop it unrun.
         if (worker.pendingInvalidate) {
             worker.pendingInvalidate = false;
+            auto droppedSlot = std::exchange(worker.background, {});
             lock.unlock();
             if (worker.holder) {
                 worker.holder->invalidate(); // noexcept; drops the hold too
             }
+            droppedSlot.reset(); // never under worker.mutex
             continue;
         }
         // 2. Hold change: apply it now, BEFORE any queued op, then re-loop — a
@@ -187,8 +257,29 @@ void OperationManager::workerLoop(ReaderWorker& worker, std::stop_token st)
             }
             continue;
         }
+        // 3. A queued op always goes before the background slot.
+        if (!worker.queue.empty()) {
+            auto op = std::move(worker.queue.front());
+            worker.queue.pop_front();
+            worker.inFlight = op.get();
+            lock.unlock();
+            if (runAndHandOff(worker, std::move(op))) {
+                return;
+            }
+            continue;
+        }
+        // 4. Empty queue and the slot is due: it runs like any other op.
+        if (worker.background && std::chrono::steady_clock::now() >= worker.backgroundDue) {
+            auto op = std::move(worker.background);
+            worker.inFlight = op.get();
+            lock.unlock();
+            if (runAndHandOff(worker, std::move(op))) {
+                return;
+            }
+            continue;
+        }
         if (!ready) {
-            // 3. Idle sweep: an idle session is demoted into the power hold
+            // 5. Idle sweep: an idle session is demoted into the power hold
             //    when one is wanted (its secrets erased, the connection kept)
             //    and closed otherwise; a reader with no session gets its hold.
             //    One holder call, judged against one reading of the clock.
@@ -199,63 +290,7 @@ void OperationManager::workerLoop(ReaderWorker& worker, std::stop_token st)
             if (worker.holder) {
                 worker.holder->sweep(hold); // noexcept
             }
-            continue;
         }
-        auto op = std::move(worker.queue.front());
-        worker.queue.pop_front();
-        worker.inFlight = op.get();
-        lock.unlock();
-
-        op->runOnWorker();
-
-        {
-            std::lock_guard inflightLock(worker.mutex);
-            worker.inFlight = nullptr;
-        }
-
-        if (worker.abandoned.load(std::memory_order_acquire)) {
-            // This worker was detached + parked on the zombie list while it
-            // was wedged in this op's doWork(). The op has already been
-            // driven to a terminal state by the per-op watchdog. The owning
-            // OperationManager may have been destroyed in the meantime, so
-            // do NOT touch m_finished / m_production (cleanup-grace re-export is
-            // moot for an abandoned reader).
-            //
-            // quiesce() the op FIRST (as the normal path does at the loop
-            // bottom, which the abandon branch used to skip): it stops + joins
-            // the per-op watchdog on THIS (the zombie worker) thread.
-            // Without it a still-armed watchdog could fire finishWatchdogTimeout()
-            // -> finish() -> m_channel->emitFinished() after the backend has been
-            // torn down; joining it here means it can never touch the channel
-            // post-teardown (the emit is additionally shutdown-gated in finish()).
-            // quiesce() joins a DIFFERENT thread (the watchdog), never self-joins,
-            // and touches only the op's own members, so it is safe even though the
-            // manager may be gone. Then drop the op and exit the loop without
-            // running the drain over (an already-empty) queue.
-            op->quiesce();
-            op.reset();
-            return;
-        }
-
-        // Reclaim the op's per-op auxiliary thread now that it is terminal,
-        // BEFORE it enters the 5 s cleanup-grace queue. Otherwise a burst of
-        // fast operations parks hundreds of idle jthreads in the grace window
-        // (each finished op holding its watchdog thread until
-        // destruction), exhausting threads and wedging the single bus event
-        // loop. The op object stays exported for the grace; only its now-idle
-        // thread is reclaimed here, on the worker thread.
-        op->quiesce();
-
-        if (m_production) {
-            // Production: hand to cleanup-grace queue. The op + its adaptor
-            // stay exported on the bus for 5 s so late client reads still
-            // see the terminal phase/progress before unexport.
-            std::lock_guard finLock(m_finishedMutex);
-            m_finished.push_back({std::move(op), std::chrono::steady_clock::now()});
-        }
-        // Test mode (no bus, no cleanup thread): the op's destructor fires
-        // here as the unique_ptr leaves scope; the test's adaptor capture
-        // has already recorded the finish.
     }
     // Drain: queued ops on shutdown get finishCardRemoved() so they
     // terminate with errorCode=CardRemoved instead of vanilla Cancelled
@@ -278,10 +313,12 @@ void OperationManager::workerLoop(ReaderWorker& worker, std::stop_token st)
     // ALIVE in the local deque; only then finish + destroy the ops. After the
     // scrub a concurrent cancel finds nothing → safe no-op.
     std::deque<std::unique_ptr<OperationBase>> doomed;
+    std::unique_ptr<OperationBase> doomedSlot;
     {
         std::lock_guard lock(worker.mutex);
         doomed = std::move(worker.queue);
         worker.queue.clear(); // leave the moved-from deque well-defined + empty
+        doomedSlot = std::exchange(worker.background, {});
     }
     for (const auto& op : doomed) {
         forgetOpById(op->id()); // scrub while the op is still alive, off the worker mutex
@@ -289,7 +326,8 @@ void OperationManager::workerLoop(ReaderWorker& worker, std::stop_token st)
     for (auto& op : doomed) {
         op->finishCardRemoved(); // drive each to its CardRemoved terminal
     }
-    doomed.clear(); // destroys the ops AFTER the tables are scrubbed
+    doomed.clear();     // destroys the ops AFTER the tables are scrubbed
+    doomedSlot.reset(); // never ran: no client, no id in the tables, no terminal to drive
 }
 
 void OperationManager::setSessionFactoryForTest(SessionFactory factory)
@@ -351,6 +389,54 @@ void OperationManager::setReaderHold(ObjectId reader, bool hold)
     w.cv.notify_all();
 }
 
+void OperationManager::installBackground(std::shared_ptr<ReaderWorker> worker, std::unique_ptr<OperationBase> op,
+                                         std::chrono::steady_clock::duration settle)
+{
+    std::unique_ptr<OperationBase> discarded;
+    {
+        std::lock_guard lock(worker->mutex);
+        if (worker->stopping) {
+            discarded = std::move(op); // the drain has run: nobody would ever run or free it
+        } else {
+            discarded = std::exchange(worker->background, std::move(op));
+            worker->backgroundDue = std::chrono::steady_clock::now() + settle;
+            ++worker->backgroundRequests;
+            worker->cv.notify_all();
+        }
+    }
+    // The op's destructor can drop the last keepAlive reference: never under the lock.
+    discarded.reset();
+}
+
+void OperationManager::setBackground(ObjectId reader, BackgroundFactory make,
+                                     std::chrono::steady_clock::duration settle)
+{
+    if (!m_production) {
+        throw std::logic_error{"OperationManager::setBackground requires the production ctor"};
+    }
+    std::shared_ptr<ReaderWorker> worker;
+    {
+        std::lock_guard lock(m_workersMutex);
+        auto it = m_workers.find(reader);
+        if (it == m_workers.end() || !it->second) {
+            return; // reader already removed: never create a worker here
+        }
+        worker = it->second;
+    }
+    // The copy keeps the holder alive while the factory (no lock held) reads it.
+    auto op = make ? make(worker->holder.get()) : nullptr;
+    if (!op) {
+        return;
+    }
+    installBackground(std::move(worker), std::move(op), settle);
+}
+
+void OperationManager::setBackgroundForTest(ObjectId reader, std::unique_ptr<OperationBase> op,
+                                            std::chrono::steady_clock::duration settle)
+{
+    installBackground(workerFor(reader, std::string{}), std::move(op), settle);
+}
+
 void OperationManager::enqueueForTest(ObjectId reader, std::unique_ptr<OperationBase> op)
 {
     // The test supplies a fully-built op (which already carries its own holder,
@@ -381,17 +467,6 @@ void OperationManager::enqueueTrackedForTest(ObjectId reader, std::unique_ptr<Op
 
 namespace {
 
-class SyncProbeChannel final : public OperationChannel
-{
-public:
-    void emitPropertiesChanged() noexcept override {}
-    void emitFinished(OperationStatus, ErrorCode, std::string_view, std::string_view) noexcept override {}
-    bool emitResult(const ResultPayload&) noexcept override
-    {
-        return true;
-    }
-};
-
 // Runs @p fn on the reader's worker thread with the reader's holder; the bridge
 // for the deferred-async PKCS#11 hop (enqueueOnReaderWorker). The op OWNS the
 // work closure (moved in), it does NOT borrow the caller's: enqueueOnReaderWorker
@@ -405,8 +480,8 @@ class SyncProbeOp final : public OperationBase
 {
 public:
     SyncProbeOp(CardSessionHolder* holder, std::function<void(CardSessionHolder&)> fn)
-        : OperationBase(std::make_unique<SyncProbeChannel>(), std::make_shared<OperationState>()), m_holder(holder),
-          m_fn(std::move(fn))
+        : OperationBase(std::make_unique<SilentOperationChannel>(), std::make_shared<OperationState>()),
+          m_holder(holder), m_fn(std::move(fn))
     {}
 
 protected:
@@ -515,8 +590,13 @@ void OperationManager::abandonOrJoin(std::shared_ptr<ReaderWorker> worker) noexc
     worker->worker.request_stop();
     OperationBase* inFlight = nullptr;
     std::deque<std::unique_ptr<OperationBase>> doomed;
+    std::unique_ptr<OperationBase> doomedSlot;
     {
         std::lock_guard lk(worker->mutex);
+        // A slot offered from now on is refused (installBackground), and the one
+        // parked now leaves with the queue.
+        worker->stopping = true;
+        doomedSlot = std::exchange(worker->background, {});
         // Drain the queued ops synchronously HERE (not via the worker's own
         // exit-path drain) so CardRemoved semantics are guaranteed
         // regardless of whether we go on to join or detach the worker — a
@@ -556,7 +636,8 @@ void OperationManager::abandonOrJoin(std::shared_ptr<ReaderWorker> worker) noexc
     for (auto& op : doomed) {
         op->finishCardRemoved(); // drive each to its CardRemoved terminal
     }
-    doomed.clear(); // destroys the ops AFTER the tables are scrubbed
+    doomed.clear();     // destroys the ops AFTER the tables are scrubbed
+    doomedSlot.reset(); // unrun, untracked; destroyed off every lock
 
     // Bounded grace: give a cooperating in-flight op a short window to wind
     // down after the cancel so we can JOIN it cleanly (no thread leak). A

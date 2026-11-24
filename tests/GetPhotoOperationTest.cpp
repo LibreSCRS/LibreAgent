@@ -7,6 +7,7 @@
 
 #include <LibreSCRS/SmartCard/CardSession.h>
 #include <LibreSCRS/SmartCard/testing/CardSessionTesting.h>
+#include "fakes/FakeLogSink.h"
 #include <gtest/gtest.h>
 #include <expected>
 #include <map>
@@ -211,6 +212,50 @@ TEST(GetPhotoOperation, CacheHitSkipsFlowAndEmitsPhoto)
     // The op yields the raw JPEG bytes verbatim; sealing them is the
     // backend channel's job, not the op's.
     EXPECT_EQ(raw->captured.at("photo:portrait"), (std::vector<std::uint8_t>{0xFF, 0xD8, 0xFF, 0xE0}));
+}
+
+// See ReadIdentityOperationTest: a cache hit is where a client's read of
+// personal data lands, so it writes the same audit line as the card walk.
+TEST(GetPhotoOperation, CacheHitLogsTheRequest)
+{
+    FakeLogSink sink;
+    sink.install();
+    CardReadSnapshot snap = snapshotWithPhotos();
+    snap.groups[0].fields[0].textValue = "ZORAN-DISTINCT-VALUE";
+    CardReadCache readCache;
+    readCache.put("card-A", snap);
+    auto holder = makeUnusedHolder();
+    UnusedReader reader;
+    UnusedPrompter prompter;
+    PromptSerializer serializer;
+    CredentialCache credCache;
+
+    auto state = std::make_shared<OperationState>();
+    GetPhotoOperation op(std::make_unique<FakeOperationChannel>(),
+                         GetPhotoOperation::Deps{
+                             .holder = holder.get(),
+                             .reader = reader,
+                             .depositor = depositor,
+                             .prompter = prompter,
+                             .serializer = serializer,
+                             .credentials = credCache,
+                             .readCache = readCache,
+                             .cardKey = "card-A",
+                             .readerName = "FakeReader",
+                             .requester = "firefox",
+                         },
+                         state);
+    op.runOnWorker();
+
+    std::string all;
+    for (const auto& [level, line] : sink.lines) {
+        all += line;
+    }
+    EXPECT_NE(all.find("identity read requested"), std::string::npos) << all;
+    EXPECT_NE(all.find("requester=firefox"), std::string::npos) << all;
+    EXPECT_NE(all.find("card=card-A"), std::string::npos) << all;
+    EXPECT_NE(all.find("(cache)"), std::string::npos) << all;
+    EXPECT_EQ(all.find("ZORAN-DISTINCT-VALUE"), std::string::npos) << "a field value reached the log";
 }
 
 // Restored fail-closed contract: when the backend channel's sealing fails
