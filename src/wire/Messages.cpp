@@ -1270,5 +1270,12 @@ CborValue toCbor(const AgentQuiesced& e)
     m.emplace("reason", CborValue::uint(static_cast<std::uint64_t>(e.reason)));
     return CborValue(std::move(m));
 }
+CborValue toCbor(const AgentResumed& e)
+{
+    Map m;
+    m.emplace("t", CborValue("AgentResumed"));
+    m.emplace("reason", CborValue::uint(static_cast<std::uint64_t>(e.reason)));
+    return CborValue(std::move(m));
+}
 
 } // namespace LibreSCRS::Agent::Wire

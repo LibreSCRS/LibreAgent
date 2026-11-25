@@ -55,7 +55,12 @@
 //   cancel              CancelStopsAnInFlightOperation
 //   refusal             MethodEntryRefusalProducesFailedOperation
 //   agent-loss mid-op   AgentLossMidOperationTerminalizesLoudly
-//   availability        AvailabilityAppearAndVanish
+//   availability        AvailabilityAppearAndVanish,
+//                         QuiesceEndsAvailabilityAcrossTransports (the agent
+//                         announces a quiesce and its end: AgentQuiesced /
+//                         AgentResumed on the socket, Manager1.Quiesced /
+//                         Resumed on D-Bus; unavailable until every reason
+//                         has ended)
 //   future ErrorCode    FutureErrorCodeSurfacesIdenticallyAcrossTransports
 //                         (wire tolerance: a raw uint32 value past this
 //                         build's last known ErrorCode surfaces identically —
@@ -160,9 +165,8 @@
 //       wire and gets UnknownMethod (mapped to CallError::InvalidArguments,
 //       not CapabilityMissing) — extending the SAME lift there is a tracked
 //       follow-up, not something this corpus already proves converged.
-//     - AgentQuiesced availability semantics — the socket counts a quiesced
-//       agent as unavailable until a re-probe; on D-Bus the agent stays on
-//       the bus.
+//     - The re-probe that rescues a missed AgentResumed — a socket
+//       GetState round-trip; on D-Bus the bus name is the probe.
 //     - Non-canonical-frame fail-closed policy, the wedged-GetState bounded
 //       probe, the write-after-peer-close EPIPE/SIGPIPE guard, the stale-
 //       ConnectionLost-after-reconnect race, and the awaited-reply+malformed-
@@ -459,6 +463,16 @@ public:
     {
         m_harness.registerService();
     }
+    // The agent announces a quiesce reason / its end: Manager1.Quiesced /
+    // Resumed on the bus.
+    void quiesce(quint32 reason)
+    {
+        m_harness.emitQuiesced(reason);
+    }
+    void resume(quint32 reason)
+    {
+        m_harness.emitResumed(reason);
+    }
 
     [[nodiscard]] int cancelledOperationCount()
     {
@@ -687,6 +701,16 @@ public:
     {
         runOnThread(m_context, [this]() { m_agent->relisten(); });
         m_client->refreshDiscovery();
+    }
+    // The agent announces a quiesce reason / its end: AgentQuiesced /
+    // AgentResumed on the wire.
+    void quiesce(quint32 reason)
+    {
+        runOnThread(m_context, [this, reason]() { m_agent->sendAgentQuiesced(reason); });
+    }
+    void resume(quint32 reason)
+    {
+        runOnThread(m_context, [this, reason]() { m_agent->sendAgentResumed(reason); });
     }
 
     [[nodiscard]] int cancelledOperationCount()
@@ -2100,6 +2124,38 @@ TYPED_TEST(TransportParity, AvailabilityAppearAndVanish)
     EXPECT_TRUE(client->isAvailable());
     ASSERT_TRUE(waitFor([&]() { return client->readers().size() == 1; }))
         << "re-appearance must re-run discovery, not just flip the flag";
+}
+
+// ---- quiesce: the agent says it stopped and says it resumed ---------------------
+
+TYPED_TEST(TransportParity, QuiesceEndsAvailabilityAcrossTransports)
+{
+    using Env = typename TypeParam::Env;
+    ParityConfig cfg;
+    cfg.capabilities = Cap::Pki;
+    Env env(cfg);
+
+    AgentClient* client = env.client();
+    ASSERT_TRUE(client->isAvailable());
+    ASSERT_EQ(client->readers().size(), 1);
+
+    env.quiesce(0); // SystemSleep
+    ASSERT_TRUE(waitFor([&]() { return !client->isAvailable(); }));
+    EXPECT_TRUE(client->readers().isEmpty());
+
+    env.quiesce(1); // ScreenLocked, on top of the sleep
+    env.resume(0);  // the wake: the lock is still on
+    QDeadlineTimer settle(300);
+    while (!settle.hasExpired()) {
+        QCoreApplication::processEvents(QEventLoop::AllEvents, 20);
+        QThread::msleep(1);
+    }
+    EXPECT_FALSE(client->isAvailable()) << "one reason ended, another is still active";
+
+    env.resume(1); // the unlock: nothing left
+    ASSERT_TRUE(waitFor([&]() { return client->isAvailable(); }));
+    ASSERT_TRUE(waitFor([&]() { return client->readers().size() == 1; }))
+        << "the end of the quiesce must re-run discovery, not just flip the flag";
 }
 
 // ---- feature discovery: identical on both wires, including an unknown token --

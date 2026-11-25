@@ -52,5 +52,23 @@
     <method name="GetAppearanceFont">
       <arg name="fd" type="h" direction="out"/>
     </method>
+
+    <!-- The agent stopped card access for one reason (the machine sleeps, the
+         screen locked, the user switched away). The bus name stays: this
+         signal is how a client learns the agent is not serving cards, and it
+         takes the agent as unreachable until every reason announced here has
+         ended. `reason` is the wire's quiesce-reason (0 SystemSleep,
+         1 ScreenLocked, 2 SessionInactive), append-only; a client that
+         predates this signal never sees the agent go away. -->
+    <signal name="Quiesced">
+      <arg name="reason" type="u"/>
+    </signal>
+
+    <!-- The end of the quiesce announced for the same reason (wake, unlock,
+         the user's session active again). Sent only for a quiesce that was
+         announced, so a client never sees Resumed without a Quiesced. -->
+    <signal name="Resumed">
+      <arg name="reason" type="u"/>
+    </signal>
   </interface>
 </node>

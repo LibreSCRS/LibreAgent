@@ -254,6 +254,10 @@ public:
     /// together, as the agent does.
     void emitReaderRelabelled(const QString& model, const QString& interfaceToken);
     void sendAgentQuiesced(quint32 reason);
+    void sendAgentResumed(quint32 reason);
+    /// AgentQuiesced, then the connections closed at once: the client reads
+    /// the frame and the end of the stream in one pump.
+    void sendAgentQuiescedThenClose(quint32 reason);
     /// Broadcast a "ConfigChanged" event for @p key with no client-side
     /// mutation behind it — the agent-internal change path (LastTsaUrl after
     /// a timestamped sign), the socket twin of FakeAgent::emitConfigChanged.

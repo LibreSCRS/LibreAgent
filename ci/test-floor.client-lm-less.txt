@@ -4,7 +4,7 @@
 CborRelocationTest 3
 CborRoundTripTest 14
 CddlVocabularyTest 17
-ClientCodecTest 89
+ClientCodecTest 92
 ClientQtAgentActivationTest 11
 ClientQtAgentCardTest 52
 ClientQtAgentDiscoveryTest 17
@@ -15,7 +15,7 @@ ClientQtCardDateTest 5
 ClientQtConfigKeyMirrorTest 2
 ClientQtCredentialTypesTest 7
 ClientQtDBusContractTest 3
-ClientQtDBusIntegrationTest 36
+ClientQtDBusIntegrationTest 41
 ClientQtDerListenerRegistryTest 6
 ClientQtErrorNameMapTest 11
 ClientQtFailureCopyTest 1
@@ -30,11 +30,11 @@ ClientQtSecurityChecksTest 17
 ClientQtSecurityVocabularyTest 5
 ClientQtSharedAgentClientTest 2
 ClientQtSignedOutputPathTest 13
-ClientQtSocketIntegrationTest 55
+ClientQtSocketIntegrationTest 61
 ClientQtSocketPathTest 2
 ClientQtSyncErrorTest 10
 ClientQtTokenMapTest 14
-ClientQtTransportParityTest 101
+ClientQtTransportParityTest 103
 ClientQtTypesTest 16
 FakeAgentWireShapeTest 9
 FdHarvestTest 5
@@ -46,7 +46,7 @@ PropertyChangedVocabGuardTest 2
 RunHeaderAcceptance.cmake 1
 TestSupportHeaderClosure.cmake 1
 WireBoundedFdReadTest 8
-WireHeadersTest 1
+WireHeadersTest 7
 WireSocketLocationTest 3
 check-clientqt-exports.sh 1
 check-vendored-exports.sh 1

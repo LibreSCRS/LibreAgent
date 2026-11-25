@@ -155,6 +155,12 @@ public Q_SLOTS:
         return m_appearanceFontCalls;
     }
 
+Q_SIGNALS:
+    /// Manager1.Quiesced / Resumed: the agent stopped / resumed card access
+    /// for one quiesce-reason value.
+    void Quiesced(uint reason);
+    void Resumed(uint reason);
+
 private:
     QString m_version;
     QStringList m_features;
@@ -826,6 +832,10 @@ public:
     ///        agent-internal mutation path (the real agent fires Changed for
     ///        LastTsaUrl after a timestamped sign, which no client wrote).
     void emitConfigChanged(const QString& key);
+    /// Manager1.Quiesced / Resumed with the raw reason value (no-op when the
+    /// Manager1 interface is not exported).
+    void emitQuiesced(quint32 reason);
+    void emitResumed(quint32 reason);
 
     /// @brief How many Manager1.LayoutVisualSignature/GetAppearanceFont calls
     ///        reached this fake — proves a client-side "layout-preview"

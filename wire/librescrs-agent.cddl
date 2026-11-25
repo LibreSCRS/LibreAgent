@@ -562,7 +562,7 @@ cert-field   = [ labelKey: tstr, labelFallback: tstr, value: tstr ]   ; (ssv): v
 ; ---- events (agent -> client, unsolicited) ----
 event = { reader-added // reader-removed // card-added // card-removed //
           property-changed // config-changed // op-progress // op-identity-group //
-          op-result-ready // op-finished // agent-quiesced }
+          op-result-ready // op-finished // agent-quiesced // agent-resumed }
 reader-added     = ( t: "ReaderAdded",   reader: reader-state )
 reader-removed   = ( t: "ReaderRemoved", handle: handle )
 card-added       = ( t: "CardAdded",     card: card-state )
@@ -631,9 +631,14 @@ op-result-ready = ( t: "OpResultReady", op: uint, result: op-result )
 op-finished = ( t: "OpFinished", op: uint, status: op-status, code: error-code,
                 msgKey: tstr, msgFallback: tstr )
 ; system-lifecycle: the agent quiesced card access (sleep / lock / user-switch).
-; Socket only: the D-Bus agent announces nothing. The core's quiesce(reason)
-; decides what is forgotten, the event only announces it.
+; Socket: this event. D-Bus: the Quiesced(u reason) signal on Manager1. The core's
+; quiesce(reason) decides what is forgotten, the event only announces it.
 agent-quiesced = ( t: "AgentQuiesced", reason: quiesce-reason )
+; The end of that quiesce: sent for the same reason once it is over (wake, unlock,
+; the user's session active again), and only for a quiesce that was announced.
+; A client counts the agent reachable again when every announced reason has ended.
+; D-Bus: the Resumed(u reason) signal on Manager1.
+agent-resumed = ( t: "AgentResumed", reason: quiesce-reason )
 ; Tolerance (client decode): quiesce-reason is wire-frozen append-only, like
 ; pre-read-auth; an unrecognised reason decodes through raw -- the event still
 ; degrades agent availability the same way regardless of which reason it names.

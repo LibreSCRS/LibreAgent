@@ -1084,6 +1084,34 @@ TEST(ClientCodec, AgentQuiescedRejectsReasonAboveUint8Range)
     EXPECT_FALSE(parseEvent(bytes, noFds()).has_value());
 }
 
+TEST(ClientCodec, AgentResumedRoundTrips)
+{
+    expectEventRoundTrip(AgentResumed{QuiesceReason::ScreenLocked});
+}
+
+// The same append-tolerance as AgentQuiesced: the end of a reason this build
+// cannot name must still reach the client, or that reason would never end.
+TEST(ClientCodec, AgentResumedToleratesAppendedReasonValue)
+{
+    CborValue::Map ev;
+    ev.emplace("t", CborValue(std::string("AgentResumed")));
+    ev.emplace("reason", CborValue::uint(42));
+    const auto bytes = CborValue(std::move(ev)).encode();
+    const auto decoded = parseEvent(bytes, noFds());
+    ASSERT_TRUE(decoded.has_value());
+    ASSERT_TRUE(std::holds_alternative<AgentResumed>(decoded->event));
+    EXPECT_EQ(static_cast<std::uint8_t>(std::get<AgentResumed>(decoded->event).reason), 42u);
+}
+
+TEST(ClientCodec, AgentResumedRejectsReasonAboveUint8Range)
+{
+    CborValue::Map ev;
+    ev.emplace("t", CborValue(std::string("AgentResumed")));
+    ev.emplace("reason", CborValue::uint(256));
+    const auto bytes = CborValue(std::move(ev)).encode();
+    EXPECT_FALSE(parseEvent(bytes, noFds()).has_value());
+}
+
 TEST(ClientCodec, OpResultReadyIdentityRoundTrips)
 {
     IdentityResult idResult;
@@ -1449,6 +1477,12 @@ TEST(ClientCodec, DefaultedOperatorEqualsComparesByValueEvents)
     const AgentQuiesced qC{QuiesceReason::SessionInactive};
     EXPECT_EQ(qA, qB);
     EXPECT_NE(qA, qC);
+
+    const AgentResumed rA{QuiesceReason::ScreenLocked};
+    const AgentResumed rB{QuiesceReason::ScreenLocked};
+    const AgentResumed rC{QuiesceReason::SessionInactive};
+    EXPECT_EQ(rA, rB);
+    EXPECT_NE(rA, rC);
 }
 
 TEST(ClientCodec, DefaultedOperatorEqualsComparesByValueCredentialsAndOpIdentityGroup)

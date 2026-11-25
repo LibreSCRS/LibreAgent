@@ -47,10 +47,11 @@
 //   - AgentQuiesced -> availability semantics: the agent quiesced card
 //     access (sleep/lock/user-switch), so the seam reports
 //     onServiceUnregistered (terminalizing in-flight operations
-//     exactly like an agent death) while the connection stays open; the next
-//     probeAvailability() issues a bounded GetState round-trip and reports
-//     available again only once the agent answers (there is no resume event
-//     on the wire).
+//     exactly like an agent death) while the connection stays open. The
+//     agent's AgentResumed for the same reason ends it: the seam reports
+//     onServiceRegistered once every announced reason has ended. A missed
+//     end is still caught by the next probeAvailability(), a bounded
+//     GetState round-trip that reports available again once the agent answers.
 //   - the HelloAck feature-token gate is enforced HERE: credential requests
 //     (ListCredentials/ManagePin/ActivateSigningKey) against an agent that
 //     did not advertise "credentials" are refused locally (mapped like the
@@ -246,8 +247,8 @@ private:
     // Recreated per connection (the class is deliberately non-copyable and
     // non-movable — its buffers are connection state).
     std::unique_ptr<LibreSCRS::Agent::Wire::FrameReassembler> m_reassembler;
-    bool m_established = false; // handshake completed on the current connection
-    bool m_quiesced = false;    // an AgentQuiesced arrived; cleared by a successful re-probe
+    bool m_established = false;             // handshake completed on the current connection
+    LibreSCRS::Agent::QuiesceSet m_quiesce; // reasons announced by AgentQuiesced and not yet ended
     QString m_agentVersion;
     QStringList m_features;
     // The sealed appearance-font fd, cached per connection — reset in

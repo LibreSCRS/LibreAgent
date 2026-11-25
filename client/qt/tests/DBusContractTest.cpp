@@ -131,6 +131,8 @@ TEST_F(DBusContract, TheSignalsTheClientDemarshalsCarryItsTypes)
 {
     expectMember(kOperationIface, Kind::Signal, "Finished", QStringLiteral("uuss"));
     expectMember(kConfigIface, Kind::Signal, "Changed", QStringLiteral("s"));
+    expectMember(kManagerIface, Kind::Signal, "Quiesced", QStringLiteral("u"));
+    expectMember(kManagerIface, Kind::Signal, "Resumed", QStringLiteral("u"));
     expectMember(kSignIface, Kind::Signal, "Result", sig<QDBusUnixFileDescriptor>() + sig<QVariantMap>());
     expectMember(kSignBatchIface, Kind::Signal, "Result", sig<SignBatchRowsWire>());
     expectMember(kIdentityIface, Kind::Signal, "Result", sig<IdentityFieldsWire>());

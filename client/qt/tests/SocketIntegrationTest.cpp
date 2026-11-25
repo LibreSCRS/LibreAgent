@@ -146,6 +146,14 @@ public:
     {
         runOnThread(m_context, [this, reason]() { m_agent->sendAgentQuiesced(reason); });
     }
+    void sendAgentQuiescedThenClose(quint32 reason)
+    {
+        runOnThread(m_context, [this, reason]() { m_agent->sendAgentQuiescedThenClose(reason); });
+    }
+    void sendAgentResumed(quint32 reason)
+    {
+        runOnThread(m_context, [this, reason]() { m_agent->sendAgentResumed(reason); });
+    }
     void sendNonCanonicalFrame()
     {
         runOnThread(m_context, [this]() { m_agent->sendNonCanonicalFrame(); });
@@ -1850,6 +1858,161 @@ TEST(SocketIntegration, AgentQuiescedIsUnavailableUntilReprobe)
     EXPECT_TRUE(client->isAvailable());
     ASSERT_TRUE(waitFor([&]() { return client->readers().size() == 1; }));
     EXPECT_EQ(h.connectionCount(), 1) << "recovery must not have needed a reconnect";
+}
+
+namespace {
+
+// Spin the event loop long enough for frames already written to arrive: the
+// way to assert that a frame changed nothing.
+void settleEventLoop()
+{
+    QDeadlineTimer settle(300);
+    while (!settle.hasExpired()) {
+        QCoreApplication::processEvents(QEventLoop::AllEvents, 20);
+        QThread::msleep(1);
+    }
+}
+
+} // namespace
+
+TEST(SocketIntegration, AgentResumedRestoresAvailabilityWithoutReprobe)
+{
+    FakeSocketAgent::Config cfg;
+    cfg.capabilities = Cap::Pki;
+    SocketHarness h(cfg);
+    auto client = makeClient(h);
+    ASSERT_TRUE(client->isAvailable());
+
+    QStringList order;
+    QObject::connect(client.get(), &AgentClient::availabilityChanged, client.get(),
+                     [&](bool available) { order.append(QStringLiteral("available:%1").arg(available)); });
+
+    h.sendAgentQuiesced(1); // ScreenLocked
+    ASSERT_TRUE(waitFor([&]() { return !client->isAvailable(); }));
+    EXPECT_EQ(client->agentState(), AgentState::Stopped);
+
+    // The agent says the quiesce is over: no refreshDiscovery(), no probe.
+    h.sendAgentResumed(1);
+    ASSERT_TRUE(waitFor([&]() { return client->isAvailable(); }));
+    EXPECT_EQ(client->agentState(), AgentState::Ready);
+    EXPECT_EQ(order, (QStringList{QStringLiteral("available:0"), QStringLiteral("available:1")}));
+    ASSERT_TRUE(waitFor([&]() { return client->readers().size() == 1; }));
+    EXPECT_EQ(h.connectionCount(), 1) << "recovery must not have needed a reconnect";
+}
+
+TEST(SocketIntegration, AgentResumedWithoutQuiesceChangesNothing)
+{
+    FakeSocketAgent::Config cfg;
+    cfg.capabilities = Cap::Pki;
+    SocketHarness h(cfg);
+    auto client = makeClient(h);
+    ASSERT_TRUE(client->isAvailable());
+    ASSERT_TRUE(waitFor([&]() { return client->readers().size() == 1; }));
+
+    int changes = 0;
+    QObject::connect(client.get(), &AgentClient::availabilityChanged, client.get(), [&](bool) { ++changes; });
+
+    h.sendAgentResumed(1);
+    settleEventLoop();
+    EXPECT_EQ(changes, 0);
+    EXPECT_TRUE(client->isAvailable());
+    EXPECT_EQ(client->readers().size(), 1);
+}
+
+TEST(SocketIntegration, AgentStaysUnavailableUntilEveryQuiesceReasonEnded)
+{
+    FakeSocketAgent::Config cfg;
+    cfg.capabilities = Cap::Pki;
+    SocketHarness h(cfg);
+    auto client = makeClient(h);
+    ASSERT_TRUE(client->isAvailable());
+
+    QStringList order;
+    QObject::connect(client.get(), &AgentClient::availabilityChanged, client.get(),
+                     [&](bool available) { order.append(QStringLiteral("available:%1").arg(available)); });
+
+    h.sendAgentQuiesced(0); // SystemSleep
+    ASSERT_TRUE(waitFor([&]() { return !client->isAvailable(); }));
+    h.sendAgentQuiesced(1); // ScreenLocked, on top of the sleep
+    h.sendAgentResumed(2);  // a reason that never began
+    h.sendAgentResumed(0);  // the wake: the lock is still on
+    settleEventLoop();
+    EXPECT_FALSE(client->isAvailable());
+    EXPECT_EQ(order, (QStringList{QStringLiteral("available:0")}));
+
+    h.sendAgentResumed(1); // the unlock: nothing left
+    ASSERT_TRUE(waitFor([&]() { return client->isAvailable(); }));
+    EXPECT_EQ(order, (QStringList{QStringLiteral("available:0"), QStringLiteral("available:1")}));
+}
+
+// A reason left in the set must never swallow the next quiesce: the probe that
+// brings the agent back, and a new connection, both start from an empty set.
+TEST(SocketIntegration, ProbeClearsStrayQuiesceReason)
+{
+    FakeSocketAgent::Config cfg;
+    cfg.capabilities = Cap::Pki;
+    SocketHarness h(cfg);
+    auto client = makeClient(h);
+    ASSERT_TRUE(client->isAvailable());
+
+    h.sendAgentQuiesced(1);
+    ASSERT_TRUE(waitFor([&]() { return !client->isAvailable(); }));
+    client->refreshDiscovery(); // the probe: the end of reason 1 was never seen
+    ASSERT_TRUE(client->isAvailable());
+
+    h.sendAgentQuiesced(2);
+    ASSERT_TRUE(waitFor([&]() { return !client->isAvailable(); }));
+    h.sendAgentResumed(2);
+    EXPECT_TRUE(waitFor([&]() { return client->isAvailable(); }))
+        << "reason 1 was cleared by the probe, so ending reason 2 leaves nothing";
+}
+
+TEST(SocketIntegration, ReconnectClearsStrayQuiesceReason)
+{
+    FakeSocketAgent::Config cfg;
+    cfg.capabilities = Cap::Pki;
+    SocketHarness h(cfg);
+    SocketTransport* transport = nullptr;
+    auto client = makeClient(h, &transport);
+    ASSERT_TRUE(client->isAvailable());
+
+    h.sendAgentQuiesced(1);
+    ASSERT_TRUE(waitFor([&]() { return !client->isAvailable(); }));
+    h.closeAllConnections(); // the agent went away while the screen was locked
+    ASSERT_TRUE(waitFor([&]() { return !transport->isConnected(); }));
+    client->refreshDiscovery(); // a fresh connection, not a probe of the old one
+    ASSERT_TRUE(client->isAvailable());
+
+    h.sendAgentQuiesced(2);
+    ASSERT_TRUE(waitFor([&]() { return !client->isAvailable(); }));
+    h.sendAgentResumed(2);
+    EXPECT_TRUE(waitFor([&]() { return client->isAvailable(); }))
+        << "a new connection forgets the reasons of the old one";
+}
+
+// The agent dies right after announcing a quiesce: the client reads the frame
+// and the end of the stream in one pump, which drops the connection BEFORE the
+// frame is applied, so the reason lands in the set of a connection that is gone.
+// The next connection must start without it.
+TEST(SocketIntegration, ReasonRecordedAfterTheConnectionDroppedDoesNotSurviveAReconnect)
+{
+    FakeSocketAgent::Config cfg;
+    cfg.capabilities = Cap::Pki;
+    SocketHarness h(cfg);
+    SocketTransport* transport = nullptr;
+    auto client = makeClient(h, &transport);
+    ASSERT_TRUE(client->isAvailable());
+
+    h.sendAgentQuiescedThenClose(0); // SystemSleep; the agent is gone
+    ASSERT_TRUE(waitFor([&]() { return !client->isAvailable() && !transport->isConnected(); }));
+    client->refreshDiscovery(); // a new connection
+    ASSERT_TRUE(client->isAvailable());
+
+    h.sendAgentQuiesced(1);
+    ASSERT_TRUE(waitFor([&]() { return !client->isAvailable(); }));
+    h.sendAgentResumed(1);
+    EXPECT_TRUE(waitFor([&]() { return client->isAvailable(); }))
+        << "the sleep of the dead connection must not hold the new one unavailable";
 }
 
 // ---- public-data DER fetch ------------------------------------------------------------------

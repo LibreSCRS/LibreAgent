@@ -13,6 +13,7 @@
 #include "../TransportSeam.h"
 
 #include "Marshal.h"
+#include <LibreSCRS/Agent/wire/QuiesceReason.h>
 
 #include <QDBusConnection>
 #include <QDBusObjectPath>
@@ -123,6 +124,11 @@ private Q_SLOTS:
     /// `Config1.Changed(key)`. The signal carries ONLY the key, so this
     /// re-reads that one property before forwarding — see refreshConfigKey().
     void onConfigChanged(const QString& key);
+    /// `Manager1.Quiesced(reason)` / `Manager1.Resumed(reason)`: the agent
+    /// stopped / resumed card access for one reason. The bus name stays, so
+    /// these are the only tell.
+    void onQuiesced(uint reason);
+    void onResumed(uint reason);
     void onInterfacesAdded(const QDBusObjectPath& path,
                            const LibreSCRS::AgentClient::AgentInterfaceProps& interfacesAndProperties);
     void onInterfacesRemoved(const QDBusObjectPath& path, const QStringList& interfaces);
@@ -177,6 +183,7 @@ private:
     quint64 m_nextToken = 0; // requestProperties only — DER tokens live in m_derListeners
     QStringList m_features;
     QString m_agentVersion;
+    LibreSCRS::Agent::QuiesceSet m_quiesce;  // reasons announced by Quiesced and not yet ended
     bool m_managerPropertiesFetched = false; // reset on onServiceUnregistered — "once per connect"
     // The sealed appearance-font fd, cached per connection exactly like
     // m_features (fetched at most once per connect, reset on

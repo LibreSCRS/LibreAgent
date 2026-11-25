@@ -511,6 +511,7 @@ TEST(MessagesRoundTrip, EveryEventEncodesWithItsTag)
     }
     EXPECT_EQ(*toCbor(OpFinished{1, OperationStatus::Ok, ErrorCode::None, "", ""}).find("t")->asText(), "OpFinished");
     EXPECT_EQ(*toCbor(AgentQuiesced{QuiesceReason::SystemSleep}).find("t")->asText(), "AgentQuiesced");
+    EXPECT_EQ(*toCbor(AgentResumed{QuiesceReason::SystemSleep}).find("t")->asText(), "AgentResumed");
 }
 
 // --- --dump-fixtures: cross-implementation fixture generator ----------------
@@ -707,6 +708,7 @@ int dumpFixtures(const std::filesystem::path& dir)
     writeFixture(dir, "OpFinished",
                  toCbor(OpFinished{24, OperationStatus::Error, ErrorCode::CardRemoved, "op.failed", "Card removed"}));
     writeFixture(dir, "AgentQuiesced", toCbor(AgentQuiesced{QuiesceReason::ScreenLocked}));
+    writeFixture(dir, "AgentResumed", toCbor(AgentResumed{QuiesceReason::ScreenLocked}));
 
     std::fprintf(stderr, "wrote fixtures to %s\n", dir.c_str());
     return 0;

@@ -1249,6 +1249,19 @@ std::optional<AgentQuiesced> decodeAgentQuiesced(const Map& m)
     }
     return AgentQuiesced{*reason};
 }
+std::optional<AgentResumed> decodeAgentResumed(const Map& m)
+{
+    FieldReader r(m);
+    const auto reasonRaw = r.uint("reason");
+    if (!r.ok()) {
+        return std::nullopt;
+    }
+    const auto reason = decodeQuiesceReason(reasonRaw);
+    if (!reason) {
+        return std::nullopt;
+    }
+    return AgentResumed{*reason};
+}
 
 } // namespace
 
@@ -1508,6 +1521,13 @@ std::optional<DecodedEvent> parseEvent(std::span<const std::uint8_t> body, std::
     }
     if (tag == "AgentQuiesced") {
         auto v = decodeAgentQuiesced(*m);
+        if (!v) {
+            return std::nullopt;
+        }
+        return DecodedEvent{std::move(*v)};
+    }
+    if (tag == "AgentResumed") {
+        auto v = decodeAgentResumed(*m);
         if (!v) {
             return std::nullopt;
         }

@@ -32,7 +32,7 @@ add_library(WireClientCodecPurityCheck OBJECT WireClientCodecPurity.cpp)
 set_target_properties(WireClientCodecPurityCheck PROPERTIES
     INCLUDE_DIRECTORIES "${CMAKE_SOURCE_DIR}/include;${CMAKE_SOURCE_DIR}/src")
 
-add_executable(WireHeadersTest ErrorCodeHeaderTest.cpp)
+add_executable(WireHeadersTest ErrorCodeHeaderTest.cpp QuiesceSetTest.cpp)
 target_include_directories(WireHeadersTest PRIVATE ${CMAKE_SOURCE_DIR}/include)
 target_link_libraries(WireHeadersTest PRIVATE GTest::gtest GTest::gtest_main)
 gtest_discover_tests(WireHeadersTest)

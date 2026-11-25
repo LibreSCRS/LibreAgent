@@ -4,7 +4,7 @@
 CborRelocationTest 3
 CborRoundTripTest 14
 CddlVocabularyTest 17
-ClientCodecTest 89
+ClientCodecTest 92
 DerivedKeysTest 17
 EcEncodingTest 7
 EcInteropTest 2
@@ -24,5 +24,5 @@ SecurityTest 6
 SnapshotParityTest 6
 SocketAgentClientContractTest 21
 SocketAgentClientTest 27
-WireHeadersTest 1
+WireHeadersTest 7
 pkcs11_tool_rpc_socket.sh 1

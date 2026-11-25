@@ -22,7 +22,7 @@ CborRoundTripTest 14
 CddlVocabularyTest 17
 CertDerExportTest 1
 CertReadFlowTest 24
-ClientCodecTest 89
+ClientCodecTest 92
 ClientQtAgentActivationTest 11
 ClientQtAgentCardTest 52
 ClientQtAgentDiscoveryTest 17
@@ -33,7 +33,7 @@ ClientQtCardDateTest 5
 ClientQtConfigKeyMirrorTest 2
 ClientQtCredentialTypesTest 7
 ClientQtDBusContractTest 3
-ClientQtDBusIntegrationTest 36
+ClientQtDBusIntegrationTest 41
 ClientQtDerListenerRegistryTest 6
 ClientQtErrorNameMapTest 11
 ClientQtFailureCopyTest 1
@@ -48,11 +48,11 @@ ClientQtSecurityChecksTest 17
 ClientQtSecurityVocabularyTest 5
 ClientQtSharedAgentClientTest 2
 ClientQtSignedOutputPathTest 13
-ClientQtSocketIntegrationTest 55
+ClientQtSocketIntegrationTest 61
 ClientQtSocketPathTest 2
 ClientQtSyncErrorTest 10
 ClientQtTokenMapTest 14
-ClientQtTransportParityTest 101
+ClientQtTransportParityTest 103
 ClientQtTypesTest 16
 ConfigStoreTest 32
 CredentialCacheRequestTest 46
@@ -135,7 +135,7 @@ VisualLayoutServiceTest 7
 WatchdogTest 14
 WireBoundedFdReadTest 8
 WireContractGuardTest 18
-WireHeadersTest 1
+WireHeadersTest 7
 WireSocketLocationTest 3
 ZombieWorkerDrainTest 3
 check-clientqt-exports.sh 1

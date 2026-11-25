@@ -7,6 +7,13 @@ Notable user-visible changes per release. Format follows
 
 ### Added
 
+- **The agent says when a quiesce ends.** The socket wire gains the event
+  `AgentResumed { reason }` (same `quiesce-reason` as `AgentQuiesced`), and the
+  D-Bus `org.librescrs.Agent.Manager1` gains the signals `Quiesced(u reason)`
+  and `Resumed(u reason)`, so both transports announce a quiesce and its end.
+  A host sends the end only for a quiesce it announced. `QuiesceSet` is the one
+  record of which reasons are active, for hosts and clients alike.
+
 - **An operation waiting behind another one on the same reader says so.** Its
   phase is the new `OperationPhase::Queued` (wire value 8, appended); the
   agent reports it before the reader's worker can start the operation.
@@ -338,6 +345,16 @@ Three targets ship, each independently usable:
   having happened.
 
 ### Changed
+
+- **The client counts the agent reachable again when every announced quiesce
+  has ended.** On both transports `AgentClient` takes the agent as unavailable
+  from the first `AgentQuiesced` / `Quiesced` and available again when the
+  matching `AgentResumed` / `Resumed` for every reason has arrived, without a
+  manual retry; an end for a reason never announced changes nothing. The
+  reasons held are forgotten when a probe finds the agent, when a connection
+  is made or lost, and when the bus name appears or vanishes. On D-Bus a
+  quiesce now makes the agent unavailable and terminalizes operations in
+  flight, as it already did on the socket.
 
 - **The watchdog starts at `Connecting` and covers the background read.** An
   operation stuck in opening the session is bounded like one stuck in

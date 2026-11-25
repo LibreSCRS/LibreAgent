@@ -194,8 +194,9 @@ public:
     // away, whatever platform reported it. The host maps its own system events
     // to a reason (systemd-logind PrepareForSleep / session Lock / Active on
     // Linux; the workspace sleep, session-resign and screen-lock notifications
-    // on macOS), calls this, then, where it has a socket to announce on,
-    // announces the same reason to its clients (AgentQuiesced).
+    // on macOS), calls this, then announces the same reason to its clients
+    // (AgentQuiesced on the socket, Quiesced on D-Bus) and, when the quiesce
+    // ends, the end (AgentResumed, Resumed).
     //
     //   SystemSleep, SessionInactive -> the full scrub: the CAN/MRZ
     //     secret cache and the credential snapshots are cleared, every

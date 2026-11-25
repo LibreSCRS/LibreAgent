@@ -356,6 +356,119 @@ TEST(DBusIntegration, ConfigChangedRefreshesTheCacheBeforeItAnnounces)
            "when Changed arrived";
 }
 
+// ---- Manager1.Quiesced / Resumed ---------------------------------------------
+
+namespace {
+
+// Spin the event loop long enough for signals already emitted to arrive: the
+// way to assert that one changed nothing.
+void settleEventLoop()
+{
+    QDeadlineTimer settle(300);
+    while (!settle.hasExpired()) {
+        QCoreApplication::processEvents(QEventLoop::AllEvents, 20);
+        QThread::msleep(1);
+    }
+}
+
+} // namespace
+
+TEST(DBusIntegration, QuiescedMakesTheAgentUnavailableAndResumedRestoresIt)
+{
+    FakeAgent::Config cfg;
+    cfg.capabilities = Cap::Pki;
+    Harness h(cfg);
+    auto client = makeClient(h);
+    ASSERT_TRUE(client->isAvailable());
+    const QString name = client->agentVersion();
+
+    QStringList order;
+    QObject::connect(client.get(), &AgentClient::availabilityChanged, client.get(),
+                     [&](bool available) { order.append(QStringLiteral("available:%1").arg(available)); });
+
+    h.emitQuiesced(1); // ScreenLocked
+    ASSERT_TRUE(waitFor([&]() { return !client->isAvailable(); }));
+    EXPECT_EQ(client->agentState(), AgentState::Stopped);
+    EXPECT_EQ(client->agentVersion(), name) << "the bus name stays, so what the agent advertised stays";
+
+    h.emitResumed(1);
+    ASSERT_TRUE(waitFor([&]() { return client->isAvailable(); }));
+    EXPECT_EQ(client->agentState(), AgentState::Ready);
+    EXPECT_EQ(order, (QStringList{QStringLiteral("available:0"), QStringLiteral("available:1")}));
+    ASSERT_TRUE(waitFor([&]() { return client->readers().size() == 1; }));
+}
+
+TEST(DBusIntegration, ResumedWithoutQuiescedChangesNothing)
+{
+    FakeAgent::Config cfg;
+    cfg.capabilities = Cap::Pki;
+    Harness h(cfg);
+    auto client = makeClient(h);
+    ASSERT_TRUE(client->isAvailable());
+
+    int changes = 0;
+    QObject::connect(client.get(), &AgentClient::availabilityChanged, client.get(), [&](bool) { ++changes; });
+
+    h.emitResumed(1);
+    settleEventLoop();
+    EXPECT_EQ(changes, 0);
+    EXPECT_TRUE(client->isAvailable());
+}
+
+TEST(DBusIntegration, AgentStaysUnavailableUntilEveryQuiesceReasonEnded)
+{
+    FakeAgent::Config cfg;
+    cfg.capabilities = Cap::Pki;
+    Harness h(cfg);
+    auto client = makeClient(h);
+    ASSERT_TRUE(client->isAvailable());
+
+    h.emitQuiesced(0); // SystemSleep
+    ASSERT_TRUE(waitFor([&]() { return !client->isAvailable(); }));
+    h.emitQuiesced(1); // ScreenLocked, on top of the sleep
+    h.emitResumed(2);  // a reason that never began
+    h.emitResumed(0);  // the wake: the lock is still on
+    settleEventLoop();
+    EXPECT_FALSE(client->isAvailable());
+
+    h.emitResumed(1); // the unlock: nothing left
+    EXPECT_TRUE(waitFor([&]() { return client->isAvailable(); }));
+}
+
+TEST(DBusIntegration, ReasonAboveUint8IsDroppedWithoutEffect)
+{
+    FakeAgent::Config cfg;
+    cfg.capabilities = Cap::Pki;
+    Harness h(cfg);
+    auto client = makeClient(h);
+    ASSERT_TRUE(client->isAvailable());
+
+    h.emitQuiesced(256); // no quiesce-reason can be this
+    settleEventLoop();
+    EXPECT_TRUE(client->isAvailable());
+}
+
+TEST(DBusIntegration, AgentNameReappearingClearsStrayQuiesceReason)
+{
+    FakeAgent::Config cfg;
+    cfg.capabilities = Cap::Pki;
+    Harness h(cfg);
+    auto client = makeClient(h);
+    ASSERT_TRUE(client->isAvailable());
+
+    h.emitQuiesced(1);
+    ASSERT_TRUE(waitFor([&]() { return !client->isAvailable(); }));
+    h.unregisterService(); // the agent died while the screen was locked
+    h.registerService();
+    ASSERT_TRUE(waitFor([&]() { return client->isAvailable(); }));
+
+    h.emitQuiesced(2);
+    ASSERT_TRUE(waitFor([&]() { return !client->isAvailable(); }));
+    h.emitResumed(2);
+    EXPECT_TRUE(waitFor([&]() { return client->isAvailable(); }))
+        << "the new owner of the name starts with no reason active";
+}
+
 // ---- reader/card discovery --------------------------------------------------
 
 TEST(DBusIntegration, ReaderAndCardDiscovery)

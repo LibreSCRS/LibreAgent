@@ -470,6 +470,15 @@ public:
     {
         runOnThread(m_context, [this, &key]() { m_agent->emitConfigChanged(key); });
     }
+    /// @brief Fire Manager1.Quiesced / Resumed with a raw reason value.
+    void emitQuiesced(quint32 reason)
+    {
+        runOnThread(m_context, [this, reason]() { m_agent->emitQuiesced(reason); });
+    }
+    void emitResumed(quint32 reason)
+    {
+        runOnThread(m_context, [this, reason]() { m_agent->emitResumed(reason); });
+    }
 
     /// @brief Drop the agent's bus name (simulates the daemon vanishing).
     ///

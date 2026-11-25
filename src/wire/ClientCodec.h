@@ -51,8 +51,9 @@
 //         SocketTransport's preAuthToken()) treats an unrecognised value the
 //         same as the default, None.
 //       * QuiesceReason: the client branches on nothing:
-//         any reason counts the agent as gone until it answers again, so an
-//         unrecognised one needs no separate mapping.
+//         any reason counts the agent as gone until its own end arrives
+//         (QuiesceSet holds the value as it came), so an unrecognised one
+//         needs no separate mapping.
 //       * ErrorCode: unchanged from before this policy existed -- opaque
 //         display/log data the client never branches on.
 //   - TEXT-TOKEN enums -- CredentialOutcome, and err-info's named SyncError
@@ -110,8 +111,9 @@ using ReplyVariant =
 // CDDL `op-identity-group` comment) -- an older client build that lists this
 // variant without it would simply decode the frame into UnknownEvent
 // instead, the ordinary forward-compat path every event here already has.
-using EventVariant = std::variant<ReaderAdded, ReaderRemoved, CardAdded, CardRemoved, PropertyChanged, ConfigChanged,
-                                  OpProgress, OpIdentityGroup, OpResultReady, OpFinished, AgentQuiesced, UnknownEvent>;
+using EventVariant =
+    std::variant<ReaderAdded, ReaderRemoved, CardAdded, CardRemoved, PropertyChanged, ConfigChanged, OpProgress,
+                 OpIdentityGroup, OpResultReady, OpFinished, AgentQuiesced, AgentResumed, UnknownEvent>;
 
 struct DecodedReply
 {

@@ -4,7 +4,7 @@
 CborRelocationTest 3
 CborRoundTripTest 14
 CddlVocabularyTest 17
-ClientCodecTest 89
+ClientCodecTest 92
 ClientQtCapabilitiesTest 15
 ClientQtCardDateTest 5
 ClientQtConfigKeyMirrorTest 2
@@ -18,7 +18,7 @@ ClientQtSealedPayloadTest 9
 ClientQtSeamTest 60
 ClientQtSecurityChecksTest 17
 ClientQtSecurityVocabularyTest 5
-ClientQtSocketIntegrationTest 54
+ClientQtSocketIntegrationTest 60
 ClientQtSyncErrorTest 10
 ClientQtTokenMapTest 14
 ClientQtTypesTest 16
@@ -30,4 +30,4 @@ MessagesRoundTripTest 25
 PropertyChangedVocabGuardTest 2
 RunHeaderAcceptance.cmake 1
 TestSupportHeaderClosure.cmake 1
-WireHeadersTest 1
+WireHeadersTest 7

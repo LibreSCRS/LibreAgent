@@ -1574,6 +1574,20 @@ void FakeAgent::emitConfigChanged(const QString& key)
     }
 }
 
+void FakeAgent::emitQuiesced(quint32 reason)
+{
+    if (m_managerAdaptor != nullptr) {
+        Q_EMIT m_managerAdaptor->Quiesced(reason);
+    }
+}
+
+void FakeAgent::emitResumed(quint32 reason)
+{
+    if (m_managerAdaptor != nullptr) {
+        Q_EMIT m_managerAdaptor->Resumed(reason);
+    }
+}
+
 void FakeAgent::scriptCardGetAll(int delayMs, const QVariantMap& props)
 {
     if (m_cardPropsWedge != nullptr) {

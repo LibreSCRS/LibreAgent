@@ -1324,6 +1324,19 @@ void FakeSocketAgent::sendAgentQuiesced(quint32 reason)
     broadcastCbor(Wire::toCbor(quiesced));
 }
 
+void FakeSocketAgent::sendAgentQuiescedThenClose(quint32 reason)
+{
+    sendAgentQuiesced(reason);
+    closeAllConnections();
+}
+
+void FakeSocketAgent::sendAgentResumed(quint32 reason)
+{
+    Wire::AgentResumed resumed;
+    resumed.reason = static_cast<Wire::QuiesceReason>(reason);
+    broadcastCbor(Wire::toCbor(resumed));
+}
+
 void FakeSocketAgent::emitConfigChanged(const QString& key)
 {
     broadcastCbor(Wire::toCbor(Wire::ConfigChanged{key.toStdString()}));

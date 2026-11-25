@@ -21,6 +21,9 @@
 #include <QLoggingCategory>
 #include <QVariant>
 
+#include <cstdint>
+#include <limits>
+
 #include <fcntl.h> // F_DUPFD_CLOEXEC (appearanceFont's per-call dup)
 
 namespace {
@@ -285,6 +288,12 @@ DBusTransport::DBusTransport(const QDBusConnection& connection, const QString& s
     // without the interface simply never emits it.
     m_connection.connect(m_service, QLatin1String(kRootPath), QLatin1String(kConfigIface), QStringLiteral("Changed"),
                          this, SLOT(onConfigChanged(QString)));
+    // Manager1.Quiesced / Resumed ride the root object as well, for the same
+    // reason: a rule installed late would miss the quiesce a lock announces.
+    m_connection.connect(m_service, QLatin1String(kRootPath), QLatin1String(kManagerIface), QStringLiteral("Quiesced"),
+                         this, SLOT(onQuiesced(uint)));
+    m_connection.connect(m_service, QLatin1String(kRootPath), QLatin1String(kManagerIface), QStringLiteral("Resumed"),
+                         this, SLOT(onResumed(uint)));
 }
 
 DBusTransport::~DBusTransport() = default;
@@ -364,6 +373,11 @@ bool DBusTransport::probeAvailability()
         // the seed path for an agent already running at construction time.
         refreshManagerProperties();
         m_managerPropertiesFetched = true;
+    }
+    if (hasOwner) {
+        // The agent answered: whatever quiesce it announced earlier is over
+        // or its end was missed, so start the next one from an empty set.
+        m_quiesce.clear();
     }
     return hasOwner;
 }
@@ -1025,8 +1039,37 @@ void DBusTransport::cancelCertificateDer(quint64 token, DerListener* listener)
     m_derListeners.cancel(token);
 }
 
+void DBusTransport::onQuiesced(uint reason)
+{
+    if (reason > std::numeric_limits<std::uint8_t>::max()) {
+        qCWarning(lcTransport) << "ignoring a Quiesced reason that is no quiesce-reason:" << reason;
+        return;
+    }
+    // The bus name stays, so the cached version, features and settings stay:
+    // only availability changes, with in-flight operations terminalized by
+    // the consumer exactly as for an agent death.
+    m_quiesce.begin(static_cast<LibreSCRS::Agent::QuiesceReason>(reason));
+    if (m_registry != nullptr) {
+        m_registry->onServiceUnregistered();
+    }
+}
+
+void DBusTransport::onResumed(uint reason)
+{
+    if (reason > std::numeric_limits<std::uint8_t>::max()) {
+        qCWarning(lcTransport) << "ignoring a Resumed reason that is no quiesce-reason:" << reason;
+        return;
+    }
+    // An end for a reason never announced changes nothing.
+    if (m_quiesce.end(static_cast<LibreSCRS::Agent::QuiesceReason>(reason)) && m_quiesce.empty() &&
+        m_registry != nullptr) {
+        m_registry->onServiceRegistered();
+    }
+}
+
 void DBusTransport::onServiceRegistered(const QString& /*service*/)
 {
+    m_quiesce.clear(); // a new owner starts with nothing quiesced
     if (!m_managerPropertiesFetched) {
         refreshManagerProperties();
         m_managerPropertiesFetched = true;
@@ -1049,6 +1092,7 @@ void DBusTransport::onServiceUnregistered(const QString& /*service*/)
     // cached list and version so neither survives past a real death nor a
     // different-generation agent that re-registers with a different set —
     // the next registration re-seeds both via onServiceRegistered() above.
+    m_quiesce.clear();
     m_managerPropertiesFetched = false;
     m_features.clear();
     m_agentVersion.clear();

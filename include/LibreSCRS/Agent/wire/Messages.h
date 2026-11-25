@@ -679,6 +679,11 @@ struct AgentQuiesced
     QuiesceReason reason{QuiesceReason::SystemSleep};
     bool operator==(const AgentQuiesced&) const = default;
 };
+struct AgentResumed
+{
+    QuiesceReason reason{QuiesceReason::SystemSleep};
+    bool operator==(const AgentResumed&) const = default;
+};
 
 [[nodiscard]] CborValue toCbor(const ReaderAdded&);
 [[nodiscard]] CborValue toCbor(const ReaderRemoved&);
@@ -691,5 +696,6 @@ struct AgentQuiesced
 [[nodiscard]] CborValue toCbor(const OpResultReady&);
 [[nodiscard]] CborValue toCbor(const OpFinished&);
 [[nodiscard]] CborValue toCbor(const AgentQuiesced&);
+[[nodiscard]] CborValue toCbor(const AgentResumed&);
 
 } // namespace LibreSCRS::Agent::Wire

@@ -667,13 +667,13 @@ bool SocketTransport::probeAvailability()
     if (!m_fd.valid()) {
         return connectAndHandshake();
     }
-    if (m_quiesced) {
-        // No resume event exists on this wire: the bounded GetState
-        // round-trip IS the probe — the agent answering again means card
+    if (!m_quiesce.empty()) {
+        // The bounded GetState round-trip is the fallback when an
+        // AgentResumed was missed — the agent answering again means card
         // access resumed.
         SyncResult result = callSync(Wire::GetState{}, kHandshakeTimeoutMs);
         if (result.failure == CallError::None && std::holds_alternative<Wire::StateReply>(result.reply)) {
-            m_quiesced = false;
+            m_quiesce.clear();
             return true;
         }
         return false;
@@ -1393,7 +1393,7 @@ bool SocketTransport::connectAndHandshake()
     m_configFetched = false;
     m_config.clear();
     m_established = true;
-    m_quiesced = false;
+    m_quiesce.clear(); // a new connection starts with nothing quiesced
     // A new connection generation: any ConnectionLost notice still queued
     // for an OLDER connection must not be announced against this one.
     ++m_generation;
@@ -1416,7 +1416,7 @@ void SocketTransport::dropConnection()
     m_reassembler.reset();
     const bool wasEstablished = m_established;
     m_established = false;
-    m_quiesced = false;
+    m_quiesce.clear();
     // The HelloAck's version described THAT connection's peer. Forget it here
     // rather than only overwriting it at the next handshake: between the drop
     // and a reconnect there is no agent, and TransportSeam::agentVersion()'s
@@ -1709,10 +1709,20 @@ void SocketTransport::dispatchEvent(Wire::DecodedEvent&& decoded, std::vector<Wi
         // Availability semantics: card access is quiesced (sleep / lock /
         // user switch), so the agent counts as unavailable — in-flight
         // operations are terminalized by the consumer exactly like an agent
-        // death — while the connection itself stays open for the re-probe.
-        m_quiesced = true;
+        // death — while the connection itself stays open for AgentResumed.
+        const auto& quiesced = std::get<Wire::AgentQuiesced>(event);
+        m_quiesce.begin(quiesced.reason);
         if (m_registry != nullptr) {
             m_registry->onServiceUnregistered();
+        }
+        return;
+    }
+    if (std::holds_alternative<Wire::AgentResumed>(event)) {
+        // One quiesce reason ended; the agent is reachable again when none is
+        // left. An end for a reason never announced changes nothing.
+        const auto& resumed = std::get<Wire::AgentResumed>(event);
+        if (m_quiesce.end(resumed.reason) && m_quiesce.empty() && m_registry != nullptr) {
+            m_registry->onServiceRegistered();
         }
         return;
     }
