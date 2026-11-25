@@ -153,11 +153,16 @@ struct StartOutcome
 
 /// The polled terminal triple of an operation (the lost-Finished recovery
 /// read). `completed == false` means the operation is still running.
+/// `phase` is the operation's phase at the time of the read, for a transport
+/// whose progress signals can fire before the subscription exists (D-Bus); empty
+/// when the transport cannot read it or has no need to (the socket wire delivers
+/// every progress frame in order).
 struct TerminalSnapshot
 {
     bool completed = false;
     OperationStatus status = OperationStatus::Error;
     ErrorCode errorCode = ErrorCode::None;
+    std::optional<OperationPhase> phase;
 };
 
 /// One typed operation payload, already scrubbed to public value types by the

@@ -49,11 +49,12 @@ struct SignFlowDeps
 // session is adopted, never re-established) -> seal the bytes upstream. No LM
 // types in the public Result.
 //
-// Watchdog discipline: this flow sets only Connecting; the provider lambda
-// drives AwaitingConsent (unbounded human PIN entry, never armed) then
+// Watchdog discipline: Connecting (set by this flow) arms the watchdog over the
+// session open and the pre-consent card I/O; the provider lambda drives
+// AwaitingConsent (unbounded human PIN entry, which disarms it) then
 // Authenticating + Signing AFTER the PIN is collected, so the per-op watchdog
-// (armed on Authenticating) covers the on-card signing PSO but never times the
-// human at the PIN prompt.
+// (re-armed on Authenticating) covers the on-card signing PSO but never times
+// the human at the PIN prompt.
 class SignFlow
 {
 public:

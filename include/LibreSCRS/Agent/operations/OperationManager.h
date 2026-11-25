@@ -119,8 +119,7 @@ public:
         }
         {
             std::lock_guard lock(worker->mutex);
-            worker->queue.push_back(std::move(op));
-            worker->cv.notify_one();
+            enqueueLocked(*worker, std::move(op));
         }
         return id;
     }
@@ -281,8 +280,19 @@ public:
         return it->second->background != nullptr;
     }
 
-    // Trip the cancel on the live Operation @p id. No-op if absent.
+    // Cancel the Operation @p id. One still waiting in a reader's queue is taken
+    // out and ended as Cancelled at once, so the wait never depends on the op
+    // ahead of it; a running one only has its cancel tripped (it ends when its
+    // doWork does). No-op for an invalid or unknown id.
     void cancel(OperationId id);
+
+    // The card on @p reader was removed: the waiting on it ends now instead of
+    // after the operation that holds the reader. The running op is cancelled
+    // (which also dismisses a prompt it waits on); queued ops that told their
+    // client they were Queued end as CardRemoved. Internal probes stay queued,
+    // and the rest keep their order. No-op for an unknown or invalid reader. NOT
+    // for system sleep: a sleeping reader's card is not removed.
+    void endOperationsOnCardRemoved(ObjectId reader);
 
     // Stop + drain the reader's worker. Queued ops finish Cancelled with
     // ErrorCode::CardRemoved. Called by the backend reader object's destructor.
@@ -361,6 +371,13 @@ public:
     {
         sweepFinished(std::chrono::steady_clock::duration::zero());
     }
+    // Run ONE round of the wedged-reader check the cleanup loop makes every second,
+    // so a test needs neither the loop nor its wall-clock rounds. Production never
+    // calls this.
+    void drainWedgedQueuesForTest()
+    {
+        drainWedgedQueues();
+    }
 #endif
 
 private:
@@ -432,6 +449,13 @@ private:
         std::chrono::steady_clock::time_point backgroundDue{};
         std::uint32_t backgroundRequests{0};
         bool stopping{false};
+        // Which run the worker is on: bumped under `mutex` each time it takes an op
+        // (queue or background slot). `wedgedSeq` is the run drainWedgedQueues last
+        // saw wedged (0 = none); equal to `runSeq` it means the same op was wedged
+        // on two rounds in a row. Both guarded by `mutex`; integers, so nothing
+        // compares pointers across an op's death.
+        std::uint64_t runSeq{0};
+        std::uint64_t wedgedSeq{0};
         std::jthread worker;
     };
 
@@ -450,11 +474,38 @@ private:
     // completion latch would never be signalled (bus-thread hang).
     [[nodiscard]] std::shared_ptr<ReaderWorker> workerFor(ObjectId reader, const std::string& readerName);
     void workerLoop(ReaderWorker& worker, std::stop_token st);
+    // Put @p op at the back of @p worker's queue and wake the worker. The caller
+    // holds worker.mutex. An op that cannot start at once (the worker runs another
+    // op, or others wait ahead) reports Queued FIRST, before it becomes visible to
+    // the worker: after push_back the worker may start it and report Connecting at
+    // any moment, and Queued must never follow that. The report is the property
+    // pulse, emitted here under worker.mutex; the worker never emits under it.
+    static void enqueueLocked(ReaderWorker& worker, std::unique_ptr<OperationBase> op);
     // Run @p op (already marked in flight) and hand it to the cleanup-grace queue
     // (or drop it in test mode). Shared by the queue and the background slot so
     // there is one copy. Returns true when the worker was abandoned meanwhile
     // and must exit without touching the manager.
     [[nodiscard]] bool runAndHandOff(ReaderWorker& worker, std::unique_ptr<OperationBase> op);
+    // The end of an op's life as the manager sees it, for an op that ran or one the
+    // manager ended without running: reclaim its watchdog thread, then park it for
+    // the cleanup grace (production) or scrub the id tables and destroy it (test
+    // mode, where nothing sweeps). Not for the worker's abandoned path. May run on
+    // the worker, bus, cleanup or card-removal (host monitor) thread; takes no
+    // worker.mutex.
+    void handOffFinished(std::unique_ptr<OperationBase> op);
+    // Once a second, from the cleanup loop. When a reader's worker has been on the
+    // same op for two rounds in a row and that op's watchdog has fired (its doWork
+    // is not coming back), end the operations queued behind it that reported
+    // Queued, as WatchdogTimeout. One round only notes the op, so an op that stops
+    // on its own right after the watchdog never costs its queue. Per reader.
+    void drainWedgedQueues();
+    // Every live worker, as shared copies taken under m_workersMutex.
+    [[nodiscard]] std::vector<std::shared_ptr<ReaderWorker>> snapshotWorkers();
+    // Take the ops that reported Queued out of @p worker's queue, keeping the
+    // order of the rest (an internal probe stays queued and runs when the reader
+    // frees). The caller holds worker.mutex and ends the returned ops off every
+    // lock.
+    [[nodiscard]] static std::vector<std::unique_ptr<OperationBase>> takeQueuedLocked(ReaderWorker& worker);
     // Land @p op in @p worker's slot unless the worker is stopping; whichever op
     // is refused or replaced is destroyed after every lock is released.
     void installBackground(std::shared_ptr<ReaderWorker> worker, std::unique_ptr<OperationBase> op,

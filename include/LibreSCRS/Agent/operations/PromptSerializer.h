@@ -31,7 +31,7 @@ using ReaderIdentityForCard = std::function<LibreSCRS::Agent::ReaderIdentity(con
 // credential prompts concurrently, and they are meant to: a dialog raised for
 // one reader must never stall — or kill — a read on another. This gate was
 // originally agent-wide, and that is exactly what went wrong in practice. The
-// per-operation watchdog arms on entry to Authenticating, BEFORE a worker
+// per-operation watchdog arms on entry to Connecting, BEFORE a worker
 // queues here, so an unanswered dialog on one reader did not merely delay the
 // others: after the watchdog budget elapsed their operations died with
 // WatchdogTimeout and their pages went with them. One card left waiting for a

@@ -260,3 +260,33 @@ TEST(IdentityPrefetch, MissingHolderFailsAndIsLogged)
     EXPECT_FALSE(rig.readCache.get(kCard).has_value());
     EXPECT_NE(all.find("identity prefetch done: card=card-P outcome=failed"), std::string::npos) << all;
 }
+
+// The background read is as unattended as a stuck card gets, so it runs under
+// the same watchdog as every other operation: it arms once, at the start of the
+// read. The arm is placed after the checks that do no card I/O, so a read that
+// never touches the card never starts a timer.
+TEST(IdentityPrefetch, TheReadArmsTheWatchdogOnce)
+{
+    Rig rig;
+    auto op = rig.makeOp();
+    op->runOnWorker();
+    EXPECT_EQ(op->watchdogArmAttempts(), 1u);
+}
+
+TEST(IdentityPrefetch, ACachedEntryArmsNoWatchdog)
+{
+    Rig rig;
+    rig.readCache.put(kCard, someSnapshot());
+    auto op = rig.makeOp();
+    op->runOnWorker();
+    EXPECT_EQ(op->watchdogArmAttempts(), 0u);
+}
+
+TEST(IdentityPrefetch, AMissingHolderArmsNoWatchdog)
+{
+    Rig rig;
+    rig.holder.reset();
+    auto op = rig.makeOp();
+    op->runOnWorker();
+    EXPECT_EQ(op->watchdogArmAttempts(), 0u);
+}

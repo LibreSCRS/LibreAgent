@@ -9,7 +9,7 @@
 
   Stable wire contract:
     Phase enum (uint32):
-       0 Created          object queued behind another op on this reader
+       0 Created          minted; not queued behind another op and not started yet
        1 Connecting       opening LM session
        2 AwaitingConsent  prompter dialog up
        3 Authenticating   LM activating authenticated channel
@@ -17,6 +17,7 @@
        5 Signing          LM producing the signature on the card
        6 Timestamping     LM applying the RFC-3161 timestamp (b-t)
        7 Done             terminal; matches the moment Finished fired
+       8 Queued           waiting behind another op on this reader; its worker has not started it
 
     Finished.status enum (uint32):
        0 Ok           operation completed normally

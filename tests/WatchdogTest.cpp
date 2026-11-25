@@ -385,6 +385,49 @@ TEST(Watchdog, HungTimestampIsBoundedByTheArmFromItsOneMachinePhaseEntry)
         << "one machine-phase entry (Authenticating); Signing/Timestamping must not arm";
 }
 
+// Opening the session is machine time too: a flow stuck right after it reports
+// Connecting (a reader that never answers) must be bounded by the watchdog, so
+// the operations queued behind it can be ended instead of waiting for ever.
+TEST(Watchdog, ConnectingPhaseArmsTheWatchdog)
+{
+    CapturedFinish slot;
+    auto state = std::make_shared<OperationState>();
+    state->watchdogTimeoutSec.store(1u);
+
+    class ConnectingOp final : public OperationBase
+    {
+    public:
+        ConnectingOp(std::unique_ptr<OperationChannel> a, std::shared_ptr<OperationState> s)
+            : OperationBase(std::move(a), std::move(s))
+        {}
+
+    protected:
+        void doWork() override
+        {
+            setPhase(static_cast<std::uint32_t>(OperationPhase::Connecting));
+            for (int i = 0; i < 500; ++i) {
+                if (isCancelled() || token().isCancelled()) {
+                    finish(OperationStatus::Cancelled, ErrorCode::None, "op.cancelled", "cancelled");
+                    return;
+                }
+                std::this_thread::sleep_for(10ms);
+            }
+            finish(OperationStatus::Ok, ErrorCode::None, "op.ok", "ok");
+        }
+    };
+
+    ConnectingOp op(std::make_unique<CapturingChannel>(slot), state);
+    std::jthread runner([&op] { op.runOnWorker(); });
+
+    const auto deadline = std::chrono::steady_clock::now() + 3s;
+    while (slot.count.load(std::memory_order_acquire) == 0 && std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::sleep_for(20ms);
+    }
+    EXPECT_EQ(slot.errorCode.load(std::memory_order_acquire), static_cast<std::uint32_t>(ErrorCode::WatchdogTimeout))
+        << "an operation stuck after Connecting must be bounded by the watchdog";
+    EXPECT_EQ(op.watchdogArmAttempts(), 1u);
+}
+
 TEST(Watchdog, EarlyFinishCancelsWatchdog)
 {
     // If doWork finishes before the watchdog expires, the watchdog must
@@ -511,6 +554,35 @@ TEST(Watchdog, WatchdogFinishUnderCancelledShutdownElidesTheWireEmitButSetsTermi
     EXPECT_EQ(op.terminalStatus(), static_cast<std::uint32_t>(OperationStatus::Error));
 
     latch.release(); // let the wedged worker unwind cleanly
+}
+
+// Waiting behind another operation is not machine time: a Queued report must not
+// start the stall timer (it would run out while the operation ahead still holds
+// the reader).
+TEST(Watchdog, QueuedPhaseDoesNotArmTheWatchdog)
+{
+    CapturedFinish slot;
+    auto state = std::make_shared<OperationState>();
+    state->watchdogTimeoutSec.store(1u);
+
+    class QueuedOp final : public OperationBase
+    {
+    public:
+        QueuedOp(std::unique_ptr<OperationChannel> a, std::shared_ptr<OperationState> s)
+            : OperationBase(std::move(a), std::move(s))
+        {}
+
+    protected:
+        void doWork() override
+        {
+            setPhase(static_cast<std::uint32_t>(OperationPhase::Queued));
+            finish(OperationStatus::Ok, ErrorCode::None, "op.ok", "ok");
+        }
+    };
+
+    QueuedOp op(std::make_unique<CapturingChannel>(slot), state);
+    op.runOnWorker();
+    EXPECT_EQ(op.watchdogArmAttempts(), 0u);
 }
 
 TEST(Watchdog, ZeroTimeoutDisablesWatchdog)

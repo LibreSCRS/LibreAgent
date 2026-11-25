@@ -81,8 +81,11 @@ public:
     ///        the agent is working and restarts on every progress report; it
     ///        stops while a person is at the agent's prompt
     ///        (`OperationPhase::AwaitingConsent`, `Authenticating`), because
-    ///        someone reading a PIN off a letter is not a stall. When it runs
-    ///        out, the operation is cancelled at the agent and finishes here
+    ///        someone reading a PIN off a letter is not a stall, and while the
+    ///        agent reports `OperationPhase::Queued` (waiting behind another
+    ///        operation on the same reader); the next report starts it again.
+    ///        An agent that reports nothing at all is still given up on. When it
+    ///        runs out, the operation is cancelled at the agent and finishes here
     ///        through the ordinary `finished()`, with `callError()` ==
     ///        `CallError::Timeout`. Zero or less turns the bound off.
     void setStallBudget(int milliseconds);
@@ -210,7 +213,10 @@ Q_SIGNALS:
     /// @brief Progress report: the agent moved into @p phase. Zero or more
     ///        emissions between minting and `finished()`; not every operation
     ///        kind visits every phase, and an operation that fails fast may
-    ///        emit none at all.
+    ///        emit none at all. On the D-Bus transport a phase the agent
+    ///        reported before this client subscribed is read back at
+    ///        construction and delivered here once, on the next turn of the
+    ///        event loop.
     void phaseChanged(LibreSCRS::AgentClient::OperationPhase phase);
     /// @brief Progressive identity-field delivery: one field group became
     ///        available. Zero or more emissions, in order, strictly before
@@ -279,6 +285,7 @@ private:
     void emitFinishedOnce(OperationStatus terminalStatus, ErrorCode code, CallError call, std::optional<SyncError> sync,
                           const QString& msgKey, const QString& msgFallback);
     void recoverIfAlreadyFinished();
+    void applyRecoveredPhase(OperationPhase recovered);
 
     struct LIBRESCRS_AGENTCLIENT_NO_EXPORT Private;
     std::unique_ptr<Private> d;

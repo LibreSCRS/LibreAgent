@@ -33,7 +33,7 @@ ClientQtCardDateTest 5
 ClientQtConfigKeyMirrorTest 2
 ClientQtCredentialTypesTest 7
 ClientQtDBusContractTest 3
-ClientQtDBusIntegrationTest 35
+ClientQtDBusIntegrationTest 36
 ClientQtDerListenerRegistryTest 6
 ClientQtErrorNameMapTest 11
 ClientQtFailureCopyTest 1
@@ -43,12 +43,12 @@ ClientQtPrivateBusDefaultTest 3
 ClientQtPrivateBusServiceDirTest 4
 ClientQtSealedPayloadInternalTest 8
 ClientQtSealedPayloadTest 14
-ClientQtSeamTest 55
+ClientQtSeamTest 60
 ClientQtSecurityChecksTest 17
 ClientQtSecurityVocabularyTest 5
 ClientQtSharedAgentClientTest 2
 ClientQtSignedOutputPathTest 13
-ClientQtSocketIntegrationTest 54
+ClientQtSocketIntegrationTest 55
 ClientQtSocketPathTest 2
 ClientQtSyncErrorTest 10
 ClientQtTokenMapTest 14
@@ -74,7 +74,7 @@ FieldKeyParityTest 4
 FrameReassemblerTest 8
 FramingTest 11
 GetPhotoOperationTest 5
-IdentityPrefetchTest 10
+IdentityPrefetchTest 13
 IdentityReadFlowTest 48
 IdentityTest 3
 KeyActivationFlowTest 10
@@ -90,7 +90,7 @@ MrzPayloadTest 18
 ObjectRegistryTest 16
 OperationBaseTest 8
 OperationLauncherTest 19
-OperationManagerTest 34
+OperationManagerTest 50
 OperationPhaseTest 2
 PinChangeFlowTest 30
 Pkcs11BrokerTest 44
@@ -132,7 +132,7 @@ TempDirTest 3
 TestSupportHeaderClosure.cmake 1
 TokenInfoReadFlowTest 7
 VisualLayoutServiceTest 7
-WatchdogTest 12
+WatchdogTest 14
 WireBoundedFdReadTest 8
 WireContractGuardTest 18
 WireHeadersTest 1

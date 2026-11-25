@@ -15,7 +15,7 @@ ClientQtCardDateTest 5
 ClientQtConfigKeyMirrorTest 2
 ClientQtCredentialTypesTest 7
 ClientQtDBusContractTest 3
-ClientQtDBusIntegrationTest 35
+ClientQtDBusIntegrationTest 36
 ClientQtDerListenerRegistryTest 6
 ClientQtErrorNameMapTest 11
 ClientQtFailureCopyTest 1
@@ -25,12 +25,12 @@ ClientQtPrivateBusDefaultTest 3
 ClientQtPrivateBusServiceDirTest 4
 ClientQtSealedPayloadInternalTest 8
 ClientQtSealedPayloadTest 14
-ClientQtSeamTest 55
+ClientQtSeamTest 60
 ClientQtSecurityChecksTest 17
 ClientQtSecurityVocabularyTest 5
 ClientQtSharedAgentClientTest 2
 ClientQtSignedOutputPathTest 13
-ClientQtSocketIntegrationTest 54
+ClientQtSocketIntegrationTest 55
 ClientQtSocketPathTest 2
 ClientQtSyncErrorTest 10
 ClientQtTokenMapTest 14

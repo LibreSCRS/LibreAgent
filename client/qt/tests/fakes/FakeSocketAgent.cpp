@@ -598,6 +598,17 @@ int FakeSocketAgent::operationCount() const
     return static_cast<int>(m_operations.size());
 }
 
+void FakeSocketAgent::sendProgress(quint32 phase)
+{
+    if (m_operations.empty() || !isLive(m_operations.back()->connection)) {
+        return;
+    }
+    Wire::OpProgress progress;
+    progress.op = m_operations.back()->id;
+    progress.phase = static_cast<Wire::OperationPhase>(phase);
+    sendCbor(m_operations.back()->connection, Wire::toCbor(progress));
+}
+
 int FakeSocketAgent::cancelledOperationCount() const
 {
     return m_cancelledOps;
@@ -727,6 +738,12 @@ void FakeSocketAgent::mintOperation(Connection* connection, quint64 req, OpKind 
     // The op-started reply is enqueued BEFORE any of the op's events — the
     // unicast-FIFO ordering the wire contract guarantees.
     sendCbor(connection, Wire::makeReply(req, Wire::OpStarted{opId}));
+    for (const quint32 phase : m_config.announcePhases) {
+        Wire::OpProgress announced;
+        announced.op = opId;
+        announced.phase = static_cast<Wire::OperationPhase>(phase);
+        sendCbor(connection, Wire::toCbor(announced));
+    }
     if (m_config.raceResultBeforeReturn) {
         fireOperation(opId); // events written before the client even parses the reply
         return;

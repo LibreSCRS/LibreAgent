@@ -35,6 +35,7 @@ Q_LOGGING_CATEGORY(lcAgentOp, "librescrs.agentclient.operation")
     case OperationPhase::Signing:
     case OperationPhase::Timestamping:
     case OperationPhase::Done:
+    case OperationPhase::Queued:
         return true;
     }
     return false;
@@ -125,13 +126,15 @@ struct AgentOperation::Private final : public OperationListener, public Transpor
     QTimer stallTimer;
     int stallBudgetMs = kLongOperationTimeoutMs;
 
-    /// The one arming rule: a person at the prompt stops the clock, any other
-    /// phase (re)starts it, so every report from the agent is a heartbeat.
+    /// The one arming rule: the clock stops while a person is at the prompt or
+    /// the operation waits in the agent's queue behind another one on the same
+    /// reader; any other phase (re)starts it, so every report from the agent is a
+    /// heartbeat. An agent that reports nothing leaves the clock running.
     void armForPhase(OperationPhase current)
     {
-        const bool personAtPrompt =
-            current == OperationPhase::AwaitingConsent || current == OperationPhase::Authenticating;
-        if (finishedEmitted || stallBudgetMs <= 0 || personAtPrompt) {
+        const bool clockStopped = current == OperationPhase::AwaitingConsent ||
+                                  current == OperationPhase::Authenticating || current == OperationPhase::Queued;
+        if (finishedEmitted || stallBudgetMs <= 0 || clockStopped) {
             stallTimer.stop();
             return;
         }
@@ -561,14 +564,40 @@ void AgentOperation::emitFinishedOnce(OperationStatus terminalStatus, ErrorCode 
     }
 }
 
+void AgentOperation::applyRecoveredPhase(OperationPhase recovered)
+{
+    d->phase = recovered;
+    d->armForPhase(recovered);
+    // Publish on the next turn of the loop: a consumer connects after the
+    // constructor returns. Skip it if a live phase has since replaced this one or
+    // the operation has finished, so a slot never sees an older phase after a
+    // newer one, nor any phase after `finished`.
+    QMetaObject::invokeMethod(
+        this,
+        [this, recovered]() {
+            if (!d->finishedEmitted && d->phase == recovered) {
+                Q_EMIT phaseChanged(recovered);
+            }
+        },
+        Qt::QueuedConnection);
+}
+
 void AgentOperation::recoverIfAlreadyFinished()
 {
     // Read the terminal triple. If the operation already finished before our
     // subscriptions installed, synthesize the missed terminal + recover the
     // typed payload. One bounded pull — never an uncapped wait.
     const std::optional<TerminalSnapshot> snapshot = d->transport->fetchOperationState(d->operationId);
-    if (!snapshot || !snapshot->completed) {
-        return; // not finished yet (or the read failed) — the live signal drives us
+    if (!snapshot) {
+        return; // the read failed — the live signal drives us
+    }
+    if (!snapshot->completed) {
+        // Still running. A phase reported before our subscription existed was
+        // missed; take it from the read.
+        if (snapshot->phase && isKnownPhase(*snapshot->phase) && *snapshot->phase != d->phase) {
+            applyRecoveredPhase(*snapshot->phase);
+        }
+        return;
     }
     // The terminal triple carries no message; clients map errorCode().
     finalizeTerminal(snapshot->status, snapshot->errorCode, QString(), QString());

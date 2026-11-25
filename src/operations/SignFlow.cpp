@@ -196,11 +196,11 @@ SignFlow::Result SignFlow::run()
                 // the on-card signing phase. Both happen AFTER the human, so the
                 // unbounded consent wait above is never timed.
                 //
-                // The Reading arm set before signer.sign() bounded the pre-consent
-                // on-card I/O (the anti-TOCTOU re-read / PACE establishment);
-                // entering AwaitingConsent above disarmed it, exactly so this wait
-                // for the human is on no clock. Re-arming here starts a FRESH
-                // budget for the on-card signing that follows.
+                // The watchdog armed at Connecting bounded the pre-consent on-card
+                // I/O (the anti-TOCTOU re-read / PACE establishment); entering
+                // AwaitingConsent above disarmed it, exactly so this wait for the
+                // human is on no clock. Re-arming here starts a FRESH budget for
+                // the on-card signing that follows.
                 phaseSink.setPhase(static_cast<std::uint32_t>(OperationPhase::Authenticating));
                 phaseSink.setPhase(static_cast<std::uint32_t>(OperationPhase::Signing));
                 std::vector<LibreSCRS::Auth::CredentialEntry> entries;
@@ -240,7 +240,8 @@ SignFlow::Result SignFlow::run()
     // The pre-consent stretch of sign() does real on-card work (the anti-TOCTOU
     // re-read, PACE establishment) before any prompt, and it runs as Reading so
     // a client's pre-PIN window names it instead of showing a generic busy
-    // state. Reading is a machine phase, so it also arms the watchdog over that
+    // state. The watchdog is already armed by Connecting (Reading is a machine
+    // phase too, but its arm is refused while the timer runs), so it covers that
     // I/O; entry into AwaitingConsent disarms it before the human is asked (see
     // OperationBase::setPhase), keeping the consent wait untimed.
     m_deps.phaseSink.setPhase(static_cast<std::uint32_t>(OperationPhase::Reading));

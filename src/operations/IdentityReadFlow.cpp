@@ -174,7 +174,8 @@ IdentityReadFlow::Result IdentityReadFlow::run()
     // The plugin's readCard self-activates the secure channel (invoking the
     // provider above on a cache miss) and then reads the data groups. Emit
     // Authenticating before the read so the UI surfaces the unlock window,
-    // then Reading immediately after: the watchdog arms on either, and we
+    // then Reading immediately after: the watchdog arms on either (it is usually
+    // armed already, by Connecting, and then keeps that budget), and we
     // have no per-group callback on the read seam to draw a finer boundary,
     // so the Authenticating→Reading split is intentionally coarse.
     m_deps.phaseSink.setPhase(static_cast<std::uint32_t>(OperationPhase::Authenticating));

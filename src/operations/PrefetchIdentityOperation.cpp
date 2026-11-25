@@ -47,6 +47,8 @@ void PrefetchIdentityOperation::doWork()
         return;
     }
 
+    // The silent channel emits nothing, but the phase arms the watchdog.
+    setPhase(static_cast<std::uint32_t>(OperationPhase::Connecting));
     IdentityPrefetchFlow flow(IdentityPrefetchFlowDeps{
         .holder = *m_deps.holder,
         .reader = m_deps.reader,

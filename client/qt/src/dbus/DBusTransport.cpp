@@ -819,6 +819,12 @@ std::optional<TerminalSnapshot> DBusTransport::fetchOperationState(const QString
     const QVariant errorV = props.value(QStringLiteral("ErrorCode"));
     snapshot.status = static_cast<OperationStatus>(statusV.isValid() ? statusV.toUInt() : 2U);
     snapshot.errorCode = static_cast<ErrorCode>(errorV.isValid() ? errorV.toUInt() : 0U);
+    // The phase the agent is in now: a progress signal sent before our match was
+    // installed is gone, and this read is how it is not lost.
+    const QVariant phaseV = props.value(QStringLiteral("Phase"));
+    if (phaseV.isValid()) {
+        snapshot.phase = static_cast<OperationPhase>(phaseV.toUInt());
+    }
     return snapshot;
 }
 

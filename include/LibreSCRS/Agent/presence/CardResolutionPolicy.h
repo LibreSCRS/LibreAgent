@@ -175,9 +175,13 @@ private:
 // invalidate as well; clearing the FLAG here keeps a later idle sweep from
 // re-acquiring a hold on an empty reader. The worker handles both flags in one
 // pass, so the order is a convention, not an observable. A reader that is
-// already gone hands this an invalid id, on which both calls are no-ops.
+// already gone hands this an invalid id, on which every call is a no-op.
+// First the waiting on the reader ends: the running op is cancelled (dismissing
+// a prompt it waits on) and ops queued behind it end as CardRemoved, instead of
+// waiting for the op ahead to notice on its own.
 inline void releaseReaderOnCardRemoved(Operations::OperationManager& operations, ObjectId reader)
 {
+    operations.endOperationsOnCardRemoved(reader);
     operations.setReaderHold(reader, false);
     operations.invalidateReaderSession(reader);
 }

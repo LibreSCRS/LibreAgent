@@ -15,10 +15,10 @@ ClientQtFieldOrderTest 5
 ClientQtIdentityRowsTest 5
 ClientQtSealedPayloadInternalTest 8
 ClientQtSealedPayloadTest 9
-ClientQtSeamTest 45
+ClientQtSeamTest 60
 ClientQtSecurityChecksTest 17
 ClientQtSecurityVocabularyTest 5
-ClientQtSocketIntegrationTest 51
+ClientQtSocketIntegrationTest 54
 ClientQtSyncErrorTest 10
 ClientQtTokenMapTest 14
 ClientQtTypesTest 16

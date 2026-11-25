@@ -48,6 +48,7 @@
 #include <algorithm>
 #include <memory>
 #include <optional>
+#include <vector>
 
 using namespace LibreSCRS::AgentClient;
 using namespace LibreSCRS::AgentClient::Fakes;
@@ -148,6 +149,10 @@ public:
     void sendNonCanonicalFrame()
     {
         runOnThread(m_context, [this]() { m_agent->sendNonCanonicalFrame(); });
+    }
+    void sendProgress(quint32 phase)
+    {
+        runOnThread(m_context, [this, phase]() { m_agent->sendProgress(phase); });
     }
     /// Keep the fake's thread busy for @p ms without blocking the caller: for
     /// that long the agent reads nothing, so what the client sends piles up in
@@ -1631,6 +1636,43 @@ TEST(SocketIntegration, OpStallHasNoInternalWatchdogCancelIsTheEscapeValve)
     op->cancel();
     ASSERT_TRUE(waitFor([&]() { return op->isFinished(); }));
     EXPECT_EQ(op->status(), OperationStatus::Cancelled);
+}
+
+// ---- queued: an agent that reports "waiting" is not stalled ----------------------------
+
+TEST(SocketIntegration, AQueuedReportStopsTheStallClockAndTheNextPhaseRestartsIt)
+{
+    FakeSocketAgent::Config cfg;
+    cfg.capabilities = Cap::Pki;
+    cfg.operationDelayMs = 60000; // the agent never finishes this op on its own
+    cfg.announcePhases = {static_cast<quint32>(OperationPhase::Queued)};
+    SocketHarness h(cfg);
+
+    auto client = makeClient(h);
+    AgentCard* card = client->card(QLatin1String(kCardId));
+    ASSERT_NE(card, nullptr);
+
+    AgentOperation* op = card->readIdentity();
+    ASSERT_NE(op, nullptr);
+    op->setStallBudget(150);
+    std::vector<OperationPhase> seen;
+    QObject::connect(op, &AgentOperation::phaseChanged, op, [&seen](OperationPhase phase) { seen.push_back(phase); });
+
+    // Queued arrives (queued behind op-started by the unicast FIFO), then silence
+    // for several budgets: the agent is alive and waiting, not stalled.
+    ASSERT_TRUE(waitFor([&]() { return !seen.empty(); }));
+    EXPECT_EQ(seen.front(), OperationPhase::Queued);
+    QDeadlineTimer settle(700);
+    while (!settle.hasExpired()) {
+        QCoreApplication::processEvents(QEventLoop::AllEvents, 20);
+        QThread::msleep(1);
+    }
+    EXPECT_FALSE(op->isFinished()) << "a queued operation must not be given up as stalled";
+
+    // The operation ahead frees the reader and this one starts: bounded again.
+    h.sendProgress(static_cast<quint32>(OperationPhase::Connecting));
+    ASSERT_TRUE(waitFor([&]() { return op->isFinished(); }));
+    EXPECT_EQ(op->callError(), CallError::Timeout);
 }
 
 // ---- FIFO delivery: result racing the op-started reply is never lost ----------------------

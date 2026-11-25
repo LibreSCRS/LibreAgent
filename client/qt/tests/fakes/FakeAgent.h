@@ -484,6 +484,10 @@ public:
     ~FakeOperation() override;
 
     [[nodiscard]] QString path() const;
+    void setInitialPhase(uint phase)
+    {
+        m_initialPhase = phase;
+    }
     void start();
 
     /// @brief Send the frozen NoResult D-Bus error for the active GetResult call
@@ -553,6 +557,7 @@ private:
     uint m_finalErrorCode;
     bool m_suppressResult; ///< finish Ok WITHOUT emitting the typed Result AND with nothing to recover (total loss)
     bool m_completed = false;
+    uint m_initialPhase = 4; ///< the Phase property while running (4 = Reading)
     /// A ListCredentials operation: the agent's listing cache is populated when
     /// THIS completes, not when the method that minted it returned.
     bool m_marksListingCurrent = false;
@@ -620,6 +625,9 @@ public:
         // "agent predating this surface" absence case.
         QString cardType;
         QString atrHex;
+        /// The Phase property a running operation reports (4 = Reading, 8 =
+        /// Queued): a phase the agent was already in when the client subscribed.
+        uint initialPhase = 4;
         int operationDelayMs = 5; ///< delay before an op fires its result/finished
         uint finalStatus = 0;     ///< 0 Ok / 1 Cancelled / 2 Error
         /// Terminal status for the ListCredentials operation ALONE, scripted apart

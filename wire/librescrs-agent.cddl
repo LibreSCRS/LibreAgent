@@ -49,7 +49,7 @@ pre-read-auth  = &( None: 0, Mrz: 1, Can: 2 )
 ; unrecognised value (AgentOperation on the Qt client, and the Swift
 ; mirror's operation object); an unrecognised op-status is treated as Error.
 op-phase  = &( Created: 0, Connecting: 1, AwaitingConsent: 2, Authenticating: 3,
-               Reading: 4, Signing: 5, Timestamping: 6, Done: 7 )
+               Reading: 4, Signing: 5, Timestamping: 6, Done: 7, Queued: 8 )
 op-status = &( Ok: 0, Cancelled: 1, Error: 2 )
 ; 21 stable, append-only values — MUST match LibreAgent's
 ; include/LibreSCRS/Agent/wire/ErrorCode.h.

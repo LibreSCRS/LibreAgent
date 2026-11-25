@@ -969,7 +969,7 @@ TEST(ClientCodec, OpFinishedRoundTrips)
 }
 
 // (i) OperationPhase append-tolerance: a phase past this build's last known
-// value (Done=7) -- as a newer agent would send -- decodes through raw
+// value (Queued=8) -- as a newer agent would send -- decodes through raw
 // rather than failing the frame closed. Hold-last-phase degradation is a
 // client-layer (AgentOperation) concern, asserted in SeamMappingTest.cpp, not
 // here -- the codec is a stateless carrier.
@@ -978,7 +978,7 @@ TEST(ClientCodec, OpProgressToleratesAppendedPhaseValue)
     CborValue::Map ev;
     ev.emplace("t", CborValue(std::string("OpProgress")));
     ev.emplace("op", CborValue::uint(50));
-    ev.emplace("phase", CborValue::uint(99)); // past Done=7
+    ev.emplace("phase", CborValue::uint(99)); // past Queued=8
     const auto bytes = CborValue(std::move(ev)).encode();
     const auto decoded = parseEvent(bytes, noFds());
     ASSERT_TRUE(decoded.has_value());

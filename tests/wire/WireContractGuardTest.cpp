@@ -142,8 +142,9 @@ static_assert(u(OperationPhase::Authenticating) == 3u, "wire contract: op-phase 
 static_assert(u(OperationPhase::Reading) == 4u, "wire contract: op-phase Reading drifted from 4");
 static_assert(u(OperationPhase::Signing) == 5u, "wire contract: op-phase Signing drifted from 5");
 static_assert(u(OperationPhase::Timestamping) == 6u, "wire contract: op-phase Timestamping drifted from 6");
-static_assert(u(OperationPhase::Done) == 7u,
-              "wire contract: op-phase Done (last) drifted from 7; bump the CDDL op-phase");
+static_assert(u(OperationPhase::Done) == 7u, "wire contract: op-phase Done drifted from 7");
+static_assert(u(OperationPhase::Queued) == 8u,
+              "wire contract: op-phase Queued (last) drifted from 8; bump the CDDL op-phase");
 static_assert(u(OperationStatus::Ok) == 0u, "wire contract: op-status Ok drifted from 0");
 static_assert(u(OperationStatus::Cancelled) == 1u, "wire contract: op-status Cancelled drifted from 1");
 static_assert(u(OperationStatus::Error) == 2u, "wire contract: op-status Error drifted from 2");
@@ -176,6 +177,8 @@ constexpr const char* opPhaseWireName(OperationPhase p) noexcept
         return "Timestamping";
     case OperationPhase::Done:
         return "Done";
+    case OperationPhase::Queued:
+        return "Queued";
     }
     return nullptr; // not a phase value (used to probe past the end for the count)
 }
@@ -187,7 +190,7 @@ constexpr std::uint32_t opPhaseCount() noexcept
     }
     return count;
 }
-static_assert(opPhaseCount() == 8u, "wire contract: op-phase has 8 values; update the CDDL + this switch together");
+static_assert(opPhaseCount() == 9u, "wire contract: op-phase has 9 values; update the CDDL + this switch together");
 
 // --- LibreAgent OperationStatus <-> CDDL `op-status` -------------------------
 constexpr const char* opStatusWireName(OperationStatus s) noexcept
@@ -648,7 +651,7 @@ TEST(WireContractGuard, MacOsAnchorsHold)
 {
     for (const auto phase : {OperationPhase::Created, OperationPhase::Connecting, OperationPhase::AwaitingConsent,
                              OperationPhase::Authenticating, OperationPhase::Reading, OperationPhase::Signing,
-                             OperationPhase::Timestamping, OperationPhase::Done}) {
+                             OperationPhase::Timestamping, OperationPhase::Done, OperationPhase::Queued}) {
         switch (phase) { // no default: -Werror=switch fires on an appended phase
         case OperationPhase::Created:
         case OperationPhase::Connecting:
@@ -658,6 +661,7 @@ TEST(WireContractGuard, MacOsAnchorsHold)
         case OperationPhase::Signing:
         case OperationPhase::Timestamping:
         case OperationPhase::Done:
+        case OperationPhase::Queued:
             break;
         }
     }

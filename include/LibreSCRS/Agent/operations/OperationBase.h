@@ -71,10 +71,13 @@ public:
     // token is a no-op.
     void bindShutdownToken(LibreSCRS::CancelToken shutdownToken) noexcept;
 
-    // Reclaim this op's per-op auxiliary thread (the watchdog) once it is terminal, WITHOUT destroying the op
-    // (it stays exported for the cleanup grace). Called by the per-reader
-    // worker thread immediately after runOnWorker() returns, so it never
-    // joins the thread it runs on. Idempotent.
+    // Reclaim this op's per-op auxiliary thread (the watchdog) once it is
+    // terminal, WITHOUT destroying the op (it stays exported for the cleanup
+    // grace). Called by the per-reader worker thread after runOnWorker()
+    // returns, and by the manager's bus, cleanup and card-removal (host
+    // monitor) threads for an op it ends without running (its watchdog is
+    // then never armed). NEVER from the watchdog thread itself: it would
+    // join itself. Idempotent.
     void quiesce() noexcept;
 
     // Bus thread -> worker: trips the cancel flag in the shared state.
@@ -82,10 +85,26 @@ public:
     // OperationManager's drain / NameOwnerChanged paths.
     void requestCancel() noexcept;
 
+    // Trips the cancel exactly like requestCancel(), but does NOT dismiss the
+    // prompter: when the op was waiting at a consent prompt it returns a COPY of
+    // the dismissal callback for the caller to invoke, empty otherwise. For a
+    // caller that holds a lock the dismissal must not run under (it can be a
+    // synchronous IPC call). The callbacks the operations pass capture only
+    // agent-lifetime pointers (prompter, serializer) and the card key by value,
+    // so invoking the copy after this op was destroyed is safe. If the copy
+    // cannot be made the dismissal runs inline and the result is empty.
+    [[nodiscard]] std::function<void()> cancelWithoutDismissing() noexcept;
+
     // Auto-cancel finish: drain loop on ReaderRemoved / CardRemoved calls
     // this to terminate queued ops with errorCode = CardRemoved instead of
     // a vanilla Cancelled (errorCode = None).
     void finishCardRemoved() noexcept;
+
+    // Cancel finish for an op that never started: the manager takes it out of
+    // the reader's queue and ends it here, so a client's cancel does not wait
+    // for the op ahead of it. Trips cancel, then finishes Cancelled/None with
+    // the message the running flows give a cancel.
+    void finishCancelled() noexcept;
 
     // Watchdog finish: per-op timer expired before the worker observed
     // its cancel + finish on its own. Trips cancel and finishes with
@@ -137,15 +156,29 @@ public:
         return m_token;
     }
 
+    // Did the watchdog time this op out? Latched before the op is finished, so a
+    // true answer means the op is (or is about to be) finished as WatchdogTimeout
+    // even if its doWork() has not returned.
+    [[nodiscard]] bool watchdogFired() const noexcept
+    {
+        return m_watchdogFired.load(std::memory_order_acquire);
+    }
+
+    // The op's current phase (an OperationPhase value), as last set.
+    [[nodiscard]] std::uint32_t phase() const noexcept
+    {
+        return m_state ? m_state->phase.load(std::memory_order_acquire) : 0u;
+    }
+
     // Test-only observer: how many phase transitions PASSED the watchdog arm-phase
-    // filter (Authenticating/Reading) — counted before the arm CAS, so it counts
-    // *accepted arms*, not *fired timers*. The contract is ONE PER MACHINE-PHASE
-    // ENTRY: an op that never prompts arms once, while an op that returns to
-    // Authenticating/Reading after each AwaitingConsent arms once per return (the
-    // consent entry disarms; see disarmWatchdog()). That makes the "a non-arming
-    // phase does not arm" property genuinely testable — the count would exceed
-    // the number of machine-phase entries if, say, Timestamping were ever added
-    // to the filter — which the CAS-gated single fire alone cannot prove.
+    // filter (Connecting/Authenticating/Reading) — counted before the arm CAS, so
+    // it counts *accepted arms*, not *fired timers*. The contract is ONE PER
+    // MACHINE-PHASE ENTRY: an op that never prompts arms once, while an op that
+    // returns to Authenticating/Reading after each AwaitingConsent arms once per
+    // return (the consent entry disarms; see disarmWatchdog()). That makes the "a
+    // non-arming phase does not arm" property genuinely testable — the count would
+    // exceed the number of machine-phase entries if, say, Timestamping were ever
+    // added to the filter — which the CAS-gated single fire alone cannot prove.
     [[nodiscard]] unsigned watchdogArmAttempts() const noexcept
     {
         return m_watchdogArmAttempts.load(std::memory_order_acquire);
@@ -229,11 +262,11 @@ protected:
     }
 
 private:
-    // Arms the watchdog timer on a transition into Authenticating or Reading
-    // while no timer is running. Further transitions inside that phase set are
-    // no-ops (only one timer runs at a time). Wakes via the per-op
-    // condition_variable + stop_token; the cv is notified by finish() so
-    // the timer thread observes the op completing early and exits without
+    // Arms the watchdog timer on a transition into Connecting, Authenticating
+    // or Reading while no timer is running. Further transitions inside that
+    // phase set are no-ops (only one timer runs at a time). Wakes via the
+    // per-op condition_variable + stop_token; the cv is notified by finish()
+    // so the timer thread observes the op completing early and exits without
     // firing the timeout finish.
     void armWatchdogIfNeeded(std::uint32_t newPhase);
 
@@ -280,12 +313,12 @@ private:
     // channel has actually emitted Finished.
     std::atomic<bool> m_finished{false};
 
-    // Watchdog: armed on an Authenticating/Reading entry, disarmed on entry to
-    // AwaitingConsent, so it measures MACHINE time only and never the holder.
-    // m_watchdogArmed gates the arm path (one live timer at a time).
-    // m_watchdogCv (condition_variable_any so it supports stop_token wait)
-    // wakes the timer thread early when finish() runs to completion, and when
-    // disarmWatchdog() retires it.
+    // Watchdog: armed on a Connecting/Authenticating/Reading entry, disarmed
+    // on entry to AwaitingConsent, so it measures MACHINE time only and never
+    // the holder. m_watchdogArmed gates the arm path (one live timer at a
+    // time). m_watchdogCv (condition_variable_any so it supports stop_token
+    // wait) wakes the timer thread early when finish() runs to completion,
+    // and when disarmWatchdog() retires it.
     std::atomic<bool> m_watchdogArmed{false};
     // Latched by finishWatchdogTimeout() BEFORE it trips cancel, and read by
     // finish() to force the terminal outcome. Without it the timeout is a race

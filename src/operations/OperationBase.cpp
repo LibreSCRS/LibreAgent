@@ -33,8 +33,8 @@ OperationBase::~OperationBase()
 
 void OperationBase::quiesce() noexcept
 {
-    // Join the watchdog. Safe only on the worker thread (never the watchdog
-    // thread itself). The destructor repeats it as a no-op.
+    // Join the watchdog. Never call it from the watchdog thread itself. The
+    // destructor repeats it as a no-op.
     if (m_watchdog.joinable()) {
         m_watchdog.request_stop();
         {
@@ -98,6 +98,18 @@ void OperationBase::runOnWorker()
 
 void OperationBase::requestCancel() noexcept
 {
+    if (const auto dismiss = cancelWithoutDismissing()) {
+        try {
+            dismiss();
+        } catch (...) {
+            // Callback is noexcept by contract but stays caught here so a
+            // misbehaving callback cannot escape past requestCancel.
+        }
+    }
+}
+
+std::function<void()> OperationBase::cancelWithoutDismissing() noexcept
+{
     // Snapshot the phase BEFORE flipping the cancel atomic so the
     // prompter-cancel decision reflects the state the user was in when
     // they hit Cancel.
@@ -115,12 +127,16 @@ void OperationBase::requestCancel() noexcept
     // whose owning Operation no longer exists.
     if (previousPhase == static_cast<std::uint32_t>(OperationPhase::AwaitingConsent) && m_prompterCancelCallback) {
         try {
-            m_prompterCancelCallback();
+            return m_prompterCancelCallback;
         } catch (...) {
-            // Callback is noexcept by contract but stays caught here so a
-            // misbehaving callback cannot escape past requestCancel.
+            // The copy failed (allocation): dismiss here rather than not at all.
+            try {
+                m_prompterCancelCallback();
+            } catch (...) {
+            }
         }
     }
+    return {};
 }
 
 void OperationBase::finishCardRemoved() noexcept
@@ -131,6 +147,12 @@ void OperationBase::finishCardRemoved() noexcept
     // the subclass hasn't already terminated.
     requestCancel();
     finish(OperationStatus::Error, ErrorCode::CardRemoved, "op.card_removed", "Card removed");
+}
+
+void OperationBase::finishCancelled() noexcept
+{
+    requestCancel();
+    finish(OperationStatus::Cancelled, ErrorCode::None, "op.cancelled", "Operation cancelled");
 }
 
 void OperationBase::setPhase(std::uint32_t phase) noexcept
@@ -146,9 +168,12 @@ void OperationBase::setPhase(std::uint32_t phase) noexcept
     // Watchdog production: the timer covers MACHINE time only. Entry into
     // AwaitingConsent (2) stops it -- the holder is not something to time, and
     // the prompt carries its own visible deadline -- and the next entry into
-    // Authenticating (3) / Reading (4) arms a FRESH full budget. Other phases
-    // (Connecting, Signing, Timestamping, Done) neither arm nor disarm: they run
-    // out whatever budget the last machine-phase entry started.
+    // Connecting (1) / Authenticating (3) / Reading (4) arms a FRESH full budget.
+    // Other phases (Signing, Timestamping, Done, Queued) neither arm nor disarm:
+    // they run out whatever budget the last machine-phase entry started. Queued
+    // is waiting for another operation, not machine time. Connecting arms so that
+    // an operation stuck in opening the session is bounded too, which is what
+    // lets the agent end the operations queued behind it.
     //
     // Enlarging the budget to cover the human instead was rejected: it would
     // make the card's allowance depend on typing speed, so a slow MRZ entry
@@ -181,9 +206,10 @@ void OperationBase::groupReady(const GroupSnapshot& group) noexcept
 
 void OperationBase::armWatchdogIfNeeded(std::uint32_t newPhase)
 {
+    constexpr auto kConnecting = static_cast<std::uint32_t>(OperationPhase::Connecting);
     constexpr auto kAuthenticating = static_cast<std::uint32_t>(OperationPhase::Authenticating);
     constexpr auto kReading = static_cast<std::uint32_t>(OperationPhase::Reading);
-    if (newPhase != kAuthenticating && newPhase != kReading) {
+    if (newPhase != kConnecting && newPhase != kAuthenticating && newPhase != kReading) {
         return;
     }
     // Count every transition that PASSED the arm-phase filter, BEFORE the CAS

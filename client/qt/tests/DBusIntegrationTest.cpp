@@ -37,6 +37,7 @@
 #include <sys/stat.h>
 #include <tuple>
 #include <unistd.h>
+#include <vector>
 
 using namespace LibreSCRS::AgentClient;
 using namespace LibreSCRS::AgentClient::Fakes;
@@ -1137,6 +1138,41 @@ TEST(DBusIntegration, OpStallHasNoInternalWatchdogCancelIsTheEscapeValve)
     op->cancel();
     ASSERT_TRUE(waitFor([&]() { return op->isFinished(); }));
     EXPECT_EQ(op->status(), OperationStatus::Cancelled);
+}
+
+// ---- queued: a phase reported before the subscription is read back -------------------
+//
+// The agent was already in Queued when this client subscribed, so the progress
+// signal was gone; the GetAll at construction carries the Phase, which reaches
+// phaseChanged and stops the stall clock.
+TEST(DBusIntegration, AQueuedPhaseSentBeforeTheSubscriptionIsReadBackAndStopsTheClock)
+{
+    FakeAgent::Config cfg;
+    cfg.capabilities = Cap::Pki;
+    cfg.operationDelayMs = 60000; // the agent never finishes this op on its own
+    cfg.initialPhase = static_cast<uint>(OperationPhase::Queued);
+    Harness h(cfg);
+
+    auto client = makeClient(h);
+    AgentCard* card = client->card(h.cardPath());
+    ASSERT_NE(card, nullptr);
+
+    AgentOperation* op = card->readIdentity();
+    ASSERT_NE(op, nullptr);
+    op->setStallBudget(150);
+    std::vector<OperationPhase> seen;
+    QObject::connect(op, &AgentOperation::phaseChanged, op, [&seen](OperationPhase phase) { seen.push_back(phase); });
+
+    ASSERT_TRUE(waitFor([&]() { return !seen.empty(); }));
+    EXPECT_EQ(seen.front(), OperationPhase::Queued);
+    QDeadlineTimer settle(700);
+    while (!settle.hasExpired()) {
+        QCoreApplication::processEvents(QEventLoop::AllEvents, 20);
+        QThread::msleep(1);
+    }
+    EXPECT_FALSE(op->isFinished()) << "a queued operation must not be given up as stalled";
+    op->cancel();
+    ASSERT_TRUE(waitFor([&]() { return op->isFinished(); }));
 }
 
 // ---- lost-Result recovery: Finished fires before the subscriber -----------

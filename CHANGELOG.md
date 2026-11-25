@@ -7,6 +7,10 @@ Notable user-visible changes per release. Format follows
 
 ### Added
 
+- **An operation waiting behind another one on the same reader says so.** Its
+  phase is the new `OperationPhase::Queued` (wire value 8, appended); the
+  agent reports it before the reader's worker can start the operation.
+
 - **The identity is read once in the background after a card is inserted.**
   When a host publishes a card that holds personal data and needs no secret
   before reading (no CAN, no MRZ), the agent reads that data, photo included,
@@ -335,6 +339,14 @@ Three targets ship, each independently usable:
 
 ### Changed
 
+- **The watchdog starts at `Connecting` and covers the background read.** An
+  operation stuck in opening the session is bounded like one stuck in
+  reading, which is what lets the queue behind it be ended; the budget runs
+  from `Connecting` to the first prompt (or to the end). The background
+  identity read reports `Connecting` on its silent channel for the same
+  reason. PKCS#11 operations stay without a watchdog (they may wait for a PIN
+  in the prompt).
+
 - **The installed agent doubles carry only what they speak.**
   `ClientQtTestSupport` no longer installs the client's transport seam,
   its wire conversions or its bus constants; besides the doubles it installs
@@ -455,6 +467,24 @@ Three targets ship, each independently usable:
   shared PC/SC client while the card stays powered.
 
 ### Fixed
+
+- **A queued operation is no longer given up as "the agent does not answer".**
+  The client's stall timer stops while an operation is `Queued` and starts
+  again with the next phase; an agent that reports nothing at all is still
+  given up on. On D-Bus a phase the agent reported before the client
+  subscribed is read back with the same state read that recovers a missed
+  finish, and reaches `phaseChanged` (this also covers `AwaitingConsent`,
+  whose missed signal left the timer running during a prompt).
+
+- **The wait in the queue can always be ended.** Cancelling an operation that
+  still waits takes it out of the reader's queue and ends it as `Cancelled`
+  at once, even when the operation ahead is stuck. When the agent's watchdog
+  has given up on the operation that holds a reader and it still does not
+  return, the `Queued` operations behind it end as `WatchdogTimeout` (one
+  check a second, two in a row; other readers are not touched). Removing the
+  card ends the waiting on that reader too: the running operation is
+  cancelled, which dismisses a prompt it waits on, and the `Queued` ones end
+  as `CardRemoved`; internal probes stay queued. System sleep does not.
 
 - **After the system sleeps, a supported card is no longer reported as
   unsupported.** The agent used to reuse, or reopen just before the system

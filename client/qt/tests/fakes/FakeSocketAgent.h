@@ -116,7 +116,11 @@ public:
         QString cardType;
         QString atrHex;
         int operationDelayMs = 5; ///< delay before an op fires its result/finished events
-        quint32 finalStatus = 0;  ///< 0 Ok / 1 Cancelled / 2 Error
+        /// OperationPhase values sent as op-progress right after op-started, in
+        /// order, before the delayed events: scripts an agent that announces
+        /// "queued" and then says nothing.
+        std::vector<quint32> announcePhases;
+        quint32 finalStatus = 0; ///< 0 Ok / 1 Cancelled / 2 Error
         quint32 finalErrorCode = 0;
         bool raceResultBeforeReturn = false; ///< fire the op's events synchronously, right after op-started
         bool suppressResult = false;         ///< finish Ok WITHOUT the result event AND with nothing to recover
@@ -257,6 +261,8 @@ public:
     /// Broadcast one frame whose body is well-formed-length but NON-CANONICAL
     /// CBOR (a non-shortest-form integer) — must fail the client closed.
     void sendNonCanonicalFrame();
+    /// Send op-progress with @p phase for the most recently minted operation.
+    void sendProgress(quint32 phase);
 
     // ---- captures -----------------------------------------------------------
     [[nodiscard]] int operationCount() const;

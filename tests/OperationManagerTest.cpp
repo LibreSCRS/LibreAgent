@@ -8,7 +8,9 @@
 #include <LibreSCRS/Agent/operations/CardSessionHolder.h>
 #include <LibreSCRS/Agent/operations/OperationManager.h>
 #include <LibreSCRS/Agent/presence/CapabilityResolver.h>
+#include <LibreSCRS/Agent/presence/CardResolutionPolicy.h>
 
+#include "fakes/FakeOperationChannel.h"
 #include "fakes/PinStubPlugin.h" // BasePinPlugin
 
 #include <LibreSCRS/Auth/ErrorKeys.h>
@@ -22,6 +24,7 @@
 #include <cstdint>
 #include <expected>
 #include <functional>
+#include <future>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -149,6 +152,16 @@ struct WaiterLatch
     std::mutex mutex;
     std::condition_variable cv;
     bool done{false};
+    void wait()
+    {
+        std::unique_lock lk(mutex);
+        cv.wait(lk, [this] { return done; });
+    }
+    [[nodiscard]] bool isDone()
+    {
+        std::lock_guard lk(mutex);
+        return done;
+    }
     void signal() noexcept
     {
         {
@@ -1372,12 +1385,12 @@ namespace {
 // between exactly two, so a fast period keeps them quick.
 constexpr auto kSuspendSweep = 100ms;
 
-// Poll until @p done holds or 2 s pass.
+// Poll until @p done holds or @p limit passes.
 template <class Pred>
-bool waitUntil(Pred done)
+bool waitUntil(Pred done, std::chrono::milliseconds limit = 2000ms)
 {
     const auto start = std::chrono::steady_clock::now();
-    while (!done() && (std::chrono::steady_clock::now() - start) < 2s) {
+    while (!done() && (std::chrono::steady_clock::now() - start) < limit) {
         std::this_thread::sleep_for(2ms);
     }
     return done();
@@ -1517,4 +1530,583 @@ TEST(OperationManager, WorkerCreatedWhileSuspendedInheritsIt)
 
     mgr.setHoldsSuspended(false);
     EXPECT_FALSE(mgr.holdsSuspended());
+}
+
+// --- A queued operation reports that it waits ---------------------------------
+//
+// Ops here carry a FakeOperationChannel with a shared Recording, so the test reads
+// the phases the channel was told about from its own handles, whichever thread
+// emitted them and whether or not the op is still alive.
+
+namespace {
+
+// Opens its gates on scope exit, so an ASSERT never leaves a worker parked (the
+// manager's teardown would abandon it as a zombie holding this frame's state).
+// Declare it AFTER the manager: members die in reverse order.
+struct LatchOpener
+{
+    std::vector<std::shared_ptr<WaiterLatch>> gates;
+    ~LatchOpener()
+    {
+        for (const auto& gate : gates) {
+            gate->signal();
+        }
+    }
+};
+
+struct RunFlags
+{
+    std::atomic<bool> started{false};
+    std::atomic<bool> returned{false};
+};
+
+// One op's observation handles; makes the channel the op will own.
+struct Rig
+{
+    std::shared_ptr<OperationState> state{std::make_shared<OperationState>()};
+    std::shared_ptr<FakeOperationChannel::Recording> recording{std::make_shared<FakeOperationChannel::Recording>()};
+    std::shared_ptr<RunFlags> flags{std::make_shared<RunFlags>()};
+
+    [[nodiscard]] std::unique_ptr<FakeOperationChannel> channel() const
+    {
+        auto channel = std::make_unique<FakeOperationChannel>();
+        channel->observedState = state;
+        channel->recording = recording;
+        return channel;
+    }
+    [[nodiscard]] std::size_t phaseCount(OperationPhase phase) const
+    {
+        std::lock_guard lock(recording->mutex);
+        return static_cast<std::size_t>(
+            std::count(recording->phases.begin(), recording->phases.end(), static_cast<std::uint32_t>(phase)));
+    }
+    [[nodiscard]] std::vector<std::uint32_t> phases() const
+    {
+        std::lock_guard lock(recording->mutex);
+        return recording->phases;
+    }
+    [[nodiscard]] bool currentPhaseIs(OperationPhase phase) const
+    {
+        return state->phase.load(std::memory_order_acquire) == static_cast<std::uint32_t>(phase);
+    }
+};
+
+// Reports Connecting like a real flow, then finishes Ok.
+class ProbeOp final : public OperationBase
+{
+public:
+    ProbeOp(std::unique_ptr<OperationChannel> channel, std::shared_ptr<OperationState> state,
+            std::shared_ptr<RunFlags> flags)
+        : OperationBase(std::move(channel), std::move(state)), m_flags(std::move(flags))
+    {}
+
+protected:
+    void doWork() override
+    {
+        m_flags->started.store(true);
+        setPhase(static_cast<std::uint32_t>(OperationPhase::Connecting));
+        finish(OperationStatus::Ok, ErrorCode::None, "op.ok", "ok");
+        m_flags->returned.store(true);
+    }
+
+private:
+    std::shared_ptr<RunFlags> m_flags;
+};
+
+// Parks in doWork on a gate. It ignores the cancel token (a stuck transmit)
+// unless `cooperative`, in which case a cancel ends the wait and, when
+// `afterCancel` is given, the op then parks on that second gate before it returns.
+class ParkedOp final : public OperationBase
+{
+public:
+    ParkedOp(std::unique_ptr<OperationChannel> channel, std::shared_ptr<OperationState> state,
+             std::shared_ptr<RunFlags> flags, std::shared_ptr<WaiterLatch> gate, OperationPhase announce,
+             bool cooperative, bool fastWatchdog, std::shared_ptr<WaiterLatch> afterCancel = nullptr)
+        : OperationBase(std::move(channel), std::move(state)), m_flags(std::move(flags)), m_gate(std::move(gate)),
+          m_afterCancel(std::move(afterCancel)), m_announce(announce), m_cooperative(cooperative)
+    {
+        if (fastWatchdog) {
+            // The budget is whole seconds; fire at the moment of arming instead.
+            setWatchdogWaitForTest([](std::unique_lock<std::mutex>&, std::stop_token, std::chrono::seconds,
+                                      const std::function<bool()>& stoppedOrFinished) { return stoppedOrFinished(); });
+        }
+    }
+
+protected:
+    void doWork() override
+    {
+        setPhase(static_cast<std::uint32_t>(m_announce));
+        m_flags->started.store(true);
+        if (m_cooperative) {
+            while (!m_gate->isDone() && !isCancelled() && !token().isCancelled()) {
+                std::this_thread::sleep_for(2ms);
+            }
+            if (m_afterCancel && isCancelled()) {
+                m_afterCancel->wait();
+            }
+        } else {
+            m_gate->wait();
+        }
+        finish(isCancelled() ? OperationStatus::Cancelled : OperationStatus::Ok, ErrorCode::None, "op.done", "done");
+        m_flags->returned.store(true);
+    }
+
+private:
+    std::shared_ptr<RunFlags> m_flags;
+    std::shared_ptr<WaiterLatch> m_gate;
+    std::shared_ptr<WaiterLatch> m_afterCancel;
+    OperationPhase m_announce;
+    bool m_cooperative;
+};
+
+[[nodiscard]] std::unique_ptr<OperationBase> makeProbe(const Rig& rig)
+{
+    return std::make_unique<ProbeOp>(rig.channel(), rig.state, rig.flags);
+}
+
+[[nodiscard]] std::unique_ptr<OperationBase> makeHeld(const Rig& rig, const std::shared_ptr<WaiterLatch>& gate)
+{
+    return std::make_unique<ParkedOp>(rig.channel(), rig.state, rig.flags, gate, OperationPhase::Connecting, false,
+                                      false);
+}
+
+} // namespace
+
+TEST(OperationManagerQueued, AnOperationOnAFreeReaderIsNeverQueued)
+{
+    OperationManager mgr;
+    Rig rig;
+    mgr.enqueueForTest(ObjectId{1}, makeProbe(rig));
+    ASSERT_TRUE(waitUntil([&] { return rig.flags->returned.load(); }));
+    EXPECT_EQ(rig.phaseCount(OperationPhase::Queued), 0u);
+}
+
+TEST(OperationManagerQueued, AnOperationBehindARunningOneReportsQueuedOnceBeforeItStarts)
+{
+    OperationManager mgr;
+    auto gate = std::make_shared<WaiterLatch>();
+    LatchOpener opener{{gate}};
+    Rig head;
+    Rig behind;
+    mgr.enqueueForTest(ObjectId{1}, makeHeld(head, gate));
+    ASSERT_TRUE(waitUntil([&] { return head.flags->started.load(); }));
+    mgr.enqueueForTest(ObjectId{1}, makeProbe(behind));
+
+    EXPECT_TRUE(behind.currentPhaseIs(OperationPhase::Queued)) << "reported while the reader is still busy";
+    EXPECT_FALSE(behind.flags->started.load());
+    EXPECT_EQ(behind.phaseCount(OperationPhase::Queued), 1u);
+
+    gate->signal();
+    ASSERT_TRUE(waitUntil([&] { return behind.flags->returned.load(); }));
+    const auto seen = behind.phases();
+    ASSERT_FALSE(seen.empty());
+    EXPECT_EQ(seen.front(), static_cast<std::uint32_t>(OperationPhase::Queued)) << "Queued comes before Connecting";
+    EXPECT_EQ(behind.phaseCount(OperationPhase::Queued), 1u) << "emitted exactly once";
+    EXPECT_EQ(behind.phaseCount(OperationPhase::Connecting), 1u);
+}
+
+TEST(OperationManagerQueued, AnOperationBehindTheBackgroundReadReportsQueued)
+{
+    OperationManager mgr;
+    auto gate = std::make_shared<WaiterLatch>();
+    LatchOpener opener{{gate}};
+    Rig background;
+    Rig behind;
+    mgr.setBackgroundForTest(ObjectId{1}, makeHeld(background, gate), std::chrono::steady_clock::duration::zero());
+    ASSERT_TRUE(waitUntil([&] { return background.flags->started.load(); }));
+    mgr.enqueueForTest(ObjectId{1}, makeProbe(behind));
+
+    EXPECT_TRUE(behind.currentPhaseIs(OperationPhase::Queued));
+    EXPECT_FALSE(behind.flags->started.load());
+    gate->signal();
+    ASSERT_TRUE(waitUntil([&] { return behind.flags->returned.load(); }));
+}
+
+TEST(OperationManagerQueued, AnOperationBehindTwoReportsQueued)
+{
+    OperationManager mgr;
+    auto gate = std::make_shared<WaiterLatch>();
+    LatchOpener opener{{gate}};
+    Rig head;
+    Rig second;
+    Rig third;
+    mgr.enqueueForTest(ObjectId{1}, makeHeld(head, gate));
+    ASSERT_TRUE(waitUntil([&] { return head.flags->started.load(); }));
+    mgr.enqueueForTest(ObjectId{1}, makeProbe(second));
+    mgr.enqueueForTest(ObjectId{1}, makeProbe(third));
+
+    EXPECT_TRUE(second.currentPhaseIs(OperationPhase::Queued));
+    EXPECT_TRUE(third.currentPhaseIs(OperationPhase::Queued));
+    gate->signal();
+    ASSERT_TRUE(waitUntil([&] { return third.flags->returned.load(); }));
+    EXPECT_EQ(third.phaseCount(OperationPhase::Queued), 1u);
+}
+
+TEST(OperationManagerQueued, AnotherReadersBusyWorkerDoesNotQueueThisReadersOperation)
+{
+    OperationManager mgr;
+    auto gate = std::make_shared<WaiterLatch>();
+    LatchOpener opener{{gate}};
+    Rig busy;
+    Rig other;
+    mgr.enqueueForTest(ObjectId{1}, makeHeld(busy, gate));
+    ASSERT_TRUE(waitUntil([&] { return busy.flags->started.load(); }));
+    mgr.enqueueForTest(ObjectId{2}, makeProbe(other));
+
+    ASSERT_TRUE(waitUntil([&] { return other.flags->returned.load(); })) << "reader 2 starts at once";
+    EXPECT_EQ(other.phaseCount(OperationPhase::Queued), 0u);
+    EXPECT_FALSE(busy.flags->returned.load()) << "reader 1 was still held the whole time";
+}
+
+// --- Cancel and wedged-reader endings for a queued operation -------------------
+
+namespace {
+
+[[nodiscard]] bool completedAs(const Rig& rig, OperationStatus status, ErrorCode code)
+{
+    return rig.state->completed.load(std::memory_order_acquire) &&
+           rig.state->terminalStatus.load(std::memory_order_acquire) == static_cast<std::uint32_t>(status) &&
+           rig.state->terminalErrorCode.load(std::memory_order_acquire) == static_cast<std::uint32_t>(code);
+}
+
+[[nodiscard]] bool isComplete(const Rig& rig)
+{
+    return rig.state->completed.load(std::memory_order_acquire);
+}
+
+// Reports Reading (arming the watchdog) and parks ignoring cancel, with the
+// watchdog firing at once: the reader's worker is wedged on an operation the
+// agent has already given up on.
+[[nodiscard]] std::unique_ptr<OperationBase> makeStuckReading(const Rig& rig, const std::shared_ptr<WaiterLatch>& gate)
+{
+    return std::make_unique<ParkedOp>(rig.channel(), rig.state, rig.flags, gate, OperationPhase::Reading, false, true);
+}
+
+} // namespace
+
+TEST(OperationManagerQueued, CancellingAQueuedOperationEndsItAtOnceWhileTheReaderIsHeld)
+{
+    OperationManager mgr;
+    auto gate = std::make_shared<WaiterLatch>();
+    LatchOpener opener{{gate}};
+    Rig head;
+    Rig behind;
+    mgr.enqueueTrackedForTest(ObjectId{1}, makeHeld(head, gate), OperationId{1}, CallerToken{});
+    ASSERT_TRUE(waitUntil([&] { return head.flags->started.load(); }));
+    mgr.enqueueTrackedForTest(ObjectId{1}, makeProbe(behind), OperationId{2}, CallerToken{});
+    ASSERT_TRUE(behind.currentPhaseIs(OperationPhase::Queued));
+
+    mgr.cancel(OperationId{2});
+
+    EXPECT_TRUE(completedAs(behind, OperationStatus::Cancelled, ErrorCode::None))
+        << "ended without waiting for the operation ahead";
+    EXPECT_FALSE(behind.flags->started.load()) << "it never ran";
+    EXPECT_FALSE(mgr.isIdTrackedForTest(OperationId{2})) << "scrubbed from the id table";
+    EXPECT_FALSE(isComplete(head)) << "the running operation is untouched";
+    EXPECT_FALSE(head.state->cancelled.load());
+    mgr.cancel(OperationId{2}); // a second cancel of the same id is a no-op
+    mgr.cancel(OperationId{});  // so is an invalid id
+    EXPECT_FALSE(isComplete(head));
+}
+
+TEST(OperationManagerQueued, CancellingTheRunningOperationOnlyAsksItToStop)
+{
+    OperationManager mgr;
+    auto gate = std::make_shared<WaiterLatch>();
+    LatchOpener opener{{gate}};
+    Rig head;
+    Rig behind;
+    mgr.enqueueTrackedForTest(ObjectId{1}, makeHeld(head, gate), OperationId{1}, CallerToken{});
+    ASSERT_TRUE(waitUntil([&] { return head.flags->started.load(); }));
+    mgr.enqueueTrackedForTest(ObjectId{1}, makeProbe(behind), OperationId{2}, CallerToken{});
+
+    mgr.cancel(OperationId{1});
+
+    EXPECT_TRUE(head.state->cancelled.load()) << "the cancel flag is tripped, as before";
+    EXPECT_FALSE(isComplete(head)) << "it ends when its own doWork does";
+    EXPECT_FALSE(isComplete(behind));
+    gate->signal();
+    ASSERT_TRUE(waitUntil([&] { return behind.flags->returned.load(); }));
+    EXPECT_TRUE(completedAs(head, OperationStatus::Cancelled, ErrorCode::None));
+    EXPECT_TRUE(completedAs(behind, OperationStatus::Ok, ErrorCode::None));
+}
+
+TEST(OperationManagerQueued, AWedgedReadersQueuedOperationsEndAsWatchdogTimeoutOnTheSecondRound)
+{
+    OperationManager mgr;
+    auto stuckGate = std::make_shared<WaiterLatch>();
+    auto otherGate = std::make_shared<WaiterLatch>();
+    LatchOpener opener{{stuckGate, otherGate}};
+    Rig stuck;
+    Rig first;
+    Rig second;
+    Rig otherHead;
+    Rig otherBehind;
+    mgr.enqueueForTest(ObjectId{1}, makeStuckReading(stuck, stuckGate));
+    ASSERT_TRUE(waitUntil([&] { return stuck.flags->started.load() && isComplete(stuck); }))
+        << "the watchdog gave up on the operation that holds the reader";
+    mgr.enqueueForTest(ObjectId{2}, makeHeld(otherHead, otherGate));
+    ASSERT_TRUE(waitUntil([&] { return otherHead.flags->started.load(); }));
+    mgr.enqueueForTest(ObjectId{1}, makeProbe(first));
+    mgr.enqueueForTest(ObjectId{1}, makeProbe(second));
+    mgr.enqueueForTest(ObjectId{2}, makeProbe(otherBehind));
+    ASSERT_TRUE(first.currentPhaseIs(OperationPhase::Queued));
+
+    mgr.drainWedgedQueuesForTest();
+    EXPECT_FALSE(isComplete(first)) << "the first sighting only notes the wedged operation";
+
+    mgr.drainWedgedQueuesForTest();
+    EXPECT_TRUE(completedAs(first, OperationStatus::Error, ErrorCode::WatchdogTimeout));
+    EXPECT_TRUE(completedAs(second, OperationStatus::Error, ErrorCode::WatchdogTimeout));
+    EXPECT_FALSE(first.flags->started.load());
+
+    Rig late;
+    mgr.enqueueForTest(ObjectId{1}, makeProbe(late));
+    ASSERT_TRUE(late.currentPhaseIs(OperationPhase::Queued)) << "the reader is still wedged: it is queued, not run";
+    mgr.drainWedgedQueuesForTest();
+    EXPECT_TRUE(completedAs(late, OperationStatus::Error, ErrorCode::WatchdogTimeout));
+
+    EXPECT_FALSE(isComplete(otherBehind)) << "another reader's queue is not touched";
+    EXPECT_TRUE(otherBehind.currentPhaseIs(OperationPhase::Queued));
+
+    stuckGate->signal();
+    ASSERT_TRUE(waitUntil([&] { return stuck.flags->returned.load(); }));
+    otherGate->signal();
+    ASSERT_TRUE(waitUntil([&] { return otherBehind.flags->returned.load(); }));
+}
+
+TEST(OperationManagerQueued, TheCleanupLoopEndsAWedgedReadersQueueWithinAFewSeconds)
+{
+    OperationManager mgr{nullptr}; // production: the cleanup loop runs
+    auto gate = std::make_shared<WaiterLatch>();
+    LatchOpener opener{{gate}};
+    Rig stuck;
+    Rig behind;
+    mgr.enqueueForTest(ObjectId{1}, makeStuckReading(stuck, gate));
+    ASSERT_TRUE(waitUntil([&] { return stuck.flags->started.load() && isComplete(stuck); }));
+    mgr.enqueueForTest(ObjectId{1}, makeProbe(behind));
+    ASSERT_TRUE(behind.currentPhaseIs(OperationPhase::Queued));
+
+    EXPECT_TRUE(
+        waitUntil([&] { return completedAs(behind, OperationStatus::Error, ErrorCode::WatchdogTimeout); }, 3000ms));
+    gate->signal();
+    ASSERT_TRUE(waitUntil([&] { return stuck.flags->returned.load(); }));
+}
+
+TEST(OperationManagerQueued, AQueueBehindAnOperationTheWatchdogHasNotFiredOnIsLeftAlone)
+{
+    OperationManager mgr;
+    auto gate = std::make_shared<WaiterLatch>();
+    LatchOpener opener{{gate}};
+    Rig head;
+    Rig behind;
+    // Reading arms a 60 s watchdog that does not fire here.
+    mgr.enqueueForTest(ObjectId{1}, std::make_unique<ParkedOp>(head.channel(), head.state, head.flags, gate,
+                                                               OperationPhase::Reading, false, false));
+    ASSERT_TRUE(waitUntil([&] { return head.flags->started.load(); }));
+    mgr.enqueueForTest(ObjectId{1}, makeProbe(behind));
+
+    for (int round = 0; round < 3; ++round) {
+        mgr.drainWedgedQueuesForTest();
+    }
+    EXPECT_FALSE(isComplete(behind));
+    EXPECT_TRUE(behind.currentPhaseIs(OperationPhase::Queued));
+
+    gate->signal();
+    ASSERT_TRUE(waitUntil([&] { return behind.flags->returned.load(); }));
+    EXPECT_TRUE(completedAs(behind, OperationStatus::Ok, ErrorCode::None));
+}
+
+TEST(OperationManagerQueued, AnOperationAheadThatStopsOnItsOwnAfterTheWatchdogFiredDoesNotCostTheQueue)
+{
+    OperationManager mgr;
+    auto gate = std::make_shared<WaiterLatch>();
+    auto afterCancel = std::make_shared<WaiterLatch>();
+    LatchOpener opener{{gate, afterCancel}};
+    Rig head;
+    Rig behind;
+    // The watchdog fires at once and trips cancel; the op notices, then needs a
+    // moment more to unwind (the second gate) before it returns.
+    mgr.enqueueForTest(ObjectId{1}, std::make_unique<ParkedOp>(head.channel(), head.state, head.flags, gate,
+                                                               OperationPhase::Reading, true, true, afterCancel));
+    ASSERT_TRUE(waitUntil([&] { return head.flags->started.load() && isComplete(head); }));
+    mgr.enqueueForTest(ObjectId{1}, makeProbe(behind));
+    ASSERT_TRUE(behind.currentPhaseIs(OperationPhase::Queued));
+
+    mgr.drainWedgedQueuesForTest(); // first round: noted, nothing ended
+    EXPECT_FALSE(isComplete(behind));
+
+    afterCancel->signal(); // it unwinds and returns by itself
+    ASSERT_TRUE(waitUntil([&] { return head.flags->returned.load(); }));
+    ASSERT_TRUE(waitUntil([&] { return behind.flags->returned.load(); })) << "the worker went on to the queued op";
+    mgr.drainWedgedQueuesForTest();
+    EXPECT_TRUE(completedAs(behind, OperationStatus::Ok, ErrorCode::None)) << "it was run, not ended as timed out";
+}
+
+TEST(OperationManagerQueued, OnlyQueuedOperationsAreEndedAndAnInternalProbeStaysInOrder)
+{
+    OperationManager mgr;
+    auto gate = std::make_shared<WaiterLatch>();
+    LatchOpener opener{{gate}};
+    Rig stuck;
+    Rig queued;
+    std::mutex orderMutex;
+    std::vector<int> order;
+    const auto note = [&](int tag) {
+        return [&order, &orderMutex, tag](CardSessionHolder&) {
+            std::lock_guard lock(orderMutex);
+            order.push_back(tag);
+        };
+    };
+    mgr.enqueueForTest(ObjectId{1}, makeStuckReading(stuck, gate));
+    ASSERT_TRUE(waitUntil([&] { return stuck.flags->started.load() && isComplete(stuck); }));
+    mgr.enqueueHolderProbeForTest(ObjectId{1}, note(1));
+    mgr.enqueueForTest(ObjectId{1}, makeProbe(queued));
+    mgr.enqueueHolderProbeForTest(ObjectId{1}, note(2));
+    ASSERT_TRUE(queued.currentPhaseIs(OperationPhase::Queued));
+
+    mgr.drainWedgedQueuesForTest();
+    mgr.drainWedgedQueuesForTest();
+    EXPECT_TRUE(completedAs(queued, OperationStatus::Error, ErrorCode::WatchdogTimeout));
+    {
+        std::lock_guard lock(orderMutex);
+        EXPECT_TRUE(order.empty()) << "the probes wait for the reader";
+    }
+
+    gate->signal();
+    ASSERT_TRUE(waitUntil([&] {
+        std::lock_guard lock(orderMutex);
+        return order.size() == 2;
+    }));
+    std::lock_guard lock(orderMutex);
+    EXPECT_EQ(order, (std::vector<int>{1, 2})) << "both probes ran, in the order they were queued";
+}
+
+// --- Card removal ends the waiting on that reader --------------------------------
+
+namespace {
+
+// Waits at a consent prompt until cancelled; the prompter-cancel callback is what
+// dismisses the dialog.
+class PromptWaitOp final : public OperationBase
+{
+public:
+    PromptWaitOp(std::unique_ptr<OperationChannel> channel, std::shared_ptr<OperationState> state,
+                 std::shared_ptr<RunFlags> flags, std::function<void()> dismissPrompt)
+        : OperationBase(std::move(channel), std::move(state), std::move(dismissPrompt)), m_flags(std::move(flags))
+    {}
+
+protected:
+    void doWork() override
+    {
+        setPhase(static_cast<std::uint32_t>(OperationPhase::AwaitingConsent));
+        m_flags->started.store(true);
+        while (!isCancelled() && !token().isCancelled()) {
+            std::this_thread::sleep_for(2ms);
+        }
+        finish(OperationStatus::Cancelled, ErrorCode::None, "op.cancelled", "cancelled");
+        m_flags->returned.store(true);
+    }
+
+private:
+    std::shared_ptr<RunFlags> m_flags;
+};
+
+} // namespace
+
+TEST(OperationManagerCardRemoved, ARunningOperationAtAPromptIsCancelledAndThePromptDismissed)
+{
+    OperationManager mgr;
+    Rig rig;
+    std::atomic<int> dismissed{0};
+    mgr.enqueueForTest(ObjectId{1}, std::make_unique<PromptWaitOp>(rig.channel(), rig.state, rig.flags,
+                                                                   [&dismissed] { dismissed.fetch_add(1); }));
+    ASSERT_TRUE(waitUntil([&] { return rig.flags->started.load(); }));
+
+    releaseReaderOnCardRemoved(mgr, ObjectId{1});
+
+    ASSERT_TRUE(waitUntil([&] { return rig.flags->returned.load(); })) << "the operation ended on the cancel";
+    EXPECT_EQ(dismissed.load(), 1) << "the waiting prompt was dismissed exactly once";
+}
+
+// The prompt is dismissed over IPC in production, and publish and cancel take the
+// worker's mutex on the bus thread: the dismissal must run with that mutex free.
+// The callback does what the bus thread would: another thread enqueues on the
+// same reader, and the callback waits (bounded) for that to finish while it is
+// still running. Nothing in it blocks without a limit, so a dismissal under the
+// mutex fails this test instead of hanging it.
+TEST(OperationManagerCardRemoved, ThePromptIsDismissedWithTheReadersMutexFree)
+{
+    OperationManager mgr;
+    Rig rig;
+    Rig other;
+    std::atomic<int> dismissed{0};
+    std::atomic<bool> mutexWasFree{false};
+    std::jthread enqueuer; // joined at scope end, after the callback is done
+    mgr.enqueueForTest(ObjectId{1}, std::make_unique<PromptWaitOp>(rig.channel(), rig.state, rig.flags, [&] {
+                           dismissed.fetch_add(1);
+                           auto reached = std::make_shared<std::promise<void>>();
+                           auto done = reached->get_future();
+                           enqueuer = std::jthread([&mgr, &other, reached] {
+                               mgr.enqueueForTest(ObjectId{1}, makeProbe(other));
+                               reached->set_value();
+                           });
+                           mutexWasFree.store(done.wait_for(1s) == std::future_status::ready);
+                       }));
+    ASSERT_TRUE(waitUntil([&] { return rig.flags->started.load(); }));
+
+    mgr.endOperationsOnCardRemoved(ObjectId{1});
+
+    EXPECT_TRUE(mutexWasFree.load()) << "the dismissal ran while the reader's mutex was held";
+    EXPECT_EQ(dismissed.load(), 1);
+    ASSERT_TRUE(waitUntil([&] { return other.flags->returned.load(); }));
+}
+
+TEST(OperationManagerCardRemoved, QueuedOperationsEndAsCardRemovedAndAProbeStaysQueued)
+{
+    OperationManager mgr;
+    auto gate = std::make_shared<WaiterLatch>();
+    LatchOpener opener{{gate}};
+    Rig head;
+    Rig queued;
+    std::atomic<bool> probeRan{false};
+    mgr.enqueueForTest(ObjectId{1}, makeHeld(head, gate));
+    ASSERT_TRUE(waitUntil([&] { return head.flags->started.load(); }));
+    mgr.enqueueHolderProbeForTest(ObjectId{1}, [&probeRan](CardSessionHolder&) { probeRan.store(true); });
+    mgr.enqueueForTest(ObjectId{1}, makeProbe(queued));
+    ASSERT_TRUE(queued.currentPhaseIs(OperationPhase::Queued));
+
+    mgr.endOperationsOnCardRemoved(ObjectId{1});
+
+    EXPECT_TRUE(completedAs(queued, OperationStatus::Error, ErrorCode::CardRemoved));
+    EXPECT_FALSE(queued.flags->started.load());
+    EXPECT_TRUE(head.state->cancelled.load()) << "the running operation is asked to stop";
+    EXPECT_FALSE(probeRan.load());
+    gate->signal();
+    ASSERT_TRUE(waitUntil([&] { return probeRan.load(); })) << "the internal probe was kept and runs after";
+}
+
+TEST(OperationManagerCardRemoved, AnotherReadersOperationsAreNotTouched)
+{
+    OperationManager mgr;
+    auto gate = std::make_shared<WaiterLatch>();
+    auto otherGate = std::make_shared<WaiterLatch>();
+    LatchOpener opener{{gate, otherGate}};
+    Rig head;
+    Rig otherHead;
+    Rig otherQueued;
+    mgr.enqueueForTest(ObjectId{1}, makeHeld(head, gate));
+    mgr.enqueueForTest(ObjectId{2}, makeHeld(otherHead, otherGate));
+    ASSERT_TRUE(waitUntil([&] { return head.flags->started.load() && otherHead.flags->started.load(); }));
+    mgr.enqueueForTest(ObjectId{2}, makeProbe(otherQueued));
+
+    mgr.endOperationsOnCardRemoved(ObjectId{1});
+    mgr.endOperationsOnCardRemoved(ObjectId{});
+
+    EXPECT_FALSE(otherHead.state->cancelled.load());
+    EXPECT_FALSE(isComplete(otherQueued));
+    EXPECT_TRUE(otherQueued.currentPhaseIs(OperationPhase::Queued));
+    otherGate->signal();
+    ASSERT_TRUE(waitUntil([&] { return otherQueued.flags->returned.load(); }));
+    EXPECT_TRUE(completedAs(otherQueued, OperationStatus::Ok, ErrorCode::None));
 }

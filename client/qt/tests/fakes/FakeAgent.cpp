@@ -77,7 +77,7 @@ public:
 
     [[nodiscard]] uint phase() const
     {
-        return m_op->m_completed ? 7u : 4u;
+        return m_op->m_completed ? 7u : m_op->m_initialPhase;
     }
     [[nodiscard]] bool completed() const
     {
@@ -1808,6 +1808,7 @@ QDBusObjectPath FakeAgent::mintOperation(FakeOperation::Kind kind, bool withCred
                                  m_config.tokenInfoEmpty, m_config.identityGroupScript, std::move(batchDisplayNames),
                                  m_config.batchHaltAtIndex, m_config.batchHaltErrorCode,
                                  /*marksListingCurrent=*/isCredentialListing);
+    op->setInitialPhase(m_config.initialPhase);
     m_operations.append(op);
     // When raceResultBeforeReturn is set, delay is 0 so start() fires Result +
     // Finished synchronously here, BEFORE we return the path — the client

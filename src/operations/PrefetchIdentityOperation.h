@@ -12,9 +12,10 @@ namespace LibreSCRS::Agent::Operations {
 class CardSessionHolder;
 
 // The background read of a freshly published card's identity. Nobody asked for
-// it and nobody waits on it: its channel drops every emission, it sets no phase
-// (so no watchdog is armed on it) and its only effect is a put into the card's
-// read cache. Never prompts, never touches the secret cache.
+// it and nobody waits on it: its channel drops every emission, but it still
+// enters Connecting, which arms the watchdog, so a read stuck on the card
+// cannot hold the reader's queue for ever. Its only effect is a put into the
+// card's read cache. Never prompts, never touches the secret cache.
 class PrefetchIdentityOperation final : public OperationBase
 {
 public:

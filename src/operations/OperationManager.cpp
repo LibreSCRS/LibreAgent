@@ -179,13 +179,19 @@ bool OperationManager::runAndHandOff(ReaderWorker& worker, std::unique_ptr<Opera
         return true;
     }
 
+    handOffFinished(std::move(op));
+    return false;
+}
+
+void OperationManager::handOffFinished(std::unique_ptr<OperationBase> op)
+{
     // Reclaim the op's per-op auxiliary thread now that it is terminal,
     // BEFORE it enters the 5 s cleanup-grace queue. Otherwise a burst of
     // fast operations parks hundreds of idle jthreads in the grace window
     // (each finished op holding its watchdog thread until
     // destruction), exhausting threads and wedging the single bus event
     // loop. The op object stays exported for the grace; only its now-idle
-    // thread is reclaimed here, on the worker thread.
+    // thread is reclaimed here.
     op->quiesce();
 
     if (m_production) {
@@ -194,11 +200,23 @@ bool OperationManager::runAndHandOff(ReaderWorker& worker, std::unique_ptr<Opera
         // see the terminal phase/progress before unexport.
         std::lock_guard finLock(m_finishedMutex);
         m_finished.push_back({std::move(op), std::chrono::steady_clock::now()});
+        return;
     }
-    // Test mode (no bus, no cleanup thread): the op's destructor fires
-    // here as the unique_ptr leaves scope; the test's adaptor capture
-    // has already recorded the finish.
-    return false;
+    // Test mode (no bus, no cleanup thread): nothing sweeps, so scrub the id
+    // tables here, BEFORE the op's destructor fires as the unique_ptr leaves
+    // scope, and a later cancel never finds a freed op. The test's adaptor
+    // capture has already recorded the finish.
+    forgetOpById(op->id());
+}
+
+void OperationManager::enqueueLocked(ReaderWorker& worker, std::unique_ptr<OperationBase> op)
+{
+    const bool busy = worker.inFlight != nullptr || !worker.queue.empty();
+    if (busy) {
+        op->setPhase(static_cast<std::uint32_t>(OperationPhase::Queued));
+    }
+    worker.queue.push_back(std::move(op));
+    worker.cv.notify_one();
 }
 
 void OperationManager::workerLoop(ReaderWorker& worker, std::stop_token st)
@@ -266,6 +284,7 @@ void OperationManager::workerLoop(ReaderWorker& worker, std::stop_token st)
             auto op = std::move(worker.queue.front());
             worker.queue.pop_front();
             worker.inFlight = op.get();
+            ++worker.runSeq;
             lock.unlock();
             if (runAndHandOff(worker, std::move(op))) {
                 return;
@@ -276,6 +295,7 @@ void OperationManager::workerLoop(ReaderWorker& worker, std::stop_token st)
         if (worker.background && std::chrono::steady_clock::now() >= worker.backgroundDue) {
             auto op = std::move(worker.background);
             worker.inFlight = op.get();
+            ++worker.runSeq;
             lock.unlock();
             if (runAndHandOff(worker, std::move(op))) {
                 return;
@@ -471,8 +491,7 @@ void OperationManager::enqueueForTest(ObjectId reader, std::unique_ptr<Operation
     // fine for the lazily-created worker's holder, which goes unused.
     auto worker = workerFor(reader, std::string{});
     std::lock_guard lock(worker->mutex);
-    worker->queue.push_back(std::move(op));
-    worker->cv.notify_one();
+    enqueueLocked(*worker, std::move(op));
 }
 
 void OperationManager::enqueueTrackedForTest(ObjectId reader, std::unique_ptr<OperationBase> op, OperationId id,
@@ -488,8 +507,7 @@ void OperationManager::enqueueTrackedForTest(ObjectId reader, std::unique_ptr<Op
         m_byId.emplace(id, op.get());
     }
     std::lock_guard lock(worker->mutex);
-    worker->queue.push_back(std::move(op));
-    worker->cv.notify_one();
+    enqueueLocked(*worker, std::move(op));
 }
 
 namespace {
@@ -578,6 +596,30 @@ bool OperationManager::enqueueOnReaderWorker(ObjectId reader, const std::string&
 
 void OperationManager::cancel(OperationId id)
 {
+    if (!id.valid()) {
+        return; // never tracked (an internal probe): nothing to cancel
+    }
+    // An op still waiting in a reader's queue is taken out and ended here, so a
+    // cancel never waits for the op ahead of it (which may be stuck). Compared by
+    // id, never by pointer. The worker may have taken the op just now: then it is
+    // not in the queue and the cooperative cancel below reaches it.
+    std::unique_ptr<OperationBase> queued;
+    for (const auto& worker : snapshotWorkers()) {
+        std::lock_guard lock(worker->mutex);
+        const auto it = std::find_if(worker->queue.begin(), worker->queue.end(),
+                                     [&](const std::unique_ptr<OperationBase>& op) { return op->id() == id; });
+        if (it != worker->queue.end()) {
+            queued = std::move(*it);
+            worker->queue.erase(it);
+            break;
+        }
+    }
+    if (queued) {
+        // Off every lock: finishing emits on the channel.
+        queued->finishCancelled();
+        handOffFinished(std::move(queued));
+        return;
+    }
     std::lock_guard lock(m_pathMutex);
     auto it = m_byId.find(id);
     if (it == m_byId.end()) {
@@ -755,6 +797,95 @@ void OperationManager::abandonOrJoin(std::shared_ptr<ReaderWorker> worker) noexc
     // unique_ptr drops at scope exit — bounded, non-wedging.
 }
 
+void OperationManager::endOperationsOnCardRemoved(ObjectId reader)
+{
+    std::shared_ptr<ReaderWorker> worker;
+    {
+        std::lock_guard wl(m_workersMutex);
+        const auto it = m_workers.find(reader);
+        if (it == m_workers.end() || !it->second) {
+            return;
+        }
+        worker = it->second;
+    }
+    std::vector<std::unique_ptr<OperationBase>> ended;
+    std::function<void()> dismissPrompt;
+    {
+        std::lock_guard lock(worker->mutex);
+        // inFlight is live under this mutex. The cancel is tripped here, but the
+        // prompt is dismissed below: that can be a synchronous IPC call, and
+        // publish and cancel take this mutex on the bus thread.
+        if (worker->inFlight != nullptr) {
+            dismissPrompt = worker->inFlight->cancelWithoutDismissing();
+        }
+        ended = takeQueuedLocked(*worker);
+    }
+    if (dismissPrompt) {
+        try {
+            dismissPrompt();
+        } catch (...) {
+            // noexcept by contract; never let one escape the host's hook.
+        }
+    }
+    for (auto& op : ended) {
+        op->finishCardRemoved();
+        handOffFinished(std::move(op));
+    }
+}
+
+std::vector<std::shared_ptr<OperationManager::ReaderWorker>> OperationManager::snapshotWorkers()
+{
+    std::vector<std::shared_ptr<ReaderWorker>> workers;
+    std::lock_guard wl(m_workersMutex);
+    for (const auto& entry : m_workers) {
+        if (entry.second) {
+            workers.push_back(entry.second);
+        }
+    }
+    return workers;
+}
+
+std::vector<std::unique_ptr<OperationBase>> OperationManager::takeQueuedLocked(ReaderWorker& worker)
+{
+    // Only ops that told their client they were Queued.
+    std::vector<std::unique_ptr<OperationBase>> taken;
+    for (auto it = worker.queue.begin(); it != worker.queue.end();) {
+        if ((*it)->phase() == static_cast<std::uint32_t>(OperationPhase::Queued)) {
+            taken.push_back(std::move(*it));
+            it = worker.queue.erase(it);
+        } else {
+            ++it;
+        }
+    }
+    return taken;
+}
+
+void OperationManager::drainWedgedQueues()
+{
+    std::vector<std::unique_ptr<OperationBase>> ended;
+    for (const auto& worker : snapshotWorkers()) {
+        std::lock_guard lock(worker->mutex);
+        // inFlight is a live op while worker.mutex is held: the worker clears it
+        // under this mutex before the op is handed on.
+        if (worker->inFlight == nullptr || !worker->inFlight->watchdogFired()) {
+            worker->wedgedSeq = 0;
+            continue;
+        }
+        if (worker->wedgedSeq != worker->runSeq) {
+            worker->wedgedSeq = worker->runSeq; // first sighting of this op
+            continue;
+        }
+        for (auto& op : takeQueuedLocked(*worker)) {
+            ended.push_back(std::move(op));
+        }
+    }
+    // Off every lock: finishing emits on the channel.
+    for (auto& op : ended) {
+        op->finishWatchdogTimeout();
+        handOffFinished(std::move(op));
+    }
+}
+
 void OperationManager::cleanupLoop(std::stop_token st)
 {
     using namespace std::chrono_literals;
@@ -764,6 +895,7 @@ void OperationManager::cleanupLoop(std::stop_token st)
         if (st.stop_requested()) {
             return;
         }
+        drainWedgedQueues();
         sweepFinished(grace);
     }
 }

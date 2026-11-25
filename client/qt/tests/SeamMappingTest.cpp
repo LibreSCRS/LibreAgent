@@ -1038,6 +1038,95 @@ TEST(SeamStall, APersonAtThePromptStopsTheClock)
     EXPECT_EQ(op->callError(), CallError::Timeout);
 }
 
+// Waiting behind another operation on the same reader is not a stall: the agent
+// said so. Only the next report from the agent starts the clock again.
+TEST(SeamStall, AQueuedReportStopsTheClockAndTheNextPhaseRestartsIt)
+{
+    ClientOnFake h;
+    h.fake->nextOperationId = QStringLiteral("/op/1");
+    AgentOperation* op = h.client->card(QStringLiteral("/card/0"))->readIdentity();
+    op->setStallBudget(60);
+    OperationListener* listener = h.fake->soleOperationListener();
+    ASSERT_NE(listener, nullptr);
+
+    listener->onPhaseChanged(OperationPhase::Queued);
+    EXPECT_FALSE(spinUntil([&] { return op->isFinished(); }, 300)) << "five budgets of silence while queued";
+    EXPECT_TRUE(h.fake->cancelled.empty());
+
+    listener->onPhaseChanged(OperationPhase::Connecting);
+    EXPECT_TRUE(spinUntil([&] { return op->isFinished(); }, 2000));
+    EXPECT_EQ(op->callError(), CallError::Timeout);
+}
+
+// The protection the queued report must not remove: an agent that holds its name
+// and never reports anything at all is still given up on.
+TEST(SeamStall, AnAgentThatNeverReportsAnythingIsStillGivenUp)
+{
+    ClientOnFake h;
+    h.fake->nextOperationId = QStringLiteral("/op/1");
+    AgentOperation* op = h.client->card(QStringLiteral("/card/0"))->readIdentity();
+    op->setStallBudget(60);
+
+    EXPECT_TRUE(spinUntil([&] { return op->isFinished(); }, 2000));
+    EXPECT_EQ(op->callError(), CallError::Timeout);
+    ASSERT_EQ(h.fake->cancelled.size(), 1U);
+}
+
+// D-Bus: a phase emitted before the client subscribed is read back with the
+// terminal state. It reaches the consumer through phaseChanged on the next turn
+// of the loop (a consumer connects after the constructor returns), and it stops
+// the clock like any live report.
+TEST(SeamStall, AQueuedPhaseReadBackAtConstructionIsPublishedAndStopsTheClock)
+{
+    ClientOnFake h;
+    h.fake->nextOperationId = QStringLiteral("/op/1");
+    h.fake->terminal = TerminalSnapshot{false, OperationStatus::Error, ErrorCode::None, OperationPhase::Queued};
+    AgentOperation* op = h.client->card(QStringLiteral("/card/0"))->readIdentity();
+    op->setStallBudget(60);
+    std::vector<OperationPhase> seen;
+    QObject::connect(op, &AgentOperation::phaseChanged, op, [&seen](OperationPhase phase) { seen.push_back(phase); });
+
+    EXPECT_FALSE(op->isFinished());
+    ASSERT_TRUE(spinUntil([&] { return !seen.empty(); }, 1000));
+    EXPECT_EQ(seen, (std::vector<OperationPhase>{OperationPhase::Queued}));
+    EXPECT_FALSE(spinUntil([&] { return op->isFinished(); }, 300)) << "queued: the clock is stopped";
+}
+
+// The deferred publication of a read-back phase never overtakes the live stream:
+// if a newer phase arrived before the loop turned, only that one is seen.
+TEST(SeamStall, ALivePhaseBeforeTheDeferredReadBackIsNeverFollowedByTheOlderOne)
+{
+    ClientOnFake h;
+    h.fake->nextOperationId = QStringLiteral("/op/1");
+    h.fake->terminal = TerminalSnapshot{false, OperationStatus::Error, ErrorCode::None, OperationPhase::Queued};
+    AgentOperation* op = h.client->card(QStringLiteral("/card/0"))->readIdentity();
+    std::vector<OperationPhase> seen;
+    QObject::connect(op, &AgentOperation::phaseChanged, op, [&seen](OperationPhase phase) { seen.push_back(phase); });
+
+    h.fake->soleOperationListener()->onPhaseChanged(OperationPhase::Reading);
+    spinEventLoop();
+    EXPECT_EQ(seen, (std::vector<OperationPhase>{OperationPhase::Reading}));
+}
+
+// ...and never after the operation has finished: the controller contract is that
+// every phase arrives before `finished`.
+TEST(SeamStall, AFinishBeforeTheDeferredReadBackLeavesNoPhaseAfterIt)
+{
+    ClientOnFake h;
+    h.fake->nextOperationId = QStringLiteral("/op/1");
+    h.fake->terminal = TerminalSnapshot{false, OperationStatus::Error, ErrorCode::None, OperationPhase::Queued};
+    AgentOperation* op = h.client->card(QStringLiteral("/card/0"))->readIdentity();
+    int phases = 0;
+    int finished = 0;
+    QObject::connect(op, &AgentOperation::phaseChanged, op, [&phases](OperationPhase) { ++phases; });
+    QObject::connect(op, &AgentOperation::finished, op, [&finished]() { ++finished; });
+
+    h.fake->soleOperationListener()->onFinished(OperationStatus::Cancelled, ErrorCode::None, QString(), QString());
+    spinEventLoop();
+    EXPECT_EQ(finished, 1);
+    EXPECT_EQ(phases, 0) << "no phaseChanged after finished";
+}
+
 TEST(SeamStall, ZeroTurnsTheBoundOff)
 {
     ClientOnFake h;
@@ -1187,7 +1276,7 @@ TEST(SeamOperation, UnknownPhaseHoldsLastKnownPhaseButStillEmits)
     h.fake->soleOperationListener()->onPhaseChanged(OperationPhase::Reading);
     EXPECT_EQ(seenPhase, OperationPhase::Reading);
 
-    // A future value this build does not name (past Done=7).
+    // A future value this build does not name (past Queued=8).
     h.fake->soleOperationListener()->onPhaseChanged(static_cast<OperationPhase>(99));
     EXPECT_EQ(phaseChangedCount, 2) << "the signal must still fire on an unrecognised phase";
     EXPECT_EQ(seenPhase, OperationPhase::Reading) << "the signal's own phase argument must not regress either";

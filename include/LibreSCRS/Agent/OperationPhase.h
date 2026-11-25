@@ -23,6 +23,7 @@ enum class OperationPhase : std::uint32_t {
     Signing = 5,         ///< Running the signing engine.
     Timestamping = 6,    ///< Contacting a timestamp authority (LT/LTA signature levels).
     Done = 7,            ///< Terminal phase; the operation has finished (see `OperationStatus` for the outcome).
+    Queued = 8,          ///< Waiting behind another operation on the same reader; not started yet.
 };
 
 /// @brief Wire-stable terminal outcome of an operation, carried alongside

@@ -64,6 +64,7 @@ TEST(ErrorTaxonomy, PhaseWireValuesAreFrozen)
     EXPECT_EQ(static_cast<std::uint32_t>(OperationPhase::Signing), 5u);
     EXPECT_EQ(static_cast<std::uint32_t>(OperationPhase::Timestamping), 6u);
     EXPECT_EQ(static_cast<std::uint32_t>(OperationPhase::Done), 7u);
+    EXPECT_EQ(static_cast<std::uint32_t>(OperationPhase::Queued), 8u);
 }
 
 TEST(ErrorTaxonomy, MapsChannelActivationErrors)
