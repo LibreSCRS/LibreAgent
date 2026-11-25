@@ -136,6 +136,7 @@ std::shared_ptr<OperationManager::ReaderWorker> OperationManager::workerFor(Obje
             },
             m_testHolderClock);
         worker->idleSweep = m_idleSweep;
+        worker->holdsSuspended = m_holdsSuspended;
         auto* raw = worker.get();
         raw->worker = std::jthread([this, raw](std::stop_token st) { workerLoop(*raw, std::move(st)); });
         it = m_workers.emplace(reader, std::move(worker)).first;
@@ -246,7 +247,10 @@ void OperationManager::workerLoop(ReaderWorker& worker, std::stop_token st)
         //    op is delayed; an empty queue must NOT fall through to the pop.
         if (worker.holdDirty) {
             worker.holdDirty = false;
-            const bool hold = worker.hold;
+            // Suspension and the post-wake bound mask the host's flag; they
+            // never change it.
+            const bool hold =
+                worker.hold && !worker.holdsSuspended && std::chrono::steady_clock::now() >= worker.holdNotBefore;
             lock.unlock();
             if (worker.holder) {
                 if (hold) {
@@ -285,7 +289,8 @@ void OperationManager::workerLoop(ReaderWorker& worker, std::stop_token st)
             //    One holder call, judged against one reading of the clock.
             //    Holder access is worker-thread-only and never under
             //    worker.mutex.
-            const bool hold = worker.hold;
+            const bool hold =
+                worker.hold && !worker.holdsSuspended && std::chrono::steady_clock::now() >= worker.holdNotBefore;
             lock.unlock();
             if (worker.holder) {
                 worker.holder->sweep(hold); // noexcept
@@ -387,6 +392,28 @@ void OperationManager::setReaderHold(ObjectId reader, bool hold)
         w.holdDirty = true;
     }
     w.cv.notify_all();
+}
+
+void OperationManager::setHoldsSuspended(bool suspended)
+{
+    // Lock order as setReaderHold: m_workersMutex, then each worker's mutex.
+    // No notify: suspension is not in the wait predicate, and a worker has
+    // nothing to do for it; its next round reads the flag.
+    std::lock_guard wl(m_workersMutex);
+    m_holdsSuspended = suspended;
+    for (auto& [id, worker] : m_workers) {
+        if (!worker) {
+            continue;
+        }
+        std::lock_guard l(worker->mutex);
+        const bool lifted = worker->holdsSuspended && !suspended;
+        worker->holdsSuspended = suspended;
+        if (lifted) {
+            // Same critical section as the flag: a worker never sees the lift
+            // without the new bound, so the hold waits one sweep period.
+            worker->holdNotBefore = std::chrono::steady_clock::now() + worker->idleSweep;
+        }
+    }
 }
 
 void OperationManager::installBackground(std::shared_ptr<ReaderWorker> worker, std::unique_ptr<OperationBase> op,

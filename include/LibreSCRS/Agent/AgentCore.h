@@ -212,11 +212,23 @@ public:
     // Reads the object registry, so the host calls it wherever it serialises
     // registry access (the monitor mutates the registry on its own thread); the
     // caches, the lease manager and the scheduler have their own locks. The
-    // power-hold FLAG is left where it is: the worker drops the hold handle on
-    // the invalidate and renews it on its next idle sweep if the card is still
-    // seated after wake; a card gone by then clears the flag through the
-    // card-removed hook.
+    // host's power-hold FLAG is left where it is (a card gone by the time the
+    // system wakes clears it through the card-removed hook). SystemSleep also
+    // suspends every reader's hold until resume(): the worker drops the hold
+    // handle on the invalidate and takes none while asleep, because a
+    // connection reopened before the system powers down is dead on wake.
     void quiesce(QuiesceReason reason);
+
+    // The system woke. Acts only when quiesce(SystemSleep) suspended the holds;
+    // otherwise (a second wake report, or no sleep at all) it does nothing, so
+    // it never drops a session opened since the first. When it acts it
+    // invalidates every reader's session (whatever was opened while the
+    // system slept) and then lifts the suspension: each worker takes its hold
+    // back on a later idle sweep, one sweep period at the earliest, on a fresh
+    // connection. No caches are scrubbed (the sleep already did) and no leases
+    // are revoked. Same serialisation rule as quiesce(): it reads the registry,
+    // and the host serialises both calls under the same lock.
+    void resume();
 
     // Revoke every PKCS#11 lease on every card the registry holds, so the next
     // PKCS#11 operation re-authenticates. Same serialisation rule as quiesce().

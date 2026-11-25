@@ -2,7 +2,7 @@
 # Test floor, leg linux: <binary> <tests it registers at least>. Raise a
 # line in the change that adds tests; lowering one needs a reason.
 AddressedCancelTest 5
-AgentCoreQuiesceTest 5
+AgentCoreQuiesceTest 9
 AgentCoreWiringTest 1
 AgentShutdownUnderLoadTest 1
 AttemptContextTest 7
@@ -90,7 +90,7 @@ MrzPayloadTest 18
 ObjectRegistryTest 16
 OperationBaseTest 8
 OperationLauncherTest 19
-OperationManagerTest 29
+OperationManagerTest 34
 OperationPhaseTest 2
 PinChangeFlowTest 30
 Pkcs11BrokerTest 44

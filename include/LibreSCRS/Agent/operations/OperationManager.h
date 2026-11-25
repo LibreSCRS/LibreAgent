@@ -208,6 +208,25 @@ public:
     // its own thread before its next op. No-op when no worker exists.
     void setReaderHold(ObjectId reader, bool hold);
 
+    // Suspend (or resume) every reader's power hold, for all readers at once.
+    // While suspended no worker takes a hold and an idle session is closed
+    // instead of being demoted into one, so nothing reopens a connection the
+    // system is about to power down. The host's own hold flag (setReaderHold)
+    // is left alone: it stays the one record of which cards should be held.
+    // Lifting the suspension does not reopen anything by itself and does not
+    // wake the workers: each worker takes the hold back on an idle sweep, but
+    // never sooner than one sweep period after the lift, so a reader that is
+    // still powering up is not opened at the first instant of wake. A worker
+    // created while suspended starts suspended. Lock order as
+    // setReaderHold: m_workersMutex, then each worker's mutex.
+    void setHoldsSuspended(bool suspended);
+
+    [[nodiscard]] bool holdsSuspended()
+    {
+        std::lock_guard wl(m_workersMutex);
+        return m_holdsSuspended;
+    }
+
     // Test seam: the hold flag as the host last set it (false when no worker
     // exists). Inline — emits no ABI symbol.
     [[nodiscard]] bool isReaderHeldForTest(ObjectId reader)
@@ -389,9 +408,16 @@ private:
         // cv wait predicate under the one lock.
         bool hold{false};
         bool holdDirty{false};
+        // Copy of the manager-wide suspension, written under `mutex`; while
+        // set, the worker acts as if no hold were wanted (see setHoldsSuspended).
+        bool holdsSuspended{false};
+        // Earliest instant the hold may be taken again after a suspension was
+        // lifted; in the past unless a lift happened within the last idleSweep.
+        std::chrono::steady_clock::time_point holdNotBefore{};
         // The bounded cv wait; kIdleClose in production, shortened by
-        // setIdleSweepForTest. Written once at construction (workerFor), read
-        // only by this worker's thread.
+        // setIdleSweepForTest. Written once at construction (workerFor), before
+        // the thread starts; read by this worker's thread and, under `mutex`, by
+        // setHoldsSuspended to place holdNotBefore.
         std::chrono::milliseconds idleSweep{CardSessionHolder::kIdleClose};
         std::mutex mutex;
         std::condition_variable_any cv;
@@ -496,6 +522,9 @@ private:
     std::chrono::milliseconds m_idleSweep{CardSessionHolder::kIdleClose};
     CardSessionHolder::Clock m_testHolderClock;
     std::mutex m_workersMutex;
+    // The manager-wide hold suspension (see setHoldsSuspended); guarded by
+    // m_workersMutex, copied into each worker under its own mutex.
+    bool m_holdsSuspended{false};
     // std::map over unordered_map for consistency with the rest of the
     // manager's id-keyed tables; reader churn is low so ordering overhead is
     // negligible. Keyed by the reader's opaque ObjectId (the backend owns the

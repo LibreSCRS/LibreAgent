@@ -365,10 +365,33 @@ void AgentCore::quiesce(QuiesceReason reason)
         return;
     }
     clearFullScrubCaches(credentialCache(), credentialSnapshotCache());
+    if (reason == QuiesceReason::SystemSleep) {
+        // Before the invalidates: a worker that handles one must already see
+        // the suspension, or its next sweep would reopen the connection the
+        // system is about to power down.
+        m_opManager.setHoldsSuspended(true);
+    }
     for (const auto& reader : m_registry.readers()) {
         m_opManager.invalidateReaderSession(reader.id);
     }
     revokeLeases();
+}
+
+void AgentCore::resume()
+{
+    // A wake can be reported twice (power-on and the workspace notification).
+    // Only the first lifts anything; the second must not drop a session, or a
+    // secret, that the first operation after the wake has just made.
+    if (!m_opManager.holdsSuspended()) {
+        return;
+    }
+    // Invalidate first, lift second: a worker that sees the lift has already
+    // been told to drop whatever it opened while the system slept, so the
+    // hold is taken back exactly once, on a fresh connection.
+    for (const auto& reader : m_registry.readers()) {
+        m_opManager.invalidateReaderSession(reader.id);
+    }
+    m_opManager.setHoldsSuspended(false);
 }
 
 void AgentCore::revokeLeases()

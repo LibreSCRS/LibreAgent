@@ -7,6 +7,9 @@
 // secure channel) and every PKCS#11 lease; a screen lock forgets only the
 // leases. Driven over a real aggregate with three readers, two of them holding
 // a card, so "every reader" and "every card" are measured on more than one.
+// AgentCore::resume() is its counterpart for wake: it lifts the power-hold
+// suspension a sleep leaves, after dropping whatever was opened meanwhile, and
+// does nothing when no sleep is pending.
 #include <LibreSCRS/Agent/AgentCore.h>
 #include <LibreSCRS/Agent/Identity.h>
 #include <LibreSCRS/Agent/operations/CardSessionHolder.h>
@@ -232,4 +235,128 @@ TEST_F(AgentCoreQuiesce, RevokeLeasesTouchesNothingElse)
     EXPECT_EQ(cachedSecrets(), 6);
     const std::map<std::string, int> expected{{"reader-A", 1}, {"reader-B", 1}, {"reader-C", 1}};
     EXPECT_EQ(opensAfterReacquire(), expected);
+}
+
+TEST_F(AgentCoreQuiesce, SleepSuspendsHoldsAndResumeLiftsThem)
+{
+    expectStartingState();
+    EXPECT_FALSE(core->operationManager().holdsSuspended());
+    core->quiesce(QuiesceReason::SystemSleep);
+    EXPECT_TRUE(core->operationManager().holdsSuspended()) << "no hold is taken while asleep";
+
+    // An operation that runs before the wake opens a session of its own.
+    const std::map<std::string, int> duringSleep{{"reader-A", 2}, {"reader-B", 2}, {"reader-C", 2}};
+    ASSERT_EQ(opensAfterReacquire(), duringSleep);
+
+    core->resume();
+    EXPECT_FALSE(core->operationManager().holdsSuspended());
+    const std::map<std::string, int> afterWake{{"reader-A", 3}, {"reader-B", 3}, {"reader-C", 3}};
+    EXPECT_EQ(opensAfterReacquire(), afterWake) << "the wake dropped every session opened while asleep";
+}
+
+TEST_F(AgentCoreQuiesce, LockAndSwitchDoNotSuspendHolds)
+{
+    core->quiesce(QuiesceReason::ScreenLocked);
+    EXPECT_FALSE(core->operationManager().holdsSuspended());
+    core->quiesce(QuiesceReason::SessionInactive);
+    EXPECT_FALSE(core->operationManager().holdsSuspended());
+}
+
+// The host sends a wake twice (power-on and the workspace notification): the
+// second must not drop what the first operation after the wake opened.
+TEST_F(AgentCoreQuiesce, ASecondResumeDoesNothing)
+{
+    core->quiesce(QuiesceReason::SystemSleep);
+    ASSERT_TRUE(core->operationManager().holdsSuspended());
+    core->resume();
+    ASSERT_FALSE(core->operationManager().holdsSuspended());
+    const std::map<std::string, int> afterWake{{"reader-A", 2}, {"reader-B", 2}, {"reader-C", 2}};
+    ASSERT_EQ(opensAfterReacquire(), afterWake);
+
+    core->resume();
+    EXPECT_EQ(opensAfterReacquire(), afterWake) << "the session opened after the first wake survives the second";
+}
+
+namespace {
+
+// A single reader with the power hold wanted and a short idle sweep. The sweep
+// period is written into a worker only when it is created, so it is set before
+// the first operation on the reader.
+class AgentCoreSleep : public ::testing::Test
+{
+protected:
+    AgentCoreSleep()
+    {
+        core.emplace(
+            resolver, authorizer, prompter, dir() / "agent.conf", dir() / "cache",
+            [](const std::string&) -> std::optional<ReaderCard> { return std::nullopt; },
+            [](const std::string&) -> std::optional<ObjectId> { return std::nullopt; });
+        core->operationManager().setIdleSweepForTest(kSweep);
+        core->operationManager().setSessionFactoryForTest(
+            [this](const std::string& name)
+                -> std::expected<std::shared_ptr<LibreSCRS::SmartCard::CardSession>, LibreSCRS::SmartCard::OpenError> {
+                opens.fetch_add(1);
+                return LibreSCRS::SmartCard::Testing::makeDetachedCardSession(name);
+            });
+        core->presenceModel().onReaderAdded(kReader);
+        reader = core->presenceModel().readerIdFor(kReader);
+        probe([](Operations::CardSessionHolder&) {}); // materialise the worker
+        core->operationManager().setReaderHold(reader, true);
+        probe([](Operations::CardSessionHolder&) {}); // the worker applied the hold first
+    }
+
+    ~AgentCoreSleep() override
+    {
+        core.reset();
+        fs::remove_all(dir());
+    }
+
+    void probe(std::function<void(Operations::CardSessionHolder&)> fn)
+    {
+        std::atomic<bool> done{false};
+        ASSERT_TRUE(core->operationManager().enqueueOnReaderWorker(
+            reader, kReader, [&done, fn = std::move(fn)](Operations::CardSessionHolder& holder) {
+                fn(holder);
+                done.store(true);
+            }));
+        const auto start = std::chrono::steady_clock::now();
+        while (!done.load() && std::chrono::steady_clock::now() - start < 2s) {
+            std::this_thread::sleep_for(2ms);
+        }
+        ASSERT_TRUE(done.load());
+    }
+
+    // Several idle sweeps with nothing queued.
+    static void letSweepsRun()
+    {
+        std::this_thread::sleep_for(kSweep * 6);
+    }
+
+    static constexpr auto kSweep = 50ms;
+    static constexpr const char* kReader = "reader-S";
+    const fs::path m_dir = LibreSCRS::Agent::Testing::makeScratchDir("libreagent-agentcore-sleep-");
+    [[nodiscard]] const fs::path& dir() const
+    {
+        return m_dir;
+    }
+
+    NeutralResolver resolver;
+    FakeAuthorizer authorizer;
+    std::shared_ptr<Operations::FakePrompter> prompter = std::make_shared<Operations::FakePrompter>();
+    // Declared before the core: the workers the core joins on teardown write it.
+    std::atomic<int> opens{0};
+    std::optional<AgentCore> core;
+    ObjectId reader{};
+};
+
+} // namespace
+
+// While the system sleeps nothing may reopen the connection the sleep just
+// dropped: a card that is powered down comes back with a dead handle.
+TEST_F(AgentCoreSleep, SleepTakesNoHoldWhileAsleep)
+{
+    ASSERT_EQ(opens.load(), 1) << "the hold is the reader's one connection before the sleep";
+    core->quiesce(QuiesceReason::SystemSleep);
+    letSweepsRun();
+    EXPECT_EQ(opens.load(), 1) << "no connection is opened while asleep";
 }

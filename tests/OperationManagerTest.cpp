@@ -1360,3 +1360,161 @@ TEST(OperationManagerBackground, SetBackgroundWithoutAWorkerCreatesNone)
                      ObjectId{9}, [](CardSessionHolder*) { return std::unique_ptr<OperationBase>{}; }, 0ms),
                  std::logic_error);
 }
+
+// ---------------------------------------------------------------------------
+// Hold suspension: while the system sleeps nothing may take a connection, and
+// after wake the hold comes back only on a sweep, one period later at the
+// earliest.
+// ---------------------------------------------------------------------------
+namespace {
+// Shorter than kSweepPeriod: these tests count sweeps over several periods
+// ("none while suspended", "not before holdNotBefore") rather than landing
+// between exactly two, so a fast period keeps them quick.
+constexpr auto kSuspendSweep = 100ms;
+
+// Poll until @p done holds or 2 s pass.
+template <class Pred>
+bool waitUntil(Pred done)
+{
+    const auto start = std::chrono::steady_clock::now();
+    while (!done() && (std::chrono::steady_clock::now() - start) < 2s) {
+        std::this_thread::sleep_for(2ms);
+    }
+    return done();
+}
+
+bool holdPresent(OperationManager& mgr)
+{
+    std::atomic<int> held{-1};
+    probeOnWorker(mgr, [&](CardSessionHolder& h) { held.store(h.hasHoldForTest() ? 1 : 0); });
+    return held.load() == 1;
+}
+} // namespace
+
+TEST(OperationManager, HoldIsNotRetakenWhileSuspended)
+{
+    HandleCensus census;
+    OperationManager mgr;
+    mgr.setSessionFactoryForTest(census.factory());
+    mgr.setIdleSweepForTest(kSuspendSweep);
+    probeOnWorker(mgr, [](CardSessionHolder&) {});
+    mgr.setReaderHold(ObjectId{1}, true);
+    ASSERT_TRUE(holdPresent(mgr));
+    ASSERT_EQ(census.opens(), 1);
+
+    mgr.setHoldsSuspended(true);
+    mgr.invalidateReaderSession(ObjectId{1});
+    EXPECT_FALSE(holdPresent(mgr)) << "the invalidate dropped the hold";
+    std::this_thread::sleep_for(kSuspendSweep * 6);
+    EXPECT_FALSE(holdPresent(mgr)) << "no sweep took it back while suspended";
+    EXPECT_EQ(census.opens(), 1) << "nothing was opened while suspended";
+    EXPECT_TRUE(mgr.isReaderHeldForTest(ObjectId{1})) << "the host's flag is untouched";
+}
+
+TEST(OperationManager, ResumeRetakesTheHoldOnAFreshConnection)
+{
+    HandleCensus census;
+    OperationManager mgr;
+    mgr.setSessionFactoryForTest(census.factory());
+    mgr.setIdleSweepForTest(kSuspendSweep);
+    probeOnWorker(mgr, [](CardSessionHolder&) {});
+    mgr.setReaderHold(ObjectId{1}, true);
+    ASSERT_TRUE(holdPresent(mgr));
+
+    mgr.setHoldsSuspended(true);
+    mgr.invalidateReaderSession(ObjectId{1});
+    ASSERT_FALSE(holdPresent(mgr));
+    ASSERT_EQ(census.closes(), 1) << "the old connection is gone";
+
+    std::this_thread::sleep_for(kSuspendSweep * 3);
+    ASSERT_EQ(census.opens(), 1) << "still nothing opened while suspended";
+
+    const auto lifted = std::chrono::steady_clock::now();
+    mgr.invalidateReaderSession(ObjectId{1}); // the order the core uses: invalidate, then lift
+    mgr.setHoldsSuspended(false);
+    ASSERT_TRUE(waitUntil([&] { return census.opens() == 2; })) << "the sweep took the hold back";
+    EXPECT_GE(std::chrono::steady_clock::now() - lifted, kSuspendSweep) << "not before one sweep period";
+    std::this_thread::sleep_for(kSuspendSweep * 4);
+    EXPECT_EQ(census.opens(), 2) << "exactly one new connection";
+    EXPECT_EQ(census.closes(), 1) << "the old one was not reused";
+    EXPECT_TRUE(holdPresent(mgr));
+}
+
+TEST(OperationManager, HoldWaitsOneSweepAfterResume)
+{
+    HandleCensus census;
+    OperationManager mgr;
+    mgr.setSessionFactoryForTest(census.factory());
+    mgr.setIdleSweepForTest(300ms);
+    probeOnWorker(mgr, [](CardSessionHolder&) {});
+    mgr.setHoldsSuspended(true);
+
+    const auto lifted = std::chrono::steady_clock::now();
+    mgr.setHoldsSuspended(false);
+    mgr.setReaderHold(ObjectId{1}, true); // step 2 runs at once, inside the wait
+    std::this_thread::sleep_for(40ms);
+    EXPECT_EQ(census.opens(), 0) << "a hold asked for right after the lift does not open at once";
+
+    ASSERT_TRUE(waitUntil([&] { return census.opens() == 1; })) << "the sweep opens it afterwards";
+    EXPECT_GE(std::chrono::steady_clock::now() - lifted, 300ms);
+    std::this_thread::sleep_for(700ms);
+    EXPECT_EQ(census.opens(), 1) << "exactly once";
+}
+
+TEST(OperationManager, OperationWhileSuspendedOpensAndIsNotDemoted)
+{
+    HandleCensus census;
+    FakeHolderClock clock;
+    OperationManager mgr;
+    mgr.setSessionFactoryForTest(census.factory());
+    mgr.setIdleSweepForTest(kSweepPeriod);
+    mgr.setHolderClockForTest(clock.fn());
+    probeOnWorker(mgr, [](CardSessionHolder&) {});
+    mgr.setHoldsSuspended(true);
+    mgr.setReaderHold(ObjectId{1}, true);
+
+    std::shared_ptr<LibreSCRS::SmartCard::CardSession> first;
+    probeOnWorker(mgr, [&](CardSessionHolder& h) {
+        auto a = h.acquire();
+        if (a) {
+            first = a->session;
+        }
+    });
+    ASSERT_NE(first, nullptr) << "an operation opens a session while suspended";
+    ASSERT_EQ(census.opens(), 1);
+
+    clock.advance(CardSessionHolder::kIdleClose);
+    std::this_thread::sleep_for(kAfterOneSweep);
+    std::shared_ptr<LibreSCRS::SmartCard::CardSession> second;
+    bool held = true;
+    probeOnWorker(mgr, [&](CardSessionHolder& h) {
+        held = h.hasHoldForTest();
+        auto b = h.acquire();
+        if (b) {
+            second = b->session;
+        }
+    });
+    EXPECT_FALSE(held) << "the idle session was closed, not demoted into a hold";
+    EXPECT_NE(second, first);
+    EXPECT_EQ(census.opens(), 2);
+}
+
+TEST(OperationManager, WorkerCreatedWhileSuspendedInheritsIt)
+{
+    HandleCensus census;
+    OperationManager mgr;
+    mgr.setSessionFactoryForTest(census.factory());
+    mgr.setIdleSweepForTest(kSuspendSweep);
+    EXPECT_FALSE(mgr.holdsSuspended());
+    mgr.setHoldsSuspended(true); // no worker exists yet
+    EXPECT_TRUE(mgr.holdsSuspended());
+
+    probeOnWorker(mgr, [](CardSessionHolder&) {});
+    mgr.setReaderHold(ObjectId{1}, true);
+    EXPECT_FALSE(holdPresent(mgr));
+    std::this_thread::sleep_for(kSuspendSweep * 4);
+    EXPECT_EQ(census.opens(), 0) << "the new worker took no hold";
+
+    mgr.setHoldsSuspended(false);
+    EXPECT_FALSE(mgr.holdsSuspended());
+}

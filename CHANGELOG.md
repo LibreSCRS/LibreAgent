@@ -456,6 +456,13 @@ Three targets ship, each independently usable:
 
 ### Fixed
 
+- **After the system sleeps, a supported card is no longer reported as
+  unsupported.** The agent used to reuse, or reopen just before the system
+  powered down, the connection it held to a contact card, and that connection
+  was dead on wake. It now holds nothing while asleep and starts from a fresh
+  connection after wake; the hold comes back on a later idle sweep, never in
+  the first moments of wake.
+
 - **Nothing is cached for a card after it has been removed.** A read that
   finished just after its card was taken out could still store the card's
   identity or certificates. Removal now retires the card's key in the read
