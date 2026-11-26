@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 // SPDX-FileCopyrightText: 2026 hirashix0
 #include "operations/PrefetchIdentityOperation.h"
+#include "operations/IdentityGroupFeed.h"
 #include "operations/IdentityPrefetchFlow.h"
 #include "operations/SilentOperationChannel.h"
 #include <LibreSCRS/Logging.h>
@@ -24,12 +25,37 @@ const char* outcomeName(FlowOutcome outcome) noexcept
     return "failed";
 }
 
+// Closes the feed on every way out of doWork(), after whatever it did last
+// (the cache put included): a client that finds the feed closed finds the
+// snapshot in the cache.
+class FeedCloser
+{
+public:
+    explicit FeedCloser(IdentityGroupFeed& feed) noexcept : m_feed(feed) {}
+    ~FeedCloser()
+    {
+        m_feed.close();
+    }
+    FeedCloser(const FeedCloser&) = delete;
+    FeedCloser& operator=(const FeedCloser&) = delete;
+
+private:
+    IdentityGroupFeed& m_feed;
+};
+
 } // namespace
 
 PrefetchIdentityOperation::PrefetchIdentityOperation(Deps deps)
     : OperationBase(std::make_unique<SilentOperationChannel>(), std::make_shared<OperationState>()),
-      m_deps(std::move(deps))
+      m_deps(std::move(deps)), m_feed(std::make_shared<IdentityGroupFeed>(m_deps.cardKey))
 {}
+
+PrefetchIdentityOperation::~PrefetchIdentityOperation() = default;
+
+std::shared_ptr<IdentityGroupFeed> PrefetchIdentityOperation::identityGroupFeed() const noexcept
+{
+    return m_feed;
+}
 
 void PrefetchIdentityOperation::doWork()
 {
@@ -47,6 +73,10 @@ void PrefetchIdentityOperation::doWork()
         return;
     }
 
+    // From here followers may attach; the closer shuts the feed on every way out.
+    m_feed->beginRead();
+    const FeedCloser closer(*m_feed);
+
     // The silent channel emits nothing, but the phase arms the watchdog.
     setPhase(static_cast<std::uint32_t>(OperationPhase::Connecting));
     IdentityPrefetchFlow flow(IdentityPrefetchFlowDeps{
@@ -56,6 +86,7 @@ void PrefetchIdentityOperation::doWork()
         .readerName = m_deps.readerName,
         .token = token(),
         .onCardType = m_deps.onCardType,
+        .onGroup = [feed = m_feed](const GroupSnapshot& group) { feed->record(group); },
     });
     auto result = flow.run();
 

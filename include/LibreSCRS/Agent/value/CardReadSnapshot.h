@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 // SPDX-FileCopyrightText: 2026 hirashix0
 #pragma once
+#include <LibreSCRS/Agent/SecureZero.h>
 #include <cstdint>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -38,6 +40,26 @@ struct GroupSnapshot
     std::string labelFallback;
     std::vector<FieldSnapshot> fields;
 };
+
+// Zeroize and empty every field's text/binary buffer, so a dropped group leaves
+// no personal data in freed heap. Shared by the read cache and the buffers of
+// the group relay.
+inline void cleanseGroup(GroupSnapshot& group) noexcept
+{
+    for (auto& field : group.fields) {
+        secureZero(field.textValue);
+        field.textValue.clear();
+        secureZero(field.binaryValue);
+        field.binaryValue.clear();
+    }
+}
+
+inline void cleanseGroups(std::vector<GroupSnapshot>& groups) noexcept
+{
+    for (auto& group : groups) {
+        cleanseGroup(group);
+    }
+}
 
 // Top-level read snapshot. Agent-side type — no LM types appear in the
 // header (the seam layer converts LM's CardData to this on the way in).

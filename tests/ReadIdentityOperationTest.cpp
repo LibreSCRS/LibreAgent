@@ -11,8 +11,11 @@
 #include <LibreSCRS/SmartCard/CardSession.h>
 #include <LibreSCRS/SmartCard/testing/CardSessionTesting.h>
 #include "fakes/FakeLogSink.h"
+#include "operations/GroupRelay.h"
+#include "operations/IdentityGroupFeed.h"
 #include <gtest/gtest.h>
 #include <expected>
+#include <functional>
 #include <memory>
 #include <span>
 #include <sstream>
@@ -47,6 +50,15 @@ public:
         }
         return deliver;
     }
+    void emitGroup(const GroupSnapshot& group) noexcept override
+    {
+        if (onGroup) {
+            onGroup(group.groupKey);
+        }
+        groupKeys.push_back(group.groupKey);
+    }
+    std::function<void(const std::string&)> onGroup; ///< runs just before a group is recorded
+    std::vector<std::string> groupKeys;
     bool deliver = true; ///< false models a channel that fails to encode or post
     std::vector<EmittedFinish> finishes;
     std::vector<CardReadSnapshot> identityEmits;
@@ -68,9 +80,15 @@ class FakeReader final : public CardReader
 {
 public:
     ReadOutcome read(LibreSCRS::SmartCard::CardSession&, const CandidateList&, LibreSCRS::CancelToken,
-                     GroupReadCallback = {}) override
+                     GroupReadCallback onGroup = {}) override
     {
         ++reads;
+        // Stream the groups of the outcome, as a plugin does, ahead of returning it.
+        if (onGroup && outcome.snapshot) {
+            for (const auto& group : outcome.snapshot->groups) {
+                onGroup(group);
+            }
+        }
         return outcome;
     }
     // Not exercised by this suite (ReadTokenInfoOperationTest owns dedicated
@@ -362,4 +380,229 @@ TEST(ReadIdentityOperation, UndeliveredResultFinishesErrorOnWalkAndCacheHit)
         EXPECT_EQ(raw->finishes[0].errorCode, static_cast<std::uint32_t>(ErrorCode::CommunicationError));
     }
     EXPECT_EQ(reader.reads, 1) << "the second run was the cache hit";
+}
+
+// --- attached to a background read of the same card --------------------------
+
+namespace {
+
+struct AttachRig
+{
+    std::unique_ptr<CardSessionHolder> holder = makeHolder();
+    FakeReader reader;
+    FakePrompter prompter;
+    PromptSerializer serializer;
+    CredentialCache credCache;
+    CardReadCache readCache;
+    std::shared_ptr<OperationState> state = std::make_shared<OperationState>();
+    FakeOperationChannel* channel = nullptr;
+
+    AttachRig()
+    {
+        reader.outcome = ReadOutcome{ReadOutcome::Status::Ok, snapshotWithPhoto(), ""};
+    }
+
+    std::unique_ptr<ReadIdentityOperation> makeOp(const std::string& cardKey = "card-A")
+    {
+        auto adaptor = std::make_unique<FakeOperationChannel>();
+        channel = adaptor.get();
+        return std::make_unique<ReadIdentityOperation>(std::move(adaptor),
+                                                       ReadIdentityOperation::Deps{
+                                                           .holder = holder.get(),
+                                                           .reader = reader,
+                                                           .depositor = depositor,
+                                                           .prompter = prompter,
+                                                           .serializer = serializer,
+                                                           .credentials = credCache,
+                                                           .readCache = readCache,
+                                                           .cardKey = cardKey,
+                                                           .readerName = "FakeReader",
+                                                           .requester = "firefox",
+                                                       },
+                                                       state);
+    }
+};
+
+GroupSnapshot groupWithKey(const std::string& key)
+{
+    return {key, "group." + key, key, {{"f", "field.f", "F", FieldType::Text, "V-" + key, {}}}};
+}
+
+std::string joined(const FakeLogSink& sink)
+{
+    std::string all;
+    for (const auto& [level, line] : sink.lines) {
+        all += line;
+    }
+    return all;
+}
+
+std::size_t occurrences(const std::string& text, const std::string& what)
+{
+    std::size_t n = 0;
+    for (auto at = text.find(what); at != std::string::npos; at = text.find(what, at + 1)) {
+        ++n;
+    }
+    return n;
+}
+
+} // namespace
+
+TEST(ReadIdentityOperation, FollowsOnlyAnOpenFeedOfItsOwnCard)
+{
+    AttachRig rig;
+    auto op = rig.makeOp("card-A");
+
+    IdentityGroupFeed notOpen("card-A");
+    EXPECT_FALSE(op->followIdentityGroupFeed(notOpen)) << "attached to a feed that had not begun";
+    EXPECT_FALSE(op->groupRelay());
+
+    IdentityGroupFeed other("card-B");
+    other.beginRead();
+    EXPECT_FALSE(op->followIdentityGroupFeed(other)) << "attached to another card's feed";
+
+    IdentityGroupFeed own("card-A");
+    own.beginRead();
+    const auto relay = op->followIdentityGroupFeed(own);
+    ASSERT_TRUE(relay);
+    EXPECT_EQ(op->groupRelay(), relay);
+
+    IdentityGroupFeed second("card-A");
+    second.beginRead();
+    EXPECT_FALSE(op->followIdentityGroupFeed(second)) << "an op follows one feed only";
+    EXPECT_EQ(op->groupRelay(), relay);
+    relay->closeAndWait();
+}
+
+// The audit line of the background source is written when the op attaches --
+// before any group can be emitted from it -- and nothing else is added for it.
+TEST(ReadIdentityOperation, AttachingWritesTheBackgroundReadLineBeforeTheFirstGroup)
+{
+    FakeLogSink sink;
+    sink.install();
+    AttachRig rig;
+    auto op = rig.makeOp();
+    IdentityGroupFeed feed("card-A");
+    feed.beginRead();
+    feed.record(groupWithKey("early"));
+    const auto relay = op->followIdentityGroupFeed(feed);
+    ASSERT_TRUE(relay);
+
+    std::size_t linesAtFirstGroup = 0;
+    rig.channel->onGroup = [&](const std::string&) {
+        if (linesAtFirstGroup == 0) {
+            linesAtFirstGroup = occurrences(joined(sink), "(background read)");
+        }
+    };
+    EXPECT_EQ(occurrences(joined(sink), "(background read)"), 1u) << joined(sink);
+    EXPECT_TRUE(rig.channel->groupKeys.empty()) << "a group was emitted before the release";
+
+    relay->release();
+    EXPECT_EQ(rig.channel->groupKeys, (std::vector<std::string>{"early"}));
+    EXPECT_EQ(linesAtFirstGroup, 1u) << "the first group went out before its audit line";
+    EXPECT_NE(joined(sink).find("requester=firefox"), std::string::npos);
+    EXPECT_NE(joined(sink).find("card=card-A"), std::string::npos);
+    relay->closeAndWait();
+}
+
+TEST(ReadIdentityOperation, AnAttachedCacheHitAddsNoCacheLine)
+{
+    FakeLogSink sink;
+    sink.install();
+    AttachRig rig;
+    rig.readCache.put("card-A", snapshotWithPhoto());
+    auto op = rig.makeOp();
+    IdentityGroupFeed feed("card-A");
+    feed.beginRead();
+    ASSERT_TRUE(op->followIdentityGroupFeed(feed));
+    op->runOnWorker();
+
+    EXPECT_EQ(rig.reader.reads, 0);
+    ASSERT_EQ(rig.channel->finishes.size(), 1u);
+    EXPECT_EQ(rig.channel->identityEmits.size(), 1u);
+    const auto all = joined(sink);
+    EXPECT_EQ(occurrences(all, "identity read requested"), 1u) << all;
+    EXPECT_EQ(occurrences(all, "(background read)"), 1u) << all;
+    EXPECT_EQ(all.find("(cache)"), std::string::npos) << all;
+    EXPECT_TRUE(op->groupRelay()->isClosed()) << "doWork closes the relay before it uses the cache";
+}
+
+// The background read failed: the op reads the card itself (its own line is
+// written), and a group it already delivered is not sent again.
+TEST(ReadIdentityOperation, AfterAFailedBackgroundReadItReadsAndSkipsWhatItAlreadyDelivered)
+{
+    FakeLogSink sink;
+    sink.install();
+    AttachRig rig;
+    auto op = rig.makeOp();
+    IdentityGroupFeed feed("card-A");
+    feed.beginRead();
+    const auto relay = op->followIdentityGroupFeed(feed);
+    ASSERT_TRUE(relay);
+    feed.record(groupWithKey("personal"));
+    relay->release();
+    ASSERT_EQ(rig.channel->groupKeys, (std::vector<std::string>{"personal"}));
+    feed.close(); // the read ended without a snapshot in the cache
+
+    op->runOnWorker();
+
+    EXPECT_EQ(rig.reader.reads, 1) << "the op reads the card for its caller";
+    EXPECT_EQ(rig.channel->groupKeys, (std::vector<std::string>{"personal", "photo"}))
+        << "'personal' must not be sent twice";
+    ASSERT_EQ(rig.channel->identityEmits.size(), 1u);
+    EXPECT_EQ(rig.channel->identityEmits[0].groups.size(), 2u) << "the Result is always the whole snapshot";
+    ASSERT_EQ(rig.channel->finishes.size(), 1u);
+    const auto all = joined(sink);
+    EXPECT_EQ(occurrences(all, "(background read)"), 1u) << all;
+    EXPECT_EQ(occurrences(all, "identity read requested"), 2u) << "its own read adds its own line: " << all;
+}
+
+TEST(ReadIdentityOperation, AnUnattachedOpStreamsEveryGroupAsBefore)
+{
+    AttachRig rig;
+    auto op = rig.makeOp();
+    op->runOnWorker();
+    EXPECT_EQ(rig.channel->groupKeys, (std::vector<std::string>{"personal", "photo"}));
+    EXPECT_FALSE(op->groupRelay());
+}
+
+// A path that ends an attached op without closing its relay would leave a
+// possible emit into a freed op: the destructor says so and closes it.
+TEST(ReadIdentityOperation, DestroyingAnAttachedOpWithAnOpenRelayIsLoggedAndClosesIt)
+{
+    FakeLogSink sink;
+    sink.install();
+    AttachRig rig;
+    std::shared_ptr<GroupRelay> relay;
+    {
+        auto op = rig.makeOp();
+        IdentityGroupFeed feed("card-A");
+        feed.beginRead();
+        relay = op->followIdentityGroupFeed(feed);
+        ASSERT_TRUE(relay);
+    }
+    EXPECT_TRUE(relay->isClosed());
+    bool errorLogged = false;
+    for (const auto& [level, line] : sink.lines) {
+        errorLogged = errorLogged || level == LibreSCRS::log::Level::Error;
+    }
+    EXPECT_TRUE(errorLogged) << joined(sink);
+}
+
+TEST(ReadIdentityOperation, ARelayClosedBeforeDestructionIsNotAnError)
+{
+    FakeLogSink sink;
+    sink.install();
+    AttachRig rig;
+    {
+        auto op = rig.makeOp();
+        IdentityGroupFeed feed("card-A");
+        feed.beginRead();
+        const auto relay = op->followIdentityGroupFeed(feed);
+        ASSERT_TRUE(relay);
+        relay->closeAndWait();
+    }
+    for (const auto& [level, line] : sink.lines) {
+        EXPECT_NE(level, LibreSCRS::log::Level::Error) << line;
+    }
 }

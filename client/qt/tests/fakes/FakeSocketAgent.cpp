@@ -395,6 +395,21 @@ void FakeSocketAgent::sendCbor(Connection* connection, const Wire::CborValue& va
         return;
     }
     const std::vector<std::uint8_t> body = value.encode();
+    if (m_burst != nullptr && passFds.empty()) {
+        const std::vector<std::uint8_t> framed = Wire::encodeFrame(body);
+        m_burst->insert(m_burst->end(), framed.begin(), framed.end());
+        return;
+    }
+    if (m_burst != nullptr && !m_burst->empty()) {
+        // A frame with an fd cannot ride the burst: flush what is buffered first so
+        // the op-started reply still precedes it.
+        std::vector<std::uint8_t> pending;
+        pending.swap(*m_burst);
+        sendRawBatch(connection, pending);
+        if (!isLive(connection)) {
+            return;
+        }
+    }
     if (!Wire::sendFrame(connection->fd.get(), body, passFds)) {
         closeConnection(connection);
     }
@@ -735,6 +750,10 @@ void FakeSocketAgent::mintOperation(Connection* connection, quint64 req, OpKind 
     const quint64 opId = op->id;
     m_operations.push_back(std::move(op));
 
+    std::vector<std::uint8_t> burst;
+    if (m_config.raceResultBeforeReturn && m_config.opFramesInOneBurst) {
+        m_burst = &burst;
+    }
     // The op-started reply is enqueued BEFORE any of the op's events — the
     // unicast-FIFO ordering the wire contract guarantees.
     sendCbor(connection, Wire::makeReply(req, Wire::OpStarted{opId}));
@@ -746,6 +765,10 @@ void FakeSocketAgent::mintOperation(Connection* connection, quint64 req, OpKind 
     }
     if (m_config.raceResultBeforeReturn) {
         fireOperation(opId); // events written before the client even parses the reply
+        if (m_burst != nullptr) {
+            m_burst = nullptr;
+            sendRawBatch(connection, burst);
+        }
         return;
     }
     QTimer::singleShot(m_config.operationDelayMs, this, [this, opId]() { fireOperation(opId); });

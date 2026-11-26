@@ -105,10 +105,21 @@ ErrorCode mapReadStatus(ReadOutcome::Status status) noexcept
 }
 
 void logIdentityRequest(const std::string& requester, const std::string& readerName, const std::string& cardKey,
-                        bool cached)
+                        IdentitySource source)
 {
+    const char* suffix = "";
+    switch (source) {
+    case IdentitySource::Card:
+        break;
+    case IdentitySource::Cache:
+        suffix = " (cache)";
+        break;
+    case IdentitySource::BackgroundRead:
+        suffix = " (background read)";
+        break;
+    }
     log::infof("identity read requested: requester={} reader=\"{}\" card={}{}",
-               requester.empty() ? "unknown" : requester, readerName, cardKey, cached ? " (cache)" : "");
+               requester.empty() ? "unknown" : requester, readerName, cardKey, suffix);
 }
 
 LibreSCRS::Auth::CredentialProvider makeReadCredentialProvider(

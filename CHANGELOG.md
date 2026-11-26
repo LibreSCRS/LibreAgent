@@ -485,6 +485,10 @@ Three targets ship, each independently usable:
 
 ### Fixed
 
+- **A client that opens a card while its identity is still being read in the
+  background now sees the data as it is read instead of an empty screen until
+  the end**, and the card is read once.
+
 - **A queued operation is no longer given up as "the agent does not answer".**
   The client's stall timer stops while an operation is `Queued` and starts
   again with the next phase; an agent that reports nothing at all is still

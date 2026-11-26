@@ -77,6 +77,9 @@ public:
 
     [[nodiscard]] uint phase() const
     {
+        // The client's GetAll reads this property: a scripted replay of groups goes
+        // out from here, ahead of the reply to that very call.
+        m_op->emitGroupsOnStateRead();
         return m_op->m_completed ? 7u : m_op->m_initialPhase;
     }
     [[nodiscard]] bool completed() const
@@ -375,6 +378,17 @@ void FakeOperation::replyNoResult()
                                                                QStringLiteral("grace window elapsed / not Ok")));
 }
 
+void FakeOperation::emitGroupsOnStateRead()
+{
+    if (!m_groupsOnStateRead || m_groupsSentOnStateRead || m_kind != Kind::Identity) {
+        return;
+    }
+    m_groupsSentOnStateRead = true;
+    for (const FakeIdentityGroup& g : m_identityGroupScript) {
+        Q_EMIT static_cast<FakeIdentityAdaptor*>(m_resultAdaptor.get())->Group(g.key, g.fields);
+    }
+}
+
 void FakeOperation::start()
 {
     // Announce AwaitingConsent AFTER a short delay so the signal lands once the
@@ -485,7 +499,7 @@ void FakeOperation::fire()
                 // Progressive delivery (Kind::Identity only): stream every
                 // scripted group, in order, strictly before the Result signal
                 // below.
-                if (m_kind == Kind::Identity) {
+                if (m_kind == Kind::Identity && !m_groupsOnStateRead) {
                     for (int i = 0; i < m_identityGroupScript.size(); ++i) {
                         const FakeIdentityGroup& g = m_identityGroupScript.at(i);
                         Q_EMIT static_cast<FakeIdentityAdaptor*>(m_resultAdaptor.get())->Group(g.key, g.fields);
@@ -1823,6 +1837,7 @@ QDBusObjectPath FakeAgent::mintOperation(FakeOperation::Kind kind, bool withCred
                                  m_config.batchHaltAtIndex, m_config.batchHaltErrorCode,
                                  /*marksListingCurrent=*/isCredentialListing);
     op->setInitialPhase(m_config.initialPhase);
+    op->setGroupsOnStateRead(m_config.groupsOnStateRead);
     m_operations.append(op);
     // When raceResultBeforeReturn is set, delay is 0 so start() fires Result +
     // Finished synchronously here, BEFORE we return the path — the client

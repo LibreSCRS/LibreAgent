@@ -14,9 +14,7 @@ namespace {
 
 void cleanse(std::string& s) noexcept
 {
-    if (!s.empty()) {
-        secureZero(std::span<std::uint8_t>(reinterpret_cast<std::uint8_t*>(s.data()), s.size()));
-    }
+    secureZero(s);
     s.clear();
 }
 

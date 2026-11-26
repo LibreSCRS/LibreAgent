@@ -3,6 +3,8 @@
 #include <LibreSCRS/Agent/operations/OperationManager.h>
 #include <LibreSCRS/Agent/presence/CapabilityResolver.h>
 #include <LibreSCRS/Agent/operations/CardPluginRouting.h>
+#include "operations/GroupRelay.h"
+#include "operations/IdentityGroupFeed.h"
 #include "operations/SilentOperationChannel.h"
 #include <LibreSCRS/SmartCard/CardSession.h>
 #include <algorithm>
@@ -47,10 +49,46 @@ openReaderSession(const std::string& reader)
 
 } // namespace
 
-OperationManager::OperationManager() = default;
+// Ops whose end was deferred behind an emit in progress (endQueuedOp). Pushed by a
+// relay's deferred action -- which may run on any thread, even after the manager is
+// gone -- and emptied by the manager. An entry that outlives the manager is
+// destroyed with the inbox, after quiesce(), which touches only the op's own members.
+class OperationManager::Inbox
+{
+public:
+    struct Entry
+    {
+        std::unique_ptr<OperationBase> op;
+        EndShape shape;
+    };
+
+    ~Inbox()
+    {
+        for (auto& entry : take()) {
+            entry.op->quiesce();
+        }
+    }
+
+    void push(std::unique_ptr<OperationBase> op, EndShape shape)
+    {
+        std::lock_guard lock(m_mutex);
+        m_entries.push_back({std::move(op), shape});
+    }
+    [[nodiscard]] std::vector<Entry> take()
+    {
+        std::lock_guard lock(m_mutex);
+        return std::exchange(m_entries, {});
+    }
+
+private:
+    std::mutex m_mutex;
+    std::vector<Entry> m_entries;
+};
+
+OperationManager::OperationManager() : m_inbox(std::make_shared<Inbox>()) {}
 
 OperationManager::OperationManager(CapabilityResolver* resolver)
-    : m_production(true), m_resolver(resolver),
+    : m_production(true), m_resolver(resolver), m_inbox(std::make_shared<Inbox>()),
       m_cleanupWorker([this](std::stop_token st) { cleanupLoop(std::move(st)); })
 {}
 
@@ -74,6 +112,13 @@ OperationManager::~OperationManager()
     }
     for (auto& w : live) {
         abandonOrJoin(std::move(w));
+    }
+    // What the workers' teardown deferred, now that every abandonOrJoin has pushed
+    // its share. Whatever a worker we gave up on pushes later is destroyed with the
+    // inbox, which the relay's deferred action keeps alive.
+    for (auto& entry : m_inbox->take()) {
+        entry.op->quiesce();
+        entry.op.reset();
     }
     // Any zombie storage (detached threads still referencing their
     // ReaderWorker's queue/mutex/cv + the in-flight op on their stack) must
@@ -209,14 +254,84 @@ void OperationManager::handOffFinished(std::unique_ptr<OperationBase> op)
     forgetOpById(op->id());
 }
 
-void OperationManager::enqueueLocked(ReaderWorker& worker, std::unique_ptr<OperationBase> op)
+OperationManager::Follower OperationManager::enqueueLocked(ReaderWorker& worker, std::unique_ptr<OperationBase> op)
 {
+    Follower follower;
     const bool busy = worker.inFlight != nullptr || !worker.queue.empty();
     if (busy) {
         op->setPhase(static_cast<std::uint32_t>(OperationPhase::Queued));
+        // Behind a background read of the same card: follow it. The in-flight op is
+        // live while worker.mutex is held (the worker clears it under this mutex).
+        if (worker.inFlight != nullptr) {
+            if (const auto feed = worker.inFlight->identityGroupFeed()) {
+                follower.relay = op->followIdentityGroupFeed(*feed);
+                if (follower.relay) {
+                    follower.awaitObserver = op->channelAwaitsObserver();
+                    follower.state = op->sharedState();
+                }
+            }
+        }
     }
     worker.queue.push_back(std::move(op));
     worker.cv.notify_one();
+    return follower;
+}
+
+void OperationManager::releaseFollower(Follower follower)
+{
+    if (!follower.relay) {
+        return;
+    }
+    if (!follower.awaitObserver || !follower.state) {
+        follower.relay->release();
+        return;
+    }
+    // The closure holds the relay, never the op: the op may be finished and destroyed
+    // before the client reads the state, and a closed relay releases nothing.
+    follower.state->onObserved([relay = std::move(follower.relay)] { relay->release(); });
+}
+
+void OperationManager::endQueuedOp(std::unique_ptr<OperationBase> op, void (OperationBase::*finish)() noexcept,
+                                   EndShape shape)
+{
+    const auto relay = op->groupRelay();
+    if (!relay) {
+        // Nothing can be emitting for it: finish and dispose of it right here.
+        (op.get()->*finish)();
+        if (shape == EndShape::HandOff) {
+            handOffFinished(std::move(op));
+        } else {
+            op.reset();
+        }
+        return;
+    }
+    // The ownership travels in a shared carrier so the std::function stays copyable.
+    // The action runs on this thread when no emit is in progress, otherwise on the
+    // emitting thread once it is done. It finishes the op and parks it; the hand-off
+    // or destruction happens in drainDeferredEnds, on a thread that holds no lock.
+    //
+    // The one exception to "the action never destroys the op": with the manager gone,
+    // the inbox's last owner is this closure, so the op dies on the thread that ran
+    // it. Safe because the host stops its bus loop before it tears the core down, so
+    // no getter of the op's own adaptor is still running.
+    auto carrier = std::make_shared<std::unique_ptr<OperationBase>>(std::move(op));
+    relay->closeThen([inbox = m_inbox, carrier, finish, shape] {
+        ((*carrier).get()->*finish)();
+        inbox->push(std::move(*carrier), shape);
+    });
+    drainDeferredEnds();
+}
+
+void OperationManager::drainDeferredEnds()
+{
+    for (auto& entry : m_inbox->take()) {
+        if (entry.shape == EndShape::HandOff) {
+            handOffFinished(std::move(entry.op));
+        } else {
+            entry.op->quiesce();
+            entry.op.reset();
+        }
+    }
 }
 
 void OperationManager::workerLoop(ReaderWorker& worker, std::stop_token st)
@@ -349,9 +464,11 @@ void OperationManager::workerLoop(ReaderWorker& worker, std::stop_token st)
         forgetOpById(op->id()); // scrub while the op is still alive, off the worker mutex
     }
     for (auto& op : doomed) {
-        op->finishCardRemoved(); // drive each to its CardRemoved terminal
+        // Drive each to its CardRemoved terminal and destroy it, AFTER the tables
+        // are scrubbed (an attached op is finished behind its relay's emit).
+        endQueuedOp(std::move(op), &OperationBase::finishCardRemoved, EndShape::Destroy);
     }
-    doomed.clear();     // destroys the ops AFTER the tables are scrubbed
+    doomed.clear();
     doomedSlot.reset(); // never ran: no client, no id in the tables, no terminal to drive
 }
 
@@ -490,8 +607,12 @@ void OperationManager::enqueueForTest(ObjectId reader, std::unique_ptr<Operation
     // if any), so no holder needs to be stamped here; an empty reader name is
     // fine for the lazily-created worker's holder, which goes unused.
     auto worker = workerFor(reader, std::string{});
-    std::lock_guard lock(worker->mutex);
-    enqueueLocked(*worker, std::move(op));
+    Follower follower;
+    {
+        std::lock_guard lock(worker->mutex);
+        follower = enqueueLocked(*worker, std::move(op));
+    }
+    releaseFollower(std::move(follower));
 }
 
 void OperationManager::enqueueTrackedForTest(ObjectId reader, std::unique_ptr<OperationBase> op, OperationId id,
@@ -506,8 +627,12 @@ void OperationManager::enqueueTrackedForTest(ObjectId reader, std::unique_ptr<Op
         std::lock_guard pathLock(m_pathMutex);
         m_byId.emplace(id, op.get());
     }
-    std::lock_guard lock(worker->mutex);
-    enqueueLocked(*worker, std::move(op));
+    Follower follower;
+    {
+        std::lock_guard lock(worker->mutex);
+        follower = enqueueLocked(*worker, std::move(op));
+    }
+    releaseFollower(std::move(follower));
 }
 
 namespace {
@@ -616,8 +741,7 @@ void OperationManager::cancel(OperationId id)
     }
     if (queued) {
         // Off every lock: finishing emits on the channel.
-        queued->finishCancelled();
-        handOffFinished(std::move(queued));
+        endQueuedOp(std::move(queued), &OperationBase::finishCancelled, EndShape::HandOff);
         return;
     }
     std::lock_guard lock(m_pathMutex);
@@ -703,9 +827,11 @@ void OperationManager::abandonOrJoin(std::shared_ptr<ReaderWorker> worker) noexc
         forgetOpById(op->id());
     }
     for (auto& op : doomed) {
-        op->finishCardRemoved(); // drive each to its CardRemoved terminal
+        // Drive each to its CardRemoved terminal and destroy it, AFTER the tables
+        // are scrubbed (an attached op is finished behind its relay's emit).
+        endQueuedOp(std::move(op), &OperationBase::finishCardRemoved, EndShape::Destroy);
     }
-    doomed.clear();     // destroys the ops AFTER the tables are scrubbed
+    doomed.clear();
     doomedSlot.reset(); // unrun, untracked; destroyed off every lock
 
     // Bounded grace: give a cooperating in-flight op a short window to wind
@@ -828,8 +954,7 @@ void OperationManager::endOperationsOnCardRemoved(ObjectId reader)
         }
     }
     for (auto& op : ended) {
-        op->finishCardRemoved();
-        handOffFinished(std::move(op));
+        endQueuedOp(std::move(op), &OperationBase::finishCardRemoved, EndShape::HandOff);
     }
 }
 
@@ -881,22 +1006,27 @@ void OperationManager::drainWedgedQueues()
     }
     // Off every lock: finishing emits on the channel.
     for (auto& op : ended) {
-        op->finishWatchdogTimeout();
-        handOffFinished(std::move(op));
+        endQueuedOp(std::move(op), &OperationBase::finishWatchdogTimeout, EndShape::HandOff);
     }
 }
 
 void OperationManager::cleanupLoop(std::stop_token st)
 {
-    using namespace std::chrono_literals;
-    constexpr auto grace = 5s;
     while (!st.stop_requested()) {
-        std::this_thread::sleep_for(1s);
+        {
+            // A wait that stop interrupts, so the join never costs a whole tick; the
+            // predicate is only the test seam's "act on the new tick now".
+            std::unique_lock lock(m_cleanupWakeMutex);
+            m_cleanupWake.wait_for(lock, st, std::chrono::nanoseconds{m_cleanupTickNs.load()},
+                                   [this] { return m_cleanupRetimed; });
+            m_cleanupRetimed = false;
+        }
         if (st.stop_requested()) {
             return;
         }
+        drainDeferredEnds();
         drainWedgedQueues();
-        sweepFinished(grace);
+        sweepFinished(std::chrono::nanoseconds{m_cleanupGraceNs.load()});
     }
 }
 

@@ -163,6 +163,7 @@ agent_core_test(OperationManagerTest)
 # One place every host assembles and queues a card operation through.
 agent_core_test(OperationLauncherTest)
 agent_core_test(OperationPhaseTest)
+agent_core_test(OperationStateTest)
 agent_core_test(PresenceModelTest)
 agent_core_test(PresenceTypesTest)
 agent_core_test(PromptBudgetChainTest)
@@ -200,6 +201,16 @@ agent_core_test(Pkcs11SecurityTest)
 foreach(_kat IN ITEMS LmCertReaderKatTest LmRawCryptoTest LmTrustVerifierTest RsaPublicKeyTest)
     target_link_libraries(${_kat} PRIVATE OpenSSL::Crypto)
 endforeach()
+
+# These suites join the OperationManagerTest binary rather than get one each:
+# the TSan leg of CI selects by binary and suite prefix (OperationManager|...), and
+# they are exactly the concurrency this leg exists to cover. One file per binary
+# is the pattern everywhere else in this directory.
+target_sources(OperationManagerTest PRIVATE
+    OperationManagerCleanupOrderTest.cpp
+    OperationManagerGroupFeedTest.cpp
+    OperationManagerGroupRelayTest.cpp
+    OperationManagerPrefetchFollowerTest.cpp)
 
 # OperationManager exposes test-only accessors behind LIBRESCRS_AGENT_TESTING;
 # only these neutral-core test builds define it.

@@ -27,6 +27,9 @@ struct IdentityPrefetchFlowDeps
     LibreSCRS::CancelToken token;
     // Fired with the read's card type on success, as IdentityReadFlowDeps does.
     std::function<void(const std::string&)> onCardType;
+    // Each group as the reader produces it, ahead of the snapshot the flow still
+    // returns in full. Empty: the reader streams nothing.
+    GroupReadCallback onGroup;
 };
 
 // Reads a card's identity on the held session with a provider that always

@@ -3,6 +3,9 @@
 #pragma once
 #include <atomic>
 #include <cstdint>
+#include <functional>
+#include <mutex>
+#include <utility>
 
 namespace LibreSCRS::Agent::Operations {
 
@@ -25,6 +28,49 @@ struct OperationState
     std::atomic<bool> completed{false};
     std::atomic<std::uint32_t> terminalStatus{0};
     std::atomic<std::uint32_t> terminalErrorCode{0};
+
+    // The client has read this operation's state (its path is known to it and its
+    // signal subscription is in place). A host whose signals are lost when sent
+    // before that point calls noteObserved() from the place that proves it; an
+    // operation that wants to emit only after it installs the action with
+    // onObserved(). One shot: the first noteObserved() runs the installed action;
+    // an action installed once the state has been observed runs at once, on the
+    // caller. At most one action is held (a later install replaces an earlier one
+    // that has not run). The action always runs outside the internal lock, so it
+    // may call back into this state.
+    void noteObserved() noexcept
+    {
+        std::function<void()> action;
+        {
+            std::lock_guard lock(observedMutex);
+            if (observed) {
+                return;
+            }
+            observed = true;
+            action = std::exchange(onObservedAction, {});
+        }
+        if (action) {
+            action();
+        }
+    }
+    void onObserved(std::function<void()> action)
+    {
+        {
+            std::lock_guard lock(observedMutex);
+            if (!observed) {
+                onObservedAction = std::move(action);
+                return;
+            }
+        }
+        if (action) {
+            action();
+        }
+    }
+
+    // Guarded by observedMutex; public only so the struct stays an aggregate.
+    std::mutex observedMutex;
+    bool observed{false};
+    std::function<void()> onObservedAction;
 };
 
 } // namespace LibreSCRS::Agent::Operations

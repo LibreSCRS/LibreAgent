@@ -22,6 +22,9 @@
 
 namespace LibreSCRS::Agent::Operations {
 
+class GroupRelay;
+class IdentityGroupFeed;
+
 class OperationBase : public OperationPhaseSink, public GroupSink
 {
 public:
@@ -207,14 +210,56 @@ public:
 
     // GroupSink override -- public surface so IdentityReadFlow (which holds a
     // GroupSink&) can push each field group from outside this class, exactly
-    // like setPhase above. Forwarded one hop to the channel's emitGroup,
-    // called on the SAME worker thread (inside doWork(), synchronously
-    // within the flow's own run()) that already calls emitResult/setPhase
-    // today -- no new cross-thread hop, no new lifetime hazard: an in-flight
-    // doWork() keeps this object (and m_channel) alive by the same
-    // abandoned-worker-is-detached-not-destroyed contract emitResult already
-    // relies on (see the class doc comment above keepAlive()).
+    // like setPhase above. Forwarded one hop to the channel's emitGroup.
+    //
+    // Called on the worker thread inside this op's own doWork() -- and, for an op
+    // attached to another op's background read (see followIdentityGroupFeed), on
+    // the reader's thread of THAT op or on a bus thread (GroupRelay::release),
+    // while this op is still queued. The attaching op's GroupRelay keeps this
+    // object alive for the duration of any such call: the manager defers the end
+    // of an attached op until the relay is idle, and doWork() closes the relay
+    // before it emits anything itself. Never call it without that guarantee.
     void groupReady(const GroupSnapshot& group) noexcept override;
+
+    // The groups this op's background read has produced and the relays following
+    // it, or null for an op that has none (the default). Called only by
+    // OperationManager, under the worker's mutex, on the op the worker is
+    // running; it emits nothing.
+    [[nodiscard]] virtual std::shared_ptr<IdentityGroupFeed> identityGroupFeed() const noexcept
+    {
+        return {};
+    }
+
+    // Offered the feed of the op the worker is running, while this op is queued
+    // behind it: an op that reads the same card attaches a parked relay over
+    // itself and returns it; the default and every mismatch return null. Called
+    // only by OperationManager, under the worker's mutex; it emits nothing and
+    // installs nothing -- the caller releases the relay once the client can
+    // receive (see OperationManager::enqueueLocked).
+    [[nodiscard]] virtual std::shared_ptr<GroupRelay> followIdentityGroupFeed(IdentityGroupFeed& /*feed*/)
+    {
+        return {};
+    }
+
+    // The relay this op was attached through, or null. Called by the manager's
+    // paths that end a queued op, on any thread and without a lock, and by tests.
+    [[nodiscard]] virtual std::shared_ptr<GroupRelay> groupRelay() const noexcept
+    {
+        return {};
+    }
+
+    // Whether this op's channel loses a group emitted before the client has read
+    // the op's state (see OperationChannel::groupsAwaitObserver), and the shared
+    // state the host marks observed. For the manager, which decides when to
+    // release a relay.
+    [[nodiscard]] bool channelAwaitsObserver() const noexcept
+    {
+        return m_channel && m_channel->groupsAwaitObserver();
+    }
+    [[nodiscard]] std::shared_ptr<OperationState> sharedState() const noexcept
+    {
+        return m_state;
+    }
 
 protected:
     // Subclass implements the actual work. Runs on the worker thread.

@@ -3,9 +3,35 @@
 #include <LibreSCRS/Agent/operations/ReadIdentityOperation.h>
 #include <LibreSCRS/Agent/operations/PromptSerializer.h>
 #include "operations/FlowPrelude.h"
+#include "operations/GroupRelay.h"
+#include "operations/IdentityGroupFeed.h"
+#include <LibreSCRS/Logging.h>
+#include <optional>
 #include <utility>
 
 namespace LibreSCRS::Agent::Operations {
+
+namespace {
+
+// The op's own read after a failed background one: the groups the relay already
+// delivered are not sent again (the Result is the whole snapshot either way).
+class SkipDelivered final : public GroupSink
+{
+public:
+    SkipDelivered(GroupSink& inner, const GroupRelay& relay) noexcept : m_inner(inner), m_relay(relay) {}
+    void groupReady(const GroupSnapshot& group) noexcept override
+    {
+        if (!m_relay.delivered(group.groupKey)) {
+            m_inner.groupReady(group);
+        }
+    }
+
+private:
+    GroupSink& m_inner;
+    const GroupRelay& m_relay;
+};
+
+} // namespace
 
 ReadIdentityOperation::ReadIdentityOperation(std::unique_ptr<OperationChannel> channel, Deps deps,
                                              std::shared_ptr<OperationState> state)
@@ -26,8 +52,46 @@ ReadIdentityOperation::ReadIdentityOperation(std::unique_ptr<OperationChannel> c
       m_deps(std::move(deps))
 {}
 
+ReadIdentityOperation::~ReadIdentityOperation()
+{
+    // Every path that ends an attached op closes its relay first. One that did not
+    // would leave an emit into a freed op possible: say so, and wait it out (a stall
+    // that shows in the log beats a use after free).
+    if (m_relay && !m_relay->isClosed()) {
+        log::errorf("identity read for card={} destroyed with its group relay open", m_deps.cardKey);
+        m_relay->closeAndWait();
+    }
+}
+
+std::shared_ptr<GroupRelay> ReadIdentityOperation::followIdentityGroupFeed(IdentityGroupFeed& feed)
+{
+    if (m_relay || feed.cardKey() != m_deps.cardKey) {
+        return {};
+    }
+    auto relay = std::make_shared<GroupRelay>(*this);
+    if (!feed.attach(relay)) {
+        return {};
+    }
+    m_relay = relay;
+    // Written now, under the worker's mutex, where the log cannot reach the
+    // channel: the relay is parked, so no group of this source has gone out yet.
+    FlowPrelude::logIdentityRequest(m_deps.requester, m_deps.readerName, m_deps.cardKey,
+                                    FlowPrelude::IdentitySource::BackgroundRead);
+    return relay;
+}
+
+std::shared_ptr<GroupRelay> ReadIdentityOperation::groupRelay() const noexcept
+{
+    return m_relay;
+}
+
 void ReadIdentityOperation::doWork()
 {
+    // An attached op first shuts its relay and waits out an emit in progress: from
+    // here this thread is the only one that emits for it.
+    if (m_relay) {
+        m_relay->closeAndWait();
+    }
     // The per-reader session holder is a raw pointer stamped by the
     // OperationManager; guard against a null (mis-wired) holder so doWork
     // finishes with an internal error instead of dereferencing nullptr.
@@ -49,7 +113,11 @@ void ReadIdentityOperation::doWork()
         if (shutdownRequested()) {
             return;
         }
-        FlowPrelude::logIdentityRequest(m_deps.requester, m_deps.readerName, m_deps.cardKey, true);
+        // An attached op already wrote the line for this source when it attached.
+        if (!m_relay) {
+            FlowPrelude::logIdentityRequest(m_deps.requester, m_deps.readerName, m_deps.cardKey,
+                                            FlowPrelude::IdentitySource::Cache);
+        }
         if (!emitResult(ResultPayload{*cached})) {
             finish(OperationStatus::Error, ErrorCode::CommunicationError, "op.result_failed",
                    "Failed to deliver the operation result");
@@ -59,6 +127,12 @@ void ReadIdentityOperation::doWork()
         return;
     }
 
+    std::optional<SkipDelivered> skipDelivered;
+    if (m_relay) {
+        skipDelivered.emplace(*this, *m_relay);
+    }
+    GroupSink& groupSink = skipDelivered ? static_cast<GroupSink&>(*skipDelivered) : static_cast<GroupSink&>(*this);
+
     IdentityReadFlow flow(IdentityReadFlowDeps{
         .holder = *m_deps.holder,
         .reader = m_deps.reader,
@@ -66,7 +140,7 @@ void ReadIdentityOperation::doWork()
         .serializer = m_deps.serializer,
         .cache = m_deps.credentials,
         .phaseSink = *this,
-        .groupSink = *this,
+        .groupSink = groupSink,
         .cardKey = m_deps.cardKey,
         .readerName = m_deps.readerName,
         .requester = m_deps.requester,

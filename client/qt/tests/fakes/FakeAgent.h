@@ -494,6 +494,10 @@ public:
     {
         m_initialPhase = phase;
     }
+    void setGroupsOnStateRead(bool on)
+    {
+        m_groupsOnStateRead = on;
+    }
     void start();
 
     /// @brief Send the frozen NoResult D-Bus error for the active GetResult call
@@ -510,6 +514,9 @@ private:
     friend class FakePhotoAdaptor;
     friend class FakeCredentialsAdaptor;
     void fire();
+    /// @brief Emit the scripted Identity1 groups, once, if m_groupsOnStateRead: called
+    ///        from the Operation1 property getters, i.e. inside the client's GetAll.
+    void emitGroupsOnStateRead();
     /// @brief Build the deterministic Identity1 field map ("personal:given_name"
     ///        = "Ana") the Result signal AND Identity1.GetResult both serve, so
     ///        the recovery pull re-serves exactly what a live signal would.
@@ -564,6 +571,8 @@ private:
     bool m_suppressResult; ///< finish Ok WITHOUT emitting the typed Result AND with nothing to recover (total loss)
     bool m_completed = false;
     uint m_initialPhase = 4; ///< the Phase property while running (4 = Reading)
+    bool m_groupsOnStateRead = false;
+    bool m_groupsSentOnStateRead = false;
     /// A ListCredentials operation: the agent's listing cache is populated when
     /// THIS completes, not when the method that minted it returned.
     bool m_marksListingCurrent = false;
@@ -784,6 +793,12 @@ public:
         /// script to the UNION of this list, so Result/GetResult always
         /// matches what streamed.
         QList<FakeIdentityGroup> identityGroupScript;
+        /// Send the scripted groups of a ReadIdentity op from INSIDE the client's
+        /// first read of that op's state (Properties.GetAll), before the reply,
+        /// instead of when the op fires -- the shape of an agent that replays a
+        /// background read's groups to a client attached to it. The op never fires
+        /// its groups itself in this mode.
+        bool groupsOnStateRead = false;
     };
 
     FakeAgent(QDBusConnection connection, Config config, QObject* parent = nullptr);

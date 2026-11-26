@@ -44,7 +44,7 @@ IdentityPrefetchFlow::Result IdentityPrefetchFlow::run()
     const auto providerGuard =
         FlowPrelude::installScopedReadProvider(opened.session, &FlowPrelude::noCredentialsProvider);
 
-    auto read = m_deps.reader.read(*opened.session, idCands, m_deps.token, {});
+    auto read = m_deps.reader.read(*opened.session, idCands, m_deps.token, m_deps.onGroup);
 
     // A cancelled prefetch (reader removed, agent stopping) must hand nothing
     // to its caller, whatever the read returned.

@@ -4,6 +4,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <span>
+#include <string>
 #include <vector>
 
 namespace LibreSCRS::Agent {
@@ -23,6 +24,16 @@ inline void secureZero(std::span<std::uint8_t> bytes) noexcept
     for (std::size_t i = 0; i < bytes.size(); ++i) {
         p[i] = 0;
     }
+}
+
+/// @brief Zero the bytes of @p s, leaving its length untouched.
+///
+/// For a string that carried a secret or personal data: the caller decides
+/// whether to clear it afterwards (a caller that does still wipes first).
+/// @since 5.0
+inline void secureZero(std::string& s) noexcept
+{
+    secureZero(std::span<std::uint8_t>(reinterpret_cast<std::uint8_t*>(s.data()), s.size()));
 }
 
 /// @brief Wipes a byte buffer with secureZero when the scope ends, on every

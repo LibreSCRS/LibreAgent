@@ -13,7 +13,7 @@ CallerLabelTest 12
 CardKeyTrackerTest 9
 CardPluginRoutingTest 5
 CardReadCacheTest 25
-CardReadSnapshotTest 4
+CardReadSnapshotTest 7
 CardResolutionPolicyTest 17
 CardSessionHolderTest 20
 CardTypeArbitrationTest 8
@@ -33,7 +33,7 @@ ClientQtCardDateTest 5
 ClientQtConfigKeyMirrorTest 2
 ClientQtCredentialTypesTest 7
 ClientQtDBusContractTest 3
-ClientQtDBusIntegrationTest 41
+ClientQtDBusIntegrationTest 42
 ClientQtDerListenerRegistryTest 6
 ClientQtErrorNameMapTest 11
 ClientQtFailureCopyTest 1
@@ -48,7 +48,7 @@ ClientQtSecurityChecksTest 17
 ClientQtSecurityVocabularyTest 5
 ClientQtSharedAgentClientTest 2
 ClientQtSignedOutputPathTest 13
-ClientQtSocketIntegrationTest 61
+ClientQtSocketIntegrationTest 62
 ClientQtSocketPathTest 2
 ClientQtSyncErrorTest 10
 ClientQtTokenMapTest 14
@@ -74,7 +74,7 @@ FieldKeyParityTest 4
 FrameReassemblerTest 8
 FramingTest 11
 GetPhotoOperationTest 5
-IdentityPrefetchTest 13
+IdentityPrefetchTest 17
 IdentityReadFlowTest 48
 IdentityTest 3
 KeyActivationFlowTest 10
@@ -90,8 +90,9 @@ MrzPayloadTest 18
 ObjectRegistryTest 16
 OperationBaseTest 8
 OperationLauncherTest 19
-OperationManagerTest 50
+OperationManagerTest 73
 OperationPhaseTest 2
+OperationStateTest 8
 PinChangeFlowTest 30
 Pkcs11BrokerTest 44
 Pkcs11LeaseInvalidationTest 4
@@ -112,7 +113,7 @@ RateLimiterTest 4
 RawCryptoCaptureGuardTest 11
 RawCryptoFlowTest 34
 ReadCertificatesOperationTest 3
-ReadIdentityOperationTest 5
+ReadIdentityOperationTest 12
 ReadTokenInfoOperationTest 6
 ReaderLabelsTest 19
 RsaPublicKeyTest 9

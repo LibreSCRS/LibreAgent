@@ -5,6 +5,8 @@
 // else. The flow has no prompter and no secret cache to reach; the operation
 // puts a snapshot only when nobody cancelled the read and the agent is not
 // shutting down.
+#include "operations/GroupRelay.h"
+#include "operations/IdentityGroupFeed.h"
 #include "operations/IdentityPrefetchFlow.h"
 #include "operations/PrefetchIdentityOperation.h"
 
@@ -42,11 +44,17 @@ class FakeReader final : public CardReader
 {
 public:
     ReadOutcome read(LibreSCRS::SmartCard::CardSession&, const CandidateList&, LibreSCRS::CancelToken,
-                     GroupReadCallback = {}) override
+                     GroupReadCallback onGroup = {}) override
     {
         ++reads;
         if (duringRead) {
             duringRead();
+        }
+        // Stream the groups of the outcome, as a plugin does, ahead of returning it.
+        if (onGroup && outcome.snapshot) {
+            for (const auto& group : outcome.snapshot->groups) {
+                onGroup(group);
+            }
         }
         return outcome;
     }
@@ -289,4 +297,100 @@ TEST(IdentityPrefetch, AMissingHolderArmsNoWatchdog)
     auto op = rig.makeOp();
     op->runOnWorker();
     EXPECT_EQ(op->watchdogArmAttempts(), 0u);
+}
+
+namespace {
+
+class KeySink final : public GroupSink
+{
+public:
+    void groupReady(const GroupSnapshot& group) noexcept override
+    {
+        keys.push_back(group.groupKey);
+    }
+    std::vector<std::string> keys;
+};
+
+} // namespace
+
+// The background read streams each group into its feed as the reader produces it,
+// so an operation attached while the read runs gets them.
+TEST(IdentityPrefetch, AReleasedRelayAttachedAfterTheReadBeganGetsTheGroups)
+{
+    Rig rig;
+    auto op = rig.makeOp();
+    KeySink sink;
+    auto relay = std::make_shared<GroupRelay>(sink);
+    const auto feed = op->identityGroupFeed();
+    ASSERT_TRUE(feed);
+    EXPECT_EQ(feed->cardKey(), kCard);
+    bool attached = false;
+    rig.reader.duringRead = [&] {
+        attached = feed->attach(relay);
+        relay->release();
+    };
+    op->runOnWorker();
+
+    EXPECT_TRUE(attached) << "the feed must be open once the read has begun";
+    EXPECT_EQ(sink.keys, (std::vector<std::string>{"personal"}));
+    EXPECT_EQ(rig.reader.reads, 1);
+}
+
+TEST(IdentityPrefetch, ACachedCardNeverOpensTheFeed)
+{
+    Rig rig;
+    rig.readCache.put(kCard, someSnapshot());
+    auto op = rig.makeOp();
+    const auto feed = op->identityGroupFeed();
+    KeySink sink;
+    op->runOnWorker();
+    EXPECT_FALSE(feed->attach(std::make_shared<GroupRelay>(sink))) << "a cached card must leave the feed shut";
+    EXPECT_EQ(rig.reader.reads, 0);
+}
+
+TEST(IdentityPrefetch, TheFeedIsClosedWhenTheReadEnds)
+{
+    KeySink sink;
+    {
+        Rig rig;
+        auto op = rig.makeOp();
+        const auto feed = op->identityGroupFeed();
+        op->runOnWorker();
+        EXPECT_FALSE(feed->attach(std::make_shared<GroupRelay>(sink))) << "closed after a successful read";
+    }
+    {
+        Rig rig;
+        rig.reader.outcome = ReadOutcome{ReadOutcome::Status::AuthFailed, std::nullopt, "wrong secret"};
+        auto op = rig.makeOp();
+        const auto feed = op->identityGroupFeed();
+        op->runOnWorker();
+        EXPECT_FALSE(feed->attach(std::make_shared<GroupRelay>(sink))) << "closed after a failed read";
+    }
+    {
+        Rig rig;
+        auto op = rig.makeOp();
+        const auto feed = op->identityGroupFeed();
+        rig.reader.duringRead = [&] { op->requestCancel(); };
+        op->runOnWorker();
+        EXPECT_FALSE(feed->attach(std::make_shared<GroupRelay>(sink))) << "closed after a cancelled read";
+    }
+}
+
+// The feed is shut only after the cache is written: an operation that finds the
+// feed closed must find the snapshot.
+TEST(IdentityPrefetch, TheCacheIsFilledBeforeTheFeedCloses)
+{
+    Rig rig;
+    auto op = rig.makeOp();
+    const auto feed = op->identityGroupFeed();
+    KeySink sink;
+    auto relay = std::make_shared<GroupRelay>(sink);
+    bool cachedWhileOpen = true;
+    rig.reader.duringRead = [&] {
+        EXPECT_TRUE(feed->attach(relay));
+        cachedWhileOpen = rig.readCache.get(kCard).has_value();
+    };
+    op->runOnWorker();
+    EXPECT_FALSE(cachedWhileOpen) << "nothing is cached while the read is still running";
+    EXPECT_TRUE(rig.readCache.get(kCard).has_value());
 }

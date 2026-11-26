@@ -13,6 +13,8 @@
 namespace LibreSCRS::Agent::Operations {
 
 class CardSessionHolder;
+class GroupRelay;
+class IdentityGroupFeed;
 
 class ReadIdentityOperation final : public OperationBase
 {
@@ -53,12 +55,25 @@ public:
     };
 
     ReadIdentityOperation(std::unique_ptr<OperationChannel> channel, Deps deps, std::shared_ptr<OperationState> state);
+    ~ReadIdentityOperation() override;
+
+    // Queued behind the background read of THIS card: follow its groups. Returns
+    // the parked relay it attached through (and writes the audit line for that
+    // source), or null for another card, a feed that is not open, or an op that
+    // already follows one. Emits nothing; the manager releases the relay once the
+    // client can receive. See OperationBase::followIdentityGroupFeed.
+    [[nodiscard]] std::shared_ptr<GroupRelay> followIdentityGroupFeed(IdentityGroupFeed& feed) override;
+    [[nodiscard]] std::shared_ptr<GroupRelay> groupRelay() const noexcept override;
 
 protected:
     void doWork() override;
 
 private:
     Deps m_deps;
+    // Set once, under the worker's mutex, before the op is visible to any other
+    // thread; the paths that end a queued op read it after taking the op out under
+    // that same mutex.
+    std::shared_ptr<GroupRelay> m_relay;
 };
 
 } // namespace LibreSCRS::Agent::Operations

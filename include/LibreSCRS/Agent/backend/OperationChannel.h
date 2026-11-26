@@ -125,6 +125,15 @@ public:
     // GroupSink at all), so the default no-op is dead code in production,
     // kept only as defense-in-depth.
     virtual void emitGroup(const GroupSnapshot& /*group*/) noexcept {}
+    // True when a group emitted before the client has read the operation's state
+    // would be lost, so an operation that replays earlier groups must wait for
+    // OperationState::noteObserved(). D-Bus: a signal sent before the client's
+    // match rule for the operation path is installed is dropped. Socket: events
+    // follow the reply in order, so there is nothing to wait for (the default).
+    [[nodiscard]] virtual bool groupsAwaitObserver() const noexcept
+    {
+        return false;
+    }
 };
 
 } // namespace LibreSCRS::Agent::Operations

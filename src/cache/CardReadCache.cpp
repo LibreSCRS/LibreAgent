@@ -7,7 +7,6 @@
 #include <cstdint>
 #include <string>
 #include <utility>
-#include <span>
 #include <vector>
 
 namespace LibreSCRS::Agent {
@@ -16,30 +15,8 @@ namespace {
 
 void cleanse(std::string& s) noexcept
 {
-    if (!s.empty()) {
-        secureZero(std::span<std::uint8_t>(reinterpret_cast<std::uint8_t*>(s.data()), s.size()));
-    }
+    secureZero(s);
     s.clear();
-}
-
-void cleanse(std::vector<std::uint8_t>& v) noexcept
-{
-    if (!v.empty()) {
-        secureZero(v);
-    }
-    v.clear();
-}
-
-// Zeroize each field's text/binary buffer. Shared by both halves: identity
-// groups and cert fields are the same GroupSnapshot value type.
-void cleanseGroups(std::vector<GroupSnapshot>& groups) noexcept
-{
-    for (auto& group : groups) {
-        for (auto& field : group.fields) {
-            cleanse(field.textValue);
-            cleanse(field.binaryValue);
-        }
-    }
 }
 
 } // namespace

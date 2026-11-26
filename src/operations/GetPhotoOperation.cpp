@@ -26,7 +26,8 @@ GetPhotoOperation::GetPhotoOperation(std::unique_ptr<OperationChannel> channel, 
 std::optional<CardReadSnapshot> GetPhotoOperation::obtainSnapshot()
 {
     if (auto cached = m_deps.readCache.get(m_deps.cardKey)) {
-        FlowPrelude::logIdentityRequest(m_deps.requester, m_deps.readerName, m_deps.cardKey, true);
+        FlowPrelude::logIdentityRequest(m_deps.requester, m_deps.readerName, m_deps.cardKey,
+                                        FlowPrelude::IdentitySource::Cache);
         return cached;
     }
     // This op's cache-miss read reuses IdentityReadFlow, but the Operation

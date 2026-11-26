@@ -5,17 +5,21 @@
 #include <LibreSCRS/Agent/operations/OperationBase.h>
 #include <LibreSCRS/Agent/operations/Seams.h>
 #include <functional>
+#include <memory>
 #include <string>
 
 namespace LibreSCRS::Agent::Operations {
 
 class CardSessionHolder;
+class IdentityGroupFeed;
 
 // The background read of a freshly published card's identity. Nobody asked for
 // it and nobody waits on it: its channel drops every emission, but it still
 // enters Connecting, which arms the watchdog, so a read stuck on the card
 // cannot hold the reader's queue for ever. Its only effect is a put into the
-// card's read cache. Never prompts, never touches the secret cache.
+// card's read cache -- and the groups it reads, which it hands to the feed of the
+// client operations that queued behind it for the same card. Never prompts,
+// never touches the secret cache.
 class PrefetchIdentityOperation final : public OperationBase
 {
 public:
@@ -30,12 +34,16 @@ public:
     };
 
     explicit PrefetchIdentityOperation(Deps deps);
+    ~PrefetchIdentityOperation() override;
+
+    [[nodiscard]] std::shared_ptr<IdentityGroupFeed> identityGroupFeed() const noexcept override;
 
 protected:
     void doWork() override;
 
 private:
     Deps m_deps;
+    std::shared_ptr<IdentityGroupFeed> m_feed;
 };
 
 } // namespace LibreSCRS::Agent::Operations

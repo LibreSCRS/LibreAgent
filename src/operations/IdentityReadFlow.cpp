@@ -95,7 +95,8 @@ IdentityReadFlow::Result IdentityReadFlow::run()
     // line, reading personal data off such a card leaves no journald trace at
     // all (mirrors TokenInfoReadFlow's own audit line for the same reason).
     // Logs ONLY this request's metadata: never a field from the snapshot.
-    FlowPrelude::logIdentityRequest(m_deps.requester, m_deps.readerName, m_deps.cardKey, false);
+    FlowPrelude::logIdentityRequest(m_deps.requester, m_deps.readerName, m_deps.cardKey,
+                                    FlowPrelude::IdentitySource::Card);
 
     // -- Steps 1-2: open the held session + install the read credential provider
     // -- (shared with CertReadFlow/SignFlow via FlowPrelude; the read tail below

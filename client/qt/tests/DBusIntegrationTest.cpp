@@ -1288,6 +1288,47 @@ TEST(DBusIntegration, AQueuedPhaseSentBeforeTheSubscriptionIsReadBackAndStopsThe
     ASSERT_TRUE(waitFor([&]() { return op->isFinished(); }));
 }
 
+// ---- identity: a group sent while the client reads the state ------------------
+//
+// An agent that replays a background read's groups to a client attached to it sends
+// them in answer to the client's first read of the operation's state
+// (Properties.GetAll): a signal sent earlier is lost, because the client installs its
+// match rule for the operation path only after the call that returned the path. The
+// fake sends the scripted group from inside that GetAll, before the reply. This holds
+// only while QtDBus puts AddMatch on the wire before QDBusConnection::connect returns:
+// if that ever stops being true, this test fails.
+TEST(DBusIntegration, AGroupSentInsideTheStateReadReachesTheClient)
+{
+    FakeAgent::Config cfg;
+    cfg.capabilities = Cap::IdentityData;
+    cfg.operationDelayMs = 60000; // the agent never finishes this op on its own
+    cfg.initialPhase = static_cast<uint>(OperationPhase::Queued);
+    cfg.groupsOnStateRead = true;
+    FakeIdentityGroup group;
+    group.key = QStringLiteral("personal");
+    group.fields.insert(QStringLiteral("given_name"),
+                        IdentityFieldWire{QStringLiteral("label_given_name"), QStringLiteral("Given name"),
+                                          QStringLiteral("text"), QDBusVariant(QStringLiteral("Ana"))});
+    cfg.identityGroupScript.append(group);
+    Harness h(cfg);
+
+    auto client = makeClient(h);
+    AgentCard* card = client->card(h.cardPath());
+    ASSERT_NE(card, nullptr);
+
+    AgentOperation* op = card->readIdentity();
+    ASSERT_NE(op, nullptr);
+    QStringList groups;
+    QObject::connect(op, &AgentOperation::groupReady, op, [&groups](const FieldGroup& g) { groups.append(g.key); });
+
+    ASSERT_TRUE(waitFor([&]() { return !groups.isEmpty(); }))
+        << "a group sent inside the client's state read never reached it";
+    EXPECT_EQ(groups, QStringList{QStringLiteral("personal")});
+    EXPECT_FALSE(op->isFinished());
+    op->cancel();
+    ASSERT_TRUE(waitFor([&]() { return op->isFinished(); }));
+}
+
 // ---- lost-Result recovery: Finished fires before the subscriber -----------
 //
 // The FakeAgent's raceResultBeforeReturn mode fires the typed Result AND

@@ -123,10 +123,14 @@ public:
         quint32 finalStatus = 0; ///< 0 Ok / 1 Cancelled / 2 Error
         quint32 finalErrorCode = 0;
         bool raceResultBeforeReturn = false; ///< fire the op's events synchronously, right after op-started
-        bool suppressResult = false;         ///< finish Ok WITHOUT the result event AND with nothing to recover
-        bool signRecoverable = false;        ///< Sign: SUPPRESS the result event but serve GetSignResult (the
-                                             ///< deterministic lost-result recovery window)
-        bool failMethodEntry = false;        ///< card methods answer an err-info at entry (no op minted)
+        /// With raceResultBeforeReturn: write op-started and every frame of the
+        /// op as ONE send, so the client's single read absorbs them together
+        /// (a frame with a passed fd flushes the burst first, keeping order).
+        bool opFramesInOneBurst = false;
+        bool suppressResult = false;  ///< finish Ok WITHOUT the result event AND with nothing to recover
+        bool signRecoverable = false; ///< Sign: SUPPRESS the result event but serve GetSignResult (the
+                                      ///< deterministic lost-result recovery window)
+        bool failMethodEntry = false; ///< card methods answer an err-info at entry (no op minted)
         LibreSCRS::Agent::Wire::SyncError entryError = LibreSCRS::Agent::Wire::SyncError::UnsupportedOnThisCard;
         /// ReadTokenInfo's Identity1-shaped result carries a present-but-EMPTY
         /// "token" group instead of the scripted label/serial_number/
@@ -364,6 +368,7 @@ private:
     void mintOperation(Connection* connection, quint64 req, OpKind kind, bool withRecords,
                        QStringList batchDisplayNames = {});
     void fireOperation(quint64 opId);
+    std::vector<std::uint8_t>* m_burst = nullptr; ///< sendCbor appends here while a burst is open
     [[nodiscard]] Op* findOperation(quint64 opId);
     [[nodiscard]] LibreSCRS::Agent::Wire::StateReply buildState() const;
     [[nodiscard]] LibreSCRS::Agent::Wire::CardState buildCardState() const;

@@ -117,10 +117,12 @@ public:
             std::lock_guard pathLock(m_pathMutex);
             m_byId.emplace(id, op.get());
         }
+        Follower follower;
         {
             std::lock_guard lock(worker->mutex);
-            enqueueLocked(*worker, std::move(op));
+            follower = enqueueLocked(*worker, std::move(op));
         }
+        releaseFollower(std::move(follower)); // off every lock: it can emit
         return id;
     }
 
@@ -378,6 +380,27 @@ public:
     {
         drainWedgedQueues();
     }
+    // Empty the inbox of operations whose end was deferred behind an emit in
+    // progress (the cleanup loop does it on every tick in production). Production
+    // never calls this.
+    void drainDeferredForTest()
+    {
+        drainDeferredEnds();
+    }
+    // Make the cleanup thread tick every @p tick and age finished operations out
+    // after @p grace, instead of every second and after 5 s, so a test needs
+    // neither wall-clock rounds nor a long grace. The thread acts at once on the
+    // new tick. Production never calls this.
+    void setCleanupCadenceForTest(std::chrono::nanoseconds tick, std::chrono::nanoseconds grace)
+    {
+        m_cleanupGraceNs.store(grace.count());
+        {
+            std::lock_guard lock(m_cleanupWakeMutex);
+            m_cleanupTickNs.store(tick.count());
+            m_cleanupRetimed = true;
+        }
+        m_cleanupWake.notify_all();
+    }
 #endif
 
 private:
@@ -474,13 +497,47 @@ private:
     // completion latch would never be signalled (bus-thread hang).
     [[nodiscard]] std::shared_ptr<ReaderWorker> workerFor(ObjectId reader, const std::string& readerName);
     void workerLoop(ReaderWorker& worker, std::stop_token st);
+    // An operation queued behind a background identity read of the same card follows
+    // it (see OperationBase::followIdentityGroupFeed): @p relay is the parked relay
+    // it attached through, @p awaitObserver whether its channel loses a group sent
+    // before the client has read the operation's state, and @p state the shared state
+    // the host marks observed. All three are taken under worker.mutex, because the op
+    // can be finished and gone by the time the lock is released.
+    struct Follower
+    {
+        std::shared_ptr<GroupRelay> relay;
+        bool awaitObserver{false};
+        std::shared_ptr<OperationState> state;
+    };
     // Put @p op at the back of @p worker's queue and wake the worker. The caller
     // holds worker.mutex. An op that cannot start at once (the worker runs another
     // op, or others wait ahead) reports Queued FIRST, before it becomes visible to
     // the worker: after push_back the worker may start it and report Connecting at
     // any moment, and Queued must never follow that. The report is the property
-    // pulse, emitted here under worker.mutex; the worker never emits under it.
-    static void enqueueLocked(ReaderWorker& worker, std::unique_ptr<OperationBase> op);
+    // pulse, emitted here under worker.mutex; the worker never emits under it. Such an
+    // op is also offered the feed of the op the worker is running; the Follower it
+    // returns MUST be handed to releaseFollower once worker.mutex is released, by every
+    // caller (a relay never released holds its groups back for good).
+    [[nodiscard]] static Follower enqueueLocked(ReaderWorker& worker, std::unique_ptr<OperationBase> op);
+    // Let a follower's groups flow: at once when the channel can receive, else when
+    // the client has read the operation's state. Off every lock -- the first case emits
+    // here, and the second runs the release at once if the state was already read.
+    static void releaseFollower(Follower follower);
+    // How the manager ends an op it took out of a queue.
+    enum class EndShape {
+        HandOff, ///< finish, then the cleanup grace (handOffFinished)
+        Destroy, ///< finish, then destroy; the caller has already scrubbed the id tables
+    };
+    // Finish @p op with @p finish and then dispose of it per @p shape. An op
+    // attached to a background read may have a group being emitted by another thread
+    // right now, and the emit can be serialised against the thread that wants to end
+    // the op: so it is finished by the relay's deferred action, after the emit, and
+    // is parked in the inbox for the actual hand-off or destruction. The action never
+    // touches the manager and never destroys the op. Nothing here waits.
+    void endQueuedOp(std::unique_ptr<OperationBase> op, void (OperationBase::*finish)() noexcept, EndShape shape);
+    // Dispose of what the inbox holds, off every lock.
+    void drainDeferredEnds();
+    class Inbox;
     // Run @p op (already marked in flight) and hand it to the cleanup-grace queue
     // (or drop it in test mode). Shared by the queue and the background slot so
     // there is one copy. Returns true when the worker was abandoned meanwhile
@@ -609,7 +666,10 @@ private:
     };
     std::mutex m_finishedMutex;
     std::deque<FinishedRecord> m_finished;
-    std::jthread m_cleanupWorker;
+    // Ends deferred behind an emit in progress (see endQueuedOp). A shared_ptr so a
+    // relay's deferred action can hold it past the manager. Declared before the
+    // cleanup thread, which empties it, so the thread is joined first.
+    std::shared_ptr<Inbox> m_inbox;
     void cleanupLoop(std::stop_token st);
     // One age-out pass over m_finished: destroy every op older than @p grace and
     // scrub it from ALL THREE tracking tables (m_byId + m_senderToOps +
@@ -623,6 +683,20 @@ private:
     std::mutex m_sendersMutex;
     std::map<CallerToken, std::set<OperationId>> m_senderToOps;
     std::map<OperationId, CallerToken> m_opToSender;
+
+    // The cleanup thread's tick and grace (one second and 5 s; a test shortens
+    // them), and what makes it act on a new tick at once.
+    std::atomic<std::int64_t> m_cleanupTickNs{std::chrono::nanoseconds{std::chrono::seconds{1}}.count()};
+    std::atomic<std::int64_t> m_cleanupGraceNs{std::chrono::nanoseconds{std::chrono::seconds{5}}.count()};
+    std::mutex m_cleanupWakeMutex;
+    std::condition_variable_any m_cleanupWake;
+    bool m_cleanupRetimed{false};
+
+    // LAST, on purpose: members die in reverse order, and the cleanup thread reads
+    // all of the above (sweepFinished uses the sender tables, the finished queue
+    // and the inbox). Declared any earlier, it would be joined after they are
+    // destroyed.
+    std::jthread m_cleanupWorker;
 };
 
 } // namespace LibreSCRS::Agent::Operations

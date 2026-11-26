@@ -1335,6 +1335,48 @@ TEST(SocketIntegration, SignBatchResultWrittenBeforeEntryReturnsIsDeliveredInOrd
     }
 }
 
+// Group frames written in the same burst as the op-started reply reach a
+// listener installed only after the call returned: the transport queues
+// mid-call frames and delivers them from the event loop, so the caller's
+// connect() after readIdentity() still sees every groupReady, in order,
+// before the Result.
+TEST(SocketIntegration, IdentityGroupsWrittenRightAfterTheReplyReachALateListener)
+{
+    FakeSocketAgent::Config cfg;
+    cfg.capabilities = Cap::IdentityData;
+    cfg.features = {QStringLiteral("credentials")};
+    cfg.raceResultBeforeReturn = true;
+    cfg.opFramesInOneBurst = true;
+    for (const char* key : {"personal", "address"}) {
+        FakeSocketIdentityGroup g;
+        g.key = QLatin1String(key);
+        g.fields["f"] = LibreSCRS::Agent::Wire::IdentityField{"label_f", "F", "text", std::string("v")};
+        cfg.identityGroupScript.append(g);
+    }
+    SocketHarness h(cfg);
+
+    auto client = makeClient(h);
+    AgentCard* card = client->card(QLatin1String(kCardId));
+    ASSERT_NE(card, nullptr);
+
+    AgentOperation* op = card->readIdentity();
+    ASSERT_NE(op, nullptr);
+
+    QStringList groups;
+    bool finishedBeforeGroups = false;
+    QObject::connect(op, &AgentOperation::groupReady, op, [&](const FieldGroup& g) {
+        groups.append(g.key);
+        finishedBeforeGroups = finishedBeforeGroups || op->isFinished();
+    });
+
+    ASSERT_TRUE(waitFor([&]() { return groups.size() >= 2; })) << "the raced group frames were lost";
+    EXPECT_EQ(groups, (QStringList{QStringLiteral("personal"), QStringLiteral("address")}));
+    ASSERT_TRUE(waitFor([&]() { return op->isFinished(); }));
+    EXPECT_FALSE(finishedBeforeGroups);
+    EXPECT_EQ(op->status(), OperationStatus::Ok);
+    EXPECT_EQ(op->identityResult().size(), 2);
+}
+
 // ---- batch signing: entry gates (never reach the wire) --------------------------------
 
 TEST(SocketIntegration, MissingBatchSignFeatureRefusesLocally)

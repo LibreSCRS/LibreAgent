@@ -70,16 +70,24 @@ struct OpenOutcome
 // in one place. Cancelled maps to None: a cancelled read is not an error.
 [[nodiscard]] ErrorCode mapReadStatus(ReadOutcome::Status status) noexcept;
 
-// The per-request audit line of an identity read: one per request, written by
-// IdentityReadFlow on a card walk and by ReadIdentityOperation and
-// GetPhotoOperation on a read-cache hit (@p cached adds " (cache)"). A cache
-// hit is where a client's read of personal data lands once the card has been
-// read in the background, and a card with no pre-read secret never reaches a
-// consent prompt, so without this line that read leaves no trace. One format,
-// so a grep for "identity read requested" finds all three. Logs request
-// metadata only, never a field of a snapshot.
+// Where the personal data of one identity request comes from.
+enum class IdentitySource {
+    Card,           ///< the request walks the card itself (no suffix)
+    Cache,          ///< the read cache already holds a snapshot (" (cache)")
+    BackgroundRead, ///< the request follows the background read of the same card (" (background read)")
+};
+
+// The per-request audit line of an identity read: one per source of personal
+// data a request uses, written BEFORE the first byte from that source: by
+// IdentityReadFlow on a card walk, by ReadIdentityOperation and GetPhotoOperation
+// on a read-cache hit, and by ReadIdentityOperation when it attaches to the
+// background read. A cache hit is where a client's read of personal data lands
+// once the card has been read in the background, and a card with no pre-read
+// secret never reaches a consent prompt, so without this line that read leaves
+// no trace. One format, so a grep for "identity read requested" finds all of
+// them. Logs request metadata only, never a field of a snapshot.
 void logIdentityRequest(const std::string& requester, const std::string& readerName, const std::string& cardKey,
-                        bool cached);
+                        IdentitySource source);
 
 // The READ credential provider, shared by IdentityReadFlow + CertReadFlow:
 // routes the cacheable CAN/MRZ through the cache (PIN is never reached here) and
