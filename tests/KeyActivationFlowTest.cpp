@@ -157,6 +157,7 @@ struct Harness
             .reader = "FakeReader",
             .artifact = "signing-key",
             .token = source.token(),
+            .refusalGenerationAtPublish = LibreSCRS::Agent::PublishedRefusalGeneration{0},
         });
     }
 };

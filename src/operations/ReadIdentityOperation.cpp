@@ -148,6 +148,7 @@ void ReadIdentityOperation::doWork()
         .token = token(),
         .onCardType = m_deps.onCardType,
         .depositor = m_deps.depositor,
+        .refusalGenerationAtPublish = m_deps.refusalGenerationAtPublish,
     });
     auto result = flow.run();
 

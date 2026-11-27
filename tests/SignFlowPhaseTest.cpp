@@ -191,6 +191,7 @@ struct Harness
             .requester = "test-client",
             .params = baseParams(),
             .token = source.token(),
+            .refusalGenerationAtPublish = LibreSCRS::Agent::PublishedRefusalGeneration{0},
         }};
     }
 };

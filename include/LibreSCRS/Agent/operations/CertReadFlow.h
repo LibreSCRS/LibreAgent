@@ -49,6 +49,9 @@ struct CertReadFlowDeps
     std::string requester;
     std::string artifact;
     LibreSCRS::CancelToken token;
+    // The card's refusal generation as read when the operation was published,
+    // not when it started: it seeds this operation's AttemptContext.
+    PublishedRefusalGeneration refusalGenerationAtPublish;
 };
 
 // Pure orchestration: open the held session -> install the CAN/PACE credential
@@ -105,10 +108,11 @@ public:
 private:
     CertReadFlowDeps m_deps;
     LibreSCRS::Auth::CredentialProvider m_provider;
-    // Default-constructed (cold, generation 0) so attemptContext() is safe to
-    // call before run() and on every early-return path; reassigned to a fresh
-    // context seeded from the card's refusal generation at the top of run().
-    std::shared_ptr<AttemptContext> m_attempts{std::make_shared<AttemptContext>()};
+    // Built in the constructor from the generation read at publish, so
+    // attemptContext() is safe to call before run() and on every early-return
+    // path; run() rebuilds it from the same value at its top (a clean
+    // allowance per run).
+    std::shared_ptr<AttemptContext> m_attempts;
 };
 
 } // namespace LibreSCRS::Agent::Operations

@@ -67,10 +67,10 @@ ReadOutcome::Status mapStatus(LibreSCRS::Plugin::ReadResult::Status s) noexcept
 // M4 (agent half): a STRUCTURAL pre-read failure carries a distinct ErrorKey.
 // Discriminate on the KEY, not the status LM tags it with, so a structural
 // failure never lands on AuthFailed and gets the credential wrongly punished by
-// the read flow's AuthFailed-only markCredentialWrong branch. Both keys map onto
+// the read flow's AuthFailed-only noteRejectedSecret branch. Both keys map onto
 // EXISTING ReadOutcome statuses -- zero ErrorCode growth:
 //   paceUnsupported       -> UnsupportedCard (the flow's AuthFailed-only
-//                            markCredentialWrong branch then skips it for free)
+//                            noteRejectedSecret branch then skips it for free)
 //   paceDowngradeDetected -> CommunicationError (never AuthFailed, so a detected
 //                            downgrade attack never evicts/punishes a credential)
 // The distinct msgKey/msgFallback still carries the reason to the user. Bind to

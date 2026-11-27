@@ -39,6 +39,7 @@ using LibreSCRS::Agent::MrzChoiceSink;
 using LibreSCRS::Agent::PromptOptions;
 using LibreSCRS::Agent::PromptResult;
 using LibreSCRS::Agent::PromptStatus;
+using LibreSCRS::Agent::PublishedRefusalGeneration;
 using LibreSCRS::Agent::Operations::kMaxPaceAttempts;
 using LibreSCRS::Agent::Operations::PrompterClientBase;
 using LibreSCRS::Agent::Operations::PromptSerializer;
@@ -432,7 +433,7 @@ TEST(CredentialCacheRequest, CanRePromptAfterRecordedRejectionCarriesAttemptAndL
     // cache: requestCredential populates opts.attempt / opts.lastError from
     // whatever AttemptContext the caller hands it.
     CredentialCache cache;
-    AttemptContext attempts;
+    AttemptContext attempts{PublishedRefusalGeneration{0}};
     attempts.recordRejection("librescrs.error.preRead.authFailed");
 
     FakePrompter prompter;
@@ -450,7 +451,7 @@ TEST(CredentialCacheRequest, CanRePromptAfterRecordedRejectionCarriesAttemptAndL
 TEST(CredentialCacheRequest, MrzRePromptAfterRecordedRejectionCarriesAttemptAndLastError)
 {
     CredentialCache cache;
-    AttemptContext attempts;
+    AttemptContext attempts{PublishedRefusalGeneration{0}};
     attempts.recordRejection("librescrs.error.preRead.authFailed");
 
     FakePrompter prompter;
@@ -467,7 +468,7 @@ TEST(CredentialCacheRequest, MrzRePromptAfterRecordedRejectionCarriesAttemptAndL
 TEST(CredentialCacheRequest, SecondConsecutiveRejectionBumpsAttemptToThree)
 {
     CredentialCache cache;
-    AttemptContext attempts;
+    AttemptContext attempts{PublishedRefusalGeneration{0}};
     attempts.recordRejection("librescrs.error.preRead.authFailed");
     attempts.recordRejection("librescrs.error.preRead.authFailed");
 
@@ -492,7 +493,7 @@ TEST(CredentialCacheRequest, InvalidateDoesNotResetAnOperationsOwnRetryContext)
     // every real read flow constructs a brand-new AttemptContext at the top
     // of its own run() (see IdentityReadFlow / CertReadFlow).
     CredentialCache cache;
-    AttemptContext attempts;
+    AttemptContext attempts{PublishedRefusalGeneration{0}};
     attempts.recordRejection("librescrs.error.preRead.authFailed");
     cache.invalidate("card-A");
 
@@ -507,13 +508,13 @@ TEST(CredentialCacheRequest, InvalidateDoesNotResetAnOperationsOwnRetryContext)
         << "an operation's own retry context survives a cache-side invalidate";
 }
 
-TEST(CredentialCacheRequest, CacheHitAfterMarkCredentialWrongNeverReachesThePrompter)
+TEST(CredentialCacheRequest, CacheHitAfterEvictSecretsNeverReachesThePrompter)
 {
     // A retry re-collecting a CORRECT secret is cached normally; a later,
     // unrelated cache HIT for the same card must not prompt at all (so no
     // question of retry context arises on that path).
     CredentialCache cache;
-    cache.markCredentialWrong("card-A");
+    cache.evictSecrets("card-A");
     cache.putCan("card-A", String{"654321"}); // simulates a since-corrected, now-cached CAN
 
     FakePrompter prompter;
@@ -603,11 +604,13 @@ TEST(CredentialCacheRequest, MalformedCachedMrzIsEvictedAndErrors)
 {
     CredentialCache cache;
     cache.putMrz("card-A", String{"garbage"}); // a poisoned cache value (e.g. a stale deposit)
+    cache.noteRefusal("card-A", CredentialCache::RefusalKind::Cancelled);
     FakePrompter prompter;
     PromptOptions opts;
     auto result = cache.requestCredential("card-A", paceReq(PaceSecretKind::Mrz), prompter, opts);
 
     EXPECT_EQ(result.status, CredentialResult::Status::Error);
+    EXPECT_EQ(cache.refusalGenerationFor("card-A"), 1U) << "evicting the secrets keeps the card's refusal history";
     EXPECT_FALSE(cache.getMrz("card-A").has_value())
         << "a malformed cached value must be EVICTED so it cannot poison the next try";
     EXPECT_EQ(prompter.mrzCalls, 0) << "the hit path returns the error without prompting";
@@ -751,7 +754,8 @@ TEST(CredentialCacheRequest, QueuedOperationsAreSilencedByAnExpiry)
     prompter.canResult = PromptResult{PromptStatus::Timeout, std::nullopt, "expired"};
 
     const std::uint64_t g = cache.refusalGenerationFor("card-A");
-    AttemptContext first{g}, second{g}, third{g}; // all dispatched together
+    AttemptContext first{PublishedRefusalGeneration{g}}, second{PublishedRefusalGeneration{g}},
+        third{PublishedRefusalGeneration{g}}; // all dispatched together
 
     PromptOptions opts;
     std::atomic<bool> expired1{false};
@@ -788,7 +792,8 @@ TEST(CredentialCacheRequest, QueuedOperationsAreSilencedByACancel)
     prompter.canResult = PromptResult{PromptStatus::Cancelled, std::nullopt, "cancelled"};
 
     const std::uint64_t g = cache.refusalGenerationFor("card-A");
-    AttemptContext first{g}, second{g}, third{g}; // all dispatched together
+    AttemptContext first{PublishedRefusalGeneration{g}}, second{PublishedRefusalGeneration{g}},
+        third{PublishedRefusalGeneration{g}}; // all dispatched together
 
     PromptOptions opts;
     std::atomic<bool> cancelled1{false};
@@ -826,7 +831,7 @@ TEST(CredentialCacheRequest, ADismissedWindowIsRecordedAsHavingYieldedNothing)
     FakePrompter prompter;
     prompter.canResult = PromptResult{PromptStatus::Cancelled, std::nullopt, "cancelled"};
 
-    AttemptContext ctx{cache.refusalGenerationFor("card-A")};
+    AttemptContext ctx{PublishedRefusalGeneration{cache.refusalGenerationFor("card-A")}};
     PromptOptions opts;
     const auto r = cache.requestCredential("card-A", paceReq(PaceSecretKind::Can), prompter, opts, nullptr, nullptr,
                                            nullptr, nullptr, nullptr, &ctx);
@@ -847,7 +852,7 @@ TEST(CredentialCacheRequest, AnAnsweredWindowClearsWhatADismissedOneRecorded)
     FakePrompter prompter;
     prompter.canResult = PromptResult{PromptStatus::Cancelled, std::nullopt, "cancelled"};
 
-    AttemptContext dismissed{cache.refusalGenerationFor("card-A")};
+    AttemptContext dismissed{PublishedRefusalGeneration{cache.refusalGenerationFor("card-A")}};
     PromptOptions opts;
     (void)cache.requestCredential("card-A", paceReq(PaceSecretKind::Can), prompter, opts, nullptr, nullptr, nullptr,
                                   nullptr, nullptr, &dismissed);
@@ -855,7 +860,7 @@ TEST(CredentialCacheRequest, AnAnsweredWindowClearsWhatADismissedOneRecorded)
 
     // A NEW operation (the retry affordance) whose window the holder answers.
     prompter.canResult = PromptResult{PromptStatus::Ok, String{"123456"}, ""};
-    AttemptContext answered{cache.refusalGenerationFor("card-A")};
+    AttemptContext answered{PublishedRefusalGeneration{cache.refusalGenerationFor("card-A")}};
     const auto r = cache.requestCredential("card-A", paceReq(PaceSecretKind::Can), prompter, opts, nullptr, nullptr,
                                            nullptr, nullptr, nullptr, &answered);
     ASSERT_EQ(r.status, CredentialResult::Status::Ok);
@@ -872,14 +877,14 @@ TEST(CredentialCacheRequest, AnOperationStartedAfterTheRefusalStillPrompts)
     FakePrompter prompter;
     prompter.canResult = PromptResult{PromptStatus::Timeout, std::nullopt, "expired"};
 
-    AttemptContext queued{cache.refusalGenerationFor("card-A")};
+    AttemptContext queued{PublishedRefusalGeneration{cache.refusalGenerationFor("card-A")}};
     PromptOptions opts;
     (void)cache.requestCredential("card-A", paceReq(PaceSecretKind::Can), prompter, opts, nullptr, nullptr, nullptr,
                                   nullptr, nullptr, &queued);
     EXPECT_EQ(prompter.canCalls, 1);
 
     // Created AFTER the refusal, exactly as the retry button does.
-    AttemptContext retried{cache.refusalGenerationFor("card-A")};
+    AttemptContext retried{PublishedRefusalGeneration{cache.refusalGenerationFor("card-A")}};
     (void)cache.requestCredential("card-A", paceReq(PaceSecretKind::Can), prompter, opts, nullptr, nullptr, nullptr,
                                   nullptr, nullptr, &retried);
     EXPECT_EQ(prompter.canCalls, 2) << "an operation the holder just asked for must still be able to ask";
@@ -896,7 +901,7 @@ TEST(CredentialCacheRequest, ACacheHitSurvivesTheGate)
     FakePrompter prompter;
     prompter.canResult = PromptResult{PromptStatus::Timeout, std::nullopt, "expired"};
 
-    AttemptContext queued{cache.refusalGenerationFor("card-A")};
+    AttemptContext queued{PublishedRefusalGeneration{cache.refusalGenerationFor("card-A")}};
     cache.noteRefusal("card-A");              // generation has moved past what `queued` captured
     cache.putCan("card-A", String{"123456"}); // ...but the secret is present
 
@@ -929,8 +934,8 @@ TEST(CredentialCacheRequest, AConcurrentlyQueuedOperationIsNeverPromptedAfterASi
     inner.canResult = PromptResult{PromptStatus::Timeout, std::nullopt, "expired"};
 
     const std::uint64_t g = cache.refusalGenerationFor("card-A");
-    AttemptContext first{g};
-    AttemptContext second{g};
+    AttemptContext first{PublishedRefusalGeneration{g}};
+    AttemptContext second{PublishedRefusalGeneration{g}};
 
     LibreSCRS::CancelSource src1;
     LibreSCRS::CancelSource src2;
@@ -1050,7 +1055,7 @@ TEST(CredentialCacheRequest, ACorrectlyAnsweredDialogSurvivesAnUnrelatedSiblings
     inner.canResult = PromptResult{PromptStatus::Ok, String{"123456"}, ""};
 
     const std::uint64_t g = cache.refusalGenerationFor("card-A");
-    AttemptContext first{g};
+    AttemptContext first{PublishedRefusalGeneration{g}};
 
     LibreSCRS::CancelSource src1;
     // Wired exactly as production wires it (see FlowPrelude::makeReadCredentialProvider):
@@ -1088,7 +1093,7 @@ TEST(CredentialCacheRequest, ACorrectlyAnsweredDialogSurvivesAnUnrelatedSiblings
     LibreSCRS::CancelSource src2;
     src2.requestCancel();
     SerializingPrompter gated2{serializer, inner, src2.token(), "card-A"};
-    AttemptContext second{g};
+    AttemptContext second{PublishedRefusalGeneration{g}};
     auto r2 = cache.requestCredential("card-A", paceReq(PaceSecretKind::Can), gated2, opts, nullptr, nullptr, nullptr,
                                       nullptr, nullptr, &second);
     EXPECT_EQ(r2.status, CredentialResult::Status::UserCancelled) << "the cancelled sibling reports its own cancel";
@@ -1124,7 +1129,7 @@ TEST(CredentialCacheRequest, ACorrectlyAnsweredDialogSurvivesAnUnrelatedSiblings
 TEST(CredentialCacheAttemptCap, PromptsUpToTheCapAndThenStopsAsking)
 {
     CredentialCache cache;
-    AttemptContext attempts;
+    AttemptContext attempts{PublishedRefusalGeneration{0}};
     FakePrompter prompter;
     prompter.canResult = PromptResult{PromptStatus::Ok, String{"123456"}, ""};
     const PromptOptions opts;
@@ -1137,7 +1142,7 @@ TEST(CredentialCacheAttemptCap, PromptsUpToTheCapAndThenStopsAsking)
         // the now-known-wrong cached value (so the NEXT iteration re-prompts
         // instead of hitting the still-cached secret from this one) AND
         // record the rejection on this operation's own context.
-        cache.markCredentialWrong("card-A");
+        cache.evictSecrets("card-A");
         attempts.recordRejection("librescrs.error.preRead.authFailed");
     }
     EXPECT_EQ(prompter.canCalls, static_cast<int>(kMaxPaceAttempts));
@@ -1157,7 +1162,7 @@ TEST(CredentialCacheAttemptCap, TheCapAlsoCoversMrz)
     // The counter is shared between the two kinds because it bounds attempts on
     // THIS OPERATION's pre-read auth, not on a kind.
     CredentialCache cache;
-    AttemptContext attempts;
+    AttemptContext attempts{PublishedRefusalGeneration{0}};
     FakePrompter prompter;
     prompter.mrzResult = PromptResult{PromptStatus::Ok, String{kTd3MrzPayload}, ""};
     const PromptOptions opts;
@@ -1168,7 +1173,7 @@ TEST(CredentialCacheAttemptCap, TheCapAlsoCoversMrz)
         EXPECT_EQ(result.status, CredentialResult::Status::Ok) << "attempt " << i;
         // See PromptsUpToTheCapAndThenStopsAsking: evict AND record together,
         // mirroring what production's credential provider does.
-        cache.markCredentialWrong("card-A");
+        cache.evictSecrets("card-A");
         attempts.recordRejection("librescrs.error.preRead.authFailed");
     }
 
@@ -1184,9 +1189,9 @@ TEST(CredentialCacheAttemptCap, ANewOperationStartsOverBecauseItIsANewAllowance)
     // operation: a fresh AttemptContext, not the exhausted one above. Under
     // the old per-card design the cache held the counter and invalidate()
     // reset it on CardRemoved; now the reset is simply "construct a new
-    // context", which every real read flow does at the top of its own run().
+    // context", which every real read flow does for each run.
     CredentialCache cache;
-    AttemptContext attempts;
+    AttemptContext attempts{PublishedRefusalGeneration{0}};
     FakePrompter prompter;
     prompter.canResult = PromptResult{PromptStatus::Ok, String{"123456"}, ""};
     const PromptOptions opts;
@@ -1197,12 +1202,12 @@ TEST(CredentialCacheAttemptCap, ANewOperationStartsOverBecauseItIsANewAllowance)
         // Evict AND record together (see PromptsUpToTheCapAndThenStopsAsking):
         // without the evict, iteration 2 onward would hit the CAN iteration 1
         // cached and never re-prompt, undercounting canCalls below.
-        cache.markCredentialWrong("card-A");
+        cache.evictSecrets("card-A");
         attempts.recordRejection("librescrs.error.preRead.authFailed");
     }
     cache.invalidate("card-A"); // CardRemoved / ReaderRemoved erases the cached secrets
 
-    AttemptContext freshAttempts;
+    AttemptContext freshAttempts{PublishedRefusalGeneration{0}};
     const auto afterReinsert = cache.requestCredential("card-A", paceReq(PaceSecretKind::Can), prompter, opts, nullptr,
                                                        nullptr, nullptr, nullptr, nullptr, &freshAttempts);
     EXPECT_EQ(afterReinsert.status, CredentialResult::Status::Ok);
@@ -1212,7 +1217,7 @@ TEST(CredentialCacheAttemptCap, ANewOperationStartsOverBecauseItIsANewAllowance)
 TEST(CredentialCacheAttemptCap, TheCapIsPerOperationNotGlobal)
 {
     CredentialCache cache;
-    AttemptContext attempts;
+    AttemptContext attempts{PublishedRefusalGeneration{0}};
     FakePrompter prompter;
     prompter.canResult = PromptResult{PromptStatus::Ok, String{"123456"}, ""};
     const PromptOptions opts;
@@ -1220,14 +1225,14 @@ TEST(CredentialCacheAttemptCap, TheCapIsPerOperationNotGlobal)
     for (std::uint32_t i = 0; i < kMaxPaceAttempts; ++i) {
         (void)cache.requestCredential("card-A", paceReq(PaceSecretKind::Can), prompter, opts, nullptr, nullptr, nullptr,
                                       nullptr, nullptr, &attempts);
-        cache.markCredentialWrong("card-A"); // evict AND record together, mirroring production
+        cache.evictSecrets("card-A"); // evict AND record together, mirroring production
         attempts.recordRejection("librescrs.error.preRead.authFailed");
     }
     // A different card, driven through a DIFFERENT operation's own context,
     // must be unaffected -- otherwise one holder's mistyping would lock out
     // every other card in the machine, which is the starvation this whole
     // redesign exists to end.
-    AttemptContext otherAttempts;
+    AttemptContext otherAttempts{PublishedRefusalGeneration{0}};
     const auto other = cache.requestCredential("card-B", paceReq(PaceSecretKind::Can), prompter, opts, nullptr, nullptr,
                                                nullptr, nullptr, nullptr, &otherAttempts);
     EXPECT_EQ(other.status, CredentialResult::Status::Ok);
@@ -1239,7 +1244,7 @@ TEST(CredentialCacheAttemptCap, ACachedSecretStillAnswersAfterTheCapIsReached)
     // known must keep working -- the cap exists to stop pointless dialogs, not
     // to disable a card that has one.
     CredentialCache cache;
-    AttemptContext attempts;
+    AttemptContext attempts{PublishedRefusalGeneration{0}};
     FakePrompter prompter;
     const PromptOptions opts;
 

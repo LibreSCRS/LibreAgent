@@ -151,9 +151,9 @@ RawCryptoFlow::Result RawCryptoFlow::runOp(Op op, Mechanism mechanism, std::span
     // failed channel establishment as CardError below (the raw path has no
     // PrompterError outcome — the flag the helper requires is write-only here).
     auto prompterFailed = std::make_shared<std::atomic<bool>>(false);
-    // Per-operation retry context, captured HERE at the top of run() -- never
-    // later (see IdentityReadFlow's identical field for the full rationale).
-    auto attempts = std::make_shared<AttemptContext>(cache.refusalGenerationFor(cardKey));
+    // Per-operation retry context, seeded from the generation read at publish
+    // (see IdentityReadFlow's identical field for the full rationale).
+    auto attempts = std::make_shared<AttemptContext>(m_deps.refusalGenerationAtPublish);
     LibreSCRS::Auth::CredentialProvider provider = FlowPrelude::makeReadCredentialProvider(
         cache, prompter, serializer, phaseSink, cardKey, requester, artifact, token, attempts, prompterFailed);
     // Install with a UAF scope guard: the provider captures the per-op phaseSink
@@ -339,7 +339,7 @@ RawCryptoFlow::Result RawCryptoFlow::runOp(Op op, Mechanism mechanism, std::span
         // A wrong PIN must not poison a later read's cached CAN; the PIN is never
         // cached, but evict the PACE secret so a card swap / retry re-establishes
         // cleanly. Mirrors SignFlow's eviction.
-        m_deps.cache.invalidate(m_deps.cardKey);
+        m_deps.cache.evictSecrets(m_deps.cardKey);
         session->clearCachedPaceCredentials();
     }
     if (outcome != Outcome::Ok) {

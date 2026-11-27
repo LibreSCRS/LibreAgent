@@ -173,6 +173,7 @@ struct Harness
             .reader = "FakeReader",
             .artifact = "",
             .token = source.token(),
+            .refusalGenerationAtPublish = LibreSCRS::Agent::PublishedRefusalGeneration{0},
         };
     }
 };

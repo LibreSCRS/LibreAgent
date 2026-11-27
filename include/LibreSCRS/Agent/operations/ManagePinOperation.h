@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 // SPDX-FileCopyrightText: 2026 hirashix0
 #pragma once
+#include <LibreSCRS/Agent/cache/AttemptContext.h>
 #include <LibreSCRS/Agent/cache/CardReadCache.h>
 #include <LibreSCRS/Agent/cache/CredentialCache.h>
 #include <LibreSCRS/Agent/cache/CredentialSnapshotCache.h>
@@ -41,6 +42,9 @@ public:
         // Resolved at the host's PIN-management entry; the flow consumes both.
         PinManageRequest request;
         CredentialSnapshot snapshot;
+        // The card's refusal generation as read when the operation was published,
+        // not when it started: it seeds this operation's AttemptContext.
+        PublishedRefusalGeneration refusalGenerationAtPublish;
     };
 
     ManagePinOperation(std::unique_ptr<OperationChannel> channel, Deps deps, std::shared_ptr<OperationState> state);

@@ -57,15 +57,14 @@ void CredentialCache::clear()
     m_entries.clear();
 }
 
-void CredentialCache::markCredentialWrong(const std::string& cardKey)
+void CredentialCache::evictSecrets(const std::string& cardKey)
 {
     std::lock_guard lock(m_mutex);
+    // Not an erase: the refusal generation and kind, and the "last prompt
+    // yielded nothing" flag, describe the card and must survive the secrets.
     auto& entry = m_entries[cardKey]; // default-constructs on first failure for this card
     entry.can.reset();
     entry.mrz.reset();
-    // The count and the message moved to the operation's AttemptContext: they
-    // describe one read attempt, not the card. What stays here is the eviction
-    // -- a rejected secret must never be replayed from cache.
 }
 
 bool CredentialCache::lastPromptYieldedNothingFor(const std::string& cardKey) const

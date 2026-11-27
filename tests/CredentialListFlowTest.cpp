@@ -177,6 +177,7 @@ struct Harness
             .requester = requester,
             .artifact = "credentials",
             .token = source.token(),
+            .refusalGenerationAtPublish = LibreSCRS::Agent::PublishedRefusalGeneration{0},
         }};
     }
 };

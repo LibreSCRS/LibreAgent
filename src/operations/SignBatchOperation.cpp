@@ -75,6 +75,7 @@ void SignBatchOperation::doWork()
         .params = m_deps.params,
         .documents = m_deps.documents,
         .token = token(),
+        .refusalGenerationAtPublish = m_deps.refusalGenerationAtPublish,
     });
     auto result = flow.run();
 

@@ -102,10 +102,10 @@ CredentialOpResult runKeyActivation(KeyActivationFlowDeps deps)
         // this path a broken channel prompt surfaces as the seam's own failure
         // outcome, so the flag is not separately consumed here.
         auto prompterFailed = std::make_shared<std::atomic<bool>>(false);
-        // Per-operation retry context, captured HERE at the top of this
-        // activation attempt -- never later (see IdentityReadFlow's identical
-        // field for the full rationale).
-        auto attempts = std::make_shared<AttemptContext>(deps.cache.refusalGenerationFor(deps.cardKey));
+        // Per-operation retry context, seeded from the generation read at
+        // publish (see IdentityReadFlow's identical field for the full
+        // rationale).
+        auto attempts = std::make_shared<AttemptContext>(deps.refusalGenerationAtPublish);
         const auto providerGuard = FlowPrelude::installScopedReadProvider(
             session, FlowPrelude::makeReadCredentialProvider(deps.cache, deps.prompter, deps.serializer, deps.phaseSink,
                                                              deps.cardKey, deps.requester, deps.artifact, deps.token,

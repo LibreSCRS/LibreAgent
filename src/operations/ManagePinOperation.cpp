@@ -44,6 +44,7 @@ void ManagePinOperation::doWork()
         .reader = m_deps.readerName,
         .artifact = m_deps.artifact,
         .token = token(),
+        .refusalGenerationAtPublish = m_deps.refusalGenerationAtPublish,
     };
     const CredentialOpResult result = runPinManage(deps, m_deps.request);
 

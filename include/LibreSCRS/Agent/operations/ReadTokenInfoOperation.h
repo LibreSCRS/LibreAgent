@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 // SPDX-FileCopyrightText: 2026 hirashix0
 #pragma once
+#include <LibreSCRS/Agent/cache/AttemptContext.h>
 #include <LibreSCRS/Agent/cache/CredentialCache.h>
 #include <LibreSCRS/Agent/operations/OperationBase.h>
 #include <LibreSCRS/Agent/operations/Seams.h>
@@ -37,6 +38,9 @@ public:
         // entry.
         std::string requester;
         std::string artifact;
+        // The card's refusal generation as read when the operation was published,
+        // not when it started: it seeds this operation's AttemptContext.
+        PublishedRefusalGeneration refusalGenerationAtPublish;
     };
 
     ReadTokenInfoOperation(std::unique_ptr<OperationChannel> channel, Deps deps, std::shared_ptr<OperationState> state);

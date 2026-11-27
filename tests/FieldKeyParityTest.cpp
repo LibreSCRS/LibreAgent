@@ -195,6 +195,7 @@ struct Harness
             .artifact = "identity",
             .token = source.token(),
             .depositor = depositor,
+            .refusalGenerationAtPublish = LibreSCRS::Agent::PublishedRefusalGeneration{0},
         }};
     }
 };

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 // SPDX-FileCopyrightText: 2026 hirashix0
 #pragma once
+#include <LibreSCRS/Agent/cache/AttemptContext.h>
 #include <LibreSCRS/Agent/operations/CardPluginRouting.h> // CandidateList
 #include <LibreSCRS/Agent/operations/Seams.h>             // CredentialManager, OperationPhaseSink
 #include <LibreSCRS/Agent/value/CredentialRecord.h>       // CredentialRecord, CredentialOpResult
@@ -55,6 +56,9 @@ struct KeyActivationFlowDeps
     std::string reader;    // human reader name (audit line only)
     std::string artifact;  // trusted, agent-owned operation category
     LibreSCRS::CancelToken token;
+    // The card's refusal generation as read when the operation was published,
+    // not when it started: it seeds this operation's AttemptContext.
+    PublishedRefusalGeneration refusalGenerationAtPublish;
 };
 
 // Pure orchestration, no LM types in the public result: gate on the record's

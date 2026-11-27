@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 // SPDX-FileCopyrightText: 2026 hirashix0
 #pragma once
+#include <LibreSCRS/Agent/cache/AttemptContext.h>
 #include <LibreSCRS/Agent/crypto/Mechanism.h>
 #include <LibreSCRS/Agent/operations/CardPluginRouting.h> // CandidateList
 #include "operations/LmRawCrypto.h"                       // RawCryptoResult
@@ -126,6 +127,9 @@ struct RawCryptoFlowDeps
     // card I/O: a marked key under a warm lease is known only after the card's
     // certificates are read.
     std::function<bool()> allowPrompt;
+    // The card's refusal generation as read when the operation was published,
+    // not when it started: it seeds this operation's AttemptContext.
+    PublishedRefusalGeneration refusalGenerationAtPublish;
 };
 
 // Agent-thread flow the Pkcs11_1.SignRaw / Decrypt methods call. Mirrors

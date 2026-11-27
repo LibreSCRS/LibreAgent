@@ -85,6 +85,9 @@ struct IdentityReadFlowDeps
     // LmCredentialDepositor (plugin-registry-backed); a wiring site with no
     // registry to resolve deposit targets from passes NullCredentialDepositor.
     CredentialDepositor& depositor;
+    // The card's refusal generation as read when the operation was published,
+    // not when it started: it seeds this operation's AttemptContext.
+    PublishedRefusalGeneration refusalGenerationAtPublish;
 };
 
 // Pure orchestration — no LM types in the public Result surface, no bus, no
@@ -138,9 +141,10 @@ public:
         return m_mrzChoice;
     }
     // This operation's own retry context (attempts belong to the operation,
-    // not the card -- see AttemptContext). Bound at the top of run() (unlike
-    // m_provider, it is never emptied at run() exit: it holds no run-scoped
-    // references, so it stays safely observable after the run completes).
+    // not the card -- see AttemptContext). Built in the constructor and
+    // rebuilt at the top of run() (unlike m_provider, it is never emptied at
+    // run() exit: it holds no run-scoped references, so it stays safely
+    // observable after the run completes).
     // Exposed for the same reason credentialProvider() is: without it, moving
     // the attempt count off the cache and onto a per-run object makes it
     // unobservable from outside, and a test asserting "this run did not count
@@ -156,10 +160,11 @@ private:
     // at run() exit whether or not it was consumed.
     std::shared_ptr<MrzChoiceSink> m_mrzChoice{std::make_shared<MrzChoiceSink>()};
     LibreSCRS::Auth::CredentialProvider m_provider;
-    // Default-constructed (cold, generation 0) so attemptContext() is safe to
-    // call before run() and on every early-return path; reassigned to a fresh
-    // context seeded from the card's refusal generation at the top of run().
-    std::shared_ptr<AttemptContext> m_attempts{std::make_shared<AttemptContext>()};
+    // Built in the constructor from the generation read at publish, so
+    // attemptContext() is safe to call before run() and on every early-return
+    // path; run() rebuilds it from the same value at its top (a clean
+    // allowance per run).
+    std::shared_ptr<AttemptContext> m_attempts;
 };
 
 } // namespace LibreSCRS::Agent::Operations

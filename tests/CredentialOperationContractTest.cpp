@@ -214,6 +214,7 @@ struct Harness
             .readerName = "FakeReader",
             .requester = "test",
             .artifact = "credentials",
+            .refusalGenerationAtPublish = LibreSCRS::Agent::PublishedRefusalGeneration{0},
         };
     }
     ManagePinOperation::Deps manageDeps()
@@ -232,6 +233,7 @@ struct Harness
             .artifact = "credentials",
             .request = changeReq(),
             .snapshot = makeSnapshot(),
+            .refusalGenerationAtPublish = LibreSCRS::Agent::PublishedRefusalGeneration{0},
         };
     }
     ActivateSigningKeyOperation::Deps activateDeps()
@@ -248,6 +250,7 @@ struct Harness
             .readerName = "FakeReader",
             .requester = "test",
             .artifact = "credentials",
+            .refusalGenerationAtPublish = LibreSCRS::Agent::PublishedRefusalGeneration{0},
         };
     }
 };

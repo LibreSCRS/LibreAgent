@@ -118,38 +118,29 @@ public:
     // a full entry erase, so it ALSO drops @ref refusalGenerationFor's counter
     // and the lastPromptYieldedNothing flag -- a re-presented card starts over
     // on every card-level fact this cache still keeps, not just the secrets.
-    // markCredentialWrong(), by contrast, evicts ONLY the secrets and leaves
-    // those two card-level facts alone, because they describe the CARD's own
-    // history (a declined window, a generation the prompt gate reads), not the
-    // rejected value markCredentialWrong is about. Callers that evict as a
-    // SIDE EFFECT of an unrelated failure (e.g. a wrong signing PIN evicting
-    // the pre-read CAN so a retry re-establishes cleanly) use this, not
-    // markCredentialWrong, since that failure carries no claim about the
-    // CAN/MRZ having been wrong.
+    // Only the card leaving ends that history; a failed secret does not (see
+    // @ref evictSecrets).
     void invalidate(const std::string& cardKey);
 
     // Drop everything (shutdown / idle-exit).
     void clear();
 
-    // Record that the CAN/MRZ collected for @p cardKey was rejected by the
-    // card: evicts the now-known-wrong cached value, so the rejected secret is
-    // never replayed from cache (same effect as invalidate()).
+    // Drop the cached CAN and MRZ for @p cardKey, keep what the card's own
+    // history says: @ref refusalGenerationFor, @ref lastRefusalKindFor and
+    // lastPromptYieldedNothingFor are untouched. The one eviction for every
+    // caller that must not replay a secret -- a CAN/MRZ the card rejected, a
+    // wrong signing PIN that takes the pre-read CAN down with it, a malformed
+    // cached value -- since none of them is the card leaving, and a declined
+    // window must keep covering the operations that were published before it.
     //
-    // Does NOT count the rejection or remember why: the attempt count and its
+    // Does NOT count a rejection or remember why: the attempt count and its
     // msgKey belong to the operation that collected the rejected value, not to
     // the card -- see @ref AttemptContext. A caller that wants the next
     // requestCredential() prompt to carry retry context (PromptOptions::attempt
     // / PromptOptions::lastError) records the rejection on its OWN
     // AttemptContext (AttemptContext::recordRejection) and passes that context
     // to requestCredential().
-    //
-    // Call this ONLY when the failure genuinely means "the pre-read CAN/MRZ
-    // was wrong" (the eMRTD read flows' AuthFailed branch). A signing-PIN
-    // failure that incidentally evicts the CAN/MRZ cache as a side effect
-    // (SignFlow / RawCryptoFlow / BatchSignFlow) must keep calling plain
-    // invalidate() -- it has no claim about the CAN/MRZ, and a fresh PACE
-    // cycle after a PIN failure has no wrong-CAN history to report.
-    void markCredentialWrong(const std::string& cardKey);
+    void evictSecrets(const std::string& cardKey);
 
     // True iff the last prompt raised for @p cardKey closed without collecting
     // anything. The rejection signal that follows such a prompt describes a
@@ -173,15 +164,13 @@ public:
 
     // Record that a prompt for @p cardKey closed without collecting anything,
     // and which outcome closed it. Bumps the card's refusal generation, which
-    // @ref stillWantedFor compares against an operation's own captured
-    // generation (see @ref AttemptContext) to bound that SAME operation's
-    // re-prompt loop after its own window closes empty. It does not silence a
-    // genuinely different operation that was already queued when this
-    // happened: such an operation only constructs its AttemptContext -- and
-    // captures the generation -- once it is dequeued and starts running, by
-    // which point this bump is already reflected in what it captures, so it
-    // reads as unrefused. Remembers @p kind so @ref lastRefusalKindFor can
-    // tell an operation that IS caught by the check which outcome to report.
+    // @ref stillWantedFor compares against the generation an operation read
+    // when it was PUBLISHED (see @ref PublishedRefusalGeneration and @ref
+    // AttemptContext). That bounds the SAME operation's re-prompt loop after
+    // its own window closes empty, and silences every operation that was
+    // published before this bump but runs after it. Remembers @p kind so @ref
+    // lastRefusalKindFor can tell an operation caught by the check which
+    // outcome to report.
     // Does NOT touch the attempt count: nothing was presented, so nothing was
     // rejected.
     void noteRefusal(const std::string& cardKey, RefusalKind kind = RefusalKind::Timeout);
@@ -264,20 +253,18 @@ public:
     // @p opts.lastError from it. It also carries @ref
     // AttemptContext::generationAtDispatch, which the gate (see @ref
     // noteRefusal and @ref stillWantedFor) compares against the card's
-    // current refusal generation: an operation whose captured generation has
-    // fallen behind is refused a further window of its own. Within a single
-    // operation that bounds the middleware's own re-invocation loop after one
-    // window already closed empty; it does not yet reach a genuinely
-    // different operation that was already queued when the refusal happened,
-    // because such an operation only captures the generation once it is
-    // dequeued and starts running, by which point the earlier refusal is
-    // already reflected in what it captures. Null means "no operation
-    // context": the prompt is unconditionally cold and both the cap and that
-    // gate are OFF. Every production caller
-    // reaches this call with a real AttemptContext constructed at the top of
-    // its own run() (the read flows via FlowPrelude::makeReadCredentialProvider;
-    // SignFlow / BatchSignFlow build theirs directly, since their hand-rolled
-    // provider also serves the uncached signing PIN). PIN itself never reaches
+    // current refusal generation: an operation whose generation has fallen
+    // behind is refused a further window of its own. That bounds the
+    // middleware's own re-invocation loop after one window already closed
+    // empty, and it also covers a different operation that was queued when
+    // the refusal happened, because the generation is the one read when that
+    // operation was published, not when it started running. Null means "no
+    // operation context": the prompt is unconditionally cold and both the cap
+    // and that gate are OFF. Every production caller reaches this call with a
+    // real AttemptContext built from its operation's published generation (the
+    // read flows via FlowPrelude::makeReadCredentialProvider; SignFlow /
+    // BatchSignFlow build theirs directly, since their hand-rolled provider
+    // also serves the uncached signing PIN). PIN itself never reaches
     // THIS call on any path -- it is collected and verified by a separate
     // branch before the CAN/MRZ branch below is ever entered, and the CARD
     // owns that counter, not this cache. A caller must never construct an
@@ -303,11 +290,11 @@ private:
         // boundary; this can. Cleared the moment a prompt does yield a secret.
         bool lastPromptYieldedNothing = false;
         // Monotonic count of prompts for this card that closed WITHOUT a
-        // secret -- expired or cancelled. A caller captures it into its
-        // AttemptContext (see that type: WHERE it captures decides how far
-        // back the gate can reach) and a prompt is refused once the card's
-        // count has moved past what was captured. Reset by a full-entry erase
-        // (invalidate() / clear()), so re-presenting the card starts over.
+        // secret -- expired or cancelled. An operation carries the value read
+        // when it was published (see AttemptContext) and a prompt is refused
+        // once the card's count has moved past it. Reset by a full-entry erase
+        // (invalidate() / clear()), so re-presenting the card starts over;
+        // evictSecrets() leaves it alone.
         std::uint64_t refusalGeneration = 0;
         // Which outcome produced the MOST RECENT refusal above -- see
         // @ref RefusalKind. Read back by the gate so a silenced operation
@@ -403,30 +390,28 @@ CredentialCache::requestCredential(const std::string& cardKey, const LibreSCRS::
                 return std::move(*result);
             }
             // Malformed cached value: EVICT it so it cannot poison the next
-            // attempt, then surface the error.
-            invalidate(cardKey);
+            // attempt, then surface the error. The card's refusal history is
+            // not touched: a bad stored value says nothing about a window.
+            evictSecrets(cardKey);
             return buildError();
         }
-        // THIS operation's own captured generation (@p attempts, if any) has
-        // fallen behind the card's current refusal generation: an earlier
-        // window for this card already closed empty -- expired or cancelled
-        // -- since @p attempts was constructed, and this call would
-        // otherwise raise a second one. Refused instead, reporting the SAME
+        // THIS operation's own generation (@p attempts, if any), read when it
+        // was published, has fallen behind the card's current refusal
+        // generation: an earlier window for this card already closed empty --
+        // expired or cancelled -- since then, and this call would otherwise
+        // raise a second one. Refused instead, reporting the SAME
         // outcome (EntryExpired / UserCancelled) that earlier window closed
         // with, not a generic failure -- see @ref RefusalKind.
         //
-        // In practice this fires WITHIN one operation: the middleware
-        // re-invokes the credential provider with the SAME @p attempts after
-        // its own window closes empty, and that object's generation is fixed
-        // at construction (see @ref AttemptContext), so the re-invocation
-        // reads behind and is silenced here -- bounding what would otherwise
-        // be an unbounded re-prompt loop for a single read. It does NOT yet
-        // reach a genuinely different operation that was already queued when
-        // the refusal happened: one card's operations are dequeued and run
-        // strictly one at a time, so such an operation only constructs its
-        // own AttemptContext -- capturing the generation -- once it is
-        // dequeued, by which point the earlier refusal is already reflected
-        // in what it captures, and it reads as current, not behind.
+        // Within one operation: the middleware re-invokes the credential
+        // provider with the SAME @p attempts after its own window closes
+        // empty, and that object's generation is fixed (see @ref
+        // AttemptContext), so the re-invocation reads behind and is silenced
+        // here -- bounding what would otherwise be an unbounded re-prompt loop
+        // for a single read. Across operations: one card's operations run
+        // strictly one at a time, but each carries the generation read at its
+        // own publish, so one queued before the refusal reads behind too and
+        // raises no window of its own.
         //
         // AFTER the cache hit, deliberately, exactly like the cap below: this
         // refuses to ASK, never to ANSWER. Moved above the hit it would break

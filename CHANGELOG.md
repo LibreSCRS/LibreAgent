@@ -485,6 +485,11 @@ Three targets ship, each independently usable:
 
 ### Fixed
 
+- **A request queued behind an access-number window of the same card gets that
+  window's answer.** Cancelling the window, or letting it expire, ends the
+  queued request the same way instead of opening a second window; an access
+  number entered in it still serves the queued request.
+
 - **A client that opens a card while its identity is still being read in the
   background now sees the data as it is read instead of an empty screen until
   the end**, and the card is read once.

@@ -270,7 +270,7 @@ TEST(PrompterKeepAliveDrain, AbandonedWorkerKeepsSerializerAndPrompterAliveThrou
 // the flow bail, so the credential cache AND the lease must ALSO be co-owned:
 //   (A) the terminal on-card op (PSO / SCardTransmit) is itself an uncancellable
 //       blocking call; a worker wedged there unblocks into markPinVerified (the
-//       common successful-sign case) or, on AuthFailed, cache.invalidate;
+//       common successful-sign case) or, on AuthFailed, cache.evictSecrets;
 //   (B) the read flows have no signing-PIN prompt — they wedge in a nested CAN/MRZ
 //       credential prompt, then write putCan/putMrz to the cache the instant the
 //       prompt returns Ok, below the flow gate.
@@ -357,7 +357,7 @@ const ObjectId kWedgeCard{7};
 // @p latch and returns @p wedgeStatus on release. The whole composition (broker +
 // lease + shares) is dropped while the worker is blocked; only the worker's captured
 // shares keep it alive. On @p wedgeStatus == Ok the flow runs markPinVerified (the
-// lease touch); on AuthFailed it runs cache.invalidate (the credential-cache touch)
+// lease touch); on AuthFailed it runs cache.evictSecrets (the credential-cache touch)
 // — both PAST the flow's post-prompt gate. @p completed flips true once the worker
 // finishes its unwind. TSan-clean iff every past-the-gate touch hit co-owned memory.
 void driveTerminalWedge(RawCryptoStatus wedgeStatus, Latch& latch, std::atomic<bool>& enteredTerminal,
@@ -420,6 +420,7 @@ void driveTerminalWedge(RawCryptoStatus wedgeStatus, Latch& latch, std::atomic<b
                 .markPinVerified = pinState.markVerified,
                 .clearPinVerified = pinState.clearVerified,
                 .allowPrompt = pinState.allowPrompt,
+                .refusalGenerationAtPublish = LibreSCRS::Agent::PublishedRefusalGeneration{0},
             }};
             static_cast<void>(flow.runSign(Mechanism::RsaPkcs1Sign, kWedgeInput));
             completed.store(true, std::memory_order_release);
@@ -475,7 +476,7 @@ void driveTerminalWedge(RawCryptoStatus wedgeStatus, Latch& latch, std::atomic<b
     holder.reset();
 
     // Release the terminal op: the flow completes its past-the-gate unwind
-    // (markPinVerified on the lease for Ok, cache.invalidate for AuthFailed) against
+    // (markPinVerified on the lease for Ok, cache.evictSecrets for AuthFailed) against
     // co-owned memory.
     latch.release();
 
@@ -510,10 +511,10 @@ TEST(PrompterKeepAliveDrain, TerminalWedgeKeepsLeaseAliveThroughBrokerPinState)
 }
 
 // TERMINAL-WEDGE (credential cache): the same abandoned worker, but the on-card op
-// returns AuthFailed, so on unblock the flow runs cache.invalidate PAST the gate.
+// returns AuthFailed, so on unblock the flow runs cache.evictSecrets PAST the gate.
 // The worker value-captures the credential-cache share (as AgentCore's raw closure
 // does), so the cache outlives the dropped composition (TSan-clean). Reverting the
-// closure's credentials capture to a raw pointer traps in invalidate — the RED proof.
+// closure's credentials capture to a raw pointer traps in evictSecrets — the RED proof.
 TEST(PrompterKeepAliveDrain, TerminalWedgeKeepsCredentialCacheAliveOnAuthFailedUnwind)
 {
     Latch latch;

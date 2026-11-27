@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 // SPDX-FileCopyrightText: 2026 hirashix0
 #pragma once
+#include <LibreSCRS/Agent/cache/AttemptContext.h>
 #include <LibreSCRS/Agent/cache/CardReadCache.h>
 #include <LibreSCRS/Agent/cache/CredentialCache.h>
 #include <LibreSCRS/Agent/operations/IdentityReadFlow.h>
@@ -47,6 +48,9 @@ public:
         // also runs IdentityReadFlow, so it is the OTHER entry point that may
         // resolve cardType for the first time.
         std::function<void(const std::string&)> onCardType;
+        // The card's refusal generation as read when the operation was published,
+        // not when it started: it seeds this operation's AttemptContext.
+        PublishedRefusalGeneration refusalGenerationAtPublish;
     };
 
     GetPhotoOperation(std::unique_ptr<OperationChannel> channel, Deps deps, std::shared_ptr<OperationState> state);

@@ -210,20 +210,22 @@ FakeOperationChannel* runBatch(CardSessionHolder& holder, FakeSigner& signer, Fa
     auto channel = std::make_unique<FakeOperationChannel>();
     auto* raw = channel.get();
     auto state = std::make_shared<OperationState>();
-    opOut = std::make_unique<SignBatchOperation>(std::move(channel),
-                                                 SignBatchOperation::Deps{
-                                                     .holder = &holder,
-                                                     .signer = signer,
-                                                     .prompter = prompter,
-                                                     .serializer = serializer,
-                                                     .credentials = cache,
-                                                     .cardKey = "card-A",
-                                                     .readerName = "FakeReader",
-                                                     .requester = "test-client",
-                                                     .params = baseParams(),
-                                                     .documents = std::move(documents),
-                                                 },
-                                                 state);
+    opOut = std::make_unique<SignBatchOperation>(
+        std::move(channel),
+        SignBatchOperation::Deps{
+            .holder = &holder,
+            .signer = signer,
+            .prompter = prompter,
+            .serializer = serializer,
+            .credentials = cache,
+            .cardKey = "card-A",
+            .readerName = "FakeReader",
+            .requester = "test-client",
+            .params = baseParams(),
+            .documents = std::move(documents),
+            .refusalGenerationAtPublish = LibreSCRS::Agent::PublishedRefusalGeneration{0},
+        },
+        state);
     opOut->runOnWorker();
     return raw;
 }
@@ -445,6 +447,7 @@ TEST(SignBatchOperation, MemfdSealFailureFinishesErrorClosed)
                               .requester = "test-client",
                               .params = baseParams(),
                               .documents = threeDocuments(),
+                              .refusalGenerationAtPublish = LibreSCRS::Agent::PublishedRefusalGeneration{0},
                           },
                           state);
     op.runOnWorker();

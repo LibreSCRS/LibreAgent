@@ -284,18 +284,21 @@ struct Rig
         auto state = std::make_shared<OperationState>();
         auto op = std::make_unique<ReadIdentityOperation>(
             std::make_unique<RecordingChannel>(log, awaitsObserver, deaths, std::move(onGroup)),
-            ReadIdentityOperation::Deps{.holder = holder.get(),
-                                        .reader = reader,
-                                        .depositor = depositor,
-                                        .prompter = prompter,
-                                        .serializer = serializer,
-                                        .credentials = credentials,
-                                        .readCache = readCache,
-                                        .cardKey = cardKey,
-                                        .readerName = "FakeReader",
-                                        .requester = "test",
-                                        .artifact = "identity",
-                                        .onCardType = {}},
+            ReadIdentityOperation::Deps{
+                .holder = holder.get(),
+                .reader = reader,
+                .depositor = depositor,
+                .prompter = prompter,
+                .serializer = serializer,
+                .credentials = credentials,
+                .readCache = readCache,
+                .cardKey = cardKey,
+                .readerName = "FakeReader",
+                .requester = "test",
+                .artifact = "identity",
+                .onCardType = {},
+                .refusalGenerationAtPublish = LibreSCRS::Agent::PublishedRefusalGeneration{0},
+            },
             state);
         mgr->enqueueTrackedForTest(readerId(), std::move(op), id, CallerToken{":1.1"});
         return state;
@@ -628,20 +631,24 @@ TEST(OperationManagerPrefetchFollower, ACachedCardIsServedWithoutGroups)
     rig.readCache.put(kCard, fullSnapshot());
     rig.mgr->enqueueTrackedForTest(
         Rig::readerId(),
-        std::make_unique<ReadIdentityOperation>(std::make_unique<RecordingChannel>(rig.log, false),
-                                                ReadIdentityOperation::Deps{.holder = rig.holder.get(),
-                                                                            .reader = rig.reader,
-                                                                            .depositor = rig.depositor,
-                                                                            .prompter = rig.prompter,
-                                                                            .serializer = rig.serializer,
-                                                                            .credentials = rig.credentials,
-                                                                            .readCache = rig.readCache,
-                                                                            .cardKey = kCard,
-                                                                            .readerName = "FakeReader",
-                                                                            .requester = "test",
-                                                                            .artifact = "identity",
-                                                                            .onCardType = {}},
-                                                std::make_shared<OperationState>()),
+        std::make_unique<ReadIdentityOperation>(
+            std::make_unique<RecordingChannel>(rig.log, false),
+            ReadIdentityOperation::Deps{
+                .holder = rig.holder.get(),
+                .reader = rig.reader,
+                .depositor = rig.depositor,
+                .prompter = rig.prompter,
+                .serializer = rig.serializer,
+                .credentials = rig.credentials,
+                .readCache = rig.readCache,
+                .cardKey = kCard,
+                .readerName = "FakeReader",
+                .requester = "test",
+                .artifact = "identity",
+                .onCardType = {},
+                .refusalGenerationAtPublish = LibreSCRS::Agent::PublishedRefusalGeneration{0},
+            },
+            std::make_shared<OperationState>()),
         OperationId{7}, CallerToken{":1.1"});
     ASSERT_TRUE(rig.log->waitForCount(2));
     EXPECT_EQ(rig.log->events(), (Events{"R", finished(OperationStatus::Ok, ErrorCode::None)}));

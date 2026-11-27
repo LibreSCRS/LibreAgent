@@ -226,6 +226,9 @@ struct Harness
             .requester = "test-client",
             .params = baseParams(),
             .token = source.token(),
+            // Read from the cache here, the way OperationLauncher::depsFor does at publish.
+            .refusalGenerationAtPublish =
+                LibreSCRS::Agent::PublishedRefusalGeneration{cache.refusalGenerationFor("card-A")},
         }};
     }
 };
@@ -263,6 +266,22 @@ TEST(SignFlow, ThePaceCapBitesOnTheChannelEstablishmentPath)
         << "each of the first three requests raised a real dialog";
     EXPECT_EQ(h.signer.canResults.back().status, LibreSCRS::Auth::CredentialResult::Status::Error)
         << "the fourth request must be refused, not prompted -- the whole point of the cap";
+}
+
+TEST(SignFlow, AWindowThatClosedEmptyAfterPublishSilencesThisOperation)
+{
+    // The operation was published (its generation read) BEFORE another window
+    // for this card closed empty. It must not raise a window of its own.
+    Harness h;
+    h.signer.canScript = {false};
+    auto flow = h.make();
+    h.cache.noteRefusal("card-A", CredentialCache::RefusalKind::Cancelled);
+
+    (void)flow.run();
+
+    EXPECT_EQ(h.prompter.canCalls, 0) << "the decline that landed after publish covers this operation";
+    ASSERT_EQ(h.signer.canResults.size(), 1u);
+    EXPECT_EQ(h.signer.canResults[0].status, LibreSCRS::Auth::CredentialResult::Status::UserCancelled);
 }
 
 TEST(SignFlow, EachRejectionMovesTheRetryContextByExactlyOne)

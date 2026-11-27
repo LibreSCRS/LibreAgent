@@ -455,7 +455,7 @@ TEST(PrompterWireKinds, ChangePinKindStringIsStable)
 // A structural pre-read failure carries a distinct ErrorKey. LmCardReader::read
 // must discriminate on the KEY -- not the status LM tags it with -- so a
 // structural failure never lands on AuthFailed and gets the credential wrongly
-// punished by the read flow's AuthFailed-only markCredentialWrong branch. Both
+// punished by the read flow's AuthFailed-only noteRejectedSecret branch. Both
 // keys map onto EXISTING ReadOutcome statuses; zero ErrorCode growth.
 
 TEST(LmCardReaderStructuralMapping, PaceUnsupportedKeyMapsToUnsupportedCard)

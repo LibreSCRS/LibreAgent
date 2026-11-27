@@ -184,6 +184,8 @@ ReadIdentityOperation::Deps OperationLauncher::depsFor(CardSessionHolder* holder
         .requester = target.requester,
         .artifact = std::string{Artifact::kIdentity},
         .onCardType = std::move(args.onCardType),
+        .refusalGenerationAtPublish =
+            PublishedRefusalGeneration{m_core.credentialCache().refusalGenerationFor(target.card.cardKey)},
     };
 }
 
@@ -203,6 +205,8 @@ GetPhotoOperation::Deps OperationLauncher::depsFor(CardSessionHolder* holder, co
         .requester = target.requester,
         .artifact = std::string{Artifact::kPhoto},
         .onCardType = std::move(args.onCardType),
+        .refusalGenerationAtPublish =
+            PublishedRefusalGeneration{m_core.credentialCache().refusalGenerationFor(target.card.cardKey)},
     };
 }
 
@@ -221,6 +225,8 @@ ReadCertificatesOperation::Deps OperationLauncher::depsFor(CardSessionHolder* ho
         .readerName = target.card.readerName,
         .requester = target.requester,
         .artifact = std::string{Artifact::kCertificates},
+        .refusalGenerationAtPublish =
+            PublishedRefusalGeneration{m_core.credentialCache().refusalGenerationFor(target.card.cardKey)},
     };
 }
 
@@ -237,6 +243,8 @@ ReadTokenInfoOperation::Deps OperationLauncher::depsFor(CardSessionHolder* holde
         .readerName = target.card.readerName,
         .requester = target.requester,
         .artifact = std::string{Artifact::kTokenInfo},
+        .refusalGenerationAtPublish =
+            PublishedRefusalGeneration{m_core.credentialCache().refusalGenerationFor(target.card.cardKey)},
     };
 }
 
@@ -253,6 +261,8 @@ SignOperation::Deps OperationLauncher::depsFor(CardSessionHolder* holder, const 
         .readerName = target.card.readerName,
         .requester = target.requester,
         .params = std::move(args.params),
+        .refusalGenerationAtPublish =
+            PublishedRefusalGeneration{m_core.credentialCache().refusalGenerationFor(target.card.cardKey)},
     };
 }
 
@@ -270,6 +280,8 @@ SignBatchOperation::Deps OperationLauncher::depsFor(CardSessionHolder* holder, c
         .requester = target.requester,
         .params = std::move(args.params),
         .documents = std::move(args.documents),
+        .refusalGenerationAtPublish =
+            PublishedRefusalGeneration{m_core.credentialCache().refusalGenerationFor(target.card.cardKey)},
     };
 }
 
@@ -287,6 +299,8 @@ ListCredentialsOperation::Deps OperationLauncher::depsFor(CardSessionHolder* hol
         .readerName = target.card.readerName,
         .requester = target.requester,
         .artifact = std::string{Artifact::kCredentials},
+        .refusalGenerationAtPublish =
+            PublishedRefusalGeneration{m_core.credentialCache().refusalGenerationFor(target.card.cardKey)},
     };
 }
 
@@ -307,6 +321,8 @@ ManagePinOperation::Deps OperationLauncher::depsFor(CardSessionHolder* holder, c
         .artifact = std::string{Artifact::kCredentials},
         .request = std::move(args.request),
         .snapshot = std::move(args.snapshot),
+        .refusalGenerationAtPublish =
+            PublishedRefusalGeneration{m_core.credentialCache().refusalGenerationFor(target.card.cardKey)},
     };
 }
 
@@ -325,6 +341,8 @@ ActivateSigningKeyOperation::Deps OperationLauncher::depsFor(CardSessionHolder* 
         .readerName = target.card.readerName,
         .requester = target.requester,
         .artifact = std::string{Artifact::kCredentials},
+        .refusalGenerationAtPublish =
+            PublishedRefusalGeneration{m_core.credentialCache().refusalGenerationFor(target.card.cardKey)},
     };
 }
 

@@ -232,6 +232,9 @@ struct Harness
             .requester = "test-client",
             .params = params(),
             .token = source.token(),
+            // Read here, as OperationLauncher::depsFor does at publish.
+            .refusalGenerationAtPublish =
+                LibreSCRS::Agent::PublishedRefusalGeneration{cache.refusalGenerationFor("card-A")},
         }};
     }
 };
@@ -322,7 +325,7 @@ TEST(SignFlow, StatusMapping)
 // V6 regression: a sign that fails authentication must evict the cached PACE
 // secret so a retry / card-swap re-establishes cleanly (a wrong signing PIN, or
 // a wrong CAN that unlocked the channel, must not be silently replayed). The
-// agent-side eviction is the directly observable half (cache.invalidate); the
+// agent-side eviction is the directly observable half (cache.evictSecrets); the
 // flow ALSO calls session->clearCachedPaceCredentials() on the same path (the
 // LM-side PACE-slot wipe is covered by LM's own tests — the hermetic detached
 // CardSession here has no PC/SC to exercise activateChannelWithSm against).
@@ -338,12 +341,16 @@ TEST(SignFlow, AuthFailedEvictsCachedPaceSecret)
     h.signer.drive = FakeSigner::Drive::Can;
     h.prompter.canResult = {PromptStatus::Ok, LibreSCRS::Secure::String{std::string{"123456"}}, ""};
     h.signer.outcome.status = SignOutcome::Status::AuthFailed;
+    // A window that closed empty BEFORE this operation was published: it is
+    // not silenced by it, so the run reaches the sign failure below.
+    h.cache.noteRefusal("card-A", CredentialCache::RefusalKind::Cancelled);
 
     auto r = h.make().run();
 
     EXPECT_EQ(r.outcome, SignFlow::Outcome::Error);
     EXPECT_EQ(r.code, ErrorCode::AuthFailed);
     EXPECT_FALSE(h.cache.getCan("card-A").has_value()) << "AuthFailed must evict the cached CAN so a retry re-prompts";
+    EXPECT_EQ(h.cache.refusalGenerationFor("card-A"), 1U) << "evicting the secrets keeps the card's refusal history";
 }
 
 TEST(SignFlow, CardBlockedEvictsCachedPaceSecret)
@@ -352,12 +359,16 @@ TEST(SignFlow, CardBlockedEvictsCachedPaceSecret)
     h.signer.drive = FakeSigner::Drive::Can;
     h.prompter.canResult = {PromptStatus::Ok, LibreSCRS::Secure::String{std::string{"123456"}}, ""};
     h.signer.outcome.status = SignOutcome::Status::CardBlocked;
+    // A window that closed empty BEFORE this operation was published: it is
+    // not silenced by it, so the run reaches the sign failure below.
+    h.cache.noteRefusal("card-A", CredentialCache::RefusalKind::Cancelled);
 
     auto r = h.make().run();
 
     EXPECT_EQ(r.outcome, SignFlow::Outcome::Error);
     EXPECT_EQ(r.code, ErrorCode::CredentialBlocked);
     EXPECT_FALSE(h.cache.getCan("card-A").has_value()) << "CardBlocked must evict the cached CAN too";
+    EXPECT_EQ(h.cache.refusalGenerationFor("card-A"), 1U) << "evicting the secrets keeps the card's refusal history";
 }
 
 TEST(SignFlow, NonAuthFailureKeepsCachedPaceSecret)
@@ -636,6 +647,7 @@ TEST(SignFlow, TsaUnreachableDoesNotEmitResult)
         .readerName = "FakeReader",
         .requester = "test",
         .params = std::move(params),
+        .refusalGenerationAtPublish = LibreSCRS::Agent::PublishedRefusalGeneration{0},
     };
     auto state = std::make_shared<OperationState>();
     auto channel = std::make_unique<RecordingSignChannel>();

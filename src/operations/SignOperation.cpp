@@ -41,6 +41,7 @@ void SignOperation::doWork()
         .requester = m_deps.requester,
         .params = m_deps.params,
         .token = token(),
+        .refusalGenerationAtPublish = m_deps.refusalGenerationAtPublish,
     });
     auto result = flow.run();
 

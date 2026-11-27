@@ -249,7 +249,8 @@ std::vector<PromptKind> runReadSeam(RecordingPrompter& prompter)
     RecordingPhaseSink phaseSink;
     LibreSCRS::CancelSource source;
     const std::string cardKey = "card-read";
-    auto attempts = std::make_shared<AttemptContext>(cache.refusalGenerationFor(cardKey));
+    auto attempts = std::make_shared<AttemptContext>(
+        LibreSCRS::Agent::PublishedRefusalGeneration{cache.refusalGenerationFor(cardKey)});
     auto prompterFailed = std::make_shared<std::atomic<bool>>(false);
 
     const auto before = prompter.chain.size();
@@ -289,6 +290,7 @@ std::vector<PromptKind> runSignSeam(RecordingPrompter& prompter, LibreSCRS::Auth
         .requester = "test-client",
         .params = baseParams(),
         .token = source.token(),
+        .refusalGenerationAtPublish = LibreSCRS::Agent::PublishedRefusalGeneration{0},
     }};
     (void)flow.run();
     EXPECT_EQ(signer.calls, 1);
@@ -322,6 +324,7 @@ std::vector<PromptKind> runBatchSeam(RecordingPrompter& prompter)
         .params = baseParams(),
         .documents = documents,
         .token = source.token(),
+        .refusalGenerationAtPublish = LibreSCRS::Agent::PublishedRefusalGeneration{0},
     }};
     (void)flow.run();
     EXPECT_EQ(signer.calls, 2) << "both documents were signed under one consent";

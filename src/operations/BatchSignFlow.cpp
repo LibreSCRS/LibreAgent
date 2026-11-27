@@ -229,11 +229,11 @@ BatchSignFlow::Result BatchSignFlow::run()
     // Set true iff the agent REFUSED to raise the prompt (helper too old).
     auto helperTooOld = std::make_shared<std::atomic<bool>>(false);
     // Per-operation retry context for the channel-establishment secret (CAN/
-    // MRZ), captured HERE at the top of run() -- never later (see
-    // IdentityReadFlow's identical field for the full rationale). PIN never
-    // reaches this: it is collected and verified by its own branch below,
-    // before the CAN/MRZ branch that consults this is ever entered.
-    auto attempts = std::make_shared<AttemptContext>(cache.refusalGenerationFor(cardKey));
+    // MRZ), seeded from the generation read when this operation was published
+    // (see IdentityReadFlow's identical field for the full rationale). PIN
+    // never reaches this: it is collected and verified by its own branch
+    // below, before the CAN/MRZ branch that consults this is ever entered.
+    auto attempts = std::make_shared<AttemptContext>(m_deps.refusalGenerationAtPublish);
 
     LibreSCRS::Auth::CredentialProvider provider =
         [&cache, &prompter, &serializer, &phaseSink, cardKey, requester, artifactNames, summary, token, attempts,
@@ -419,7 +419,7 @@ BatchSignFlow::Result BatchSignFlow::run()
             // CAN; the PIN itself is never cached, but evict the PACE
             // secret so a card swap or a retry re-establishes cleanly --
             // mirrors SignFlow's own eviction.
-            m_deps.cache.invalidate(m_deps.cardKey);
+            m_deps.cache.evictSecrets(m_deps.cardKey);
             session->clearCachedPaceCredentials();
             code = mapRowStatus(outcome.status);
             haltsBatch = true;

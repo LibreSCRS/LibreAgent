@@ -129,7 +129,9 @@ ErrorCode mapCertStatus(CertReadOutcome::Status s) noexcept
 
 } // namespace
 
-CertReadFlow::CertReadFlow(CertReadFlowDeps deps) : m_deps(std::move(deps)) {}
+CertReadFlow::CertReadFlow(CertReadFlowDeps deps)
+    : m_deps(std::move(deps)), m_attempts(std::make_shared<AttemptContext>(m_deps.refusalGenerationAtPublish))
+{}
 
 CertReadFlow::Result CertReadFlow::run()
 {
@@ -177,15 +179,15 @@ CertReadFlow::Result CertReadFlow::run()
     auto helperTooOld = std::make_shared<std::atomic<bool>>(false);
     // Set true by the credential provider iff, on the card's re-prompt signal,
     // it already marked the now-live rejected secret wrong. The AuthFailed
-    // branch below consults it to SKIP its own markCredentialWrong so a rejected
+    // branch below consults it to SKIP its own noteRejectedSecret so a rejected
     // value is marked EXACTLY once. Run-scoped (fresh per run) so parallel
     // readers never cross-talk.
     auto providerMarkedWrong = std::make_shared<std::atomic<bool>>(false);
-    // Per-operation retry context, captured HERE at the top of run() -- never
-    // later (see IdentityReadFlow's identical field for the full rationale).
+    // Per-operation retry context, seeded from the generation read at publish
+    // (see IdentityReadFlow's identical field for the full rationale).
     // Stored as a member (mirrors m_provider) so attemptContext() stays
     // observable after run() returns.
-    m_attempts = std::make_shared<AttemptContext>(m_deps.cache.refusalGenerationFor(m_deps.cardKey));
+    m_attempts = std::make_shared<AttemptContext>(m_deps.refusalGenerationAtPublish);
     // Install with a UAF scope guard: the provider captures the per-op phaseSink
     // by reference, but `session` is owned by the CardSessionHolder and outlives
     // this flow (see FlowPrelude::installScopedReadProvider).

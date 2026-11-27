@@ -48,7 +48,7 @@ class CredentialSnapshotCache;
 //   * serializer  — the single-live-prompt gate; its SlotGuard unwind locks +
 //                   notifies unconditionally on any live-process unblock;
 //   * credentials — a nested CAN/MRZ prompt writes putCan/putMrz, and a raw
-//                   AuthFailed unwind invalidates it, both past the flow gate;
+//                   AuthFailed unwind evicts its secrets, both past the flow gate;
 //   * lease       — the login grant + the PIN-verified-state marks reached past
 //                   the flow gate (the broker's PIN-state callbacks and the
 //                   login continuation co-own this same share);

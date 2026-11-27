@@ -143,16 +143,16 @@ inline constexpr const char* kHelperTooOldMsgFallback =
 // attempts->attempts() for the PACE cap and applies it to the prompt's
 // attempt/lastError; the provider also calls attempts->recordRejection() on
 // the re-key signal below, alongside the cache's own eviction. Callers
-// construct it fresh at the top of their run(), seeded from
-// CredentialCache::refusalGenerationFor(cardKey) read AT THAT POINT — never
-// later, so a value read lazily at prompt time cannot see a sibling
-// operation's already-advanced generation.
+// construct it fresh for each run, seeded from the generation the card had
+// when the operation was PUBLISHED (PublishedRefusalGeneration) — never read
+// from the cache later, so a value read lazily at prompt time cannot see a
+// sibling operation's already-advanced generation.
 //
 // @p providerMarkedWrong (optional/may be null) is the re-key
 // signal channel, provider-scoped so parallel readers never cross-talk. When
 // the incoming AuthRequirement's reasonForUser carries preReadAuthFailed().key
 // (LM sets it ONLY on a re-prompt after a wrong-secret rejection in the SAME
-// activation — M5′), the provider FIRST calls cache.markCredentialWrong(cardKey)
+// activation — M5′), the provider FIRST calls cache.evictSecrets(cardKey)
 // (evicting the rejected value) AND attempts->recordRejection(...) (so the
 // re-prompt carries attempt/last_error instead of replaying the rejected
 // secret). The flag is then
@@ -167,7 +167,7 @@ inline constexpr const char* kHelperTooOldMsgFallback =
 // an invocation the flag can read true while the value live for LM is NOT the
 // one that invocation marked; the flag tracks whether SOMEONE in this run
 // already marked, not who owns the current value. The flow's AuthFailed branch
-// consults it to skip its own markCredentialWrong so a rejected value is marked
+// consults it to skip its own noteRejectedSecret so a rejected value is marked
 // EXACTLY once (truthful attempt numbering). A same-kind re-invocation WITHOUT
 // the signal serves the cache normally.
 //
@@ -223,7 +223,7 @@ inline constexpr const char* kHelperTooOldMsgFallback =
                                          const std::string& cardKey);
 
 // Record that the CAN/MRZ collected for @p cardKey was rejected: evicts the
-// now-known-wrong cached value (CredentialCache::markCredentialWrong) AND
+// now-known-wrong cached value (CredentialCache::evictSecrets) AND
 // records the rejection on @p attempts (AttemptContext::recordRejection) --
 // ONE call for a pairing that must never happen alone. Forgetting the
 // eviction replays a REJECTED secret from cache on the next attempt;

@@ -81,7 +81,9 @@ private:
 
 } // namespace
 
-IdentityReadFlow::IdentityReadFlow(IdentityReadFlowDeps deps) : m_deps(std::move(deps)) {}
+IdentityReadFlow::IdentityReadFlow(IdentityReadFlowDeps deps)
+    : m_deps(std::move(deps)), m_attempts(std::make_shared<AttemptContext>(m_deps.refusalGenerationAtPublish))
+{}
 
 // Lifetime contract for m_deps.token: held by value (the LM CancelToken is
 // a cheap-copy handle), never moved into a seam call. Each seam takes the
@@ -136,22 +138,21 @@ IdentityReadFlow::Result IdentityReadFlow::run()
     auto helperTooOld = std::make_shared<std::atomic<bool>>(false);
     // Set true by the credential provider iff, on the M5′ rejection signal, it
     // already marked the now-live rejected secret wrong. The
-    // AuthFailed branch below consults it to SKIP its own markCredentialWrong so
+    // AuthFailed branch below consults it to SKIP its own noteRejectedSecret so
     // a rejected value is marked EXACTLY once. Run-scoped (fresh per run) so
     // parallel readers never cross-talk.
     auto providerMarkedWrong = std::make_shared<std::atomic<bool>>(false);
     // Per-operation retry context: the count of CAN/MRZ rejections THIS
     // operation has recorded, and the msgKey of the most recent one. The
-    // generation is captured HERE and never refreshed, which is what stops the
-    // middleware's re-invocation loop from raising a fresh window every time
-    // an activation fails inside THIS run. It does NOT yet silence a sibling
-    // operation queued behind this one -- see AttemptContext's constructor doc
-    // for why the capture has to move up to where the operation is created for
-    // that, and what it would take. Stored as a member (mirrors m_provider) so
-    // a fresh run() always starts from a clean allowance, discarding whatever a
-    // previous run spent, and so the accessor below can observe it from outside
-    // for tests.
-    m_attempts = std::make_shared<AttemptContext>(m_deps.cache.refusalGenerationFor(m_deps.cardKey));
+    // generation is the one read when the operation was published and is never
+    // refreshed. That stops the middleware's re-invocation loop from raising a
+    // fresh window every time an activation fails inside THIS run, and it
+    // silences a sibling operation queued behind a window that closed empty --
+    // see AttemptContext's constructor doc. Stored as a member (mirrors
+    // m_provider) so a fresh run() always starts from a clean allowance,
+    // discarding whatever a previous run spent, and so the accessor below can
+    // observe it from outside for tests.
+    m_attempts = std::make_shared<AttemptContext>(m_deps.refusalGenerationAtPublish);
     // A CAN prompt may be renegotiated into an MRZ read: the offer is derived
     // from THIS card's candidates, and the payload the user chose comes back
     // through the flow-owned sink below (scrubbed at run() exit, consumed at

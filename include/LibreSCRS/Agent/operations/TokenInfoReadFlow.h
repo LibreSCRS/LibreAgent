@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 // SPDX-FileCopyrightText: 2026 hirashix0
 #pragma once
+#include <LibreSCRS/Agent/cache/AttemptContext.h>
 #include <LibreSCRS/Agent/operations/FlowOutcome.h>
 #include <LibreSCRS/Agent/value/CardReadSnapshot.h>
 #include <LibreSCRS/Agent/value/ErrorTaxonomy.h>
@@ -46,6 +47,9 @@ struct TokenInfoReadFlowDeps
     std::string requester;
     std::string artifact;
     LibreSCRS::CancelToken token;
+    // The card's refusal generation as read when the operation was published,
+    // not when it started: it seeds this operation's AttemptContext.
+    PublishedRefusalGeneration refusalGenerationAtPublish;
 };
 
 // Pure orchestration: open the held session -> install the CAN/PACE

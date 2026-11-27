@@ -160,7 +160,7 @@ LibreSCRS::Auth::CredentialProvider makeReadCredentialProvider(
                 if (attempts) {
                     noteRejectedSecret(cache, cardKey, *attempts);
                 } else {
-                    cache.markCredentialWrong(cardKey);
+                    cache.evictSecrets(cardKey);
                 }
                 markedNow = true;
             }
@@ -246,7 +246,7 @@ bool isCardRejectionSignal(const LibreSCRS::Auth::AuthRequirement& req, const Cr
 
 void noteRejectedSecret(CredentialCache& cache, const std::string& cardKey, AttemptContext& attempts)
 {
-    cache.markCredentialWrong(cardKey);
+    cache.evictSecrets(cardKey);
     attempts.recordRejection(LibreSCRS::Auth::ErrorKeys::preReadAuthFailed().key);
 }
 

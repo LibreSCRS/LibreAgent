@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 // SPDX-FileCopyrightText: 2026 hirashix0
 #pragma once
+#include <LibreSCRS/Agent/cache/AttemptContext.h>
 #include <LibreSCRS/Agent/value/ErrorTaxonomy.h>
 #include <LibreSCRS/Agent/operations/CardPluginRouting.h>
 #include <LibreSCRS/Agent/backend/PrompterClientBase.h>
@@ -134,6 +135,9 @@ struct BatchSignFlowDeps
     SignParams params;
     std::vector<BatchDocumentInput> documents;
     LibreSCRS::CancelToken token;
+    // The card's refusal generation as read when the operation was published,
+    // not when it started: it seeds this operation's AttemptContext.
+    PublishedRefusalGeneration refusalGenerationAtPublish;
 };
 
 // Sequential per-file Signer.sign() under ONE collected credential. The PIN

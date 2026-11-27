@@ -69,7 +69,7 @@ using ResolveReaderCard = std::function<std::optional<ReaderCard>(const std::str
 // touches only memory it co-owns rather than freed members. The prompter + gate
 // cover the blocking call itself and its RAII unwind; the credential cache + lease
 // cover the touches PAST the flow's post-prompt gate (a terminal-op wedge that
-// unblocks into markPinVerified / clearPinVerified on the lease and invalidate on
+// unblocks into markPinVerified / clearPinVerified on the lease and evictSecrets on
 // the cache, or a nested CAN/MRZ prompt that writes putCan/putMrz to the cache).
 // The lease is co-owned both directly (the login continuation captures the lease
 // share) and via the broker's PIN-verified-state callbacks that the raw worker

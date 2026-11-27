@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 // SPDX-FileCopyrightText: 2026 hirashix0
 #pragma once
+#include <LibreSCRS/Agent/cache/AttemptContext.h>
 #include <LibreSCRS/Agent/value/CredentialRecord.h> // CredentialSnapshot, CredentialOpResult, EntryError
 #include <LibreSCRS/Agent/operations/Seams.h>       // CredentialManager, OperationPhaseSink, PrompterClientBase
 #include <LibreSCRS/CancelToken.h>
@@ -56,6 +57,9 @@ struct PinManageFlowDeps
     std::string reader;
     std::string artifact;
     LibreSCRS::CancelToken token;
+    // The card's refusal generation as read when the operation was published,
+    // not when it started: it seeds this operation's AttemptContext.
+    PublishedRefusalGeneration refusalGenerationAtPublish;
 };
 
 // Entry validation: a typed error is produced BEFORE any Operation exists, so a

@@ -201,6 +201,7 @@ TEST(GetPhotoOperation, CacheHitSkipsFlowAndEmitsPhoto)
                              .readCache = readCache,
                              .cardKey = "card-A",
                              .readerName = "FakeReader",
+                             .refusalGenerationAtPublish = LibreSCRS::Agent::PublishedRefusalGeneration{0},
                          },
                          state);
     op.runOnWorker();
@@ -243,6 +244,7 @@ TEST(GetPhotoOperation, CacheHitLogsTheRequest)
                              .cardKey = "card-A",
                              .readerName = "FakeReader",
                              .requester = "firefox",
+                             .refusalGenerationAtPublish = LibreSCRS::Agent::PublishedRefusalGeneration{0},
                          },
                          state);
     op.runOnWorker();
@@ -287,6 +289,7 @@ TEST(GetPhotoOperation, MemfdSealFailureFinishesErrorClosed)
                              .readCache = readCache,
                              .cardKey = "card-A",
                              .readerName = "FakeReader",
+                             .refusalGenerationAtPublish = LibreSCRS::Agent::PublishedRefusalGeneration{0},
                          },
                          state);
     op.runOnWorker();
@@ -323,6 +326,7 @@ TEST(GetPhotoOperation, NoPhotoFieldYieldsError)
                              .readCache = readCache,
                              .cardKey = "card-A",
                              .readerName = "FakeReader",
+                             .refusalGenerationAtPublish = LibreSCRS::Agent::PublishedRefusalGeneration{0},
                          },
                          state);
     op.runOnWorker();
@@ -366,6 +370,7 @@ TEST(GetPhotoOperation, CacheMissDrivesFlowAndNamesReaderInAuditLine)
                              .readCache = readCache,
                              .cardKey = "card-A",
                              .readerName = "FakeReader",
+                             .refusalGenerationAtPublish = LibreSCRS::Agent::PublishedRefusalGeneration{0},
                          },
                          state);
     op.runOnWorker();

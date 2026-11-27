@@ -5,9 +5,9 @@ AddressedCancelTest 5
 AgentCoreQuiesceTest 9
 AgentCoreWiringTest 1
 AgentShutdownUnderLoadTest 1
-AttemptContextTest 7
+AttemptContextTest 9
 AuthorizerTest 3
-BatchSignFlowTest 18
+BatchSignFlowTest 19
 CacheScrubOnRemovalTest 4
 CallerLabelTest 12
 CardKeyTrackerTest 9
@@ -21,7 +21,7 @@ CborRelocationTest 3
 CborRoundTripTest 14
 CddlVocabularyTest 17
 CertDerExportTest 1
-CertReadFlowTest 24
+CertReadFlowTest 25
 ClientCodecTest 92
 ClientQtAgentActivationTest 11
 ClientQtAgentCardTest 52
@@ -75,7 +75,7 @@ FrameReassemblerTest 8
 FramingTest 11
 GetPhotoOperationTest 5
 IdentityPrefetchTest 17
-IdentityReadFlowTest 48
+IdentityReadFlowTest 49
 IdentityTest 3
 KeyActivationFlowTest 10
 LeaseManagerTest 18
@@ -89,7 +89,7 @@ MessagesRoundTripTest 25
 MrzPayloadTest 18
 ObjectRegistryTest 16
 OperationBaseTest 8
-OperationLauncherTest 19
+OperationLauncherTest 24
 OperationManagerTest 73
 OperationPhaseTest 2
 OperationStateTest 8
@@ -123,7 +123,7 @@ Sha256HexTest 3
 SignBatchOperationTest 7
 SignFlowOrchestrationTest 21
 SignFlowPhaseTest 1
-SignFlowTest 5
+SignFlowTest 6
 SignGateTest 4
 SignSeamKeepAliveDrainTest 1
 SignatureParamsTest 16

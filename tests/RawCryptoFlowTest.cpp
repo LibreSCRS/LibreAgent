@@ -279,6 +279,9 @@ struct Harness
                 return promptAllowed;
             }}
                                     : std::function<bool()>{},
+            // Read from the cache here, the way OperationLauncher::depsFor does at publish.
+            .refusalGenerationAtPublish =
+                LibreSCRS::Agent::PublishedRefusalGeneration{cache.refusalGenerationFor("card-A")},
         };
     }
 };
@@ -339,8 +342,10 @@ TEST(RawCryptoFlow, WrongPinFromTheCardMapsAuthFailed)
     // lease + the next op re-prompts).
     Harness h;
     h.cardPin = "9999"; // prompter returns "1234" -> mismatch
+    h.cache.noteRefusal("card-A", CredentialCache::RefusalKind::Cancelled);
     auto r = h.make().runSign(Mechanism::RsaPkcs1Sign, kInput);
     EXPECT_EQ(r.outcome, RawCryptoFlow::Outcome::AuthFailed);
+    EXPECT_EQ(h.cache.refusalGenerationFor("card-A"), 1U) << "evicting the secrets keeps the card's refusal history";
     EXPECT_EQ(h.verifyCalls, 1) << "the verify ran on the real path";
     EXPECT_FALSE(h.pinVerified) << "a failed verify must NOT mark the lease verified";
 }

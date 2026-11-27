@@ -255,6 +255,9 @@ struct Harness
             .params = baseParams(),
             .documents = documents,
             .token = source.token(),
+            // Read from the cache here, the way OperationLauncher::depsFor does at publish.
+            .refusalGenerationAtPublish =
+                LibreSCRS::Agent::PublishedRefusalGeneration{cache.refusalGenerationFor("card-A")},
         }};
     }
 };
@@ -412,9 +415,26 @@ TEST(BatchSignFlow, CardBlockedHaltsTheRemainingDocumentsWithTheHaltCode)
     EXPECT_TRUE(h.pinHolder.wiped());
 }
 
+TEST(BatchSignFlow, AWindowThatClosedEmptyAfterPublishSilencesThisOperation)
+{
+    // The operation was published (its generation read) BEFORE another window
+    // for this card closed empty. It must not raise a window of its own.
+    Harness h;
+    h.signer.canCallsToScript = 1;
+    auto flow = h.make();
+    h.cache.noteRefusal("card-A", CredentialCache::RefusalKind::Cancelled);
+
+    (void)flow.run();
+
+    EXPECT_EQ(h.prompter.canCalls, 0) << "the decline that landed after publish covers this operation";
+    ASSERT_EQ(h.signer.canResults.size(), 1u);
+    EXPECT_EQ(h.signer.canResults[0].status, LibreSCRS::Auth::CredentialResult::Status::UserCancelled);
+}
+
 TEST(BatchSignFlow, PartialSuccessThenHaltIsOkWithPerRowCodesAuthoritative)
 {
     Harness h;
+    h.cache.noteRefusal("card-A", CredentialCache::RefusalKind::Cancelled);
     h.signer.scriptedStatus[2] = SignOutcome::Status::AuthFailed; // second document halts
     auto r = h.make().run();
 
@@ -425,6 +445,7 @@ TEST(BatchSignFlow, PartialSuccessThenHaltIsOkWithPerRowCodesAuthoritative)
     EXPECT_FALSE(r.rows[0].signedBytes.empty());
     EXPECT_EQ(r.rows[1].code, ErrorCode::CredentialWrong);
     EXPECT_EQ(r.rows[2].code, ErrorCode::CredentialWrong) << "inherits the halt code without being attempted";
+    EXPECT_EQ(h.cache.refusalGenerationFor("card-A"), 1U) << "evicting the secrets keeps the card's refusal history";
     EXPECT_TRUE(h.pinHolder.wiped());
 }
 

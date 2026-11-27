@@ -118,39 +118,38 @@ TEST(CredentialCache, ClearWipesEverything)
     EXPECT_FALSE(c.getCan(kCardB).has_value());
 }
 
-TEST(CredentialCache, MarkCredentialWrongEvictsBothCanAndMrz)
+TEST(CredentialCache, EvictSecretsDropsBothCanAndMrz)
 {
     CredentialCache c;
     c.putCan(kCardA, Secret{"123456"});
     c.putMrz(kCardA, Secret{"MRZ"});
 
-    c.markCredentialWrong(kCardA);
+    c.evictSecrets(kCardA);
 
     EXPECT_FALSE(c.getCan(kCardA).has_value());
     EXPECT_FALSE(c.getMrz(kCardA).has_value());
 }
 
-TEST(CredentialCache, MarkCredentialWrongOnUnknownCardIsNotACrash)
+TEST(CredentialCache, EvictSecretsOnUnknownCardIsNotACrash)
 {
     // First-ever failure for a card that was never put(): the entry is
     // default-constructed on demand. Not directly observable via the public
     // getters (they only report can/mrz), but must not misbehave.
     CredentialCache c;
-    c.markCredentialWrong(kCardA);
+    c.evictSecrets(kCardA);
     EXPECT_FALSE(c.getCan(kCardA).has_value());
     EXPECT_FALSE(c.getMrz(kCardA).has_value());
 }
 
-TEST(CredentialCache, InvalidateAfterMarkCredentialWrongIsNotACrash)
+TEST(CredentialCache, InvalidateAfterEvictSecretsIsNotACrash)
 {
-    // markCredentialWrong() only evicts now -- the attempt count and its
-    // msgKey moved off the cache entirely, onto the caller's own
-    // AttemptContext (see CredentialCacheRequestTest, which can see
-    // PromptOptions, for that per-operation behavior). This just pins that
-    // invalidate() does not throw/crash on an entry markCredentialWrong
-    // touched.
+    // evictSecrets() only drops the secrets -- the attempt count and its
+    // msgKey live on the caller's own AttemptContext (see
+    // CredentialCacheRequestTest, which can see PromptOptions, for that
+    // per-operation behavior). This just pins that invalidate() does not
+    // throw/crash on an entry evictSecrets touched.
     CredentialCache c;
-    c.markCredentialWrong(kCardA);
+    c.evictSecrets(kCardA);
     c.invalidate(kCardA);
     EXPECT_FALSE(c.getCan(kCardA).has_value());
     EXPECT_FALSE(c.getMrz(kCardA).has_value());

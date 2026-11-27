@@ -165,6 +165,7 @@ TEST(ReadIdentityOperation, SuccessPathPopulatesCacheEmitsResultThenFinishes)
                                  .readCache = readCache,
                                  .cardKey = "card-A",
                                  .readerName = "FakeReader",
+                                 .refusalGenerationAtPublish = LibreSCRS::Agent::PublishedRefusalGeneration{0},
                              },
                              state);
 
@@ -225,6 +226,7 @@ TEST(ReadIdentityOperation, SecondReadOfSameCardServesFromCacheWithoutReWalking)
                                      .readCache = readCache,
                                      .cardKey = "card-A",
                                      .readerName = "FakeReader",
+                                     .refusalGenerationAtPublish = LibreSCRS::Agent::PublishedRefusalGeneration{0},
                                  },
                                  state);
         op.runOnWorker();
@@ -252,6 +254,7 @@ TEST(ReadIdentityOperation, SecondReadOfSameCardServesFromCacheWithoutReWalking)
                                      .readCache = readCache,
                                      .cardKey = "card-A",
                                      .readerName = "FakeReader",
+                                     .refusalGenerationAtPublish = LibreSCRS::Agent::PublishedRefusalGeneration{0},
                                  },
                                  state);
         op.runOnWorker();
@@ -293,6 +296,7 @@ TEST(ReadIdentityOperation, CacheHitLogsTheRequest)
                                  .cardKey = "card-A",
                                  .readerName = "FakeReader",
                                  .requester = "firefox",
+                                 .refusalGenerationAtPublish = LibreSCRS::Agent::PublishedRefusalGeneration{0},
                              },
                              state);
     op.runOnWorker();
@@ -334,6 +338,7 @@ TEST(ReadIdentityOperation, FlowErrorMapsToFinishedError)
                                  .readCache = readCache,
                                  .cardKey = "card-A",
                                  .readerName = "FakeReader",
+                                 .refusalGenerationAtPublish = LibreSCRS::Agent::PublishedRefusalGeneration{0},
                              },
                              state);
     op.runOnWorker();
@@ -372,6 +377,7 @@ TEST(ReadIdentityOperation, UndeliveredResultFinishesErrorOnWalkAndCacheHit)
                                      .readCache = readCache,
                                      .cardKey = "card-A",
                                      .readerName = "FakeReader",
+                                     .refusalGenerationAtPublish = LibreSCRS::Agent::PublishedRefusalGeneration{0},
                                  },
                                  std::make_shared<OperationState>());
         op.runOnWorker();
@@ -406,20 +412,22 @@ struct AttachRig
     {
         auto adaptor = std::make_unique<FakeOperationChannel>();
         channel = adaptor.get();
-        return std::make_unique<ReadIdentityOperation>(std::move(adaptor),
-                                                       ReadIdentityOperation::Deps{
-                                                           .holder = holder.get(),
-                                                           .reader = reader,
-                                                           .depositor = depositor,
-                                                           .prompter = prompter,
-                                                           .serializer = serializer,
-                                                           .credentials = credCache,
-                                                           .readCache = readCache,
-                                                           .cardKey = cardKey,
-                                                           .readerName = "FakeReader",
-                                                           .requester = "firefox",
-                                                       },
-                                                       state);
+        return std::make_unique<ReadIdentityOperation>(
+            std::move(adaptor),
+            ReadIdentityOperation::Deps{
+                .holder = holder.get(),
+                .reader = reader,
+                .depositor = depositor,
+                .prompter = prompter,
+                .serializer = serializer,
+                .credentials = credCache,
+                .readCache = readCache,
+                .cardKey = cardKey,
+                .readerName = "FakeReader",
+                .requester = "firefox",
+                .refusalGenerationAtPublish = LibreSCRS::Agent::PublishedRefusalGeneration{0},
+            },
+            state);
     }
 };
 

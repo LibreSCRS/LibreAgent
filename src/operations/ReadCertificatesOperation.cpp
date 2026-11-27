@@ -62,6 +62,7 @@ void ReadCertificatesOperation::doWork()
         .requester = m_deps.requester,
         .artifact = m_deps.artifact,
         .token = token(),
+        .refusalGenerationAtPublish = m_deps.refusalGenerationAtPublish,
     });
     auto result = flow.run();
 

@@ -76,6 +76,7 @@ void ActivateSigningKeyOperation::doWork()
         .reader = m_deps.readerName,
         .artifact = m_deps.artifact,
         .token = token(),
+        .refusalGenerationAtPublish = m_deps.refusalGenerationAtPublish,
     });
 
     if (shutdownRequested()) {

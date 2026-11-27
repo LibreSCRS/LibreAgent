@@ -22,6 +22,10 @@
 #include <LibreSCRS/Agent/operations/OperationArtifact.h>
 #include <LibreSCRS/Agent/operations/OperationLauncher.h>
 #include <LibreSCRS/Agent/operations/OperationManager.h>
+#include <LibreSCRS/Auth/AuthRequirement.h>
+#include <LibreSCRS/Auth/CredentialResult.h>
+#include <LibreSCRS/Auth/PaceSecretKind.h>
+#include <LibreSCRS/LocalizedText.h>
 #include <LibreSCRS/SmartCard/CardSession.h>
 #include <LibreSCRS/SmartCard/testing/CardSessionTesting.h>
 #include "fakes/FakeAuthorizer.h"
@@ -29,6 +33,7 @@
 #include "fakes/FakeCredentialManager.h"
 #include "fakes/FakePrompter.h"
 #include "fakes/ScratchDir.h"
+#include "operations/FlowPrelude.h"
 
 #include <gtest/gtest.h>
 #include <atomic>
@@ -100,6 +105,38 @@ public:
                      LibreSCRS::Auth::CredentialProvider, LibreSCRS::CancelToken) override
     {
         return {};
+    }
+};
+
+// A signer that asks for the card's access number, then, if it got one, for
+// the signing PIN -- the two requests a real activation makes. The mapping of
+// a refused request mirrors the terminal signing op: a cancel is Cancelled and
+// anything else is a communication error, never AuthFailed (which would evict
+// the cached secrets).
+class CanThenPinSigner final : public Signer
+{
+public:
+    SignOutcome sign(const std::shared_ptr<LibreSCRS::SmartCard::CardSession>&, const SignParams&, const CandidateList&,
+                     LibreSCRS::Auth::CredentialProvider credentials, LibreSCRS::CancelToken) override
+    {
+        using Status = LibreSCRS::Auth::CredentialResult::Status;
+        SignOutcome out;
+        const auto can = credentials(LibreSCRS::Auth::AuthRequirement::forPaceSecret(
+            LibreSCRS::Auth::PaceSecretKind::Can, LibreSCRS::LocalizedText{}));
+        if (can.status != Status::Ok) {
+            out.status = can.status == Status::UserCancelled ? SignOutcome::Status::Cancelled
+                                                             : SignOutcome::Status::CommunicationError;
+            return out;
+        }
+        const auto pin = credentials(LibreSCRS::Auth::AuthRequirement::forSigning());
+        if (pin.status != Status::Ok) {
+            out.status = pin.status == Status::UserCancelled ? SignOutcome::Status::Cancelled
+                                                             : SignOutcome::Status::CommunicationError;
+            return out;
+        }
+        out.status = SignOutcome::Status::Ok;
+        out.signedDocumentBytes = {0xAA};
+        return out;
     }
 };
 
@@ -195,6 +232,22 @@ protected:
             .credentials = credentials,
             .depositor = depositor,
         };
+    }
+
+    // A launcher whose signer is the one given; the rest is the fixture's.
+    std::unique_ptr<OperationLauncher> launcherSigning(std::shared_ptr<Signer> with)
+    {
+        OperationSeams s = seams();
+        s.signer = std::move(with);
+        return std::make_unique<OperationLauncher>(*core, std::move(s), transportShare);
+    }
+
+    // The same card on the fixture's reader, or another card there.
+    OperationTarget targetFor(const std::string& cardKey) const
+    {
+        OperationTarget other = target;
+        other.card.cardKey = cardKey;
+        return other;
     }
 
     OperationLauncher::ChannelFactory recordingChannel()
@@ -298,12 +351,13 @@ protected:
 TEST_F(OperationLauncherTest, AReadIdentityGetsEveryDependency)
 {
     auto holder = makeHolder();
+    core->credentialCache().noteRefusal(kCardKey, CredentialCache::RefusalKind::Cancelled);
     int cardTypes = 0;
     auto deps = launcher->depsFor(
         holder.get(), target, OperationLauncher::ReadIdentity{.onCardType = [&](const std::string&) { ++cardTypes; }});
     // A new member of ReadIdentityOperation::Deps is a compile error here.
     auto& [dHolder, dReader, dDepositor, dPrompter, dSerializer, dCredentials, dReadCache, dCardKey, dReaderName,
-           dRequester, dArtifact, dOnCardType] = deps;
+           dRequester, dArtifact, dOnCardType, dRefusalGeneration] = deps;
     EXPECT_EQ(dHolder, holder.get());
     EXPECT_EQ(&dReader, reader.get());
     EXPECT_EQ(&dDepositor, depositor.get());
@@ -312,6 +366,7 @@ TEST_F(OperationLauncherTest, AReadIdentityGetsEveryDependency)
     EXPECT_EQ(&dCredentials, &core->credentialCache());
     EXPECT_EQ(&dReadCache, &core->cardReadCache());
     EXPECT_EQ(dCardKey, kCardKey);
+    EXPECT_EQ(dRefusalGeneration.value(), core->credentialCache().refusalGenerationFor(kCardKey));
     EXPECT_EQ(dReaderName, kReader);
     EXPECT_EQ(dRequester, "firefox");
     EXPECT_EQ(dArtifact, Artifact::kIdentity);
@@ -323,11 +378,12 @@ TEST_F(OperationLauncherTest, AReadIdentityGetsEveryDependency)
 TEST_F(OperationLauncherTest, AGetPhotoGetsEveryDependency)
 {
     auto holder = makeHolder();
+    core->credentialCache().noteRefusal(kCardKey, CredentialCache::RefusalKind::Cancelled);
     int cardTypes = 0;
     auto deps = launcher->depsFor(holder.get(), target,
                                   OperationLauncher::GetPhoto{.onCardType = [&](const std::string&) { ++cardTypes; }});
     auto& [dHolder, dReader, dDepositor, dPrompter, dSerializer, dCredentials, dReadCache, dCardKey, dReaderName,
-           dRequester, dArtifact, dOnCardType] = deps;
+           dRequester, dArtifact, dOnCardType, dRefusalGeneration] = deps;
     EXPECT_EQ(dHolder, holder.get());
     EXPECT_EQ(&dReader, reader.get());
     EXPECT_EQ(&dDepositor, depositor.get());
@@ -336,6 +392,7 @@ TEST_F(OperationLauncherTest, AGetPhotoGetsEveryDependency)
     EXPECT_EQ(&dCredentials, &core->credentialCache());
     EXPECT_EQ(&dReadCache, &core->cardReadCache());
     EXPECT_EQ(dCardKey, kCardKey);
+    EXPECT_EQ(dRefusalGeneration.value(), core->credentialCache().refusalGenerationFor(kCardKey));
     EXPECT_EQ(dReaderName, kReader);
     EXPECT_EQ(dRequester, "firefox");
     EXPECT_EQ(dArtifact, Artifact::kPhoto);
@@ -347,9 +404,10 @@ TEST_F(OperationLauncherTest, AGetPhotoGetsEveryDependency)
 TEST_F(OperationLauncherTest, AReadCertificatesGetsEveryDependency)
 {
     auto holder = makeHolder();
+    core->credentialCache().noteRefusal(kCardKey, CredentialCache::RefusalKind::Cancelled);
     auto deps = launcher->depsFor(holder.get(), target, OperationLauncher::ReadCertificates{});
     auto& [dHolder, dCertReader, dTrustVerifier, dPrompter, dSerializer, dCredentials, dReadCache, dCardKey,
-           dReaderName, dRequester, dArtifact] = deps;
+           dReaderName, dRequester, dArtifact, dRefusalGeneration] = deps;
     EXPECT_EQ(dHolder, holder.get());
     EXPECT_EQ(&dCertReader, certReader.get());
     EXPECT_EQ(&dTrustVerifier, trustVerifier.get());
@@ -358,6 +416,7 @@ TEST_F(OperationLauncherTest, AReadCertificatesGetsEveryDependency)
     EXPECT_EQ(&dCredentials, &core->credentialCache());
     EXPECT_EQ(&dReadCache, &core->cardReadCache());
     EXPECT_EQ(dCardKey, kCardKey);
+    EXPECT_EQ(dRefusalGeneration.value(), core->credentialCache().refusalGenerationFor(kCardKey));
     EXPECT_EQ(dReaderName, kReader);
     EXPECT_EQ(dRequester, "firefox");
     EXPECT_EQ(dArtifact, Artifact::kCertificates);
@@ -366,14 +425,17 @@ TEST_F(OperationLauncherTest, AReadCertificatesGetsEveryDependency)
 TEST_F(OperationLauncherTest, AReadTokenInfoGetsEveryDependency)
 {
     auto holder = makeHolder();
+    core->credentialCache().noteRefusal(kCardKey, CredentialCache::RefusalKind::Cancelled);
     auto deps = launcher->depsFor(holder.get(), target, OperationLauncher::ReadTokenInfo{});
-    auto& [dHolder, dReader, dPrompter, dSerializer, dCredentials, dCardKey, dReaderName, dRequester, dArtifact] = deps;
+    auto& [dHolder, dReader, dPrompter, dSerializer, dCredentials, dCardKey, dReaderName, dRequester, dArtifact,
+           dRefusalGeneration] = deps;
     EXPECT_EQ(dHolder, holder.get());
     EXPECT_EQ(&dReader, reader.get());
     EXPECT_EQ(&dPrompter, prompter.get());
     EXPECT_EQ(&dSerializer, &core->promptSerializer());
     EXPECT_EQ(&dCredentials, &core->credentialCache());
     EXPECT_EQ(dCardKey, kCardKey);
+    EXPECT_EQ(dRefusalGeneration.value(), core->credentialCache().refusalGenerationFor(kCardKey));
     EXPECT_EQ(dReaderName, kReader);
     EXPECT_EQ(dRequester, "firefox");
     EXPECT_EQ(dArtifact, Artifact::kTokenInfo);
@@ -382,14 +444,17 @@ TEST_F(OperationLauncherTest, AReadTokenInfoGetsEveryDependency)
 TEST_F(OperationLauncherTest, ASignGetsEveryDependency)
 {
     auto holder = makeHolder();
+    core->credentialCache().noteRefusal(kCardKey, CredentialCache::RefusalKind::Cancelled);
     auto deps = launcher->depsFor(holder.get(), target, OperationLauncher::Sign{.params = someParams()});
-    auto& [dHolder, dSigner, dPrompter, dSerializer, dCredentials, dCardKey, dReaderName, dRequester, dParams] = deps;
+    auto& [dHolder, dSigner, dPrompter, dSerializer, dCredentials, dCardKey, dReaderName, dRequester, dParams,
+           dRefusalGeneration] = deps;
     EXPECT_EQ(dHolder, holder.get());
     EXPECT_EQ(&dSigner, signer.get());
     EXPECT_EQ(&dPrompter, prompter.get());
     EXPECT_EQ(&dSerializer, &core->promptSerializer());
     EXPECT_EQ(&dCredentials, &core->credentialCache());
     EXPECT_EQ(dCardKey, kCardKey);
+    EXPECT_EQ(dRefusalGeneration.value(), core->credentialCache().refusalGenerationFor(kCardKey));
     EXPECT_EQ(dReaderName, kReader);
     EXPECT_EQ(dRequester, "firefox");
     EXPECT_EQ(dParams.certId, "cert-1");
@@ -400,18 +465,20 @@ TEST_F(OperationLauncherTest, ASignGetsEveryDependency)
 TEST_F(OperationLauncherTest, ASignBatchGetsEveryDependency)
 {
     auto holder = makeHolder();
+    core->credentialCache().noteRefusal(kCardKey, CredentialCache::RefusalKind::Cancelled);
     std::vector<BatchDocumentInput> documents{{.displayName = "a.pdf", .bytes = {1}},
                                               {.displayName = "b.pdf", .bytes = {2}}};
     auto deps = launcher->depsFor(holder.get(), target,
                                   OperationLauncher::SignBatch{.params = someParams(), .documents = documents});
     auto& [dHolder, dSigner, dPrompter, dSerializer, dCredentials, dCardKey, dReaderName, dRequester, dParams,
-           dDocuments] = deps;
+           dDocuments, dRefusalGeneration] = deps;
     EXPECT_EQ(dHolder, holder.get());
     EXPECT_EQ(&dSigner, signer.get());
     EXPECT_EQ(&dPrompter, prompter.get());
     EXPECT_EQ(&dSerializer, &core->promptSerializer());
     EXPECT_EQ(&dCredentials, &core->credentialCache());
     EXPECT_EQ(dCardKey, kCardKey);
+    EXPECT_EQ(dRefusalGeneration.value(), core->credentialCache().refusalGenerationFor(kCardKey));
     EXPECT_EQ(dReaderName, kReader);
     EXPECT_EQ(dRequester, "firefox");
     EXPECT_EQ(dParams.certId, "cert-1");
@@ -422,9 +489,10 @@ TEST_F(OperationLauncherTest, ASignBatchGetsEveryDependency)
 TEST_F(OperationLauncherTest, AListCredentialsGetsEveryDependency)
 {
     auto holder = makeHolder();
+    core->credentialCache().noteRefusal(kCardKey, CredentialCache::RefusalKind::Cancelled);
     auto deps = launcher->depsFor(holder.get(), target, OperationLauncher::ListCredentials{});
     auto& [dHolder, dCredentials, dPrompter, dSerializer, dCredCache, dSnapshotCache, dCardKey, dReaderName, dRequester,
-           dArtifact] = deps;
+           dArtifact, dRefusalGeneration] = deps;
     EXPECT_EQ(dHolder, holder.get());
     EXPECT_EQ(&dCredentials, credentials.get());
     EXPECT_EQ(&dPrompter, prompter.get());
@@ -432,6 +500,7 @@ TEST_F(OperationLauncherTest, AListCredentialsGetsEveryDependency)
     EXPECT_EQ(&dCredCache, &core->credentialCache());
     EXPECT_EQ(&dSnapshotCache, &core->credentialSnapshotCache());
     EXPECT_EQ(dCardKey, kCardKey);
+    EXPECT_EQ(dRefusalGeneration.value(), core->credentialCache().refusalGenerationFor(kCardKey));
     EXPECT_EQ(dReaderName, kReader);
     EXPECT_EQ(dRequester, "firefox");
     EXPECT_EQ(dArtifact, Artifact::kCredentials);
@@ -440,6 +509,7 @@ TEST_F(OperationLauncherTest, AListCredentialsGetsEveryDependency)
 TEST_F(OperationLauncherTest, AManagePinGetsEveryDependency)
 {
     auto holder = makeHolder();
+    core->credentialCache().noteRefusal(kCardKey, CredentialCache::RefusalKind::Cancelled);
     CredentialSnapshot snapshot;
     snapshot.version = 3;
     auto deps = launcher->depsFor(
@@ -449,7 +519,7 @@ TEST_F(OperationLauncherTest, AManagePinGetsEveryDependency)
             .snapshot = snapshot,
         });
     auto& [dHolder, dCredentials, dPrompter, dSerializer, dCredCache, dSnapshotCache, dReadCache, dCardKey, dReaderName,
-           dRequester, dArtifact, dRequest, dSnapshot] = deps;
+           dRequester, dArtifact, dRequest, dSnapshot, dRefusalGeneration] = deps;
     EXPECT_EQ(dHolder, holder.get());
     EXPECT_EQ(&dCredentials, credentials.get());
     EXPECT_EQ(&dPrompter, prompter.get());
@@ -458,6 +528,7 @@ TEST_F(OperationLauncherTest, AManagePinGetsEveryDependency)
     EXPECT_EQ(&dSnapshotCache, &core->credentialSnapshotCache());
     EXPECT_EQ(&dReadCache, &core->cardReadCache());
     EXPECT_EQ(dCardKey, kCardKey);
+    EXPECT_EQ(dRefusalGeneration.value(), core->credentialCache().refusalGenerationFor(kCardKey));
     EXPECT_EQ(dReaderName, kReader);
     EXPECT_EQ(dRequester, "firefox");
     EXPECT_EQ(dArtifact, Artifact::kCredentials);
@@ -469,9 +540,10 @@ TEST_F(OperationLauncherTest, AManagePinGetsEveryDependency)
 TEST_F(OperationLauncherTest, AnActivateSigningKeyGetsEveryDependency)
 {
     auto holder = makeHolder();
+    core->credentialCache().noteRefusal(kCardKey, CredentialCache::RefusalKind::Cancelled);
     auto deps = launcher->depsFor(holder.get(), target, OperationLauncher::ActivateSigningKey{});
     auto& [dHolder, dCredentials, dPrompter, dSerializer, dCredCache, dSnapshotCache, dReadCache, dCardKey, dReaderName,
-           dRequester, dArtifact] = deps;
+           dRequester, dArtifact, dRefusalGeneration] = deps;
     EXPECT_EQ(dHolder, holder.get());
     EXPECT_EQ(&dCredentials, credentials.get());
     EXPECT_EQ(&dPrompter, prompter.get());
@@ -480,6 +552,7 @@ TEST_F(OperationLauncherTest, AnActivateSigningKeyGetsEveryDependency)
     EXPECT_EQ(&dSnapshotCache, &core->credentialSnapshotCache());
     EXPECT_EQ(&dReadCache, &core->cardReadCache());
     EXPECT_EQ(dCardKey, kCardKey);
+    EXPECT_EQ(dRefusalGeneration.value(), core->credentialCache().refusalGenerationFor(kCardKey));
     EXPECT_EQ(dReaderName, kReader);
     EXPECT_EQ(dRequester, "firefox");
     EXPECT_EQ(dArtifact, Artifact::kCredentials);
@@ -700,6 +773,105 @@ TEST_F(OperationLauncherTest, AChannelFactoryThatBuildsNothingQueuesNothing)
         << "the refused build left no operation behind";
     releaseWorker();
     drainWorker();
+}
+
+// --- a request queued behind a credential window of the same card -------------
+//
+// The operations are published while the worker is parked, so each carries the
+// refusal generation that stood before any window opened. A window that closes
+// empty then silences the ones queued behind it.
+
+TEST_F(OperationLauncherTest, ACancelledWindowCancelsTheOperationQueuedBehindIt)
+{
+    prompter->canResult = PromptResult{PromptStatus::Cancelled, std::nullopt, ""};
+    auto own = launcherSigning(std::make_shared<CanThenPinSigner>());
+    blockWorker();
+    const auto f = recordingChannel();
+    ASSERT_TRUE(own->launch(target, f, OperationLauncher::Sign{.params = someParams()}).has_value());
+    ASSERT_TRUE(own->launch(target, f, OperationLauncher::Sign{.params = someParams()}).has_value());
+    releaseWorker();
+    ASSERT_TRUE(waitFor([&] { return record->finishCount() == 2; })) << "the operations never finished";
+
+    EXPECT_EQ(prompter->calls, (std::vector<FakePrompter::Kind>{FakePrompter::Kind::Can}))
+        << "the queued operation opened a second window";
+    std::lock_guard lk(record->mutex);
+    for (std::size_t i = 0; i < 2; ++i) {
+        EXPECT_EQ(record->finishes[i], OperationStatus::Cancelled) << "operation " << i;
+        EXPECT_EQ(record->finishKeys[i], "op.cancelled") << "operation " << i;
+    }
+}
+
+TEST_F(OperationLauncherTest, AnExpiredWindowExpiresTheOperationQueuedBehindIt)
+{
+    prompter->canResult = PromptResult{PromptStatus::Timeout, std::nullopt, ""};
+    auto own = launcherSigning(std::make_shared<CanThenPinSigner>());
+    blockWorker();
+    const auto f = recordingChannel();
+    ASSERT_TRUE(own->launch(target, f, OperationLauncher::Sign{.params = someParams()}).has_value());
+    ASSERT_TRUE(own->launch(target, f, OperationLauncher::Sign{.params = someParams()}).has_value());
+    releaseWorker();
+    ASSERT_TRUE(waitFor([&] { return record->finishCount() == 2; })) << "the operations never finished";
+
+    EXPECT_EQ(prompter->calls, (std::vector<FakePrompter::Kind>{FakePrompter::Kind::Can}))
+        << "the queued operation opened a second window";
+    std::lock_guard lk(record->mutex);
+    for (std::size_t i = 0; i < 2; ++i) {
+        EXPECT_EQ(record->finishes[i], OperationStatus::Error) << "operation " << i;
+        EXPECT_EQ(record->finishKeys[i], FlowPrelude::kEntryExpiredMsgKey) << "operation " << i;
+    }
+}
+
+TEST_F(OperationLauncherTest, AQueuedOperationIsServedByTheEnteredCanAndStillAsksForItsPin)
+{
+    prompter->canResult = PromptResult{PromptStatus::Ok, LibreSCRS::Secure::String{"123456"}, ""};
+    prompter->pinResult = PromptResult{PromptStatus::Ok, LibreSCRS::Secure::String{"1234"}, ""};
+    auto own = launcherSigning(std::make_shared<CanThenPinSigner>());
+    blockWorker();
+    const auto f = recordingChannel();
+    ASSERT_TRUE(own->launch(target, f, OperationLauncher::Sign{.params = someParams()}).has_value());
+    ASSERT_TRUE(own->launch(target, f, OperationLauncher::Sign{.params = someParams()}).has_value());
+    releaseWorker();
+    ASSERT_TRUE(waitFor([&] { return record->finishCount() == 2; })) << "the operations never finished";
+
+    using Kind = FakePrompter::Kind;
+    EXPECT_EQ(prompter->calls, (std::vector<Kind>{Kind::Can, Kind::Pin, Kind::Pin}))
+        << "one access number, one PIN per operation";
+    std::lock_guard lk(record->mutex);
+    for (std::size_t i = 0; i < 2; ++i) {
+        EXPECT_EQ(record->finishes[i], OperationStatus::Ok) << "operation " << i;
+    }
+}
+
+TEST_F(OperationLauncherTest, AnOperationPublishedAfterTheCancelStillAsks)
+{
+    prompter->canResult = PromptResult{PromptStatus::Cancelled, std::nullopt, ""};
+    auto own = launcherSigning(std::make_shared<CanThenPinSigner>());
+    const auto f = recordingChannel();
+    ASSERT_TRUE(own->launch(target, f, OperationLauncher::Sign{.params = someParams()}).has_value());
+    ASSERT_TRUE(waitFor([&] { return record->finishCount() == 1; })) << "the first operation never finished";
+    drainWorker();
+
+    // Published after the window closed, so it carries the newer generation.
+    ASSERT_TRUE(own->launch(target, f, OperationLauncher::Sign{.params = someParams()}).has_value());
+    ASSERT_TRUE(waitFor([&] { return record->finishCount() == 2; })) << "the later operation never finished";
+
+    EXPECT_EQ(prompter->calls, (std::vector<FakePrompter::Kind>{FakePrompter::Kind::Can, FakePrompter::Kind::Can}))
+        << "a request made after the cancel must ask again";
+}
+
+TEST_F(OperationLauncherTest, AnotherCardsOperationInTheSameQueueStillAsks)
+{
+    prompter->canResult = PromptResult{PromptStatus::Cancelled, std::nullopt, ""};
+    auto own = launcherSigning(std::make_shared<CanThenPinSigner>());
+    blockWorker();
+    const auto f = recordingChannel();
+    ASSERT_TRUE(own->launch(target, f, OperationLauncher::Sign{.params = someParams()}).has_value());
+    ASSERT_TRUE(own->launch(targetFor("card-8"), f, OperationLauncher::Sign{.params = someParams()}).has_value());
+    releaseWorker();
+    ASSERT_TRUE(waitFor([&] { return record->finishCount() == 2; })) << "the operations never finished";
+
+    EXPECT_EQ(prompter->calls, (std::vector<FakePrompter::Kind>{FakePrompter::Kind::Can, FakePrompter::Kind::Can}))
+        << "the cancel of one card silenced another card's request";
 }
 
 } // namespace

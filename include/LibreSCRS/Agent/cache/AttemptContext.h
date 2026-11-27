@@ -8,6 +8,27 @@
 
 namespace LibreSCRS::Agent {
 
+/// @brief A card's refusal generation as read when an operation was published.
+///
+/// A distinct type, with no default, so an operation cannot be handed a bare
+/// number or forget to carry one: the only way to build an @ref AttemptContext
+/// is from this, and the only way to build this is to name the value.
+///
+/// @since 5.0
+class PublishedRefusalGeneration
+{
+public:
+    explicit PublishedRefusalGeneration(std::uint64_t generation) noexcept : m_value(generation) {}
+
+    [[nodiscard]] std::uint64_t value() const noexcept
+    {
+        return m_value;
+    }
+
+private:
+    std::uint64_t m_value;
+};
+
 /// @brief Retry context for ONE read attempt: how many collected secrets the
 ///        card rejected during it, and why the last rejection happened.
 ///
@@ -30,28 +51,22 @@ namespace LibreSCRS::Agent {
 class AttemptContext
 {
 public:
-    /// @p generationAtDispatch is the card's refusal generation as it stood
-    /// when this context was constructed. Captured HERE, in the constructor,
-    /// and nowhere else -- there is no setter, so nothing can refresh it to a
-    /// value read at prompt time.
+    /// generationAtDispatch() is the card's refusal generation as it stood
+    /// when the operation was PUBLISHED, handed in by the caller and fixed
+    /// for the object's lifetime -- there is no setter, so nothing can refresh
+    /// it to a value read at prompt time.
     ///
-    /// WHERE this object is constructed is therefore the whole mechanism, and
-    /// it decides what the prompt gate can see. Constructed at the top of a
-    /// flow's run(), as every caller does today, it bounds the re-prompt loop
-    /// WITHIN one operation: after a window closes empty, the middleware's
-    /// activation fails and it invokes the credential provider again, and that
-    /// invocation finds the card's generation already past what this object
-    /// holds, so no fresh window is raised. It does NOT yet reach a SIBLING
-    /// operation: one card's operations are dequeued and run strictly one at a
-    /// time, so an operation that was already queued when another's window
-    /// closed builds its context AFTER that refusal and reads an equal
-    /// generation. Closing that needs the capture to move to where the
-    /// operation is created and published, which is above this library.
+    /// Reading it at publish is the whole mechanism. After a window closes
+    /// empty, the middleware's activation fails and it invokes the credential
+    /// provider again; that invocation finds the card's generation already
+    /// past what this object holds, so no fresh window is raised. The same
+    /// holds for a SIBLING operation: one card's operations run strictly one
+    /// at a time, but each was published before the earlier one's window
+    /// closed, so it carries the older generation and is silenced too.
     ///
-    /// Defaults to 0 so a test that does not care about the generation can
-    /// still write a bare `AttemptContext ctx;`.
-    explicit AttemptContext(std::uint64_t generationAtDispatch = 0) noexcept
-        : m_generationAtDispatch(generationAtDispatch)
+    /// There is no default and no bare-number overload: a caller must name the
+    /// generation it carries.
+    explicit AttemptContext(PublishedRefusalGeneration published) noexcept : m_generationAtDispatch(published.value())
     {}
 
     /// The card rejected a secret that WAS collected. Never call this for an

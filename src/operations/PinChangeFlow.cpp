@@ -167,10 +167,10 @@ CredentialOpResult runPinManage(PinManageFlowDeps& deps, const PinManageRequest&
         // below and passed as arguments. The scope guard resets the provider to a
         // no-op on exit (the session outlives this flow; see FlowPrelude).
         auto prompterFailed = std::make_shared<std::atomic<bool>>(false);
-        // Per-operation retry context, captured HERE at the top of this change
-        // attempt -- never later (see IdentityReadFlow's identical field for
-        // the full rationale).
-        auto attempts = std::make_shared<AttemptContext>(deps.cache.refusalGenerationFor(deps.cardKey));
+        // Per-operation retry context, seeded from the generation read at
+        // publish (see IdentityReadFlow's identical field for the full
+        // rationale).
+        auto attempts = std::make_shared<AttemptContext>(deps.refusalGenerationAtPublish);
         const auto providerGuard = FlowPrelude::installScopedReadProvider(
             session, FlowPrelude::makeReadCredentialProvider(deps.cache, deps.prompter, deps.serializer, deps.phaseSink,
                                                              deps.cardKey, deps.requester, deps.artifact, deps.token,

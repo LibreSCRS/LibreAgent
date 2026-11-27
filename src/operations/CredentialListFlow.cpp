@@ -85,9 +85,9 @@ CredentialListFlow::Result CredentialListFlow::run()
     auto entryExpired = std::make_shared<std::atomic<bool>>(false);
     // Set true iff the agent REFUSED to raise the prompt (helper too old).
     auto helperTooOld = std::make_shared<std::atomic<bool>>(false);
-    // Per-operation retry context, captured HERE at the top of run() -- never
-    // later (see IdentityReadFlow's identical field for the full rationale).
-    auto attempts = std::make_shared<AttemptContext>(m_deps.cache.refusalGenerationFor(m_deps.cardKey));
+    // Per-operation retry context, seeded from the generation read at publish
+    // (see IdentityReadFlow's identical field for the full rationale).
+    auto attempts = std::make_shared<AttemptContext>(m_deps.refusalGenerationAtPublish);
     // Install with a UAF scope guard: the provider captures the per-op phaseSink
     // by reference, but `session` is owned by the CardSessionHolder and outlives
     // this flow (see FlowPrelude::installScopedReadProvider).

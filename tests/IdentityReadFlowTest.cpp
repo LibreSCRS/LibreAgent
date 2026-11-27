@@ -312,6 +312,7 @@ struct Harness
     // every pre-existing scenario keeps its no-candidate holder).
     CandidateList candidates;
     std::unique_ptr<CardSessionHolder> holder;
+    std::vector<std::unique_ptr<CardSessionHolder>> earlierHolders;
     FakeReader reader;
     FakePrompter prompter;
     PromptSerializer serializer;
@@ -341,6 +342,10 @@ struct Harness
 
     IdentityReadFlow make()
     {
+        // An earlier flow may still be alive (two operations published together).
+        if (holder) {
+            earlierHolders.push_back(std::move(holder));
+        }
         holder = makeHolder(failWith, candidates);
         return IdentityReadFlow{IdentityReadFlowDeps{
             .holder = *holder,
@@ -356,6 +361,9 @@ struct Harness
             .artifact = artifact,
             .token = source.token(),
             .depositor = depositor,
+            // Read from the cache here, the way OperationLauncher::depsFor does at publish.
+            .refusalGenerationAtPublish =
+                LibreSCRS::Agent::PublishedRefusalGeneration{cache.refusalGenerationFor("card-A")},
         }};
     }
 };
@@ -562,7 +570,7 @@ TEST(IdentityReadFlow, ProviderLambdaRoutesOnRequirementAndFiresAwaitingConsent)
     // inside readCard on a channel cache miss).
     Harness h;
     auto prompterFailed = std::make_shared<std::atomic<bool>>(false);
-    auto attempts = std::make_shared<AttemptContext>();
+    auto attempts = std::make_shared<AttemptContext>(LibreSCRS::Agent::PublishedRefusalGeneration{0});
     auto provider =
         FlowPrelude::makeReadCredentialProvider(h.cache, h.prompter, h.serializer, h.phaseSink, "card-A", h.requester,
                                                 h.artifact, h.source.token(), attempts, prompterFailed);
@@ -591,7 +599,7 @@ TEST(IdentityReadFlow, ExpiredEntryRemapsTheMessageAndNotOnlyTheCode)
     Harness h;
     auto prompterFailed = std::make_shared<std::atomic<bool>>(false);
     auto entryExpired = std::make_shared<std::atomic<bool>>(false);
-    auto attempts = std::make_shared<AttemptContext>();
+    auto attempts = std::make_shared<AttemptContext>(LibreSCRS::Agent::PublishedRefusalGeneration{0});
     auto provider = FlowPrelude::makeReadCredentialProvider(
         h.cache, h.prompter, h.serializer, h.phaseSink, "card-A", h.requester, h.artifact, h.source.token(), attempts,
         prompterFailed, /*userCancelled=*/{}, /*providerMarkedWrong=*/{}, /*offerMrzAlternative=*/false,
@@ -639,7 +647,7 @@ TEST(IdentityReadFlow, ProviderLambdaClosesTheConsentExcursionSoThePostPromptRea
     // branch, which the ordinary CAN path never enters.
     Harness h;
     auto prompterFailed = std::make_shared<std::atomic<bool>>(false);
-    auto attempts = std::make_shared<AttemptContext>();
+    auto attempts = std::make_shared<AttemptContext>(LibreSCRS::Agent::PublishedRefusalGeneration{0});
     auto provider =
         FlowPrelude::makeReadCredentialProvider(h.cache, h.prompter, h.serializer, h.phaseSink, "card-A", h.requester,
                                                 h.artifact, h.source.token(), attempts, prompterFailed);
@@ -670,7 +678,7 @@ TEST(IdentityReadFlow, ProviderLambdaClosesTheConsentExcursionEvenWhenThePromptT
     Harness h;
     h.prompter.throwOnCan = true;
     auto prompterFailed = std::make_shared<std::atomic<bool>>(false);
-    auto attempts = std::make_shared<AttemptContext>();
+    auto attempts = std::make_shared<AttemptContext>(LibreSCRS::Agent::PublishedRefusalGeneration{0});
     auto provider =
         FlowPrelude::makeReadCredentialProvider(h.cache, h.prompter, h.serializer, h.phaseSink, "card-A", h.requester,
                                                 h.artifact, h.source.token(), attempts, prompterFailed);
@@ -696,7 +704,7 @@ TEST(IdentityReadFlow, ProviderLambdaPopulatesRequesterAndArtifactOnPrompt)
     h.requester = "Mozilla Firefox";
     h.artifact = "identity";
     auto prompterFailed = std::make_shared<std::atomic<bool>>(false);
-    auto attempts = std::make_shared<AttemptContext>();
+    auto attempts = std::make_shared<AttemptContext>(LibreSCRS::Agent::PublishedRefusalGeneration{0});
     auto provider =
         FlowPrelude::makeReadCredentialProvider(h.cache, h.prompter, h.serializer, h.phaseSink, "card-A", h.requester,
                                                 h.artifact, h.source.token(), attempts, prompterFailed);
@@ -717,7 +725,7 @@ TEST(IdentityReadFlow, ProviderLambdaForwardsRequesterToMrzPrompt)
     h.requester = "/usr/bin/seahorse";
     h.artifact = "identity";
     auto prompterFailed = std::make_shared<std::atomic<bool>>(false);
-    auto attempts = std::make_shared<AttemptContext>();
+    auto attempts = std::make_shared<AttemptContext>(LibreSCRS::Agent::PublishedRefusalGeneration{0});
     auto provider =
         FlowPrelude::makeReadCredentialProvider(h.cache, h.prompter, h.serializer, h.phaseSink, "card-A", h.requester,
                                                 h.artifact, h.source.token(), attempts, prompterFailed);
@@ -817,7 +825,7 @@ TEST(IdentityReadFlow, RejectedRetryPromptEvictsAndRepromptsWithContext)
     // EVICTION).
     Harness h;
     auto prompterFailed = std::make_shared<std::atomic<bool>>(false);
-    auto attempts = std::make_shared<AttemptContext>();
+    auto attempts = std::make_shared<AttemptContext>(LibreSCRS::Agent::PublishedRefusalGeneration{0});
     auto provider =
         FlowPrelude::makeReadCredentialProvider(h.cache, h.prompter, h.serializer, h.phaseSink, "card-A", h.requester,
                                                 h.artifact, h.source.token(), attempts, prompterFailed);
@@ -850,7 +858,7 @@ TEST(IdentityReadFlow, PaceUnsupportedFallbackDoesNotMarkCredentialWrong)
     // vacuously today; reddens only if A2 regresses to invocation-counting.
     Harness h;
     auto prompterFailed = std::make_shared<std::atomic<bool>>(false);
-    auto attempts = std::make_shared<AttemptContext>();
+    auto attempts = std::make_shared<AttemptContext>(LibreSCRS::Agent::PublishedRefusalGeneration{0});
     auto provider =
         FlowPrelude::makeReadCredentialProvider(h.cache, h.prompter, h.serializer, h.phaseSink, "card-A", h.requester,
                                                 h.artifact, h.source.token(), attempts, prompterFailed);
@@ -863,8 +871,7 @@ TEST(IdentityReadFlow, PaceUnsupportedFallbackDoesNotMarkCredentialWrong)
     auto second = provider(paceReq(PaceSecretKind::Mrz)); // same kind, EMPTY reason -- no rejection
     EXPECT_EQ(second.status, LibreSCRS::Auth::CredentialResult::Status::Ok);
     EXPECT_EQ(h.prompter.mrzPrompts, 1) << "a same-kind re-invocation with no rejection serves the cache, no re-prompt";
-    EXPECT_TRUE(h.cache.getMrz("card-A").has_value())
-        << "no eviction: the never-rejected MRZ stays cached (no markCredentialWrong)";
+    EXPECT_TRUE(h.cache.getMrz("card-A").has_value()) << "the never-rejected MRZ stays cached";
 }
 
 TEST(IdentityReadFlow, ExpiredPromptDoesNotMarkCredentialWrong)
@@ -930,51 +937,52 @@ TEST(IdentityReadFlow, DismissedPromptCancelsAndDoesNotMarkCredentialWrong)
         << "a dismissal presented nothing, so it is not a rejection and must not count";
 }
 
-// DISABLED: reproduces the cross-operation case that CredentialCache.h's
-// noteRefusal/requestCredential comments say the gate does not yet cover
-// (see @ref LibreSCRS::Agent::AttemptContext's constructor doc for the
-// mechanism this depends on).
-//
 // Two IdentityReadFlow runs against the SAME card, exactly as the per-reader
-// worker dequeues them: STRICTLY one at a time. Each flow constructs its
-// AttemptContext at the top of its own run() -- i.e. at dequeue time, not at
-// the moment the client asked for it -- so the second flow's context is built
-// only AFTER the first flow's expired window already bumped the card's
-// refusal generation. It therefore captures the ALREADY-BUMPED generation as
-// its own starting point, reads as unrefused, and raises a second window:
-// h.prompter.canPrompts ends at 2, not 1.
-//
-// Enabling this requires moving the generation capture from flow-start to
-// where the operation is CREATED and PUBLISHED -- before it is queued -- so
-// a queued verb captures the generation the card had when it was asked for,
-// not the generation the card has by the time it happens to run. That
-// capture point is above this library's own seam.
-TEST(IdentityReadFlow, DISABLED_ASiblingOperationQueuedBehindAnExpiredWindowRaisesNoSecondWindow)
+// worker dequeues them: strictly one at a time. Both were PUBLISHED before
+// either ran, so each carries the generation the card had then; the first
+// one's window closing on the clock therefore puts the second behind it, and
+// the second must not raise a window of its own.
+TEST(IdentityReadFlow, ASiblingOperationQueuedBehindAnExpiredWindowRaisesNoSecondWindow)
 {
-    // The measured symptom, at the level LibreAgent can reach it. A client
-    // fires three verbs for one card; the OperationManager runs that reader's
-    // operations STRICTLY ONE AT A TIME, so verb #2 is dequeued only after
-    // verb #1 has finished -- including its window closing on the clock. Verb
-    // #2 was published long before that, so it is not a fresh request and must
-    // not raise a window of its own.
     Harness h;
     h.candidates = emrtdCandidates();
     h.prompter.canOverride = PromptResult{PromptStatus::Timeout, std::nullopt, "expired"};
     h.reader.outcome = ReadOutcome{ReadOutcome::Status::AuthFailed, std::nullopt, "auth failed"};
 
     auto first = h.make();
+    auto second = h.make();
+
     h.reader.onRead = [&first](int, LibreSCRS::SmartCard::CardSession&) {
         static_cast<void>(first.credentialProvider()(paceReq(PaceSecretKind::Can)));
     };
     (void)first.run();
     ASSERT_EQ(h.prompter.canPrompts, 1) << "the verb that actually raised the window";
 
-    auto second = h.make();
     h.reader.onRead = [&second](int, LibreSCRS::SmartCard::CardSession&) {
         static_cast<void>(second.credentialProvider()(paceReq(PaceSecretKind::Can)));
     };
     (void)second.run();
     EXPECT_EQ(h.prompter.canPrompts, 1) << "one decline is a decline for every operation already queued";
+}
+
+TEST(IdentityReadFlow, AWindowThatClosedEmptyAfterPublishSilencesThisOperation)
+{
+    // The operation was published (its generation read) BEFORE another window
+    // for this card closed empty. It must not raise a window of its own.
+    Harness h;
+    h.candidates = emrtdCandidates();
+    h.prompter.canOverride = PromptResult{PromptStatus::Ok, LibreSCRS::Secure::String{"123456"}, ""};
+    h.reader.outcome = ReadOutcome{ReadOutcome::Status::AuthFailed, std::nullopt, "Authentication failed."};
+
+    auto flow = h.make();
+    h.cache.noteRefusal("card-A", CredentialCache::RefusalKind::Cancelled);
+    h.reader.onRead = [&flow](int, LibreSCRS::SmartCard::CardSession&) {
+        static_cast<void>(flow.credentialProvider()(paceReq(PaceSecretKind::Can)));
+    };
+    const auto result = flow.run();
+
+    EXPECT_EQ(h.prompter.canPrompts, 0) << "the decline that landed after publish covers this operation";
+    EXPECT_EQ(result.outcome, IdentityReadFlow::Outcome::Cancelled);
 }
 
 TEST(IdentityReadFlow, FirstInvocationStillUsesWarmCache)
@@ -985,7 +993,7 @@ TEST(IdentityReadFlow, FirstInvocationStillUsesWarmCache)
     Harness h;
     h.cache.putCan("card-A", LibreSCRS::Secure::String{"123456"});
     auto prompterFailed = std::make_shared<std::atomic<bool>>(false);
-    auto attempts = std::make_shared<AttemptContext>();
+    auto attempts = std::make_shared<AttemptContext>(LibreSCRS::Agent::PublishedRefusalGeneration{0});
     auto provider =
         FlowPrelude::makeReadCredentialProvider(h.cache, h.prompter, h.serializer, h.phaseSink, "card-A", h.requester,
                                                 h.artifact, h.source.token(), attempts, prompterFailed);
@@ -1004,7 +1012,7 @@ TEST(IdentityReadFlow, RejectedSecretIsMarkedWrongExactlyOnce)
     // double-count a single rejected value.
     Harness h;
     auto prompterFailed = std::make_shared<std::atomic<bool>>(false);
-    auto attempts = std::make_shared<AttemptContext>();
+    auto attempts = std::make_shared<AttemptContext>(LibreSCRS::Agent::PublishedRefusalGeneration{0});
     auto provider =
         FlowPrelude::makeReadCredentialProvider(h.cache, h.prompter, h.serializer, h.phaseSink, "card-A", h.requester,
                                                 h.artifact, h.source.token(), attempts, prompterFailed);
@@ -1228,7 +1236,7 @@ TEST(IdentityReadFlow, CachedMrzShortCircuitsWithoutPrompting)
     Harness h;
     auto sink = std::make_shared<LibreSCRS::Agent::MrzChoiceSink>();
     auto prompterFailed = std::make_shared<std::atomic<bool>>(false);
-    auto attempts = std::make_shared<AttemptContext>();
+    auto attempts = std::make_shared<AttemptContext>(LibreSCRS::Agent::PublishedRefusalGeneration{0});
     h.cache.putMrz("card-A", LibreSCRS::Secure::String{kTd3MrzPayload});
 
     auto provider = FlowPrelude::makeReadCredentialProvider(
@@ -1257,7 +1265,7 @@ TEST(IdentityReadFlow, ALaterEmptyReasonInvocationLeavesTheMarkedFlagAlone)
     Harness h;
     auto prompterFailed = std::make_shared<std::atomic<bool>>(false);
     auto marked = std::make_shared<std::atomic<bool>>(false);
-    auto attempts = std::make_shared<AttemptContext>();
+    auto attempts = std::make_shared<AttemptContext>(LibreSCRS::Agent::PublishedRefusalGeneration{0});
     auto provider = FlowPrelude::makeReadCredentialProvider(h.cache, h.prompter, h.serializer, h.phaseSink, "card-A",
                                                             h.requester, h.artifact, h.source.token(), attempts,
                                                             prompterFailed, /*userCancelled=*/{}, marked);
@@ -1378,7 +1386,7 @@ TEST(IdentityReadFlow, AlternativeIsNotAdvertisedWithoutASinkToReceiveTheChoice)
     // closed: no sink, no offer.
     Harness h;
     auto prompterFailed = std::make_shared<std::atomic<bool>>(false);
-    auto attempts = std::make_shared<AttemptContext>();
+    auto attempts = std::make_shared<AttemptContext>(LibreSCRS::Agent::PublishedRefusalGeneration{0});
     auto provider = FlowPrelude::makeReadCredentialProvider(
         h.cache, h.prompter, h.serializer, h.phaseSink, "card-A", h.requester, h.artifact, h.source.token(), attempts,
         prompterFailed, /*userCancelled=*/{}, /*providerMarkedWrong=*/{}, /*offerMrzAlternative=*/true,

@@ -184,6 +184,7 @@ TEST(ReadCertificatesOperation, CacheHitSkipsFlowAndEmitsCertificates)
                                      .readerName = "FakeReader",
                                      .requester = "test",
                                      .artifact = "certificates",
+                                     .refusalGenerationAtPublish = LibreSCRS::Agent::PublishedRefusalGeneration{0},
                                  },
                                  state);
     op.runOnWorker();
@@ -225,6 +226,7 @@ TEST(ReadCertificatesOperation, ColdReadPopulatesTheCache)
                                      .readerName = "FakeReader",
                                      .requester = "test",
                                      .artifact = "certificates",
+                                     .refusalGenerationAtPublish = LibreSCRS::Agent::PublishedRefusalGeneration{0},
                                  },
                                  state);
 
@@ -268,6 +270,7 @@ TEST(ReadCertificatesOperation, UndeliveredResultFinishesErrorOnColdReadAndCache
                                          .readerName = "FakeReader",
                                          .requester = "test",
                                          .artifact = "certificates",
+                                         .refusalGenerationAtPublish = LibreSCRS::Agent::PublishedRefusalGeneration{0},
                                      },
                                      std::make_shared<OperationState>());
         op.runOnWorker();

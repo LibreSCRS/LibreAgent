@@ -208,6 +208,9 @@ struct Harness
             .requester = requester,
             .artifact = "certificates",
             .token = source.token(),
+            // Read from the cache here, the way OperationLauncher::depsFor does at publish.
+            .refusalGenerationAtPublish =
+                LibreSCRS::Agent::PublishedRefusalGeneration{cache.refusalGenerationFor("card-A")},
         }};
     }
 };
@@ -493,6 +496,25 @@ TEST(CertReadFlow, DismissedPromptCancelsAndDoesNotMarkCredentialWrong)
         << "no message may claim an authentication that was never attempted";
     EXPECT_EQ(flow.attemptContext().attempts(), 0u)
         << "a dismissal presented nothing, so it is not a rejection and must not count";
+}
+
+TEST(CertReadFlow, AWindowThatClosedEmptyAfterPublishSilencesThisOperation)
+{
+    // The operation was published (its generation read) BEFORE another window
+    // for this card closed empty. It must not raise a window of its own.
+    Harness h;
+    h.prompter.canOverride = PromptResult{PromptStatus::Ok, LibreSCRS::Secure::String{"123456"}, ""};
+    h.certReader.outcome = CertReadOutcome{CertReadOutcome::Status::AuthFailed, {}, "Authentication failed."};
+
+    auto flow = h.make();
+    h.cache.noteRefusal("card-A", CredentialCache::RefusalKind::Cancelled);
+    h.certReader.onRead = [&flow](int, LibreSCRS::SmartCard::CardSession&) {
+        static_cast<void>(flow.credentialProvider()(paceReq(LibreSCRS::Auth::PaceSecretKind::Can)));
+    };
+    const auto result = flow.run();
+
+    EXPECT_EQ(h.prompter.canPrompts, 0) << "the decline that landed after publish covers this operation";
+    EXPECT_EQ(result.outcome, CertReadFlow::Outcome::Cancelled);
 }
 
 TEST(CertReadFlow, RefusedPromptSurfacesCapabilityMissingWithRemedyMessage)

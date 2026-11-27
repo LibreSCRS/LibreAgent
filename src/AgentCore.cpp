@@ -43,7 +43,8 @@ Pkcs11Broker::CryptoResult runRawCrypto(Mechanism mechanism, Operations::CardSes
                                         Operations::PromptSerializer& serializer, CredentialCache& cache,
                                         const std::string& cardKey, const std::string& requester,
                                         const std::string& certId, std::span<const std::uint8_t> bytes,
-                                        const Pkcs11Broker::LeasePinState& pinState, LibreSCRS::CancelToken token)
+                                        const Pkcs11Broker::LeasePinState& pinState, LibreSCRS::CancelToken token,
+                                        PublishedRefusalGeneration refusalGenerationAtPublish)
 {
     NullPhaseSink phaseSink;
 
@@ -71,6 +72,7 @@ Pkcs11Broker::CryptoResult runRawCrypto(Mechanism mechanism, Operations::CardSes
         .markPinVerified = pinState.markVerified,
         .clearPinVerified = pinState.clearVerified,
         .allowPrompt = pinState.allowPrompt,
+        .refusalGenerationAtPublish = refusalGenerationAtPublish,
     };
     // The preflight and the three card operations, each in its own slot.
     Operations::bindLmRawCrypto(deps);
@@ -221,7 +223,7 @@ void AgentCore::runRawCryptoOnWorker(Mechanism mechanism, const std::string& rea
     //   * serializer — the SlotGuard unwind that locks + notifies the gate
     //                  unconditionally on any live-process unblock;
     //   * credentials — a nested CAN/MRZ prompt writes putCan/putMrz to the cache,
-    //                  and the AuthFailed unwind invalidates it, BOTH past the
+    //                  and the AuthFailed unwind evicts its secrets, BOTH past the
     //                  flow's post-prompt gate (so the shutdown token cannot always
     //                  bail before the cache is touched);
     //   * lease      — reached both through pinState (captured by value below, whose
@@ -240,12 +242,16 @@ void AgentCore::runRawCryptoOnWorker(Mechanism mechanism, const std::string& rea
     //                  Where the wedge is past the gate (a terminal op / nested
     //                  prompt), the co-owned context keeps the touched members alive.
     auto ctx = m_cryptoCtx;
+    // Read here, on the calling thread, before the op is queued: what the card
+    // had refused by the time this request was made, not by the time the worker
+    // gets to it.
+    const PublishedRefusalGeneration refusalGenerationAtPublish{ctx->credentials->refusalGenerationFor(rc->cardKey)};
     const bool queued = m_opManager.enqueueOnReaderWorker(
         rc->readerId, rc->readerName,
-        [done, input, cardKey = rc->cardKey, requester, certId, pinState, ctx,
-         mechanism](Operations::CardSessionHolder& holder) {
+        [done, input, cardKey = rc->cardKey, requester, certId, pinState, ctx, mechanism,
+         refusalGenerationAtPublish](Operations::CardSessionHolder& holder) {
             auto result = runRawCrypto(mechanism, holder, *ctx->prompter, *ctx->serializer, *ctx->credentials, cardKey,
-                                       requester, certId, *input, pinState, ctx->shutdown);
+                                       requester, certId, *input, pinState, ctx->shutdown, refusalGenerationAtPublish);
             // A plaintext or a derived secret: wiped on every way out, the
             // teardown skip included. Handed on, it is moved and leaves nothing.
             const SecureZeroOnExit wipe{result.bytes};
